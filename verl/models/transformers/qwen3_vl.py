@@ -65,11 +65,14 @@ def _maybe_log_model_video_inputs(
 
     rank = os.environ.get("RANK", "0")
     n_video_tokens = int((input_ids == model.config.video_token_id).sum().item())
+    n_video_tokens_per_sample = [int(v) for v in (input_ids == model.config.video_token_id).sum(dim=-1).tolist()]
+    n_image_tokens_per_sample = [int(v) for v in (input_ids == model.config.image_token_id).sum(dim=-1).tolist()]
     print(
         "[VIDEO_DEBUG][model_input] "
         f"rank={rank} pixel_values_videos_shape={tuple(pixel_values_videos.shape)} "
         f"video_grid_t={grid_t} temporal_patch_size={temporal_patch_size} "
-        f"estimated_sampled_frames={estimated_sampled_frames} n_video_tokens={n_video_tokens}"
+        f"estimated_sampled_frames={estimated_sampled_frames} n_video_tokens={n_video_tokens} "
+        f"n_video_tokens_per_sample={n_video_tokens_per_sample} n_image_tokens_per_sample={n_image_tokens_per_sample}"
     )
     _video_debug_log_count += 1
 

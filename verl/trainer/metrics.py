@@ -31,7 +31,7 @@ def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
     prompt_length = batch.batch["attention_mask"][:, :-max_response_length].sum(-1).float()
     response_length = batch.batch["attention_mask"][:, -max_response_length:].sum(-1).float()
 
-    return {
+    metrics = {
         # response length
         "response_length/mean": torch.mean(response_length).detach().item(),
         "response_length/max": torch.max(response_length).detach().item(),
@@ -43,6 +43,23 @@ def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
         "prompt_length/min": torch.min(prompt_length).detach().item(),
         "prompt_length/clip_ratio": torch.eq(prompt_length, max_prompt_length).float().mean().detach().item(),
     }
+
+    visual_keys = (
+        ("visual_token_count", "visual_token_count"),
+        ("video_visual_token_count", "video_visual_token_count"),
+        ("image_visual_token_count", "image_visual_token_count"),
+    )
+    for key, metric_name in visual_keys:
+        if key in batch.batch:
+            values = batch.batch[key].float()
+            metrics[f"{metric_name}/mean"] = torch.mean(values).detach().item()
+            metrics[f"{metric_name}/max"] = torch.max(values).detach().item()
+            metrics[f"{metric_name}/min"] = torch.min(values).detach().item()
+            metrics[f"{metric_name}/ratio_in_prompt_mean"] = (
+                values / torch.clamp(prompt_length, min=1.0)
+            ).mean().detach().item()
+
+    return metrics
 
 
 def compute_data_metrics(batch: DataProto, use_critic: bool = False) -> dict[str, Any]:

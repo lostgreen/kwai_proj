@@ -42,6 +42,24 @@ _VIDEO_DEBUG_ENABLED = os.environ.get("EASYR1_DEBUG_VIDEO_FRAMES", "0").strip().
 _VIDEO_DEBUG_MAX_LOGS = int(os.environ.get("EASYR1_DEBUG_VIDEO_FRAMES_MAX_LOGS", "200"))
 _video_debug_log_count = 0
 
+_VISUAL_TOKEN_DEBUG_ENABLED = os.environ.get(
+    "EASYR1_DEBUG_VISUAL_TOKENS",
+    os.environ.get("EASYR1_DEBUG_VIDEO_FRAMES", "0"),
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
+_VISUAL_TOKEN_DEBUG_MAX_LOGS = int(
+    os.environ.get(
+        "EASYR1_DEBUG_VISUAL_TOKENS_MAX_LOGS",
+        os.environ.get("EASYR1_DEBUG_VIDEO_FRAMES_MAX_LOGS", "200"),
+    )
+)
+_visual_token_debug_log_count = 0
+
 
 QUESTION_TEMPLATE = (
     "{Question}\n"
@@ -244,6 +262,57 @@ def _maybe_log_video_debug(video: Any, result: Any, target_fps: float, max_frame
     _video_debug_log_count += 1
 
 
+def _count_token(input_ids: torch.Tensor, token_id: Optional[int]) -> int:
+    if token_id is None or not isinstance(input_ids, torch.Tensor):
+        return 0
+    if token_id < 0:
+        return 0
+    return int((input_ids == token_id).sum().item())
+
+
+def _grid_to_list(grid: Optional[torch.Tensor]) -> Optional[list[list[int]]]:
+    if grid is None:
+        return None
+    if not isinstance(grid, torch.Tensor):
+        return None
+    if grid.numel() == 0:
+        return []
+    return [[int(v) for v in row] for row in grid.detach().cpu().tolist()]
+
+
+def _maybe_log_visual_token_debug(
+    *,
+    index: int,
+    prompt_len_before_pad: int,
+    prompt_len_after_pad: int,
+    video_tokens_before_pad: int,
+    video_tokens_after_pad: int,
+    image_tokens_before_pad: int,
+    image_tokens_after_pad: int,
+    raw_prompt_len: int,
+    max_prompt_length: int,
+    video_grid_thw: Optional[torch.Tensor],
+    image_grid_thw: Optional[torch.Tensor],
+) -> None:
+    global _visual_token_debug_log_count
+    if not _VISUAL_TOKEN_DEBUG_ENABLED:
+        return
+    if _visual_token_debug_log_count >= _VISUAL_TOKEN_DEBUG_MAX_LOGS:
+        return
+
+    rank = os.environ.get("RANK", "0")
+    print(
+        "[VIDEO_DEBUG][prompt_tokens] "
+        f"rank={rank} idx={index} "
+        f"prompt_len_before={prompt_len_before_pad} prompt_len_after={prompt_len_after_pad} "
+        f"video_tokens_before={video_tokens_before_pad} video_tokens_after={video_tokens_after_pad} "
+        f"image_tokens_before={image_tokens_before_pad} image_tokens_after={image_tokens_after_pad} "
+        f"raw_prompt_len={raw_prompt_len} max_prompt_length={max_prompt_length} "
+        f"video_grid_thw={_grid_to_list(video_grid_thw)} image_grid_thw={_grid_to_list(image_grid_thw)}"
+    )
+    _visual_token_debug_log_count += 1
+
+
 class RLHFDataset(Dataset):
     """
     We assume the dataset contains a column that contains prompts and other information
@@ -440,6 +509,11 @@ class RLHFDataset(Dataset):
         example: dict = self.dataset[index]
         messages = self._build_messages(example)
         example.pop(self.prompt_key, None)
+        token_stats_grid_video = None
+        token_stats_grid_image = None
+        prompt_len_before_pad = 0
+        video_tokens_before_pad = 0
+        image_tokens_before_pad = 0
 
         if self.image_key in example and isinstance(example.get(self.image_key), list) and len(example.get(self.image_key)) > 0:
             prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
@@ -455,6 +529,7 @@ class RLHFDataset(Dataset):
             input_ids = model_inputs.pop("input_ids")[0]
             attention_mask = model_inputs.pop("attention_mask")[0]
             example["multi_modal_data"] = {"images": images}
+            token_stats_grid_image = model_inputs.get("image_grid_thw", None)
         elif self.video_key in example and isinstance(example.get(self.video_key), list) and len(example.get(self.video_key)) > 0:
             prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
             videos = example.pop(self.video_key)
@@ -499,6 +574,7 @@ class RLHFDataset(Dataset):
                 "max_frames": self.max_frames,
                 "video_fps": self.video_fps
             }
+            token_stats_grid_video = model_inputs.get("video_grid_thw", None)
         else:
             prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
             model_inputs = self.tokenizer([prompt], add_special_tokens=False, return_tensors="pt")
@@ -539,6 +615,12 @@ class RLHFDataset(Dataset):
         else:
             position_ids = torch.clip(attention_mask.cumsum(dim=0) - 1, min=0, max=None)  # (seq_length,)
 
+        prompt_len_before_pad = int(attention_mask.sum().item())
+        video_token_id = getattr(self.processor, "video_token_id", None) if self.processor is not None else None
+        image_token_id = getattr(self.processor, "image_token_id", None) if self.processor is not None else None
+        video_tokens_before_pad = _count_token(input_ids, video_token_id)
+        image_tokens_before_pad = _count_token(input_ids, image_token_id)
+
         input_ids, attention_mask, position_ids = VF.postprocess_data(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -549,6 +631,7 @@ class RLHFDataset(Dataset):
             truncation=self.truncation,
         )
         raw_prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        raw_prompt_len_before_trunc = len(raw_prompt_ids)
         if len(raw_prompt_ids) > self.max_prompt_length:
             if self.truncation == "left":
                 raw_prompt_ids = raw_prompt_ids[-self.max_prompt_length :]
@@ -557,11 +640,34 @@ class RLHFDataset(Dataset):
             elif self.truncation == "error":
                 raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.max_prompt_length}.")
 
+        prompt_len_after_pad = int(attention_mask.sum().item())
+        video_tokens_after_pad = _count_token(input_ids, video_token_id)
+        image_tokens_after_pad = _count_token(input_ids, image_token_id)
+        visual_tokens_after_pad = video_tokens_after_pad + image_tokens_after_pad
+
         example["input_ids"] = input_ids
         example["attention_mask"] = attention_mask
         example["position_ids"] = position_ids
         example["raw_prompt_ids"] = raw_prompt_ids
+        example["prompt_token_count"] = torch.tensor(prompt_len_after_pad, dtype=torch.long)
+        example["video_visual_token_count"] = torch.tensor(video_tokens_after_pad, dtype=torch.long)
+        example["image_visual_token_count"] = torch.tensor(image_tokens_after_pad, dtype=torch.long)
+        example["visual_token_count"] = torch.tensor(visual_tokens_after_pad, dtype=torch.long)
         example["ground_truth"] = example.pop(self.answer_key)
+
+        _maybe_log_visual_token_debug(
+            index=index,
+            prompt_len_before_pad=prompt_len_before_pad,
+            prompt_len_after_pad=prompt_len_after_pad,
+            video_tokens_before_pad=video_tokens_before_pad,
+            video_tokens_after_pad=video_tokens_after_pad,
+            image_tokens_before_pad=image_tokens_before_pad,
+            image_tokens_after_pad=image_tokens_after_pad,
+            raw_prompt_len=raw_prompt_len_before_trunc,
+            max_prompt_length=self.max_prompt_length,
+            video_grid_thw=token_stats_grid_video,
+            image_grid_thw=token_stats_grid_image,
+        )
 
         # print(example)
         # print(input_ids.shape)
