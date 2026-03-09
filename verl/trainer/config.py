@@ -17,7 +17,7 @@ PPO config
 
 import os
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from ..workers.config import WorkerConfig
 
@@ -57,7 +57,7 @@ class DataConfig:
     filter_overlong_prompts: bool = True
     filter_overlong_prompts_workers: int = 16
     task_homogeneous_batching: bool = False
-    task_weights: Optional[str] = None  # JSON string, e.g. '{"temporal_seg":0.4,"add":0.15}'
+    task_weights: Optional[Dict[str, float]] = None  # e.g. {"temporal_seg": 0.4, "add": 0.15}
     task_key: str = "problem_type"
 
     def post_init(self):

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from typing import Optional
 
 import torch
@@ -55,10 +54,8 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
     if config.task_homogeneous_batching:
         task_weights = None
         if config.task_weights:
-            try:
-                task_weights = json.loads(config.task_weights)
-            except json.JSONDecodeError:
-                print(f"[WARN] Failed to parse task_weights: {config.task_weights}, using equal weights.")
+            # OmegaConf 已经把命令行 JSON/YAML 解析成 DictConfig，直接转成普通 dict
+            task_weights = dict(config.task_weights)
 
         batch_sampler = TaskHomogeneousBatchSampler(
             dataset=train_dataset,
