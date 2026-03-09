@@ -476,9 +476,24 @@ class FSDPWorker(Worker):
                         # see https://github.com/hiyouga/EasyR1/pull/339
                         multi_modal_inputs = dict(self.processor.image_processor(images=images, return_tensors="pt", do_resize=False))
                     elif len(videos) != 0:
-                        multi_modal_inputs = dict(
-                            self.processor.image_processor(images=None, videos=videos, return_tensors="pt", do_resize=False, do_sample_frames=False)
-                        )
+                        # 逐个视频处理后合并，因为不同视频帧数不同无法直接 stack
+                        per_video_results = []
+                        for single_video in videos:
+                            r = dict(
+                                self.processor.image_processor(
+                                    images=None, videos=[single_video],
+                                    return_tensors="pt", do_resize=False, do_sample_frames=False
+                                )
+                            )
+                            per_video_results.append(r)
+                        # 合并：pixel_values 沿 dim=0 cat，video_grid_thw 沿 dim=0 cat
+                        multi_modal_inputs = {}
+                        for key in per_video_results[0]:
+                            tensors = [r[key] for r in per_video_results if key in r]
+                            if isinstance(tensors[0], torch.Tensor):
+                                multi_modal_inputs[key] = torch.cat(tensors, dim=0)
+                            else:
+                                multi_modal_inputs[key] = tensors[0]
                     else:
                         multi_modal_inputs = {}
 

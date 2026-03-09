@@ -575,7 +575,7 @@ class RLHFDataset(Dataset):
                 "videos": videos,
                 "min_pixels": self.min_pixels,
                 "max_pixels": self.max_pixels,
-                "max_frames": self.max_frames,
+                "max_frames": max_frames_per_video,
                 "video_fps": self.video_fps
             }
             token_stats_grid_video = model_inputs.get("video_grid_thw", None)
