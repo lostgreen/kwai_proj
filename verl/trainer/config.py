@@ -56,6 +56,9 @@ class DataConfig:
     max_pixels: Optional[int] = 4194304
     filter_overlong_prompts: bool = True
     filter_overlong_prompts_workers: int = 16
+    task_homogeneous_batching: bool = False
+    task_weights: Optional[str] = None  # JSON string, e.g. '{"temporal_seg":0.4,"add":0.15}'
+    task_key: str = "problem_type"
 
     def post_init(self):
         if self.image_dir is not None:
@@ -147,7 +150,7 @@ class TrainerConfig:
     """file to save ray timeline"""
     find_last_checkpoint: bool = True
     """automatically find the last checkpoint in the save checkpoint path to resume training"""
-    save_rollout_to_file: bool = False
+    save_rollout_to_file: bool = True
     """whether to save training rollouts to a JSONL file at every step"""
     save_rollout_n_per_step: int = -1
     """how many rollout samples to save per step, -1 means save all"""

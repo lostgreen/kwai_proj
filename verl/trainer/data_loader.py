@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from typing import Optional
 
 import torch
@@ -20,6 +21,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 from ..utils.dataset import RLHFDataset, collate_fn
+from ..utils.task_sampler import TaskHomogeneousBatchSampler
 from .config import DataConfig
 
 
@@ -43,28 +45,54 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
         filter_overlong_prompts=config.filter_overlong_prompts,
         filter_overlong_prompts_workers=config.filter_overlong_prompts_workers,
     )
-    # use sampler for better ckpt resume
-    if config.shuffle:
-        train_dataloader_generator = torch.Generator()
-        train_dataloader_generator.manual_seed(config.seed)
-        sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
-    else:
-        sampler = SequentialSampler(data_source=train_dataset)
 
     if config.mini_rollout_batch_size is not None:
         train_batch_size = config.mini_rollout_batch_size
     else:
         train_batch_size = config.rollout_batch_size
 
-    train_dataloader = StatefulDataLoader(
-        dataset=train_dataset,
-        batch_size=train_batch_size,
-        sampler=sampler,
-        num_workers=config.dataloader_num_workers,
-        collate_fn=collate_fn,
-        pin_memory=False,
-        drop_last=True,
-    )
+    # ---- Task-homogeneous batching (每个 batch 内只含同一任务) ----
+    if config.task_homogeneous_batching:
+        task_weights = None
+        if config.task_weights:
+            try:
+                task_weights = json.loads(config.task_weights)
+            except json.JSONDecodeError:
+                print(f"[WARN] Failed to parse task_weights: {config.task_weights}, using equal weights.")
+
+        batch_sampler = TaskHomogeneousBatchSampler(
+            dataset=train_dataset,
+            batch_size=train_batch_size,
+            task_key=config.task_key,
+            task_weights=task_weights,
+            seed=config.seed,
+            drop_last=True,
+        )
+        train_dataloader = StatefulDataLoader(
+            dataset=train_dataset,
+            batch_sampler=batch_sampler,
+            num_workers=config.dataloader_num_workers,
+            collate_fn=collate_fn,
+            pin_memory=False,
+        )
+    else:
+        # ---- 原始随机采样 ----
+        if config.shuffle:
+            train_dataloader_generator = torch.Generator()
+            train_dataloader_generator.manual_seed(config.seed)
+            sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
+        else:
+            sampler = SequentialSampler(data_source=train_dataset)
+
+        train_dataloader = StatefulDataLoader(
+            dataset=train_dataset,
+            batch_size=train_batch_size,
+            sampler=sampler,
+            num_workers=config.dataloader_num_workers,
+            collate_fn=collate_fn,
+            pin_memory=False,
+            drop_last=True,
+        )
 
     val_dataset = RLHFDataset(
         data_path=config.val_files,

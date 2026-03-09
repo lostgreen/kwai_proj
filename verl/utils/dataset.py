@@ -541,9 +541,13 @@ class RLHFDataset(Dataset):
 
             processed_videos = [] if len(videos) != 0 else None  # text-only data
             video_fps_list = []
+            # 多视频时，将 max_frames 均匀分配给每个视频以防止 OOM
+            n_videos = len(videos)
+            max_frames_per_video = max(1, self.max_frames // n_videos) if n_videos > 1 else self.max_frames
+            
             for video in videos:
                 processed_video, video_fps = process_video(
-                    video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=self.max_frames, video_fps=self.video_fps, return_fps=True
+                    video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=max_frames_per_video, video_fps=self.video_fps, return_fps=True
                 )
                 video_kwargs = {"do_sample_frames": False}
                 processed_videos.append(processed_video)

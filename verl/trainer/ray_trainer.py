@@ -390,6 +390,7 @@ class RayPPOTrainer:
         scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
         uids = batch.non_tensor_batch.get("uid", [None] * len(scores))
         ground_truths = batch.non_tensor_batch.get("ground_truth", [None] * len(scores))
+        problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(scores))
 
         total = len(scores)
         n = self.config.trainer.save_rollout_n_per_step
@@ -402,6 +403,7 @@ class RayPPOTrainer:
                 record = {
                     "step": self.global_step,
                     "uid": str(uids[i]) if uids[i] is not None else None,
+                    "problem_type": str(problem_types[i]) if problem_types[i] is not None else None,
                     "prompt": prompt_text,
                     "response": response_text,
                     "ground_truth": str(ground_truths[i]) if ground_truths[i] is not None else None,
@@ -670,6 +672,20 @@ class RayPPOTrainer:
                         batch.batch["token_level_scores"] = reward_tensor
                         reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
                         metrics.update(reward_metrics)
+                        
+                        # 按任务类型统计奖励
+                        problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(reward_tensor))
+                        task_rewards = {}
+                        for pidx, ptype in enumerate(problem_types):
+                            if ptype not in task_rewards:
+                                task_rewards[ptype] = []
+                            task_rewards[ptype].append(reward_tensor[pidx].sum().item())
+                        
+                        # 计算每个任务的平均奖励并记录
+                        for task_type, task_scores in task_rewards.items():
+                            if task_scores:
+                                avg_reward = sum(task_scores) / len(task_scores)
+                                metrics[f"reward/{task_type}"] = avg_reward
 
                     # apply kl penalty if available
                     if not self.config.algorithm.use_kl_loss and self.use_reference_policy:
