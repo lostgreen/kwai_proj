@@ -21,7 +21,7 @@ exp_name='qwen3_vl_mixed_proxy_training'
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"   # 替换为你的模型路径
-TRAIN_FILE="proxy_data/mixed_train.jsonl"                   # 合并后的混合数据
+TRAIN_FILE="proxy_data/mixed_train_clean.jsonl"             # 过滤不可读视频后的干净数据
 TEST_FILE="proxy_data/youcook2_val_small.jsonl"             # 验证集
 IMAGE_DIR=""                                                 # 视频已使用绝对路径则留空
 
