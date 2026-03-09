@@ -21,15 +21,15 @@ exp_name='qwen3_vl_mixed_proxy_training'
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"   # 替换为你的模型路径
-TRAIN_FILE="proxy_data/mixed_train_clean.jsonl"             # 过滤不可读视频后的干净数据
+TRAIN_FILE="proxy_data/mixed_train_cot.jsonl"              # CoT prompt 版本（选择题要求 <think>...<answer>）
 TEST_FILE="proxy_data/youcook2_val_small.jsonl"             # 验证集
 IMAGE_DIR=""                                                 # 视频已使用绝对路径则留空
 
 # ---- 训练超参数 ----
 ROLLOUT_BS=16           # rollout batch size
 GLOBAL_BS=16            # actor 更新 global batch size
-MB_PER_UPDATE=2         # 每设备每次更新 micro batch
-MB_PER_EXP=2            # 每设备每次 experience 收集 micro batch
+MB_PER_UPDATE=1         # 每设备每次更新 micro batch
+MB_PER_EXP=1            # 每设备每次 experience 收集 micro batch
 ROLLOUT_N=8             # 每个 prompt 生成的候选回复数
 TP_SIZE=2               # vLLM Tensor Parallel size
 N_GPUS_PER_NODE=8       # 每节点 GPU 数
@@ -37,7 +37,7 @@ NNODES=1                # 节点数
 
 # ---- 序列长度 & 视频 ----
 MAX_PROMPT_LEN=14000    # prompt 最大 token 数
-MAX_RESPONSE_LEN=512    # 回复最大 token 数
+MAX_RESPONSE_LEN=1024   # CoT 推理需要更长回复（旧值 512 对选择题太短）
 VIDEO_FPS=2.0
 MAX_FRAMES=256
 MAX_PIXELS=49152
