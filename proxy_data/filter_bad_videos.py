@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-用 decord 直接验证并过滤数据集中无法读取的视频样本。
+用 decord 直接验证并过滤数据集中无法读取 / 帧数不足的视频样本。
 
 之所以用 decord 而不是 ffprobe：
   训练时 qwen_vl_utils 优先调用 decord.VideoReader，
   decord 失败的视频会直接导致 DataLoader worker 崩溃（KeyError: 'video_fps'）。
   本脚本与训练代码行为完全对齐，只保留 decord 能成功打开的视频。
+
+  此外，Qwen3-VL 要求 temporal_patch_size=2，即视频至少需要 2 帧。
+  --min-frames 参数（默认 4）过滤掉帧数过少的视频，避免
+  "nframes should in interval [FRAME_FACTOR, total_frames]" 崩溃。
 
 用法:
     # 检查 + 过滤，生成干净数据集
@@ -41,12 +45,19 @@ from typing import Optional
 # 单个视频可读性检查
 # ─────────────────────────────────────────────
 
-def check_video_decord(video_path: str) -> dict:
+def check_video_decord(video_path: str, min_frames: int = 4) -> dict:
     """
     用 decord.VideoReader 尝试打开视频，和训练时行为完全一致。
-    返回 {"path": str, "ok": bool, "error": str}
+    
+    Args:
+        video_path: 视频文件路径
+        min_frames: 最小帧数要求。Qwen3-VL 的 temporal_patch_size=2
+                    要求至少 2 帧；多视频场景 max_frames_per_video 可能
+                    很小，默认 4 留足余量。
+    
+    返回 {"path": str, "ok": bool, "error": str, "num_frames": int}
     """
-    result = {"path": video_path, "ok": False, "error": ""}
+    result = {"path": video_path, "ok": False, "error": "", "num_frames": 0}
 
     if not os.path.exists(video_path):
         result["error"] = "文件不存在"
@@ -59,8 +70,13 @@ def check_video_decord(video_path: str) -> dict:
     try:
         import decord
         vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
-        if len(vr) == 0:
+        n_frames = len(vr)
+        result["num_frames"] = n_frames
+        if n_frames == 0:
             result["error"] = "视频帧数为 0"
+            return result
+        if n_frames < min_frames:
+            result["error"] = f"视频帧数不足: {n_frames} < {min_frames} (min_frames)"
             return result
         # 额外验证：尝试读第 0 帧
         _ = vr[0]
@@ -118,6 +134,8 @@ def main():
     parser.add_argument("--video_key", default="videos",  help="视频路径字段名（默认 videos）")
     parser.add_argument("--workers", "-w", type=int, default=16, help="并行线程数（默认 16）")
     parser.add_argument("--bad_list", default=None, help="将不可读视频路径写入此文件")
+    parser.add_argument("--min-frames", type=int, default=4,
+                        help="视频最少帧数（默认 4，Qwen3-VL temporal_patch_size=2 至少需要 2 帧）")
     args = parser.parse_args()
 
     # ── 1. 读取数据集，收集所有唯一视频路径 ──
@@ -159,7 +177,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
-            executor.submit(check_video_decord, v): v
+            executor.submit(check_video_decord, v, args.min_frames): v
             for v in all_videos
         }
         for future in as_completed(futures):

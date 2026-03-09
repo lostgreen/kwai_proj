@@ -17,7 +17,7 @@ mkdir -p "$(dirname "${BAD_SAMPLES_LOG}")"
 
 # ---- 实验配置 ----
 project_name='EasyR1-mixed-proxy'
-exp_name='qwen3_vl_mixed_proxy_training'
+exp_name='qwen3_vl_mixed_proxy_training_8gpu'
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"   # 替换为你的模型路径
@@ -108,5 +108,5 @@ python3 -m verl.trainer.main \
     trainer.val_generations_to_log=4 \
     trainer.save_freq=50 \
     trainer.logger="[file,tensorboard]" \
-    trainer.save_checkpoint_path="checkpoints/${exp_name}" \
+    trainer.save_checkpoint_path="/m2v_intern/xuboshen/zgw/RL-Models/${exp_name}" \
     data.val_batch_size=8
