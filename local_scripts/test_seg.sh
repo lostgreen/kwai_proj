@@ -6,6 +6,9 @@
 set -x
 
 # ---- 环境变量 ----
+export EASYR1_DEBUG_VISUAL_TOKENS=1
+export EASYR1_DEBUG_VISUAL_TOKENS_MAX_LOGS=200
+export EASYR1_DEBUG_VIDEO_FRAMES="${EASYR1_DEBUG_VIDEO_FRAMES:-1}"
 export DECORD_EOF_RETRY_MAX=2048001
 # 将异常样本日志写到可写的绝对路径，避免 './EasyR1/bad_samples.txt' 不存在
 export BAD_SAMPLES_LOG="$(pwd)/bad_samples.txt"
@@ -38,7 +41,7 @@ MAX_PROMPT_LEN=14000    # prompt 最大 token 数
 MAX_RESPONSE_LEN=512    # 回复最大 token 数（256 对于 thinking+events 不够用）
 VIDEO_FPS=2.0           # 视频采样帧率（effective 1fps after temporal_patch_size=2）
 MAX_FRAMES=256          # 最大抽取帧数
-MAX_PIXELS=12288        # 每帧最大像素数（48 tokens: 48 * 16 * 16）
+MAX_PIXELS=49152        # 每帧最大像素数（48 tokens: 48 * 16 * 16）
 MIN_PIXELS=3136         # 每帧最小像素数（与 YAML 保持一致）
 
 # ---- 学习率 & 算法 ----

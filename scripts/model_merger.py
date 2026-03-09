@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+python /home/xuboshen/zgw/EasyR1/scripts/model_merger.py \
+    --local_dir /m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_youcook2_temporal_seg_8gpu-48token/global_step_250/actor
+"""
 
 import argparse
 import os
