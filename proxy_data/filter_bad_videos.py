@@ -36,9 +36,36 @@
 
 import json
 import os
+import re
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import Optional, Tuple
+
+
+# ─────────────────────────────────────────────
+# 时间戳解析
+# ─────────────────────────────────────────────
+
+def parse_timestamp_from_filename(video_path: str) -> Optional[Tuple[float, float]]:
+    """
+    从文件名中解析时间戳（秒级）。
+    
+    YouCook2 格式示例:
+        Fe4tO5vW9_E_event00_42_51.mp4  → (42, 51)  # 表示 42-51 秒的片段
+    
+    返回 (start_sec, end_sec) 或 None（如果格式不匹配）
+    """
+    basename = os.path.basename(video_path)
+    # 匹配 _event\d+_\d+_\d+ 格式
+    match = re.search(r'_event\d+_(\d+)_(\d+)', basename)
+    if match:
+        try:
+            start = float(match.group(1))
+            end = float(match.group(2))
+            return (start, end)
+        except (ValueError, IndexError):
+            return None
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -55,9 +82,25 @@ def check_video_decord(video_path: str, min_frames: int = 4) -> dict:
                     要求至少 2 帧；多视频场景 max_frames_per_video 可能
                     很小，默认 4 留足余量。
     
-    返回 {"path": str, "ok": bool, "error": str, "num_frames": int}
+    返回 {
+        "path": str, 
+        "ok": bool, 
+        "error": str, 
+        "num_frames": int,
+        "duration": float,          # 实际视频时长（秒）
+        "timestamp_duration": float, # 文件名中标注的时长，None 则无标注
+        "duration_mismatch": bool    # 标注时长 vs 实际时长差异过大
+    }
     """
-    result = {"path": video_path, "ok": False, "error": "", "num_frames": 0}
+    result = {
+        "path": video_path, 
+        "ok": False, 
+        "error": "", 
+        "num_frames": 0,
+        "duration": 0.0,
+        "timestamp_duration": None,
+        "duration_mismatch": False
+    }
 
     if not os.path.exists(video_path):
         result["error"] = "文件不存在"
@@ -72,12 +115,29 @@ def check_video_decord(video_path: str, min_frames: int = 4) -> dict:
         vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
         n_frames = len(vr)
         result["num_frames"] = n_frames
+        
+        # 计算实际时长
+        fps = vr.get_avg_fps() or 24.0  # 默认 24fps
+        actual_duration = n_frames / fps
+        result["duration"] = actual_duration
+        
         if n_frames == 0:
             result["error"] = "视频帧数为 0"
             return result
         if n_frames < min_frames:
             result["error"] = f"视频帧数不足: {n_frames} < {min_frames} (min_frames)"
             return result
+        
+        # 检查文件名中的时间戳
+        ts = parse_timestamp_from_filename(video_path)
+        if ts is not None:
+            start_sec, end_sec = ts
+            ts_duration = end_sec - start_sec
+            result["timestamp_duration"] = ts_duration
+            # 允许 ±10% 误差（帧率/采样问题）
+            if abs(actual_duration - ts_duration) > max(ts_duration * 0.1, 0.5):
+                result["duration_mismatch"] = True
+        
         # 额外验证：尝试读第 0 帧
         _ = vr[0]
         result["ok"] = True
@@ -172,6 +232,7 @@ def main():
     # ── 2. 并行验证视频 ──
     print(f"\n🔍 验证视频可读性（workers={args.workers}）...")
     bad_videos: set = set()
+    duration_mismatch_videos: list = []  # [(path, actual_duration, ts_duration), ...]
     checked = 0
     total = len(all_videos)
 
@@ -187,6 +248,13 @@ def main():
                 bad_videos.add(res["path"])
                 print(f"  ❌ [{checked:>6}/{total}] {res['path']}")
                 print(f"             原因: {res['error']}")
+            elif res.get("duration_mismatch", False):
+                # 时长不匹配但视频本身可读
+                duration_mismatch_videos.append((
+                    res["path"],
+                    res["duration"],
+                    res["timestamp_duration"]
+                ))
             elif checked % 500 == 0 or checked == total:
                 print(f"  ✅ [{checked:>6}/{total}] 进度...")
 
@@ -195,6 +263,8 @@ def main():
     print(f"\n📊 结果汇总:")
     print(f"  可读视频   : {good_count} / {total}")
     print(f"  不可读视频  : {len(bad_videos)} / {total}")
+    if duration_mismatch_videos:
+        print(f"  时长不匹配  : {len(duration_mismatch_videos)} 个（可读但标注与实际时长差异 >10%）")
 
     # 按任务类型统计丢弃情况
     if bad_videos:
@@ -211,7 +281,21 @@ def main():
             for t, c in sorted(task_counts.items()):
                 print(f"    {t:20s}: {c}")
 
-    # ── 4. 输出不可读视频列表 ──
+    # ── 4. 输出时长不匹配诊断 ──
+    if duration_mismatch_videos:
+        print(f"\n⚠️  时长不匹配诊断（标注vs实际，允许±10%误差）:")
+        for video_path, actual_dur, ts_dur in sorted(duration_mismatch_videos)[:20]:  # 显示前 20 个
+            print(f"  {os.path.basename(video_path)}")
+            print(f"    标注时长: {ts_dur:.2f}s  →  实际时长: {actual_dur:.2f}s  (差 {abs(actual_dur - ts_dur):.2f}s, {abs(actual_dur - ts_dur) / ts_dur * 100:.1f}%)")
+        if len(duration_mismatch_videos) > 20:
+            print(f"  ... 及其他 {len(duration_mismatch_videos) - 20} 个视频")
+        print(f"\n  可能原因:")
+        print(f"    1. 视频文件损坏或转码导致实际时长不同")
+        print(f"    2. 帧率 (fps) 变化导致采样帧数异常")
+        print(f"    3. 时间戳标注错误（罕见）")
+        print(f"  建议: 检查这些视频是否确实能被 qwen_vl_utils 正确处理")
+
+    # ── 5. 输出不可读视频列表 ──
     if args.bad_list and bad_videos:
         os.makedirs(os.path.dirname(os.path.abspath(args.bad_list)), exist_ok=True)
         with open(args.bad_list, "w", encoding="utf-8") as f:
@@ -219,7 +303,7 @@ def main():
                 f.write(v + "\n")
         print(f"\n  不可读视频列表 → {args.bad_list}")
 
-    # ── 5. 输出干净数据集 ──
+    # ── 6. 输出干净数据集 ──
     if args.output is None:
         print("\n（未指定 --output，跳过写出）")
         return
