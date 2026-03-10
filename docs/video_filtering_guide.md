@@ -61,7 +61,7 @@ python3 proxy_data/filter_bad_videos.py \
     -i proxy_data/mixed_train_cot.jsonl \
     -o proxy_data/mixed_train_cot_clean.jsonl \
     --min-frames 4 \
-    --workers 32 \
+    --workers 16 \
     --bad_list proxy_data/bad_videos.txt
 ```
 
@@ -72,6 +72,19 @@ python3 proxy_data/filter_bad_videos.py \
 - `--workers`：并行检查线程数，默认 16（可根据 CPU 核数调整）
 - `--bad_list`：保存不可读视频列表（可选）
 - `--video_key`：JSON 中视频路径字段名，默认 "videos"
+- `--filter-duration-mismatch`：同时丢弃时长不匹配的样本（默认关闭，仅警告）
+
+### 示例：同时过滤时长不匹配的视频
+
+```bash
+python3 proxy_data/filter_bad_videos.py \
+    -i proxy_data/mixed_train_cot.jsonl \
+    -o proxy_data/mixed_train_cot_clean.jsonl \
+    --min-frames 4 \
+    --filter-duration-mismatch \
+    --workers 32 \
+    --bad_list proxy_data/bad_videos.txt
+```
 
 ### 示例：针对 temporal_seg 任务的激进过滤
 
@@ -108,7 +121,7 @@ python3 proxy_data/filter_bad_videos.py \
 ### 处理建议
 
 - **小差异（< 20%）**：通常可以忽略，qwen_vl_utils 会自动采样
-- **大差异（> 50%）**：建议人工检查这些视频
+- **大差异（> 50%）**：建议加上 `--filter-duration-mismatch` 一并丢弃
 - **批量处理**：可在过滤后单独处理这些视频
 
 ---

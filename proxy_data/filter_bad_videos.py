@@ -196,6 +196,8 @@ def main():
     parser.add_argument("--bad_list", default=None, help="将不可读视频路径写入此文件")
     parser.add_argument("--min-frames", type=int, default=4,
                         help="视频最少帧数（默认 4，Qwen3-VL temporal_patch_size=2 至少需要 2 帧）")
+    parser.add_argument("--filter-duration-mismatch", action="store_true", default=False,
+                        help="丢弃时长不匹配样本（标注时长 vs 实际时长差异 >10%%）")
     args = parser.parse_args()
 
     # ── 1. 读取数据集，收集所有唯一视频路径 ──
@@ -255,6 +257,10 @@ def main():
                     res["duration"],
                     res["timestamp_duration"]
                 ))
+                if args.filter_duration_mismatch:
+                    bad_videos.add(res["path"])
+                    print(f"  ⚠️  [{checked:>6}/{total}] {res['path']}")
+                    print(f"             原因: 时长不匹配（标注 {res['timestamp_duration']:.1f}s vs 实际 {res['duration']:.1f}s）")
             elif checked % 500 == 0 or checked == total:
                 print(f"  ✅ [{checked:>6}/{total}] 进度...")
 
@@ -264,7 +270,8 @@ def main():
     print(f"  可读视频   : {good_count} / {total}")
     print(f"  不可读视频  : {len(bad_videos)} / {total}")
     if duration_mismatch_videos:
-        print(f"  时长不匹配  : {len(duration_mismatch_videos)} 个（可读但标注与实际时长差异 >10%）")
+        mismatch_status = "已丢弃" if args.filter_duration_mismatch else "仅警告，未丢弃（加 --filter-duration-mismatch 可丢弃）"
+        print(f"  时长不匹配  : {len(duration_mismatch_videos)} 个（{mismatch_status}）")
 
     # 按任务类型统计丢弃情况
     if bad_videos:
@@ -313,7 +320,7 @@ def main():
     if not bad_videos:
         import shutil
         shutil.copy2(args.input, args.output)
-        print(f"\n✅ 所有视频均可读，数据集已复制 → {args.output}")
+        print(f"\n✅ 无需过滤，数据集已复制 → {args.output}")
         return
 
     kept = removed = 0
@@ -322,15 +329,21 @@ def main():
             videos = sample.get(args.video_key, [])
             if isinstance(videos, str):
                 videos = [videos]
-            # 只要有一个视频不可读，整个样本丢弃
+            # 只要有一个视频在 bad_videos 中（不可读 或 时长不匹配且开启了丢弃开关），整个样本丢弃
             if isinstance(videos, list) and any(v in bad_videos for v in videos):
                 removed += 1
                 continue
             fout.write(raw_line + "\n")
             kept += 1
 
+    mismatch_removed = sum(
+        1 for sample, _ in samples
+        if any(v in bad_videos and v in {p for p, _, _ in duration_mismatch_videos}
+               for v in (sample.get(args.video_key, []) if isinstance(sample.get(args.video_key, []), list) else [sample.get(args.video_key, [])]))
+    ) if args.filter_duration_mismatch else 0
+
     print(f"\n✅ 干净数据集: {kept} 样本 → {args.output}")
-    print(f"   移除样本数: {removed}（含 ≥1 个不可读视频）")
+    print(f"   移除样本数: {removed}（不可读: {removed - mismatch_removed}，时长不匹配: {mismatch_removed}）")
 
 
 if __name__ == "__main__":
