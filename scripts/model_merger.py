@@ -54,6 +54,56 @@ def upload_model_to_huggingface(local_path: str, remote_path: str):
     api.upload_folder(repo_id=remote_path, folder_path=local_path, repo_type="model")
 
 
+# Fields that may be silently dropped / reset when save_pretrained rewrites
+# config.json from a meta-device model.  We copy them back from the original
+# config so that vLLM expert-parallelism validation never sees num_experts=0.
+_MOE_FIELDS = [
+    "num_experts",
+    "num_experts_per_tok",
+    "moe_intermediate_size",
+    "shared_expert_intermediate_size",
+    "norm_topk_prob",
+    "router_aux_loss_coef",
+    "decoder_sparse_step",
+    "mlp_only_layers",
+    "expert_interval",
+]
+
+
+def _restore_moe_config(hf_path: str, original_config: "PretrainedConfig") -> None:
+    """
+    save_pretrained() re-serialises config.json from a meta-device model,
+    which can zero out or drop MoE fields (e.g. num_experts).  Patch them
+    back from *original_config*, which was loaded from hf_path BEFORE
+    save_pretrained was called.
+    """
+    import json
+
+    saved_cfg_path = os.path.join(hf_path, "config.json")
+    if not os.path.exists(saved_cfg_path):
+        return
+
+    with open(saved_cfg_path) as f:
+        saved = json.load(f)
+
+    changed = []
+    for field in _MOE_FIELDS:
+        orig_val = getattr(original_config, field, None)
+        if orig_val is None:          # field doesn't exist on this model type
+            continue
+        if saved.get(field) != orig_val:
+            changed.append(f"  {field}: {saved.get(field)!r} -> {orig_val!r}")
+            saved[field] = orig_val
+
+    if changed:
+        with open(saved_cfg_path, "w") as f:
+            json.dump(saved, f, indent=2, ensure_ascii=False)
+        print("Restored MoE config fields after save_pretrained:")
+        print("\n".join(changed))
+    else:
+        print("MoE config fields OK – no restoration needed.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_dir", required=True, type=str, help="The path for your saved model")
@@ -185,6 +235,12 @@ if __name__ == "__main__":
     print(f"Saving model to {hf_path}...")
     model.save_pretrained(hf_path, state_dict=state_dict)
     del state_dict, model
+
+    # ── Post-merge: restore MoE / architecture fields that may get dropped
+    # when save_pretrained re-serialises config from a meta-device model.
+    # Pass the config object loaded BEFORE save_pretrained so we compare
+    # against the true original values, not the already-overwritten file.
+    _restore_moe_config(hf_path, config)
 
     if args.hf_upload_path:
         upload_model_to_huggingface(hf_path, args.hf_upload_path)
