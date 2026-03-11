@@ -54,9 +54,42 @@ def upload_model_to_huggingface(local_path: str, remote_path: str):
     api.upload_folder(repo_id=remote_path, folder_path=local_path, repo_type="model")
 
 
+def _copy_non_weight_files(src_dir: str, dst_dir: str) -> None:
+    """Copy config / tokenizer / processor files from *src_dir* to *dst_dir*.
+
+    Only non-weight files are copied (config.json, tokenizer*, preprocessor*,
+    generation_config.json, etc.).  Existing weight files (.safetensors, .bin)
+    in *dst_dir* are never touched.
+    """
+    import shutil
+
+    _WEIGHT_SUFFIXES = {".safetensors", ".bin", ".pt", ".pth"}
+    _SKIP = {"model.safetensors.index.json"}
+    for fname in os.listdir(src_dir):
+        src = os.path.join(src_dir, fname)
+        if not os.path.isfile(src):
+            continue
+        if any(fname.endswith(s) for s in _WEIGHT_SUFFIXES):
+            continue
+        if fname in _SKIP:
+            continue
+        dst = os.path.join(dst_dir, fname)
+        shutil.copy2(src, dst)
+        print(f"  copied {fname} from base model")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_dir", required=True, type=str, help="The path for your saved model")
+    parser.add_argument(
+        "--base_model",
+        default=None,
+        type=str,
+        help="Path (or HF hub id) of the ORIGINAL base model. "
+        "When provided, config.json / tokenizer files are copied from here "
+        "after merge to avoid save_pretrained dropping architecture fields "
+        "(e.g. num_experts for MoE / hybrid models).",
+    )
     parser.add_argument("--hf_upload_path", default=False, type=str, help="The path of the huggingface repo to upload")
     args = parser.parse_args()
     local_dir: str = args.local_dir
@@ -164,7 +197,27 @@ if __name__ == "__main__":
 
     print("Merge completed.")
     hf_path = os.path.join(local_dir, "huggingface")
-    config: PretrainedConfig = AutoConfig.from_pretrained(hf_path)
+
+    # ── If --base_model is given, resolve it to a local directory so we can
+    #    copy non-weight files from it later.  This handles both local paths
+    #    and HuggingFace Hub model ids (e.g. "Qwen/Qwen3-VL-4B-Instruct").
+    base_model_dir: str | None = None
+    if args.base_model:
+        if os.path.isdir(args.base_model):
+            base_model_dir = args.base_model
+        else:
+            # Assume it's a HF hub id → snapshot_download
+            from huggingface_hub import snapshot_download
+
+            base_model_dir = snapshot_download(
+                args.base_model,
+                ignore_patterns=["*.safetensors", "*.bin", "*.pt", "*.pth"],
+            )
+        print(f"Base model config source: {base_model_dir}")
+
+    config: PretrainedConfig = AutoConfig.from_pretrained(
+        base_model_dir if base_model_dir else hf_path
+    )
     architectures: list[str] = getattr(config, "architectures", ["Unknown"])
 
     if "ForTokenClassification" in architectures[0]:
@@ -182,28 +235,37 @@ if __name__ == "__main__":
     assert isinstance(model, PreTrainedModel)
     model.to_empty(device="cpu")
 
-    # ── Backup config.json before save_pretrained overwrites it.
-    # save_pretrained() re-serialises config from the meta-device model object,
-    # which can silently drop architecture fields (MoE num_experts, etc.)
-    # that vLLM / other inference engines depend on.  The original config.json
-    # in hf_path was already correct (copied from the base model), so we
-    # restore it after save_pretrained finishes writing the weight files.
+    # ── Save merged weights.
+    # save_pretrained() also re-serialises config.json from the (meta-device)
+    # model object, which can silently drop architecture-specific fields
+    # (num_experts, decoder_sparse_step, …).  We fix that below.
     import shutil
 
     config_path = os.path.join(hf_path, "config.json")
     config_backup = config_path + ".bak"
     if os.path.exists(config_path):
         shutil.copy2(config_path, config_backup)
-        print(f"Backed up original config.json -> config.json.bak")
 
     print(f"Saving model to {hf_path}...")
     model.save_pretrained(hf_path, state_dict=state_dict)
     del state_dict, model
 
-    # ── Restore the original config.json
-    if os.path.exists(config_backup):
+    if base_model_dir:
+        # Best path: copy ALL non-weight files (config, tokenizer, processor,
+        # chat_template, …) from the authoritative base model.
+        print(f"Restoring config / tokenizer files from base model: {base_model_dir}")
+        _copy_non_weight_files(base_model_dir, hf_path)
+        if os.path.exists(config_backup):
+            os.remove(config_backup)
+    elif os.path.exists(config_backup):
+        # Fallback: restore the config.json that existed in hf_path before
+        # save_pretrained overwrote it.  Works for first-time merges where
+        # the training framework wrote a correct config during checkpoint save.
         shutil.move(config_backup, config_path)
-        print(f"Restored original config.json (avoids save_pretrained dropping fields)")
+        print("Restored config.json from pre-merge backup")
+    else:
+        print("[WARN] No --base_model provided and no config backup available. "
+              "config.json may be incomplete – consider re-running with --base_model.")
 
     if args.hf_upload_path:
         upload_model_to_huggingface(hf_path, args.hf_upload_path)

@@ -116,7 +116,27 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             hf_path = os.path.join(path, "huggingface")
             os.makedirs(hf_path, exist_ok=True)
             assert isinstance(self.model._fsdp_wrapped_module, PreTrainedModel)
-            self.model._fsdp_wrapped_module.config.save_pretrained(hf_path)
+
+            # ── Save config.  Prefer copying from the original model directory
+            # when available, because config.save_pretrained() re-serialises
+            # from the in-memory object which can silently drop fields on
+            # composite models (e.g. num_experts in Qwen3-VL text_config).
+            _orig_cfg_dir = getattr(
+                self.model._fsdp_wrapped_module.config, "_name_or_path", None
+            )
+            _orig_cfg_file = (
+                os.path.join(_orig_cfg_dir, "config.json")
+                if _orig_cfg_dir
+                else None
+            )
+            if _orig_cfg_file and os.path.isfile(_orig_cfg_file):
+                import shutil
+
+                shutil.copy2(_orig_cfg_file, os.path.join(hf_path, "config.json"))
+            else:
+                # Fallback: serialise from in-memory config object
+                self.model._fsdp_wrapped_module.config.save_pretrained(hf_path)
+
             self.model._fsdp_wrapped_module.generation_config.save_pretrained(hf_path)
             self.processing_class.save_pretrained(hf_path)
 
