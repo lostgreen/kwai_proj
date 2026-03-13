@@ -6,27 +6,27 @@
 <title>Rollout Insight Studio</title>
 <style>
 :root{
-  --bg:#0a0f1f; --panel:rgba(17,24,39,0.74); --border:rgba(148,163,184,0.22);
-  --text:#e5e7eb; --muted:#9ca3af; --ok:#34d399; --warn:#f59e0b;
-  --danger:#fb7185; --blue:#60a5fa; --violet:#a78bfa; --r:14px;
+  --bg:#f8fafc; --panel:rgba(255,255,255,0.92); --border:rgba(100,116,139,0.18);
+  --text:#1e293b; --muted:#64748b; --ok:#059669; --warn:#d97706;
+  --danger:#e11d48; --blue:#2563eb; --violet:#7c3aed; --r:14px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
-  background:radial-gradient(1200px 500px at 8% -10%,rgba(37,99,235,.35),transparent 70%),
-    radial-gradient(900px 450px at 92% 0%,rgba(16,185,129,.26),transparent 65%),var(--bg);
+  background:radial-gradient(1200px 500px at 8% -10%,rgba(37,99,235,.08),transparent 70%),
+    radial-gradient(900px 450px at 92% 0%,rgba(16,185,129,.06),transparent 65%),var(--bg);
   min-height:100vh}
 .page{display:none;padding:20px;max-width:1440px;margin:0 auto}.page.active{display:block}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);
-  backdrop-filter:blur(8px);box-shadow:0 8px 28px rgba(2,6,23,.24)}
+  backdrop-filter:blur(8px);box-shadow:0 2px 12px rgba(0,0,0,.06)}
 h1{font-size:24px;font-weight:700}h2{font-size:17px;font-weight:700}
-h3{font-size:13px;font-weight:600;color:#d1d5db}
+h3{font-size:13px;font-weight:600;color:#374151}
 .muted{color:var(--muted);font-size:12px}
 .badge{font-size:11px;display:inline-block;border-radius:999px;padding:3px 9px;
-  border:1px solid rgba(148,163,184,.35);color:#dbeafe;white-space:nowrap}
+  border:1px solid rgba(100,116,139,.25);color:#334155;white-space:nowrap}
 .chip{font-size:11px;display:inline-block;border-radius:6px;padding:2px 7px;
-  background:rgba(148,163,184,.12);color:#cbd5e1}
+  background:rgba(100,116,139,.1);color:#475569}
 .input,select{border-radius:10px;padding:9px 12px;font-size:13px;
-  border:1px solid rgba(148,163,184,.3);background:rgba(15,23,42,.7);color:var(--text)}
+  border:1px solid rgba(100,116,139,.25);background:rgba(255,255,255,.8);color:var(--text)}
 .btn{border:none;font-weight:600;cursor:pointer;padding:9px 18px;font-size:13px;
   border-radius:10px;color:#08131f;background:linear-gradient(135deg,#7dd3fc,#34d399)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
@@ -42,29 +42,29 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .chart-legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
 .legend-item{display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;user-select:none;transition:opacity .2s}
 .legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
-.chart-svg{display:block;background:rgba(2,6,23,.3);border:1px solid rgba(148,163,184,.18);border-radius:10px}
+.chart-svg{display:block;background:rgba(241,245,249,.8);border:1px solid rgba(100,116,139,.15);border-radius:10px}
 .smooth-control{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
 .smooth-control input[type=range]{accent-color:#34d399;width:130px;cursor:pointer}
 .step-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-bottom:20px}
 .step-card{padding:14px 16px;cursor:pointer;display:grid;gap:8px;transition:border-color .2s}
 .step-card:hover{border-color:rgba(96,165,250,.5)}
-.step-minibar{width:100%;height:5px;border-radius:999px;background:rgba(148,163,184,.18);overflow:hidden;display:flex;gap:1px}
+.step-minibar{width:100%;height:5px;border-radius:999px;background:rgba(100,116,139,.12);overflow:hidden;display:flex;gap:1px}
 /* ── Detail layout ── */
 .detail-layout{display:grid;grid-template-columns:290px minmax(0,1fr);gap:12px}
 .detail-header{display:flex;align-items:center;gap:12px;padding:14px 18px;margin-bottom:12px;flex-wrap:wrap}
-.back-btn{background:rgba(148,163,184,.12);border:1px solid rgba(148,163,184,.25);
+.back-btn{background:rgba(100,116,139,.08);border:1px solid rgba(100,116,139,.2);
   color:var(--text);border-radius:10px;padding:6px 14px;font-size:13px;cursor:pointer}
-.back-btn:hover{background:rgba(148,163,184,.22)}
+.back-btn:hover{background:rgba(100,116,139,.15)}
 .group-sidebar{padding:14px;display:grid;gap:8px;align-content:start;max-height:calc(100vh - 120px);overflow-y:auto}
-.group-list{overflow-y:auto;border:1px solid rgba(148,163,184,.18);border-radius:10px;max-height:560px}
-.group-row{padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(148,163,184,.1);display:grid;gap:3px}
-.group-row:hover{background:rgba(96,165,250,.1)}.group-row.active{background:rgba(52,211,153,.14)}
+.group-list{overflow-y:auto;border:1px solid rgba(100,116,139,.15);border-radius:10px;max-height:560px}
+.group-row{padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(100,116,139,.1);display:grid;gap:3px}
+.group-row:hover{background:rgba(37,99,235,.06)}.group-row.active{background:rgba(5,150,105,.08)}
 .group-main{display:grid;gap:12px;align-content:start;overflow-y:auto;overflow-x:hidden;max-height:calc(100vh - 120px);min-width:0}
 /* ── Frame + timeline sync ── */
 .sync-outer{overflow-x:auto;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
 .frame-item{flex-shrink:0;display:grid;gap:3px;width:100px;cursor:pointer}
-.frame-img{width:100px;height:60px;border-radius:7px;border:2px solid rgba(148,163,184,.2);
-  background:rgba(148,163,184,.1);display:flex;align-items:center;justify-content:center;
+.frame-img{width:100px;height:60px;border-radius:7px;border:2px solid rgba(100,116,139,.2);
+  background:rgba(241,245,249,.6);display:flex;align-items:center;justify-content:center;
   font-size:10px;color:var(--muted);position:relative;overflow:hidden;transition:border-color .2s}
 .frame-img:hover{border-color:var(--blue);box-shadow:0 0 8px rgba(96,165,250,.3)}
 .frame-img img{width:100%;height:100%;object-fit:cover;border-radius:5px}
@@ -76,7 +76,7 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .frame-label{font-size:9px;color:var(--muted);text-align:center;line-height:1}
 /* ── Frame zoom modal ── */
 .frame-modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
-  background:rgba(0,0,0,.85);z-index:9999;align-items:center;justify-content:center;cursor:zoom-out}
+  background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;cursor:zoom-out}
 .frame-modal-overlay.active{display:flex}
 .frame-modal-overlay img{max-width:90vw;max-height:90vh;border-radius:12px;box-shadow:0 0 40px rgba(0,0,0,.5)}
 .sync-slider-row{padding:4px 0 2px;display:flex;align-items:center;gap:8px}
@@ -84,20 +84,20 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .tl-label-item{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);white-space:nowrap}
 .tl-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .tl-tick{position:absolute;top:0;transform:translateX(-50%);font-size:9px;color:var(--muted);white-space:nowrap}
-.tl-lane{position:relative;height:18px;border-radius:999px;background:rgba(148,163,184,.14);overflow:hidden}
+.tl-lane{position:relative;height:18px;border-radius:999px;background:rgba(100,116,139,.1);overflow:hidden}
 .seg-blk{position:absolute;top:2px;bottom:2px;border-radius:999px;opacity:.9}
 /* ── Modification band ── */
 .mod-band{margin-top:8px;padding:7px 12px;border-radius:8px;
   background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);
   display:flex;align-items:center;gap:10px;font-size:11px;flex-wrap:wrap}
-.mod-timeline{flex:1;min-width:120px;height:8px;background:rgba(148,163,184,.15);border-radius:999px;position:relative}
+.mod-timeline{flex:1;min-width:120px;height:8px;background:rgba(100,116,139,.1);border-radius:999px;position:relative}
 .mod-timeline-seg{position:absolute;top:0;bottom:0;background:rgba(245,158,11,.6);border-radius:999px}
 /* ── Sort ── */
-.sort-rollout-panel{padding:10px 0;border-bottom:1px solid rgba(148,163,184,.1)}
+.sort-rollout-panel{padding:10px 0;border-bottom:1px solid rgba(100,116,139,.08)}
 .sort-rollout-panel:last-child{border-bottom:none}
 .sort-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px}
-.sort-clip{border-radius:10px;border:2px solid transparent;background:rgba(2,6,23,.4);overflow:hidden}
-.sort-clip-img{width:100%;aspect-ratio:16/9;background:rgba(148,163,184,.1);
+.sort-clip{border-radius:10px;border:2px solid transparent;background:rgba(241,245,249,.6);overflow:hidden}
+.sort-clip-img{width:100%;aspect-ratio:16/9;background:rgba(241,245,249,.5);
   display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted);position:relative;overflow:hidden}
 .sort-clip-img img{width:100%;height:100%;object-fit:cover}
 .sort-clip-meta{padding:3px 5px;display:flex;justify-content:space-between;align-items:center;font-size:10px}
@@ -107,26 +107,26 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .s-d2{border-color:rgba(251,113,133,.55)}.s-d2 .sort-clip-delta{background:rgba(251,113,133,.2);color:#fb7185}
 /* ── Choice ── */
 .choice-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:8px}
-.choice-card{border-radius:10px;border:2px solid rgba(148,163,184,.22);background:rgba(2,6,23,.4);overflow:hidden}
+.choice-card{border-radius:10px;border:2px solid rgba(100,116,139,.18);background:rgba(241,245,249,.6);overflow:hidden}
 .choice-card.c-both{border-color:rgba(167,139,250,.8)}
 .choice-card.c-gt{border-color:rgba(52,211,153,.7)}
 .choice-card.c-pred{border-color:rgba(96,165,250,.7)}
-.choice-thumb{width:100%;aspect-ratio:16/9;background:rgba(148,163,184,.08);
+.choice-thumb{width:100%;aspect-ratio:16/9;background:rgba(241,245,249,.5);
   display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);overflow:hidden;position:relative}
 .choice-thumb img{width:100%;height:100%;object-fit:cover}
 .choice-foot{padding:5px 8px;display:flex;justify-content:space-between;align-items:center;font-size:11px;gap:4px}
 .choice-text-grid{display:grid;gap:7px}
-.choice-text-card{border-radius:10px;border:2px solid rgba(148,163,184,.22);
-  background:rgba(2,6,23,.4);padding:10px 12px;display:grid;gap:4px}
+.choice-text-card{border-radius:10px;border:2px solid rgba(100,116,139,.18);
+  background:rgba(241,245,249,.6);padding:10px 12px;display:grid;gap:4px}
 .choice-text-card.c-gt{border-color:rgba(52,211,153,.7)}
 .choice-text-card.c-pred{border-color:rgba(96,165,250,.7)}
 /* ── Misc ── */
 .mono{font-family:"JetBrains Mono","Fira Code",monospace;font-size:11px;line-height:1.45;
   white-space:pre-wrap;word-break:break-word;padding:8px 10px;
-  background:rgba(2,6,23,.38);border-radius:8px;border:1px solid rgba(148,163,184,.18);
-  max-height:300px;overflow-y:auto;color:#94a3b8;margin-top:6px}
+  background:rgba(241,245,249,.7);border-radius:8px;border:1px solid rgba(100,116,139,.15);
+  max-height:300px;overflow-y:auto;color:#475569;margin-top:6px}
 ::-webkit-scrollbar{width:4px;height:6px}
-::-webkit-scrollbar-thumb{background:rgba(148,163,184,.35);border-radius:999px}
+::-webkit-scrollbar-thumb{background:rgba(100,116,139,.25);border-radius:999px}
 ::-webkit-scrollbar-track{background:transparent}
 input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:20px}
 </style>
@@ -147,7 +147,7 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
         <button class="btn" id="loadBtn" onclick="doLoad()">加载数据</button>
       </div>
     </div>
-    <p id="statusMsg" style="font-size:12px;color:#93c5fd;margin-top:8px"> </p>
+    <p id="statusMsg" style="font-size:12px;color:var(--blue);margin-top:8px"> </p>
   </div>
 
   <div class="stats-row">
@@ -160,7 +160,7 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
 
   <div class="card chart-section" style="margin-bottom:12px">
     <div class="chart-header">
-      <span style="font-size:13px;font-weight:600;color:#d1d5db">📈 奖励曲线</span>
+      <span style="font-size:13px;font-weight:600;color:#374151">📈 奖励曲线</span>
       <div class="smooth-control">
         <span>Smooth</span>
         <input type="range" id="smoothSlider" min="0" max="98" value="60" oninput="onSmooth(this.value)"/>
@@ -172,7 +172,7 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
   </div>
 
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <h2 style="color:#d1d5db;font-size:14px;font-weight:600">按 Step 浏览 <span class="muted">— 点击进入详情</span></h2>
+    <h2 style="color:#374151;font-size:14px;font-weight:600">按 Step 浏览 <span class="muted">— 点击进入详情</span></h2>
     <span id="stepCountLabel" class="muted"></span>
   </div>
   <div class="step-grid" id="stepGrid">
@@ -325,8 +325,8 @@ function buildStepGrid(){
 }
 
 /* ═══════════════ CHART ═══════════════ */
-const CCOLORS={overall:'#e5e7eb',temporal_seg:'#fb7185',add:'#60a5fa',
-  'delete':'#34d399',replace:'#f59e0b',sort:'#a78bfa'};
+const CCOLORS={overall:'#475569',temporal_seg:'#e11d48',add:'#2563eb',
+  'delete':'#059669',replace:'#d97706',sort:'#7c3aed'};
 function ema(data,a){
   if(a<.01)return[...data];
   let s=[data[0]];
@@ -346,16 +346,16 @@ function drawChart(a=.6){
   let d='';
   [0,.25,.5,.75,1].forEach(v=>{
     const y=ys(v);
-    d+=`<line x1="${PL}" y1="${y}" x2="${PL+pw}" y2="${y}" stroke="rgba(148,163,184,.08)" stroke-width="1"/>`;
+    d+=`<line x1="${PL}" y1="${y}" x2="${PL+pw}" y2="${y}" stroke="rgba(100,116,139,.08)" stroke-width="1"/>`;
     d+=`<text x="${PL-4}" y="${y+4}" text-anchor="end" font-size="9" fill="#6b7280">${v.toFixed(2)}</text>`;
   });
   [minS,...allSteps.filter((_,i,arr)=>i==0||i==arr.length-1||(i%Math.max(1,Math.floor(arr.length/5))===0))].filter((v,i,a)=>a.indexOf(v)===i).forEach(s=>{
     const x=xs(s);
     d+=`<text x="${x}" y="${H-8}" text-anchor="middle" font-size="9" fill="#6b7280">${s}</text>`;
-    d+=`<line x1="${x}" y1="${PT}" x2="${x}" y2="${H-PB}" stroke="rgba(148,163,184,.05)" stroke-width="1"/>`;
+    d+=`<line x1="${x}" y1="${PT}" x2="${x}" y2="${H-PB}" stroke="rgba(100,116,139,.05)" stroke-width="1"/>`;
   });
-  d+=`<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${H-PB}" stroke="rgba(148,163,184,.25)" stroke-width="1"/>`;
-  d+=`<line x1="${PL}" y1="${H-PB}" x2="${PL+pw}" y2="${H-PB}" stroke="rgba(148,163,184,.25)" stroke-width="1"/>`;
+  d+=`<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${H-PB}" stroke="rgba(100,116,139,.2)" stroke-width="1"/>`;
+  d+=`<line x1="${PL}" y1="${H-PB}" x2="${PL+pw}" y2="${H-PB}" stroke="rgba(100,116,139,.2)" stroke-width="1"/>`;
   Object.entries(chartData).forEach(([name,pts])=>{
     if(hiddenCurves.has(name)) return;
     const color=CCOLORS[name]||taskColor(name);
@@ -489,16 +489,25 @@ async function renderGroup(uid){
 
   // Build frame HTML
   const modSeg=g.modification_seg||null;
+  const missingIdx=g.missing_clip_index;
   // Store frames globally for zoom access
   window._currentFrames=frames;
+
+  // Determine step label for each clip
+  function clipStepLabel(ci){
+    if(missingIdx==null) return ci+1;
+    return ci<missingIdx ? ci+1 : ci+2;
+  }
+
   function makeFrameItem(src,idx){
     const ts=nF>1?Math.round(idx*maxT/(nF-1)):0;
     const inM=modSeg&&ts>=modSeg.start&&ts<=modSeg.end;
     const ci=getClipIndex(idx,clipBounds);
     const clipColor=CLIP_COLORS[ci%CLIP_COLORS.length];
+    const stepNum=clipStepLabel(ci);
     const borderStyle=nClips>1?`border-color:${clipColor}`:'';
     const imgHTML=src?`<img src="${src}" alt="${ts}s"/>`:`<span>${ts}s</span>`;
-    const clipBadge=nClips>1?`<span class="frame-clip-badge" style="background:${clipColor}">C${ci+1}</span>`:'';
+    const clipBadge=nClips>1?`<span class="frame-clip-badge" style="background:${clipColor}">S${stepNum}</span>`:'';
     return `<div class="frame-item" onclick="zoomFrame(${idx})">
       <div class="frame-img${inM?' mod':''}" style="${borderStyle}">
         ${imgHTML}${inM?'<span class="frame-mod-badge">mod</span>':''}${clipBadge}
@@ -506,7 +515,37 @@ async function renderGroup(uid){
       <div class="frame-label">${ts}s</div>
     </div>`;
   }
-  const framesHTML=(nF>0?frames:['']).map((s,i)=>makeFrameItem(s,i)).join('');
+
+  // Build frame strip with [MISSING] placeholder
+  let frameParts=[];
+  if(missingIdx!=null&&nClips>0){
+    // Insert frames grouped by clip, with MISSING placeholder at the right position
+    for(let ci=0;ci<nClips;ci++){
+      if(ci===missingIdx){
+        frameParts.push(`<div class="frame-item" style="width:80px;flex-shrink:0">
+          <div style="width:80px;height:60px;border-radius:7px;border:2px dashed #fb7185;
+            display:flex;align-items:center;justify-content:center;font-size:18px;color:#fb7185;
+            background:rgba(251,113,133,.08)">❓</div>
+          <div class="frame-label" style="color:#fb7185;font-weight:600">MISSING</div>
+        </div>`);
+      }
+      const start=clipBounds[ci];
+      const end=ci<nClips-1?clipBounds[ci+1]:nF;
+      for(let j=start;j<end;j++) frameParts.push(makeFrameItem(frames[j],j));
+    }
+    // If missing is after all clips
+    if(missingIdx>=nClips){
+      frameParts.push(`<div class="frame-item" style="width:80px;flex-shrink:0">
+        <div style="width:80px;height:60px;border-radius:7px;border:2px dashed #fb7185;
+          display:flex;align-items:center;justify-content:center;font-size:18px;color:#fb7185;
+          background:rgba(251,113,133,.08)">❓</div>
+        <div class="frame-label" style="color:#fb7185;font-weight:600">MISSING</div>
+      </div>`);
+    }
+  } else {
+    frameParts=(nF>0?frames:['']).map((s,i)=>makeFrameItem(s,i));
+  }
+  const framesHTML=frameParts.join('');
 
   // Meta bar
   let html=`
@@ -582,7 +621,7 @@ async function renderGroup(uid){
               <div style="display:flex;gap:${FG}px;padding:10px 8px">${framesHTML}</div>
               <div style="position:relative;height:18px;margin:4px 0 6px">${ruler}</div>
               <div class="tl-lane" style="margin-bottom:7px">${gtSegsHTML}</div>
-              <div style="height:1px;background:rgba(148,163,184,.12);margin-bottom:3px"></div>
+              <div style="height:1px;background:rgba(100,116,139,.08);margin-bottom:3px"></div>
               ${predLanes}
             </div>
           </div>
@@ -608,7 +647,7 @@ async function renderGroup(uid){
     html+=`<div class="card" style="padding:14px"><h3 style="margin-bottom:8px">🔄 Rollout 详情</h3>`;
     attempts.forEach((r,ri)=>{
       const rc=rewColor(r.reward);
-      html+=`<div style="padding:8px 0;border-bottom:1px solid rgba(148,163,184,.1);display:grid;gap:4px">
+      html+=`<div style="padding:8px 0;border-bottom:1px solid rgba(100,116,139,.08);display:grid;gap:4px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <span class="badge">Rollout #${ri+1}</span>
           <span style="color:${rc};font-weight:700">${r.reward.toFixed(3)}</span>
@@ -633,13 +672,18 @@ async function renderGroup(uid){
         </div>
       </div>`;
     }
-    const clipLegend=nClips>1?clipBounds.map((b,i)=>
-      `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;margin-left:6px"><span style="width:8px;height:8px;border-radius:50%;background:${CLIP_COLORS[i%CLIP_COLORS.length]}"></span>Clip ${i+1}</span>`
-    ).join(''):'';
+    let clipLegendItems=clipBounds.map((b,i)=>{
+      const sn=clipStepLabel(i);
+      return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;margin-left:6px"><span style="width:8px;height:8px;border-radius:50%;background:${CLIP_COLORS[i%CLIP_COLORS.length]}"></span>Step ${sn}</span>`;
+    });
+    if(missingIdx!=null){
+      clipLegendItems.splice(missingIdx,0,`<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;margin-left:6px;color:#fb7185">❓ Step ${missingIdx+1} MISSING</span>`);
+    }
+    const clipLegend=nClips>1?clipLegendItems.join(''):'';
     html+=`
       <div class="card" style="padding:14px;min-width:0">
         <h3 style="margin-bottom:10px">📽 输入帧条 <span class="muted">（${nClips} clip${nClips>1?'s':''}, ${nF} 帧 · 点击帧可放大）</span>${clipLegend}</h3>
-        <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:scroll;border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.35);-webkit-overflow-scrolling:touch">${framesHTML}</div>
+        <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:scroll;border-radius:8px;border:1px solid rgba(100,116,139,.15);background:rgba(241,245,249,.6);-webkit-overflow-scrolling:touch">${framesHTML}</div>
         ${modBand}
         <div style="padding:6px 0 2px;display:flex;align-items:center;gap:8px">
           <span style="font-size:10px;color:var(--muted)">0s</span>
@@ -745,7 +789,7 @@ function renderChoice(g){
             <b style="font-size:15px">${o.letter}.</b>
             ${tag?`<span class="chip">${tag}</span>`:''}
           </div>
-          <div style="font-size:12px;line-height:1.5;color:#cbd5e1">${esc(o.text)}</div>
+          <div style="font-size:12px;line-height:1.5;color:#475569">${esc(o.text)}</div>
         </div>`;
     }).join('');
     optHTML=`<div class="choice-text-grid">${cards}</div>`;
@@ -759,7 +803,7 @@ function renderChoice(g){
   const rolloutItems=attempts.map((r,i)=>{
     const rc=rewColor(r.reward);
     return `
-      <div style="padding:8px 0;border-bottom:1px solid rgba(148,163,184,.1);display:grid;gap:4px">
+      <div style="padding:8px 0;border-bottom:1px solid rgba(100,116,139,.08);display:grid;gap:4px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <span class="badge">Rollout #${i+1}</span>
           <span style="color:${rc};font-weight:700;font-size:13px">${r.reward.toFixed(3)}</span>

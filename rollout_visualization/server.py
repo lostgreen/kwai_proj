@@ -360,14 +360,27 @@ class RolloutStore:
         detail["frame_strip"] = self._get_frame_strip(uid, max_frames=max_frames)
         detail["clip_boundaries"] = group.get("_clip_boundaries", [])
         detail["timeline_max_t"] = self._timeline_max_t(detail)
+        # Detect [MISSING] position for replace/add/delete tasks
+        detail["missing_clip_index"] = self._detect_missing_position(detail)
         task = str(detail.get("problem_type") or "")
         if task in ("add", "delete", "replace"):
             detail["choice_meta"] = self._build_choice_meta(detail)
         elif task == "sort":
             detail["sort_meta"] = self._build_sort_meta(detail)
-        # Remove internal keys not needed by frontend
         detail.pop("_clip_boundaries", None)
         return detail
+
+    @staticmethod
+    def _detect_missing_position(detail: dict[str, Any]) -> Optional[int]:
+        """Parse prompt to find which step index is [MISSING]. Returns clip index (0-based)."""
+        prompt = detail.get("prompt") or ""
+        steps = re.findall(r'Step\s+(\d+)\s*:\s*(.*?)(?=Step\s+\d+\s*:|$)', prompt, re.DOTALL)
+        if not steps:
+            return None
+        for i, (step_num, content) in enumerate(steps):
+            if "[MISSING]" in content.upper():
+                return i
+        return None
 
     def _timeline_max_t(self, detail: dict[str, Any]) -> float:
         max_t = 0.0
