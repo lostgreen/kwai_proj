@@ -358,12 +358,15 @@ class RolloutStore:
         detail = dict(group)
         detail["attempts"] = sorted(group["attempts"], key=lambda a: a["reward"], reverse=True)
         detail["frame_strip"] = self._get_frame_strip(uid, max_frames=max_frames)
+        detail["clip_boundaries"] = group.get("_clip_boundaries", [])
         detail["timeline_max_t"] = self._timeline_max_t(detail)
         task = str(detail.get("problem_type") or "")
         if task in ("add", "delete", "replace"):
             detail["choice_meta"] = self._build_choice_meta(detail)
         elif task == "sort":
             detail["sort_meta"] = self._build_sort_meta(detail)
+        # Remove internal keys not needed by frontend
+        detail.pop("_clip_boundaries", None)
         return detail
 
     def _timeline_max_t(self, detail: dict[str, Any]) -> float:
@@ -459,10 +462,10 @@ class RolloutStore:
 
     def _extract_frames(self, group: dict[str, Any], max_frames: int) -> list[str]:
         frames: list[str] = []
+        clip_boundaries: list[int] = []
         candidates: list[Any] = []
         mm = group.get("multi_modal_source")
         if isinstance(mm, dict):
-            # Online deployment preferred schema: multi_modal_source.frames_base64
             if "frames_base64" in mm:
                 frames_base64 = mm.get("frames_base64")
                 if isinstance(frames_base64, list):
@@ -479,8 +482,12 @@ class RolloutStore:
         for candidate in candidates:
             if len(frames) >= max_frames:
                 break
-            frames.extend(self._candidate_to_frames(candidate, max_frames=max_frames - len(frames)))
+            clip_boundaries.append(len(frames))
+            new_frames = self._candidate_to_frames(candidate, max_frames=max_frames - len(frames))
+            frames.extend(new_frames)
 
+        # Store clip boundaries in group metadata for frontend use
+        group["_clip_boundaries"] = clip_boundaries
         return frames[:max_frames]
 
     def _candidate_to_frames(self, candidate: Any, max_frames: int) -> list[str]:

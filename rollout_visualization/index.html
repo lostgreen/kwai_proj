@@ -62,15 +62,23 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .group-main{display:grid;gap:12px;align-content:start;overflow:hidden}
 /* ── Frame + timeline sync ── */
 .sync-outer{overflow-x:hidden}
-.frame-item{flex-shrink:0;display:grid;gap:3px;width:88px}
-.frame-img{width:88px;height:50px;border-radius:7px;border:1.5px solid rgba(148,163,184,.2);
+.frame-item{flex-shrink:0;display:grid;gap:3px;width:100px;cursor:pointer}
+.frame-img{width:100px;height:60px;border-radius:7px;border:2px solid rgba(148,163,184,.2);
   background:rgba(148,163,184,.1);display:flex;align-items:center;justify-content:center;
-  font-size:10px;color:var(--muted);position:relative;overflow:hidden}
-.frame-img img{width:100%;height:100%;object-fit:cover;border-radius:6px}
+  font-size:10px;color:var(--muted);position:relative;overflow:hidden;transition:border-color .2s}
+.frame-img:hover{border-color:var(--blue);box-shadow:0 0 8px rgba(96,165,250,.3)}
+.frame-img img{width:100%;height:100%;object-fit:cover;border-radius:5px}
 .frame-img.mod{border-color:rgba(245,158,11,.65);background:rgba(245,158,11,.08)}
 .frame-mod-badge{position:absolute;top:2px;right:2px;font-size:7px;padding:1px 3px;
   background:rgba(245,158,11,.85);border-radius:3px;color:#08131f;font-weight:700}
+.frame-clip-badge{position:absolute;bottom:2px;left:2px;font-size:7px;padding:1px 4px;
+  border-radius:3px;font-weight:700;color:#fff}
 .frame-label{font-size:9px;color:var(--muted);text-align:center;line-height:1}
+/* ── Frame zoom modal ── */
+.frame-modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+  background:rgba(0,0,0,.85);z-index:9999;align-items:center;justify-content:center;cursor:zoom-out}
+.frame-modal-overlay.active{display:flex}
+.frame-modal-overlay img{max-width:90vw;max-height:90vh;border-radius:12px;box-shadow:0 0 40px rgba(0,0,0,.5)}
 .sync-slider-row{padding:4px 0 2px;display:flex;align-items:center;gap:8px}
 .sync-slider{flex:1;accent-color:#34d399;cursor:pointer}
 .tl-label-item{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);white-space:nowrap}
@@ -197,11 +205,16 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
     </div>
   </div>
 </div>
+<!-- Frame zoom modal -->
+<div class="frame-modal-overlay" id="frameModal" onclick="this.classList.remove('active')">
+  <img id="frameModalImg" src="" alt="zoomed frame"/>
+</div>
 
 <script>
 /* ═══════════════ CONSTANTS ═══════════════ */
-const FW=92, FG=4, STRIDE=FW+FG, LABEL_W=68;
+const FW=104, FG=4, STRIDE=FW+FG, LABEL_W=68;
 const TC={temporal_seg:'#fb7185',add:'#60a5fa',delete:'#34d399',replace:'#f59e0b',sort:'#a78bfa'};
+const CLIP_COLORS=['#60a5fa','#34d399','#f59e0b','#a78bfa','#fb7185','#38bdf8','#e879f9','#fbbf24'];
 const taskColor=t=>TC[t.replace(/_video|_text/,'')]||'#94a3b8';
 const rewColor=r=>r>=.7?'#34d399':r>=.5?'#f59e0b':'#fb7185';
 
@@ -465,20 +478,28 @@ async function renderGroup(uid){
     }
   }
   const frames=g.frame_strip||[];
+  const clipBounds=g.clip_boundaries||[];
   const nF=frames.length;
   const maxT=Number(g.timeline_max_t)||nF||60;
   const innerW=Math.max(nF,1)*STRIDE+16;
   const task=g.problem_type||'';
+  const nClips=clipBounds.length||1;
 
   // Build frame HTML
   const modSeg=g.modification_seg||null;
+  // Store frames globally for zoom access
+  window._currentFrames=frames;
   function makeFrameItem(src,idx){
     const ts=nF>1?Math.round(idx*maxT/(nF-1)):0;
     const inM=modSeg&&ts>=modSeg.start&&ts<=modSeg.end;
+    const ci=getClipIndex(idx,clipBounds);
+    const clipColor=CLIP_COLORS[ci%CLIP_COLORS.length];
+    const borderStyle=nClips>1?`border-color:${clipColor}`:'';
     const imgHTML=src?`<img src="${src}" alt="${ts}s"/>`:`<span>${ts}s</span>`;
-    return `<div class="frame-item">
-      <div class="frame-img${inM?' mod':''}">
-        ${imgHTML}${inM?'<span class="frame-mod-badge">mod</span>':''}
+    const clipBadge=nClips>1?`<span class="frame-clip-badge" style="background:${clipColor}">C${ci+1}</span>`:'';
+    return `<div class="frame-item" onclick="zoomFrame(${idx})">
+      <div class="frame-img${inM?' mod':''}" style="${borderStyle}">
+        ${imgHTML}${inM?'<span class="frame-mod-badge">mod</span>':''}${clipBadge}
       </div>
       <div class="frame-label">${ts}s</div>
     </div>`;
@@ -610,11 +631,14 @@ async function renderGroup(uid){
         </div>
       </div>`;
     }
+    const clipLegend=nClips>1?clipBounds.map((b,i)=>
+      `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;margin-left:6px"><span style="width:8px;height:8px;border-radius:50%;background:${CLIP_COLORS[i%CLIP_COLORS.length]}"></span>Clip ${i+1}</span>`
+    ).join(''):'';
     html+=`
       <div class="card" style="padding:14px">
-        <h3 style="margin-bottom:10px">📽 输入帧条 <span class="muted">（1fps 采样，${nF} 帧）</span></h3>
+        <h3 style="margin-bottom:10px">📽 输入帧条 <span class="muted">（${nClips} clip${nClips>1?'s':''}, ${nF} 帧 · 点击帧可放大）</span>${clipLegend}</h3>
         <div style="overflow:hidden;border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.35)">
-          <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:auto;scrollbar-width:none">${framesHTML}</div>
+          <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:auto;scrollbar-width:thin">${framesHTML}</div>
         </div>
         ${modBand}
         <div style="padding:4px 0 2px;display:flex;align-items:center;gap:8px">
@@ -760,6 +784,22 @@ function renderChoice(g){
 /* ═══════════════ UTILS ═══════════════ */
 function esc(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function zoomFrame(idx){
+  const frames=window._currentFrames||[];
+  const src=frames[idx];
+  if(!src) return;
+  const modal=document.getElementById('frameModal');
+  document.getElementById('frameModalImg').src=src;
+  modal.classList.add('active');
+}
+function getClipIndex(idx, boundaries){
+  if(!boundaries||!boundaries.length) return 0;
+  let ci=0;
+  for(let i=1;i<boundaries.length;i++){
+    if(idx>=boundaries[i]) ci=i; else break;
+  }
+  return ci;
 }
 
 /* ═══════════════ INIT ═══════════════ */
