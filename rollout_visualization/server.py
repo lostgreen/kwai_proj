@@ -415,7 +415,7 @@ class RolloutStore:
 
     def _save_frame_disk_cache(self, uid: str, frames: list[str]) -> None:
         cache_dir = self._frame_cache_dir()
-        if cache_dir is None or not frames:
+        if cache_dir is None:
             return
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -430,22 +430,32 @@ class RolloutStore:
         """Pre-extract and cache frames for all groups. Prints progress."""
         total = len(self.group_order)
         cached = 0
+        extracted = 0
+        with_frames = 0
         for i, uid in enumerate(self.group_order):
             if uid in self.frame_cache:
                 cached += 1
+                if self.frame_cache[uid]:
+                    with_frames += 1
                 continue
             disk = self._load_frame_disk_cache(uid)
             if disk is not None:
                 self.frame_cache[uid] = disk
                 cached += 1
+                if disk:
+                    with_frames += 1
                 continue
             print(f"\r  Extracting frames: {i+1}/{total} ...", end="", flush=True)
             try:
-                self._get_frame_strip(uid, max_frames)
+                frames = self._get_frame_strip(uid, max_frames)
+                if frames:
+                    with_frames += 1
+                extracted += 1
             except Exception:
                 self.frame_cache[uid] = []
+                self._save_frame_disk_cache(uid, [])
         if total > 0:
-            print(f"\r  Frame cache ready: {total} groups ({cached} from cache)    ")
+            print(f"\r  Frame cache: {total} groups, {cached} from cache, {extracted} extracted, {with_frames} with frames")
 
     def _extract_frames(self, group: dict[str, Any], max_frames: int) -> list[str]:
         frames: list[str] = []
