@@ -9,13 +9,14 @@ ROLLOUT_DIR="${ROLLOUT_DIR:-/m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_mixed_pr
 LOG_FILE="${LOG_FILE:-/m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_mixed_proxy_training_2gpu_new/experiment_log.jsonl}"
 
 echo "[rollout-viz] host=${VIZHOST} port=${PORT}"
-echo "[rollout-viz] default rollout_dir=${ROLLOUT_DIR}"
-echo "[rollout-viz] default log_file=${LOG_FILE}"
-echo "[rollout-viz] open:"
-echo "http://localhost:${PORT}/?rollout_dir=${ROLLOUT_DIR}&log_file=${LOG_FILE}&autoload=1"
+echo "[rollout-viz] rollout_dir=${ROLLOUT_DIR}"
+echo "[rollout-viz] log_file=${LOG_FILE}"
+echo "[rollout-viz] open: http://localhost:${PORT}/"
 
 cd "${REPO_ROOT}"
 python rollout_visualization/server.py \
   --host "${VIZHOST}" \
   --port "${PORT}" \
-  --static-dir rollout_visualization
+  --static-dir rollout_visualization \
+  --rollout-dir "${ROLLOUT_DIR}" \
+  --log-file "${LOG_FILE}"

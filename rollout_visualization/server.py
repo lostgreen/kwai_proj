@@ -610,6 +610,8 @@ def main() -> None:
         default="assets/rollout_dashboard",
         help="directory containing index.html",
     )
+    parser.add_argument("--rollout-dir", default=None, help="pre-load rollout directory on startup")
+    parser.add_argument("--log-file", default=None, help="pre-load experiment log file on startup")
     args = parser.parse_args()
 
     root = Path.cwd().resolve()
@@ -617,7 +619,15 @@ def main() -> None:
     if not static_dir.exists():
         raise FileNotFoundError(f"Static directory not found: {static_dir}")
 
-    DashboardHandler.store = RolloutStore(root=root)
+    store = RolloutStore(root=root)
+    if args.rollout_dir:
+        try:
+            store.load(rollout_dir_text=args.rollout_dir, log_file_text=args.log_file)
+            print(f"Pre-loaded rollout data from: {args.rollout_dir}")
+        except Exception as e:
+            print(f"[warn] Failed to pre-load rollout data: {e}")
+
+    DashboardHandler.store = store
     DashboardHandler.static_dir = static_dir
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"Rollout dashboard server running at http://{args.host}:{args.port}")
