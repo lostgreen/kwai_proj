@@ -379,10 +379,73 @@ class RolloutStore:
     def _get_frame_strip(self, uid: str, max_frames: int) -> list[str]:
         if uid in self.frame_cache:
             return self.frame_cache[uid]
+        # Try disk cache
+        disk_frames = self._load_frame_disk_cache(uid)
+        if disk_frames is not None:
+            self.frame_cache[uid] = disk_frames
+            return disk_frames
         group = self.groups[uid]
         frames = self._extract_frames(group, max_frames=max_frames)
         self.frame_cache[uid] = frames
+        self._save_frame_disk_cache(uid, frames)
         return frames
+
+    def _frame_cache_dir(self) -> Optional[Path]:
+        if not self.rollout_dir:
+            return None
+        cache_dir = self.rollout_dir / ".frame_cache"
+        return cache_dir
+
+    def _load_frame_disk_cache(self, uid: str) -> Optional[list[str]]:
+        cache_dir = self._frame_cache_dir()
+        if cache_dir is None:
+            return None
+        safe_name = re.sub(r'[^\w\-.]', '_', uid) + ".json"
+        cache_file = cache_dir / safe_name
+        if not cache_file.exists():
+            return None
+        try:
+            with open(cache_file, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+        return None
+
+    def _save_frame_disk_cache(self, uid: str, frames: list[str]) -> None:
+        cache_dir = self._frame_cache_dir()
+        if cache_dir is None or not frames:
+            return
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r'[^\w\-.]', '_', uid) + ".json"
+            cache_file = cache_dir / safe_name
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(frames, f)
+        except Exception:
+            pass
+
+    def warm_frame_cache(self, max_frames: int = 30) -> None:
+        """Pre-extract and cache frames for all groups. Prints progress."""
+        total = len(self.group_order)
+        cached = 0
+        for i, uid in enumerate(self.group_order):
+            if uid in self.frame_cache:
+                cached += 1
+                continue
+            disk = self._load_frame_disk_cache(uid)
+            if disk is not None:
+                self.frame_cache[uid] = disk
+                cached += 1
+                continue
+            print(f"\r  Extracting frames: {i+1}/{total} ...", end="", flush=True)
+            try:
+                self._get_frame_strip(uid, max_frames)
+            except Exception:
+                self.frame_cache[uid] = []
+        if total > 0:
+            print(f"\r  Frame cache ready: {total} groups ({cached} from cache)    ")
 
     def _extract_frames(self, group: dict[str, Any], max_frames: int) -> list[str]:
         frames: list[str] = []
@@ -485,6 +548,7 @@ class RolloutStore:
 class DashboardHandler(BaseHTTPRequestHandler):
     store: RolloutStore = None
     static_dir: Path = None
+    preloaded_html: Optional[bytes] = None
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -587,33 +651,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         content = file_path.read_bytes()
 
-        # Inject ALL pre-loaded data into index.html so the dashboard works
-        # fully offline (no API calls needed except for video frame strips).
-        if file_path.name == "index.html" and self.store and self.store.rollout_dir:
-            all_groups_list = self.store.query_groups(step=None, task=None, query=None, limit=5000)
-            all_group_details = {}
-            for uid in self.store.group_order:
-                try:
-                    detail = self.store.get_group_detail(uid, max_frames=30)
-                    all_group_details[uid] = detail
-                except Exception:
-                    pass
-            preload = {
-                "summary": self.store.summary(),
-                "steps": self.store.get_steps_summary(),
-                "all_groups": all_groups_list,
-                "all_details": all_group_details,
-            }
-            inject = (
-                b'<script>window.__PRELOADED__='
-                + json.dumps(preload, ensure_ascii=False).encode("utf-8")
-                + b';</script>\n'
-            )
+        # Inject pre-computed data blob into index.html
+        if file_path.name == "index.html" and self.preloaded_html:
             marker = b'</head>'
             if marker in content:
-                content = content.replace(marker, inject + marker, 1)
+                content = content.replace(marker, self.preloaded_html + marker, 1)
             else:
-                content = inject + content
+                content = self.preloaded_html + content
 
         if file_path.suffix == ".html":
             content_type = "text/html; charset=utf-8"
@@ -649,15 +693,39 @@ def main() -> None:
         raise FileNotFoundError(f"Static directory not found: {static_dir}")
 
     store = RolloutStore(root=root)
+    preloaded_html: Optional[bytes] = None
     if args.rollout_dir:
         try:
             store.load(rollout_dir_text=args.rollout_dir, log_file_text=args.log_file)
             print(f"Pre-loaded rollout data from: {args.rollout_dir}")
+            print("  Warming frame cache (first run extracts frames, subsequent runs use disk cache)...")
+            store.warm_frame_cache(max_frames=30)
+            # Pre-build the injected HTML blob
+            all_groups_list = store.query_groups(step=None, task=None, query=None, limit=5000)
+            all_group_details = {}
+            for uid in store.group_order:
+                try:
+                    all_group_details[uid] = store.get_group_detail(uid, max_frames=30)
+                except Exception:
+                    pass
+            preload = {
+                "summary": store.summary(),
+                "steps": store.get_steps_summary(),
+                "all_groups": all_groups_list,
+                "all_details": all_group_details,
+            }
+            preloaded_html = (
+                b'<script>window.__PRELOADED__='
+                + json.dumps(preload, ensure_ascii=False).encode("utf-8")
+                + b';</script>\n'
+            )
+            print(f"  Ready. Preloaded HTML inject size: {len(preloaded_html) / 1024:.0f} KB")
         except Exception as e:
             print(f"[warn] Failed to pre-load rollout data: {e}")
 
     DashboardHandler.store = store
     DashboardHandler.static_dir = static_dir
+    DashboardHandler.preloaded_html = preloaded_html
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"Rollout dashboard server running at http://{args.host}:{args.port}")
     print(f"Static dir: {static_dir}")
