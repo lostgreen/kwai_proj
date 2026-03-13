@@ -59,7 +59,7 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .group-list{overflow-y:auto;border:1px solid rgba(148,163,184,.18);border-radius:10px;max-height:560px}
 .group-row{padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(148,163,184,.1);display:grid;gap:3px}
 .group-row:hover{background:rgba(96,165,250,.1)}.group-row.active{background:rgba(52,211,153,.14)}
-.group-main{display:grid;gap:12px;align-content:start;overflow-y:auto;max-height:calc(100vh - 120px)}
+.group-main{display:grid;gap:12px;align-content:start;overflow-y:auto;overflow-x:hidden;max-height:calc(100vh - 120px);min-width:0}
 /* ── Frame + timeline sync ── */
 .sync-outer{overflow-x:auto;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
 .frame-item{flex-shrink:0;display:grid;gap:3px;width:100px;cursor:pointer}
@@ -124,9 +124,11 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .mono{font-family:"JetBrains Mono","Fira Code",monospace;font-size:11px;line-height:1.45;
   white-space:pre-wrap;word-break:break-word;padding:8px 10px;
   background:rgba(2,6,23,.38);border-radius:8px;border:1px solid rgba(148,163,184,.18);
-  max-height:90px;overflow-y:auto;color:#94a3b8;margin-top:6px}
-::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-thumb{background:rgba(148,163,184,.25);border-radius:999px}
+  max-height:300px;overflow-y:auto;color:#94a3b8;margin-top:6px}
+::-webkit-scrollbar{width:4px;height:6px}
+::-webkit-scrollbar-thumb{background:rgba(148,163,184,.35);border-radius:999px}
+::-webkit-scrollbar-track{background:transparent}
+input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:20px}
 </style>
 </head>
 <body>
@@ -611,7 +613,7 @@ async function renderGroup(uid){
           <span class="badge">Rollout #${ri+1}</span>
           <span style="color:${rc};font-weight:700">${r.reward.toFixed(3)}</span>
         </div>
-        <pre class="mono" style="max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">${esc(String(r.response||''))}</pre>
+        <pre class="mono">${esc(String(r.response||''))}</pre>
       </div>`;
     });
     html+='</div>';
@@ -635,15 +637,13 @@ async function renderGroup(uid){
       `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;margin-left:6px"><span style="width:8px;height:8px;border-radius:50%;background:${CLIP_COLORS[i%CLIP_COLORS.length]}"></span>Clip ${i+1}</span>`
     ).join(''):'';
     html+=`
-      <div class="card" style="padding:14px">
+      <div class="card" style="padding:14px;min-width:0">
         <h3 style="margin-bottom:10px">📽 输入帧条 <span class="muted">（${nClips} clip${nClips>1?'s':''}, ${nF} 帧 · 点击帧可放大）</span>${clipLegend}</h3>
-        <div style="border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.35)">
-          <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:auto;scrollbar-width:thin;-webkit-overflow-scrolling:touch">${framesHTML}</div>
-        </div>
+        <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:scroll;border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.35);-webkit-overflow-scrolling:touch">${framesHTML}</div>
         ${modBand}
-        <div style="padding:4px 0 2px;display:flex;align-items:center;gap:8px">
+        <div style="padding:6px 0 2px;display:flex;align-items:center;gap:8px">
           <span style="font-size:10px;color:var(--muted)">0s</span>
-          <input type="range" style="flex:1;accent-color:#34d399" min="0" max="${Math.max(1,nF-1)}" value="0"
+          <input type="range" style="flex:1;accent-color:#34d399;height:24px" min="0" max="${Math.max(1,nF-1)}" value="0"
             oninput="scrollFT('${uid}',this.value,${nF})"/>
           <span style="font-size:10px;color:var(--muted)">${maxT}s</span>
         </div>
@@ -701,7 +701,7 @@ function renderSort(g){
           <span class="chip">GT: ${gt.join('')}</span>
         </div>
         <div class="sort-grid">${cards||'<div class="muted" style="font-size:11px;padding:4px">未能解析预测顺序</div>'}</div>
-        <pre class="mono" style="max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">${esc(String(r.response||''))}</pre>
+        <pre class="mono">${esc(String(r.response||''))}</pre>
       </div>`;
   }).join('');
   return `
@@ -766,7 +766,7 @@ function renderChoice(g){
           <span class="chip">Pred: ${r.pred_letter||'?'}</span>
           <span class="chip">GT: ${gtLetter||'?'}</span>
         </div>
-        <pre class="mono" style="max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">${esc(String(r.response||''))}</pre>
+        <pre class="mono">${esc(String(r.response||''))}</pre>
       </div>`;
   }).join('');
   const typeLabel=isVid?'选项为视频片段':'选项为文本';
