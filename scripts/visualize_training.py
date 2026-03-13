@@ -5,8 +5,8 @@
 
 用法:
     python scripts/visualize_training.py \
-        -i checkpoints/qwen3_vl_mixed_proxy_training_8gpu/experiment_log.jsonl \
-        -o checkpoints/qwen3_vl_mixed_proxy_training_8gpu/training_curves.png
+        -i checkpoints/qwen3_vl_mixed_proxy_training/experiment_log.jsonl \
+        -o checkpoints/qwen3_vl_mixed_proxy_training/training_curves.png
 
     # 交互模式（弹窗预览）
     python scripts/visualize_training.py \

@@ -40,31 +40,19 @@ from collections import Counter
 
 COT_SUFFIX_ADD = """First, carefully observe the actions and visual content in each Context Video to understand the cooking progression. Then, watch each Option Video and reason about which one logically continues the sequence.
 
-Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags.
-
-Example format:
-<think> The context videos show [describe progression]... Option A shows [describe]... Option C shows [describe]... Based on the cooking flow, the next step should be... </think><answer>C</answer>"""
+Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags."""
 
 COT_SUFFIX_DELETE = """First, carefully observe the visual content and cooking actions in each video clip. Identify the overall cooking flow and reason about which clip does NOT fit the logical sequence.
 
-Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags.
-
-Example format:
-<think> Video A shows [describe]... Video B shows [describe]... The logical cooking sequence appears to be [describe flow]... Video [X] does not fit because... </think><answer>D</answer>"""
+Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags."""
 
 COT_SUFFIX_REPLACE = """First, carefully observe the Context Sequence to understand the cooking flow before and after the [MISSING] step. Then, watch each Option Video and reason about which one best fills the gap.
 
-Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags.
-
-Example format:
-<think> Before the gap, the sequence shows [describe]... After the gap, the sequence shows [describe]... Option B shows [describe], which logically bridges... </think><answer>B</answer>"""
+Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags."""
 
 COT_SUFFIX_SORT = """First, carefully observe the cooking actions in each video clip. Reason about the logical chronological order of the cooking process.
 
-Think step by step inside <think> </think> tags, then provide your final answer (the correct order as a continuous sequence of video indices) inside <answer> </answer> tags.
-
-Example format:
-<think> Video 1 shows [describe]... Video 3 shows [describe]... The logical cooking order should start with [describe reasoning]... </think><answer>31245</answer>"""
+Think step by step inside <think> </think> tags, then provide your final answer (the correct order as a continuous sequence of video indices) inside <answer> </answer> tags."""
 
 
 # ============================================================
