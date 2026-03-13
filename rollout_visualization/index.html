@@ -734,13 +734,27 @@ function esc(s){
 
 /* ═══════════════ INIT ═══════════════ */
 (async()=>{
+  // Read URL query params and pre-fill inputs
+  const urlParams=new URLSearchParams(window.location.search);
+  const urlDir=urlParams.get('rollout_dir');
+  const urlLog=urlParams.get('log_file');
+  const autoload=urlParams.get('autoload')==='1';
+  if(urlDir) document.getElementById('rolloutDir').value=urlDir;
+  if(urlLog) document.getElementById('logFile').value=urlLog;
+
   try{
     const res=await api.state();
     if(res.ok&&res.summary&&res.summary.group_count>0){
       if(res.summary.rollout_dir) document.getElementById('rolloutDir').value=res.summary.rollout_dir;
       applyState(res.summary);
+    } else if(autoload&&(urlDir||document.getElementById('rolloutDir').value.trim())){
+      await doLoad();
     }
-  }catch(e){}
+  }catch(e){
+    if(autoload&&(urlDir||document.getElementById('rolloutDir').value.trim())){
+      await doLoad();
+    }
+  }
 })();
 </script>
 </body>
