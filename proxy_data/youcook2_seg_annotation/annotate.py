@@ -60,21 +60,30 @@ from prompts import (
 
 def frames_to_base64(frame_dir: Path, max_frames: int = 64) -> list[str]:
     """
-    Load JPEG frames from `frame_dir`, evenly sample up to `max_frames`,
-    and return them as base64 data URLs.
+    Load JPEG frames from `frame_dir`, evenly sample up to `max_frames`.
+
+    Returns:
+        (b64_list, indices) where b64_list are base64 data URLs and
+        indices are 1-based frame numbers (= seconds since clip start for 1fps).
     """
     frame_files = sorted(frame_dir.glob("*.jpg"))
     if not frame_files:
-        return []
+        return [], []
     if len(frame_files) > max_frames:
         stride = (len(frame_files) - 1) / (max_frames - 1)
         frame_files = [frame_files[round(i * stride)] for i in range(max_frames)]
-    result = []
+    b64_list = []
+    indices = []
     for fp in frame_files:
         with open(fp, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
-            result.append(f"data:image/jpeg;base64,{b64}")
-    return result
+            b64_list.append(f"data:image/jpeg;base64,{b64}")
+        # filename is %04d.jpg (1-indexed); numeric value = second within clip
+        try:
+            indices.append(int(fp.stem))
+        except ValueError:
+            indices.append(len(indices) + 1)
+    return b64_list, indices
 
 
 def clip_key_from_path(video_path: str) -> str:
@@ -82,7 +91,7 @@ def clip_key_from_path(video_path: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenAI-compatible API client (no extra dependencies beyond stdlib + requests)
+# OpenAI-compatible API client via openai library
 # ─────────────────────────────────────────────────────────────────────────────
 
 def call_vlm(
@@ -92,59 +101,60 @@ def call_vlm(
     system_prompt: str,
     user_text: str,
     frame_b64_list: list[str],
-    max_tokens: int = 2048,
-    temperature: float = 0.1,
+    frame_indices: list[int],
+    max_tokens: int = 8192,
+    temperature: float = 0.0,
     retries: int = 3,
 ) -> str:
     """
-    Call an OpenAI-compatible VLM endpoint with vision (interleaved images).
+    Call a VLM endpoint (OpenAI-compatible) with interleaved frame images.
 
-    Frames are sent as image_url content items before the text prompt.
-    Returns the assistant's response text.
+    Message layout:
+        system: system_prompt
+        user:   [text: user_text]
+                [text: "[Frame {i}]"] [image: frame_i]  × n_frames
+
+    Uses response_format={"type": "json_object"} for structured output.
+    API key is taken from `api_key` or NOVITA_API_KEY / OPENAI_API_KEY env vars.
     """
     try:
-        import requests
+        from openai import OpenAI
     except ImportError:
-        raise ImportError("requests is required: pip install requests")
+        raise ImportError("openai is required: pip install openai")
 
-    # Build content list: images first, then text instruction
-    content: list[dict[str, Any]] = []
-    for b64 in frame_b64_list:
+    key = api_key or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    client = OpenAI(api_key=key, base_url=api_base)
+
+    # Build user content: prompt text first, then interleaved frame labels + images
+    content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    for i, b64 in enumerate(frame_b64_list):
+        fid = frame_indices[i] if i < len(frame_indices) else i + 1
+        content.append({"type": "text", "text": f"[Frame {fid}]"})
         content.append({
             "type": "image_url",
-            "image_url": {"url": b64},
+            "image_url": {"url": b64, "detail": "low"},
         })
-    content.append({"type": "text", "text": user_text})
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": content},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": content},
+    ]
 
-    last_error = None
+    last_error: Exception | None = None
     for attempt in range(retries):
         try:
-            r = requests.post(
-                f"{api_base.rstrip('/')}/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=120,
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format={"type": "json_object"},
             )
-            r.raise_for_status()
-            data = r.json()
-            return data["choices"][0]["message"]["content"]
+            return resp.choices[0].message.content
         except Exception as e:
             last_error = e
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)  # exponential back-off
+                time.sleep(2 ** attempt)
     raise RuntimeError(f"API call failed after {retries} attempts: {last_error}")
 
 
@@ -221,7 +231,7 @@ def annotate_clip(
 
     # Load frames
     frame_dir = frames_base / key
-    frame_b64 = frames_to_base64(frame_dir, max_frames=max_frames_per_call)
+    frame_b64, frame_indices = frames_to_base64(frame_dir, max_frames=max_frames_per_call)
     if not frame_b64:
         return {"clip_key": key, "ok": False,
                 "error": f"no frames found in {frame_dir}", "skipped": False}
@@ -234,7 +244,8 @@ def annotate_clip(
     try:
         if level == 1:
             prompt_text = get_level1_prompt(clip_duration)
-            raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64)
+            raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT,
+                           prompt_text, frame_b64, frame_indices)
             parsed = parse_json_from_response(raw)
             result_key = "level1"
             result_val = parsed
@@ -245,7 +256,8 @@ def annotate_clip(
                 return {"clip_key": key, "ok": False,
                         "error": "level1 annotation missing; run level 1 first", "skipped": False}
             prompt_text = get_level2_prompt(clip_duration, l1)
-            raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64)
+            raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT,
+                           prompt_text, frame_b64, frame_indices)
             parsed = parse_json_from_response(raw)
             result_key = "level2"
             result_val = parsed
@@ -258,7 +270,8 @@ def annotate_clip(
                         "error": "level1/level2 annotation missing; run previous levels first",
                         "skipped": False}
             prompt_text = get_level3_prompt(clip_duration, l1, l2)
-            raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64)
+            raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT,
+                           prompt_text, frame_b64, frame_indices)
             parsed = parse_json_from_response(raw)
             result_key = "level3"
             result_val = parsed
@@ -307,11 +320,11 @@ def main() -> None:
                         help="Directory to write per-clip annotation JSON files")
     parser.add_argument("--level", type=int, choices=[1, 2, 3], default=1,
                         help="Annotation level to run (1=macro, 2=activity, 3=step)")
-    parser.add_argument("--api-base", default="http://localhost:8000/v1",
+    parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
-                        help="API key (can also set OPENAI_API_KEY env var)")
-    parser.add_argument("--model", default="Qwen3-VL-7B",
+                        help="API key (prefers NOVITA_API_KEY env var, then OPENAI_API_KEY)")
+    parser.add_argument("--model", default="pa/gmn-2.5-pr",
                         help="Model name to pass to the API")
     parser.add_argument("--max-frames-per-call", type=int, default=32,
                         help="Max frames to include per API call (memory limit)")
@@ -323,7 +336,7 @@ def main() -> None:
                         help="Re-annotate even if the level is already done")
     args = parser.parse_args()
 
-    api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
+    api_key = args.api_key or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
 
     # Load JSONL
     jsonl_path = Path(args.jsonl)
