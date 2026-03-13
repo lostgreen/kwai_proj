@@ -574,7 +574,13 @@ class RolloutStore:
                 if hasattr(frame, 'numpy'):
                     frame = frame.numpy()
                 import numpy as np
-                image = Image.fromarray(np.uint8(frame))
+                frame = np.uint8(frame)
+                # CHW -> HWC for PIL
+                if len(frame.shape) == 3 and frame.shape[0] in (1, 3):
+                    frame = frame.transpose(1, 2, 0)
+                    if frame.shape[2] == 1:
+                        frame = frame.squeeze(2)
+                image = Image.fromarray(frame)
                 frames.append(_image_to_data_url(image))
             return frames
         except Exception as e:
