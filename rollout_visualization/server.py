@@ -512,15 +512,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
             return
+        self._handle_load_data(payload.get("rollout_dir", ""), payload.get("log_file"))
 
-        rollout_dir = payload.get("rollout_dir", "")
-        log_file = payload.get("log_file")
+    def _handle_load_data(self, rollout_dir: str, log_file: Optional[str]) -> None:
         if not rollout_dir:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "rollout_dir is required"})
             return
-
         try:
-            summary = self.store.load(rollout_dir_text=rollout_dir, log_file_text=log_file)
+            summary = self.store.load(rollout_dir_text=rollout_dir, log_file_text=log_file or None)
         except Exception as e:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
             return
@@ -530,6 +529,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/state":
             self._send_json(HTTPStatus.OK, {"ok": True, "summary": self.store.summary()})
+            return
+
+        if parsed.path == "/api/load-data":
+            q = parse_qs(parsed.query)
+            rollout_dir = unquote(q.get("rollout_dir", [""])[0])
+            log_file = unquote(q.get("log_file", [""])[0]) or None
+            self._handle_load_data(rollout_dir, log_file)
             return
 
         if parsed.path == "/api/steps":

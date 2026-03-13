@@ -212,8 +212,9 @@ let chartData={}, hiddenCurves=new Set();
 /* ═══════════════ API ═══════════════ */
 const api={
   async load(rolloutDir,logFile){
-    const r=await fetch('/api/load-data',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({rollout_dir:rolloutDir,log_file:logFile||null})});
+    const q=new URLSearchParams({rollout_dir:rolloutDir});
+    if(logFile) q.set('log_file',logFile);
+    const r=await fetch('/api/load-data?'+q);
     return r.json();
   },
   async state(){return(await fetch('/api/state')).json()},
