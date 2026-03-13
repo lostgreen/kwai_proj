@@ -383,14 +383,16 @@ class RolloutStore:
         if uid in self.frame_cache:
             return self.frame_cache[uid]
         # Try disk cache
-        disk_frames = self._load_frame_disk_cache(uid)
-        if disk_frames is not None:
-            self.frame_cache[uid] = disk_frames
-            return disk_frames
+        disk_data = self._load_frame_disk_cache(uid)
+        if disk_data is not None:
+            frames, boundaries = disk_data
+            self.frame_cache[uid] = frames
+            self.groups[uid]["_clip_boundaries"] = boundaries
+            return frames
         group = self.groups[uid]
         frames = self._extract_frames(group, max_frames=max_frames)
         self.frame_cache[uid] = frames
-        self._save_frame_disk_cache(uid, frames)
+        self._save_frame_disk_cache(uid, frames, group.get("_clip_boundaries", []))
         return frames
 
     def _frame_cache_dir(self) -> Optional[Path]:
@@ -399,7 +401,7 @@ class RolloutStore:
         cache_dir = self.rollout_dir / ".frame_cache"
         return cache_dir
 
-    def _load_frame_disk_cache(self, uid: str) -> Optional[list[str]]:
+    def _load_frame_disk_cache(self, uid: str) -> Optional[tuple[list[str], list[int]]]:
         cache_dir = self._frame_cache_dir()
         if cache_dir is None:
             return None
@@ -410,13 +412,16 @@ class RolloutStore:
         try:
             with open(cache_file, encoding="utf-8") as f:
                 data = json.load(f)
+            if isinstance(data, dict):
+                return (data.get("frames", []), data.get("clip_boundaries", []))
             if isinstance(data, list):
-                return data
+                # Legacy format: just frames, no boundaries
+                return (data, [])
         except Exception:
             pass
         return None
 
-    def _save_frame_disk_cache(self, uid: str, frames: list[str]) -> None:
+    def _save_frame_disk_cache(self, uid: str, frames: list[str], clip_boundaries: list[int] = None) -> None:
         cache_dir = self._frame_cache_dir()
         if cache_dir is None:
             return
@@ -425,7 +430,7 @@ class RolloutStore:
             safe_name = re.sub(r'[^\w\-.]', '_', uid) + ".json"
             cache_file = cache_dir / safe_name
             with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(frames, f)
+                json.dump({"frames": frames, "clip_boundaries": clip_boundaries or []}, f)
         except Exception:
             pass
 
@@ -441,11 +446,13 @@ class RolloutStore:
                 if self.frame_cache[uid]:
                     with_frames += 1
                 continue
-            disk = self._load_frame_disk_cache(uid)
-            if disk is not None:
-                self.frame_cache[uid] = disk
+            disk_data = self._load_frame_disk_cache(uid)
+            if disk_data is not None:
+                frames, boundaries = disk_data
+                self.frame_cache[uid] = frames
+                self.groups[uid]["_clip_boundaries"] = boundaries
                 cached += 1
-                if disk:
+                if frames:
                     with_frames += 1
                 continue
             print(f"\r  Extracting frames: {i+1}/{total} ...", end="", flush=True)
@@ -456,7 +463,7 @@ class RolloutStore:
                 extracted += 1
             except Exception:
                 self.frame_cache[uid] = []
-                self._save_frame_disk_cache(uid, [])
+                self._save_frame_disk_cache(uid, [], [])
         if total > 0:
             print(f"\r  Frame cache: {total} groups, {cached} from cache, {extracted} extracted, {with_frames} with frames")
 
@@ -476,8 +483,15 @@ class RolloutStore:
                 candidates.extend(mm.get("videos") or [])
             if "images" in mm:
                 candidates.extend(mm.get("images") or [])
-        candidates.extend(group.get("video_paths") or [])
-        candidates.extend(group.get("image_paths") or [])
+        # Only add video_paths/image_paths if not already covered by multi_modal_source
+        mm_videos = set(str(v) for v in (mm.get("videos") or [])) if isinstance(mm, dict) else set()
+        mm_images = set(str(v) for v in (mm.get("images") or [])) if isinstance(mm, dict) else set()
+        for vp in group.get("video_paths") or []:
+            if str(vp) not in mm_videos:
+                candidates.append(vp)
+        for ip in group.get("image_paths") or []:
+            if str(ip) not in mm_images:
+                candidates.append(ip)
 
         for candidate in candidates:
             if len(frames) >= max_frames:
@@ -486,7 +500,8 @@ class RolloutStore:
             new_frames = self._candidate_to_frames(candidate, max_frames=max_frames - len(frames))
             frames.extend(new_frames)
 
-        # Store clip boundaries in group metadata for frontend use
+        # Remove boundaries that produced 0 frames
+        clip_boundaries = [b for b in clip_boundaries if b < len(frames)]
         group["_clip_boundaries"] = clip_boundaries
         return frames[:max_frames]
 

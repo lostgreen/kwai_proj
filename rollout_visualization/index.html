@@ -55,13 +55,13 @@ h3{font-size:13px;font-weight:600;color:#d1d5db}
 .back-btn{background:rgba(148,163,184,.12);border:1px solid rgba(148,163,184,.25);
   color:var(--text);border-radius:10px;padding:6px 14px;font-size:13px;cursor:pointer}
 .back-btn:hover{background:rgba(148,163,184,.22)}
-.group-sidebar{padding:14px;display:grid;gap:8px;align-content:start;max-height:calc(100vh - 120px);overflow:hidden}
+.group-sidebar{padding:14px;display:grid;gap:8px;align-content:start;max-height:calc(100vh - 120px);overflow-y:auto}
 .group-list{overflow-y:auto;border:1px solid rgba(148,163,184,.18);border-radius:10px;max-height:560px}
 .group-row{padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(148,163,184,.1);display:grid;gap:3px}
 .group-row:hover{background:rgba(96,165,250,.1)}.group-row.active{background:rgba(52,211,153,.14)}
-.group-main{display:grid;gap:12px;align-content:start;overflow:hidden}
+.group-main{display:grid;gap:12px;align-content:start;overflow-y:auto;overflow-x:hidden}
 /* ── Frame + timeline sync ── */
-.sync-outer{overflow-x:hidden}
+.sync-outer{overflow-x:auto;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
 .frame-item{flex-shrink:0;display:grid;gap:3px;width:100px;cursor:pointer}
 .frame-img{width:100px;height:60px;border-radius:7px;border:2px solid rgba(148,163,184,.2);
   background:rgba(148,163,184,.1);display:flex;align-items:center;justify-content:center;
@@ -611,7 +611,7 @@ async function renderGroup(uid){
           <span class="badge">Rollout #${ri+1}</span>
           <span style="color:${rc};font-weight:700">${r.reward.toFixed(3)}</span>
         </div>
-        <pre class="mono">${esc(String(r.response||'').slice(0,400))}</pre>
+        <pre class="mono" style="max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">${esc(String(r.response||''))}</pre>
       </div>`;
     });
     html+='</div>';
@@ -637,8 +637,8 @@ async function renderGroup(uid){
     html+=`
       <div class="card" style="padding:14px">
         <h3 style="margin-bottom:10px">📽 输入帧条 <span class="muted">（${nClips} clip${nClips>1?'s':''}, ${nF} 帧 · 点击帧可放大）</span>${clipLegend}</h3>
-        <div style="overflow:hidden;border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.35)">
-          <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:auto;scrollbar-width:thin">${framesHTML}</div>
+        <div style="border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.35)">
+          <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:auto;scrollbar-width:thin;-webkit-overflow-scrolling:touch">${framesHTML}</div>
         </div>
         ${modBand}
         <div style="padding:4px 0 2px;display:flex;align-items:center;gap:8px">
@@ -701,7 +701,7 @@ function renderSort(g){
           <span class="chip">GT: ${gt.join('')}</span>
         </div>
         <div class="sort-grid">${cards||'<div class="muted" style="font-size:11px;padding:4px">未能解析预测顺序</div>'}</div>
-        <pre class="mono">${esc(String(r.response||'').slice(0,300))}</pre>
+        <pre class="mono" style="max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">${esc(String(r.response||''))}</pre>
       </div>`;
   }).join('');
   return `
@@ -766,7 +766,7 @@ function renderChoice(g){
           <span class="chip">Pred: ${r.pred_letter||'?'}</span>
           <span class="chip">GT: ${gtLetter||'?'}</span>
         </div>
-        <pre class="mono">${esc(String(r.response||'').slice(0,400))}</pre>
+        <pre class="mono" style="max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">${esc(String(r.response||''))}</pre>
       </div>`;
   }).join('');
   const typeLabel=isVid?'选项为视频片段':'选项为文本';
