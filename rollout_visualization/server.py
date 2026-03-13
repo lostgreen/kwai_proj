@@ -471,6 +471,7 @@ class RolloutStore:
         frames: list[str] = []
         clip_boundaries: list[int] = []
         candidates: list[Any] = []
+        seen_paths: set[str] = set()
         mm = group.get("multi_modal_source")
         if isinstance(mm, dict):
             if "frames_base64" in mm:
@@ -479,28 +480,34 @@ class RolloutStore:
                     candidates.extend(frames_base64)
                 elif isinstance(frames_base64, str):
                     candidates.append(frames_base64)
-            if "videos" in mm:
-                candidates.extend(mm.get("videos") or [])
-            if "images" in mm:
-                candidates.extend(mm.get("images") or [])
-        # Only add video_paths/image_paths if not already covered by multi_modal_source
-        mm_videos = set(str(v) for v in (mm.get("videos") or [])) if isinstance(mm, dict) else set()
-        mm_images = set(str(v) for v in (mm.get("images") or [])) if isinstance(mm, dict) else set()
+            for v in mm.get("videos") or []:
+                if isinstance(v, str):
+                    seen_paths.add(v)
+                candidates.append(v)
+            for v in mm.get("images") or []:
+                if isinstance(v, str):
+                    seen_paths.add(v)
+                candidates.append(v)
         for vp in group.get("video_paths") or []:
-            if str(vp) not in mm_videos:
+            if str(vp) not in seen_paths:
                 candidates.append(vp)
         for ip in group.get("image_paths") or []:
-            if str(ip) not in mm_images:
+            if str(ip) not in seen_paths:
                 candidates.append(ip)
+
+        # Distribute max_frames evenly across clips
+        n_candidates = max(len(candidates), 1)
+        per_clip = max(1, max_frames // n_candidates)
 
         for candidate in candidates:
             if len(frames) >= max_frames:
                 break
             clip_boundaries.append(len(frames))
-            new_frames = self._candidate_to_frames(candidate, max_frames=max_frames - len(frames))
+            budget = min(per_clip, max_frames - len(frames))
+            new_frames = self._candidate_to_frames(candidate, max_frames=budget)
             frames.extend(new_frames)
 
-        # Remove boundaries that produced 0 frames
+        # Remove boundaries for clips that produced 0 frames
         clip_boundaries = [b for b in clip_boundaries if b < len(frames)]
         group["_clip_boundaries"] = clip_boundaries
         return frames[:max_frames]
@@ -543,16 +550,36 @@ class RolloutStore:
         return []
 
     def _video_file_to_frames(self, video_path: Path, max_frames: int) -> list[str]:
+        # Try decord first (lightweight, more reliable)
+        try:
+            import decord
+            decord.bridge.set_bridge("native")
+            vr = decord.VideoReader(str(video_path))
+            total = len(vr)
+            if total <= 0:
+                return []
+            n = min(max_frames, total)
+            indices = _sample_evenly(list(range(total)), n)
+            frames = []
+            for idx in indices:
+                frame_np = vr[idx].asnumpy()  # HWC uint8
+                image = Image.fromarray(frame_np)
+                image.thumbnail((320, 180), Image.LANCZOS)
+                frames.append(_image_to_data_url(image))
+            return frames
+        except Exception:
+            pass
+
+        # Fallback: qwen_vl_utils
         try:
             from qwen_vl_utils.vision_process import fetch_video
         except Exception:
             return []
-
         try:
             vision_info = {
                 "video": str(video_path),
-                "min_pixels": 4 * 32 * 32,
-                "max_pixels": 48 * 32 * 32,
+                "min_pixels": 128 * 128,
+                "max_pixels": 320 * 180,
                 "max_frames": max_frames,
                 "fps": 2.0,
             }
@@ -561,24 +588,20 @@ class RolloutStore:
                 result = result[0]
             if result is None:
                 return []
-
-            # Handle torch.Tensor
             if hasattr(result, 'numpy'):
                 import numpy as np
                 arr = result.cpu().numpy() if hasattr(result, 'cpu') else result.numpy()
             elif hasattr(result, 'shape'):
                 arr = result
             elif isinstance(result, list):
-                # List of PIL Images
                 frames = []
                 sampled = _sample_evenly(result, min(max_frames, len(result)))
                 for img in sampled:
-                    if hasattr(img, 'save'):  # PIL Image
+                    if hasattr(img, 'save'):
                         frames.append(_image_to_data_url(img))
                 return frames
             else:
                 return []
-
             if len(arr.shape) == 4:
                 total = int(arr.shape[0])
             elif len(arr.shape) == 3:
@@ -597,7 +620,6 @@ class RolloutStore:
                     frame = frame.numpy()
                 import numpy as np
                 frame = np.uint8(frame)
-                # CHW -> HWC for PIL
                 if len(frame.shape) == 3 and frame.shape[0] in (1, 3):
                     frame = frame.transpose(1, 2, 0)
                     if frame.shape[2] == 1:
@@ -608,7 +630,6 @@ class RolloutStore:
         except Exception as e:
             print(f"    [warn] frame extraction failed for {video_path.name}: {e}")
             return []
-        return []
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
