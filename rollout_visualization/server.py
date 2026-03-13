@@ -539,18 +539,46 @@ class RolloutStore:
                 result = result[0]
             if result is None:
                 return []
-            if hasattr(result, "shape"):
-                total = int(result.shape[0]) if len(result.shape) >= 4 else 0
-                if total <= 0:
-                    return []
-                indices = _sample_evenly(list(range(total)), min(max_frames, total))
+
+            # Handle torch.Tensor
+            if hasattr(result, 'numpy'):
+                import numpy as np
+                arr = result.cpu().numpy() if hasattr(result, 'cpu') else result.numpy()
+            elif hasattr(result, 'shape'):
+                arr = result
+            elif isinstance(result, list):
+                # List of PIL Images
                 frames = []
-                for idx in indices:
-                    frame = result[idx]
-                    image = Image.fromarray(frame.astype("uint8"))
-                    frames.append(_image_to_data_url(image))
+                sampled = _sample_evenly(result, min(max_frames, len(result)))
+                for img in sampled:
+                    if hasattr(img, 'save'):  # PIL Image
+                        frames.append(_image_to_data_url(img))
                 return frames
-        except Exception:
+            else:
+                return []
+
+            if len(arr.shape) == 4:
+                total = int(arr.shape[0])
+            elif len(arr.shape) == 3:
+                total = 1
+                import numpy as np
+                arr = np.expand_dims(arr, 0)
+            else:
+                return []
+            if total <= 0:
+                return []
+            indices = _sample_evenly(list(range(total)), min(max_frames, total))
+            frames = []
+            for idx in indices:
+                frame = arr[idx]
+                if hasattr(frame, 'numpy'):
+                    frame = frame.numpy()
+                import numpy as np
+                image = Image.fromarray(np.uint8(frame))
+                frames.append(_image_to_data_url(image))
+            return frames
+        except Exception as e:
+            print(f"    [warn] frame extraction failed for {video_path.name}: {e}")
             return []
         return []
 
