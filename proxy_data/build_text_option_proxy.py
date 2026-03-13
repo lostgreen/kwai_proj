@@ -42,8 +42,17 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-LETTERS = ["A", "B", "C", "D"]
+LETTERS = [chr(ord("A") + i) for i in range(26)]
 EVENT_FILE_RE = re.compile(r"_event\d+_(\d+)_(\d+)\.mp4$")
+
+
+def get_option_labels(n):
+    """返回 n 个选项标签（A, B, C...），最多支持 26 个。"""
+    if n < 2:
+        raise ValueError(f"选项数必须 >=2，当前: {n}")
+    if n > len(LETTERS):
+        raise ValueError(f"选项数超过上限 {len(LETTERS)}，当前: {n}")
+    return LETTERS[:n]
 
 
 def normalize_segment(seg):
@@ -292,6 +301,7 @@ def sample_negative_sentences(recipe_pool, global_pool, anchor_video_id, gt_sent
 
 
 def format_add_prompt(num_ctx, options, cot=True):
+    labels = get_option_labels(len(options))
     lines = ["Context Video Sequence:"]
     for i in range(num_ctx):
         lines.append(f"{i + 1}. <video>")
@@ -303,7 +313,7 @@ def format_add_prompt(num_ctx, options, cot=True):
     ])
 
     for i, opt in enumerate(options):
-        lines.append(f"{LETTERS[i]}. {opt}")
+        lines.append(f"{labels[i]}. {opt}")
 
     if cot:
         lines.extend([
@@ -322,6 +332,7 @@ def format_add_prompt(num_ctx, options, cot=True):
 
 
 def format_delete_prompt(num_ctx, options, cot=True):
+    labels = get_option_labels(len(options))
     lines = [
         "Watch the following cooking video sequence carefully:",
     ]
@@ -335,19 +346,19 @@ def format_delete_prompt(num_ctx, options, cot=True):
     ])
 
     for i, opt in enumerate(options):
-        lines.append(f"{LETTERS[i]}. {opt}")
+        lines.append(f"{labels[i]}. {opt}")
 
     if cot:
         lines.extend([
             "",
             "First, carefully observe the visual actions in each video step. Then, identify which text option does NOT match the sequence.",
             "",
-            "Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags.",
+            f"Think step by step inside <think> </think> tags, then provide your final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
         ])
     else:
         lines.extend([
             "",
-            "Output your answer as a single letter (e.g., A, B, C, D).",
+            f"Output your answer as a single letter (e.g., {', '.join(labels)}).",
         ])
 
     return "\n".join(lines)
@@ -377,7 +388,8 @@ def build_add_sample(v, sentence_pool_by_recipe, global_pool, min_ctx=2, max_ctx
 
     options = negs + [gt_event["sentence"]]
     random.shuffle(options)
-    answer = LETTERS[options.index(gt_event["sentence"])]
+    labels = get_option_labels(len(options))
+    answer = labels[options.index(gt_event["sentence"])]
 
     prompt = format_add_prompt(len(ctx_events), options, cot=cot)
     videos = [x["path"] for x in ctx_events]
@@ -409,9 +421,10 @@ def build_delete_sample(v, sentence_pool_by_recipe, global_pool, seq_len=4, cot=
 
     start = random.randint(0, len(events) - seq_len)
     seq_events = events[start:start + seq_len]
+    labels = get_option_labels(len(seq_events))
 
     outlier_pos = random.randint(0, seq_len - 1)
-    gt_letter = LETTERS[outlier_pos]
+    gt_letter = labels[outlier_pos]
 
     outlier_cands = sample_negative_sentences(
         recipe_pool=sentence_pool_by_recipe[v["recipe_type"]],
@@ -475,6 +488,11 @@ def main():
 
     args = parser.parse_args()
     random.seed(args.seed)
+
+    if args.delete_context_len < 2:
+        raise ValueError("--delete-context-len 必须 >= 2")
+    if args.delete_context_len > len(LETTERS):
+        raise ValueError(f"--delete-context-len 不能超过 {len(LETTERS)}")
 
     videos, sentence_pool_by_recipe = load_videos(
         anno_path=args.annotations,
