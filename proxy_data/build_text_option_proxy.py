@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-从 YouCookII 原始标注重新生成 proxy 训练数据（仅 add / delete），
+从 YouCookII 原始标注重新生成 proxy 训练数据（add / replace 文本选项），
 并将“选项”从视频改为 trainval 标注文本（sentence）。
 
 输出为 EasyR1 JSONL 格式：
@@ -11,7 +11,7 @@
   "answer": "A|B|C|D",
   "videos": ["...mp4", ...],
   "data_type": "video",
-  "problem_type": "add|delete",
+    "problem_type": "add|replace",
   "metadata": {...}
 }
 
@@ -21,13 +21,13 @@ python proxy_data/build_text_option_proxy.py \
   -o proxy_data/proxy_train_text_options.jsonl \
   --event-clips-root /m2v_intern/xuboshen/zgw/data/youcook2_event_clips \
   --add-per-video 1 \
-  --delete-per-video 1 \
+    --replace-per-video 1 \
   --seed 42 \
   --max-samples 1000 \
   --shuffle \
   --min-context 3 \
   --max-context 4 \
-  --delete-context-len 5 \
+    --replace-context-len 5 \
   --validate-clips \
   --duration-tol 1.5
 """
@@ -320,28 +320,30 @@ def format_add_prompt(num_ctx, options, cot=True):
             "",
             "First, carefully observe the actions and visual content in each Context Video to understand the cooking progression. Then, reason about which text option best continues the sequence.",
             "",
-            "Think step by step inside <think> </think> tags, then provide your final answer (a single letter A, B, C, or D) inside <answer> </answer> tags.",
+            f"Think step by step inside <think> </think> tags, then provide your final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
         ])
     else:
         lines.extend([
             "",
-            "Output your answer as a single letter (e.g., A, B, C, D).",
+            f"Output your answer as a single letter (e.g., {', '.join(labels)}).",
         ])
 
     return "\n".join(lines)
 
 
-def format_delete_prompt(num_ctx, options, cot=True):
+def format_replace_prompt(total_steps, missing_pos, options, cot=True):
     labels = get_option_labels(len(options))
-    lines = [
-        "Watch the following cooking video sequence carefully:",
-    ]
-    for i in range(num_ctx):
-        lines.append(f"Step {i + 1}: <video>")
+    lines = ["Watch the following cooking process carefully. The sequence has a [MISSING] step in the middle."]
+    lines.append("Context Sequence:")
+    for i in range(total_steps):
+        if i == missing_pos:
+            lines.append(f"Step {i + 1}: [MISSING]")
+        else:
+            lines.append(f"Step {i + 1}: <video>")
 
     lines.extend([
         "",
-        "Among the textual options below, ONE step description is maliciously inserted and does NOT belong to the visual cooking sequence.",
+        "Based on the chronological visual content of the sequence, pick the correct textual option to fill in the [MISSING] step.",
         "Options:",
     ])
 
@@ -351,7 +353,7 @@ def format_delete_prompt(num_ctx, options, cot=True):
     if cot:
         lines.extend([
             "",
-            "First, carefully observe the visual actions in each video step. Then, identify which text option does NOT match the sequence.",
+            "First, carefully observe the Context Sequence to understand the cooking flow before and after the [MISSING] step. Then, reason about which text option best fills the gap.",
             "",
             f"Think step by step inside <think> </think> tags, then provide your final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
         ])
@@ -414,34 +416,43 @@ def build_add_sample(v, sentence_pool_by_recipe, global_pool, min_ctx=2, max_ctx
     }
 
 
-def build_delete_sample(v, sentence_pool_by_recipe, global_pool, seq_len=4, cot=True):
+def build_replace_sample(v, sentence_pool_by_recipe, global_pool, seq_len=5, cot=True):
     events = v["events"]
     if len(events) < seq_len:
         return None
 
     start = random.randint(0, len(events) - seq_len)
     seq_events = events[start:start + seq_len]
-    labels = get_option_labels(len(seq_events))
+    if seq_len < 3:
+        return None
 
-    outlier_pos = random.randint(0, seq_len - 1)
-    gt_letter = labels[outlier_pos]
+    # 缺失位置放在中间，避免退化为开头/结尾猜测
+    missing_pos = random.randint(1, seq_len - 2)
+    gt_event = seq_events[missing_pos]
 
-    outlier_cands = sample_negative_sentences(
+    negs = sample_negative_sentences(
         recipe_pool=sentence_pool_by_recipe[v["recipe_type"]],
         global_pool=global_pool,
         anchor_video_id=v["video_id"],
-        gt_sentence=seq_events[outlier_pos]["sentence"],
-        k=1,
+        gt_sentence=gt_event["sentence"],
+        k=3,
     )
-    if not outlier_cands:
+    if not negs:
         return None
-    outlier_text = outlier_cands[0]
+    options = negs + [gt_event["sentence"]]
+    random.shuffle(options)
+    labels = get_option_labels(len(options))
+    gt_letter = labels[options.index(gt_event["sentence"])]
 
-    options = [ev["sentence"] for ev in seq_events]
-    options[outlier_pos] = outlier_text
+    context_events = [ev for i, ev in enumerate(seq_events) if i != missing_pos]
 
-    prompt = format_delete_prompt(len(seq_events), options, cot=cot)
-    videos = [x["path"] for x in seq_events]
+    prompt = format_replace_prompt(
+        total_steps=len(seq_events),
+        missing_pos=missing_pos,
+        options=options,
+        cot=cot,
+    )
+    videos = [x["path"] for x in context_events]
 
     return {
         "messages": [{"role": "user", "content": prompt}],
@@ -449,32 +460,33 @@ def build_delete_sample(v, sentence_pool_by_recipe, global_pool, seq_len=4, cot=
         "answer": gt_letter,
         "videos": videos,
         "data_type": "video",
-        "problem_type": "delete",
+        "problem_type": "replace",
         "metadata": {
-            "task_type": "delete",
+            "task_type": "replace",
             "video_id": v["video_id"],
             "recipe_type": v["recipe_type"],
             "context_start_event": seq_events[0]["id"],
             "context_end_event": seq_events[-1]["id"],
-            "outlier_pos": outlier_pos,
-            "outlier_sentence": outlier_text,
+            "missing_pos": missing_pos,
+            "target_event": gt_event["id"],
+            "target_sentence": gt_event["sentence"],
             "option_type": "text",
         },
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="从原始标注生成文本选项版 proxy(add/delete) 训练数据")
+    parser = argparse.ArgumentParser(description="从原始标注生成文本选项版 proxy(add/replace) 训练数据")
     parser.add_argument("--annotations", "-a", required=True, help="youcookii_annotations_trainval.json 路径")
     parser.add_argument("--output", "-o", required=True, help="输出 JSONL 文件")
     parser.add_argument("--event-clips-root", required=True, help="事件切片根目录，例如 /.../youcook2_event_clips")
 
     parser.add_argument("--add-per-video", type=int, default=1, help="每个视频生成 add 样本数")
-    parser.add_argument("--delete-per-video", type=int, default=1, help="每个视频生成 delete 样本数")
+    parser.add_argument("--replace-per-video", type=int, default=1, help="每个视频生成 replace 样本数")
     parser.add_argument("--min-events", type=int, default=4, help="最少事件数")
     parser.add_argument("--min-context", type=int, default=2, help="add 任务最小上下文长度")
     parser.add_argument("--max-context", type=int, default=4, help="add 任务最大上下文长度")
-    parser.add_argument("--delete-context-len", type=int, default=4, help="delete 任务上下文长度（即输入视频数）")
+    parser.add_argument("--replace-context-len", type=int, default=5, help="replace 任务总步骤数（输入视频数=总步骤数-1）")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--shuffle", action="store_true", help="写出前打乱样本")
     parser.add_argument("--max-samples", type=int, default=None, help="最多写出样本数")
@@ -489,10 +501,8 @@ def main():
     args = parser.parse_args()
     random.seed(args.seed)
 
-    if args.delete_context_len < 2:
-        raise ValueError("--delete-context-len 必须 >= 2")
-    if args.delete_context_len > len(LETTERS):
-        raise ValueError(f"--delete-context-len 不能超过 {len(LETTERS)}")
+    if args.replace_context_len < 3:
+        raise ValueError("--replace-context-len 必须 >= 3")
 
     videos, sentence_pool_by_recipe = load_videos(
         anno_path=args.annotations,
@@ -561,18 +571,18 @@ def main():
                 stats["add"] += 1
                 ctx_stats[f"add_ctx_{len(s['videos'])}"] += 1
 
-        for _ in range(args.delete_per_video):
-            s = build_delete_sample(
+        for _ in range(args.replace_per_video):
+            s = build_replace_sample(
                 v,
                 sentence_pool_by_recipe=sentence_pool_by_recipe,
                 global_pool=global_pool,
-                seq_len=args.delete_context_len,
+                seq_len=args.replace_context_len,
                 cot=not args.no_cot,
             )
             if s is not None:
                 samples.append(s)
-                stats["delete"] += 1
-                ctx_stats[f"delete_ctx_{len(s['videos'])}"] += 1
+                stats["replace"] += 1
+                ctx_stats[f"replace_ctx_{len(s['videos'])}"] += 1
 
     if args.shuffle:
         random.shuffle(samples)
@@ -592,7 +602,7 @@ def main():
     print("📊 统计:")
     print(f"  可用视频数: {len(videos)}")
     print(f"  add: {stats['add']}")
-    print(f"  delete: {stats['delete']}")
+    print(f"  replace: {stats['replace']}")
     print("  上下文视频数分布:")
     for k in sorted(ctx_stats.keys()):
         print(f"    {k}: {ctx_stats[k]}")
