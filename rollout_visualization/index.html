@@ -735,28 +735,44 @@ function esc(s){
 
 /* ═══════════════ INIT ═══════════════ */
 (async()=>{
-  // Read URL query params and pre-fill inputs
-  const urlParams=new URLSearchParams(window.location.search);
-  const urlDir=urlParams.get('rollout_dir');
-  const urlLog=urlParams.get('log_file');
-  const autoload=urlParams.get('autoload')==='1';
-  if(urlDir) document.getElementById('rolloutDir').value=urlDir;
-  if(urlLog) document.getElementById('logFile').value=urlLog;
+  // Use server-injected pre-loaded data if available (no API call needed)
+  const pre=window.__PRELOADED__;
+  if(pre&&pre.summary&&pre.summary.group_count>0){
+    if(pre.summary.rollout_dir) document.getElementById('rolloutDir').value=pre.summary.rollout_dir;
+    applyStateWithSteps(pre.summary, pre.steps||[]);
+    return;
+  }
 
+  // Fallback: try API calls
   try{
     const res=await api.state();
     if(res.ok&&res.summary&&res.summary.group_count>0){
       if(res.summary.rollout_dir) document.getElementById('rolloutDir').value=res.summary.rollout_dir;
       applyState(res.summary);
-    } else if(autoload&&(urlDir||document.getElementById('rolloutDir').value.trim())){
-      await doLoad();
     }
-  }catch(e){
-    if(autoload&&(urlDir||document.getElementById('rolloutDir').value.trim())){
-      await doLoad();
-    }
-  }
+  }catch(e){}
 })();
+
+function applyStateWithSteps(summary, steps){
+  curSummary=summary;
+  document.getElementById('statGroups').textContent=summary.group_count??'—';
+  document.getElementById('statSamples').textContent=summary.sample_count??'—';
+  document.getElementById('statSteps').textContent=summary.step_count??'—';
+  const seg=(summary.temporal_ratio??0)*100;
+  document.getElementById('statSeg').textContent=seg.toFixed(1)+'%';
+  const curve=summary.step_curve||[];
+  if(curve.length) document.getElementById('statRew').textContent=(curve[curve.length-1].reward??0).toFixed(3);
+  chartData={};
+  if(curve.length) chartData['overall']=curve.map(p=>({step:p.step,v:p.reward}));
+  const tc=summary.task_curves||{};
+  Object.entries(tc).forEach(([t,pts])=>{chartData[t]=pts.map(p=>({step:p.step,v:p.reward}));});
+  buildLegend();
+  drawChart(+document.getElementById('smoothSlider').value/100);
+  setStatus(`✓ 已加载: ${summary.group_count} groups / ${summary.sample_count} samples / ${summary.step_count} steps`);
+  curSteps=steps;
+  document.getElementById('stepCountLabel').textContent=curSteps.length+' steps';
+  buildStepGrid();
+}
 </script>
 </body>
 </html>

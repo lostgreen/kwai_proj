@@ -586,6 +586,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         content = file_path.read_bytes()
+
+        # Inject pre-loaded data into index.html so it works without API calls
+        if file_path.name == "index.html" and self.store and self.store.rollout_dir:
+            preload = {
+                "summary": self.store.summary(),
+                "steps": self.store.get_steps_summary(),
+            }
+            inject = (
+                b'<script>window.__PRELOADED__='
+                + json.dumps(preload, ensure_ascii=False).encode("utf-8")
+                + b';</script>\n'
+            )
+            # Insert right before </head> or at the start of the file
+            marker = b'</head>'
+            if marker in content:
+                content = content.replace(marker, inject + marker, 1)
+            else:
+                content = inject + content
+
         if file_path.suffix == ".html":
             content_type = "text/html; charset=utf-8"
         elif file_path.suffix == ".js":
