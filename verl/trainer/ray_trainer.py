@@ -18,6 +18,7 @@ This trainer supports model-agonistic model initialization with huggingface.
 
 import json
 import os
+import re
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -59,6 +60,52 @@ from .metrics import (
     compute_timing_metrics,
     reduce_metrics,
 )
+
+
+_TEMPORAL_SEGMENT_PATTERN = re.compile(r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*\]")
+
+
+def _extract_temporal_segments(text: str) -> list[list[float]]:
+    if not text:
+        return []
+    matches = _TEMPORAL_SEGMENT_PATTERN.findall(str(text))
+    segments = []
+    for start_raw, end_raw in matches:
+        start = float(start_raw)
+        end = float(end_raw)
+        if start >= end or start < 0:
+            continue
+        segments.append([start, end])
+    return segments
+
+
+def _to_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.ndarray):
+        return [_to_jsonable(v) for v in value.tolist()]
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    return str(value)
+
+
+def _flatten_paths(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        flattened = []
+        for item in value:
+            flattened.extend(_flatten_paths(item))
+        return flattened
+    return [str(value)]
 
 
 class Role(IntEnum):
@@ -391,6 +438,10 @@ class RayPPOTrainer:
         uids = batch.non_tensor_batch.get("uid", [None] * len(scores))
         ground_truths = batch.non_tensor_batch.get("ground_truth", [None] * len(scores))
         problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(scores))
+        data_types = batch.non_tensor_batch.get("data_type", [None] * len(scores))
+        problem_ids = batch.non_tensor_batch.get("problem_id", [None] * len(scores))
+        problems = batch.non_tensor_batch.get("problem_reserved_text", [None] * len(scores))
+        multimodal_sources = batch.non_tensor_batch.get("multi_modal_data", [None] * len(scores))
 
         total = len(scores)
         n = self.config.trainer.save_rollout_n_per_step
@@ -400,15 +451,43 @@ class RayPPOTrainer:
             for i in indices:
                 prompt_text = self.tokenizer.decode(prompt_ids[i], skip_special_tokens=True)
                 response_text = self.tokenizer.decode(response_ids[i], skip_special_tokens=True)
+                problem_type = str(problem_types[i]) if problem_types[i] is not None else None
+                mm_source = multimodal_sources[i] if i < len(multimodal_sources) else None
+                mm_source_json = _to_jsonable(mm_source) if self.config.trainer.save_rollout_include_multimodal else None
+                video_paths = []
+                image_paths = []
+                if isinstance(mm_source_json, dict):
+                    video_paths = _flatten_paths(mm_source_json.get("videos"))
+                    image_paths = _flatten_paths(mm_source_json.get("images"))
+
                 record = {
                     "step": self.global_step,
                     "uid": str(uids[i]) if uids[i] is not None else None,
-                    "problem_type": str(problem_types[i]) if problem_types[i] is not None else None,
+                    "problem_type": problem_type,
+                    "data_type": str(data_types[i]) if data_types[i] is not None else None,
+                    "problem_id": str(problem_ids[i]) if problem_ids[i] is not None else None,
+                    "problem": str(problems[i]) if problems[i] is not None else None,
                     "prompt": prompt_text,
                     "response": response_text,
                     "ground_truth": str(ground_truths[i]) if ground_truths[i] is not None else None,
                     "reward": scores[i],
+                    "video_paths": video_paths,
+                    "image_paths": image_paths,
+                    "multi_modal_source": mm_source_json,
                 }
+                if self.config.trainer.save_rollout_include_timeline and problem_type == "temporal_seg":
+                    pred_segments = _extract_temporal_segments(response_text)
+                    gt_segments = _extract_temporal_segments(record["ground_truth"])
+                    max_t = 0.0
+                    if pred_segments:
+                        max_t = max(max_t, max(seg[1] for seg in pred_segments))
+                    if gt_segments:
+                        max_t = max(max_t, max(seg[1] for seg in gt_segments))
+                    record["temporal_segments"] = {
+                        "predicted": pred_segments,
+                        "ground_truth": gt_segments,
+                        "max_t": max_t,
+                    }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         print(f"[rollout] step {self.global_step}: saved {len(indices)}/{total} samples → {filepath}")

@@ -10,16 +10,17 @@
 4. sort     — 排序题：按时间排列视频片段，jigsaw displacement reward
 5. temporal_seg — 时序分割：F1-IoU reward（复用 youcook2_temporal_seg_reward）
 
-格式要求:
-- add/delete/replace: 模型需先 <think>推理</think> 再 <answer>字母</answer>
-- sort: 模型需先 <think>推理</think> 再 <answer>数字序列</answer>
-- temporal_seg: 答案为事件标签格式 (<events>...</events>)
-- 也兼容无 <answer> 标签的旧格式（直接从回复中提取）
+格式要求（严格模式）:
+- add/delete/replace: 必须同时包含 <think>...</think> 和 <answer>字母</answer>，
+  缺少任意一个标签直接返回 0.0，不再回退到全文提取。
+- sort: 必须同时包含 <think>...</think> 和 <answer>数字序列</answer>，
+  缺少任意一个标签直接返回 0.0。
+- temporal_seg: 答案为事件标签格式 (<events>...</events>)，无标签返回 0.0。
 
 Reward 输出格式（兼容 EasyR1 batch reward 接口）:
     {
         "overall": float,    # 总分 (0.0 = 格式错误，0.0-1.0 = 准确率)
-        "format":  float,    # 格式分 (总是 0.0，因为格式不对就不给奖励)
+        "format":  float,    # 格式分 (1.0 = 两个标签都存在，0.0 = 缺标签)
         "accuracy": float,   # 准确率奖励
     }
 """
@@ -36,6 +37,9 @@ from typing import Any, Dict, List, Optional
 # 匹配 <answer> 标签内的内容
 _ANSWER_TAG_PATTERN = re.compile(r"<answer>\s*([\s\S]*?)\s*</answer>", re.IGNORECASE)
 
+# 匹配 <think> 标签（只需存在，不解析内容）
+_THINK_TAG_PATTERN = re.compile(r"<think>", re.IGNORECASE)
+
 # 匹配单个大写字母（独立单词）
 _SINGLE_LETTER_PATTERN = re.compile(r"\b([A-Z])\b", re.IGNORECASE)
 
@@ -51,24 +55,26 @@ def _extract_from_answer_tag(response: str) -> Optional[str]:
     return None
 
 
+def _has_required_tags(response: str) -> bool:
+    """
+    严格格式检查：必须同时包含 <think> 和 <answer> 标签。
+    缺少任意一个视为格式错误，返回 False。
+    """
+    return (
+        _THINK_TAG_PATTERN.search(response) is not None
+        and _ANSWER_TAG_PATTERN.search(response) is not None
+    )
+
+
 def _extract_choice(response: str) -> Optional[str]:
     """
-    从模型回复中提取选项字母。
-    
-    优先级:
-    1. 从 <answer> 标签中提取字母
-    2. 回退：从完整回复中找最后一个独立大写字母
-    3. None (无法解析)
+    严格模式：仅从 <answer> 标签内提取选项字母，不做全文 fallback。
+    调用前应已通过 _has_required_tags() 检查。
     """
-    # 优先从 <answer> 标签提取
     tag_content = _extract_from_answer_tag(response)
-    if tag_content is not None:
-        letters = _SINGLE_LETTER_PATTERN.findall(tag_content)
-        if letters:
-            return letters[-1].upper()
-    
-    # 回退：从完整回复找（兼容旧格式）
-    letters = _SINGLE_LETTER_PATTERN.findall(response)
+    if tag_content is None:
+        return None
+    letters = _SINGLE_LETTER_PATTERN.findall(tag_content)
     if not letters:
         return None
     return letters[-1].upper()
@@ -76,31 +82,26 @@ def _extract_choice(response: str) -> Optional[str]:
 
 def _choice_reward(response: str, ground_truth: str) -> Dict[str, float]:
     """
-    选择题精确匹配 reward。
-    无格式奖励：格式不对（无法解析）就是 0.0。
-    使用 <answer> 标签时追踪 format 分（仅供监控，不影响 overall）。
-    
-    - 答案正确: overall=1.0, accuracy=1.0
-    - 答案错误: overall=0.0, accuracy=0.0
-    - 无法解析: overall=0.0, accuracy=0.0
+    选择题精确匹配 reward（严格格式模式）。
+
+    必须同时包含 <think> 和 <answer> 标签，缺任意一个直接返回 0.0。
+
+    - 格式正确 + 答案正确: overall=1.0, format=1.0, accuracy=1.0
+    - 格式正确 + 答案错误: overall=0.0, format=1.0, accuracy=0.0
+    - 格式错误（缺标签）:  overall=0.0, format=0.0, accuracy=0.0
     """
+    # 严格格式门控：缺少 <think> 或 <answer> 直接返回 0
+    if not _has_required_tags(response):
+        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+
     gt = ground_truth.strip().upper()
     pred = _extract_choice(response)
-    
-    # 追踪是否使用了 <answer> 标签（仅用于监控日志）
-    has_answer_tag = _ANSWER_TAG_PATTERN.search(response) is not None
-    format_score = 1.0 if has_answer_tag else 0.0
 
     if pred is None:
-        # 无法解析 → 无奖励
-        return {"overall": 0.0, "format": format_score, "accuracy": 0.0}
+        return {"overall": 0.0, "format": 1.0, "accuracy": 0.0}
 
-    if pred == gt:
-        accuracy = 1.0
-    else:
-        accuracy = 0.0
-
-    return {"overall": float(accuracy), "format": format_score, "accuracy": float(accuracy)}
+    accuracy = 1.0 if pred == gt else 0.0
+    return {"overall": float(accuracy), "format": 1.0, "accuracy": float(accuracy)}
 
 
 # ===================================================================
@@ -179,48 +180,36 @@ def _compute_jigsaw_displacement(pred_seq: List[int], gt_seq: List[int]) -> floa
 
 def _sort_reward(response: str, ground_truth: str) -> Dict[str, float]:
     """
-    排序题 Reward（数字序列版本）:
-    - 优先从 <answer> 标签提取，回退到全文提取
+    排序题 Reward（数字序列版本，严格格式模式）:
+    - 必须同时包含 <think> 和 <answer> 标签，缺任意一个直接返回 0.0
+    - 仅从 <answer> 标签内解析数字序列，不做全文 fallback
     - 计算 jigsaw displacement reward
-    - 无格式奖励：格式不对（无法解析）= 0.0
     """
     gt_seq = _parse_sort_digits(ground_truth)
     if gt_seq is None:
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
-    # 优先从 <answer> 标签提取
+    # 严格格式门控
+    if not _has_required_tags(response):
+        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+
     tag_content = _extract_from_answer_tag(response)
-    pred_seq = None
-    if tag_content is not None:
-        pred_seq = _parse_sort_digits(tag_content)
-    # 回退：从完整回复提取（兼容旧格式）
-    if pred_seq is None:
-        pred_seq = _parse_sort_digits(response)
+    pred_seq = _parse_sort_digits(tag_content) if tag_content is not None else None
 
     if pred_seq is None:
-        # 无法解析 → 无奖励
-        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+        return {"overall": 0.0, "format": 1.0, "accuracy": 0.0}
 
     # 长度不匹配的处理
     if len(pred_seq) != len(gt_seq):
-        # 截断或补齐到 gt 长度
         if len(pred_seq) > len(gt_seq):
             pred_seq = pred_seq[:len(gt_seq)]
         else:
-            # 补齐缺失的元素（会被惩罚最大位移）
             missing = [e for e in gt_seq if e not in pred_seq]
             pred_seq = pred_seq + missing[:len(gt_seq) - len(pred_seq)]
 
-    # 计算 jigsaw reward
     jigsaw_r = _compute_jigsaw_displacement(pred_seq, gt_seq)
-
-    # 完全正确额外奖励（满分）
-    if pred_seq == gt_seq:
-        accuracy = 1.0
-    else:
-        accuracy = jigsaw_r
-
-    return {"overall": float(accuracy), "format": 0.0, "accuracy": float(accuracy)}
+    accuracy = 1.0 if pred_seq == gt_seq else jigsaw_r
+    return {"overall": float(accuracy), "format": 1.0, "accuracy": float(accuracy)}
 
 
 # ===================================================================

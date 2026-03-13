@@ -154,6 +154,10 @@ class TrainerConfig:
     """whether to save training rollouts to a JSONL file at every step"""
     save_rollout_n_per_step: int = -1
     """how many rollout samples to save per step, -1 means save all"""
+    save_rollout_include_multimodal: bool = True
+    """whether to save multimodal source metadata (e.g. video/image paths) in rollout jsonl"""
+    save_rollout_include_timeline: bool = True
+    """whether to save parsed temporal segments for timeline visualization"""
 
     def post_init(self):
         if self.save_checkpoint_path is None:

@@ -102,6 +102,9 @@ class ActorConfig:
     """ulysses sequence parallel size"""
     use_torch_compile: bool = True
     """enable torch compile"""
+    entropy_coeff: float = 0.0
+    """entropy regularization coefficient; positive value adds entropy bonus to loss to prevent mode collapse.
+    Recommended: 0.001-0.01 when using online_filtering (DAPO-style dynamic sampling)."""
     model: ModelConfig = field(default_factory=ModelConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     fsdp: FSDPConfig = field(default_factory=FSDPConfig)

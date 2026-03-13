@@ -31,6 +31,7 @@ EasyR1 is efficient and scalable due to the design of **[HybirdEngine](https://a
   - Padding-free training
   - Resuming from the latest/best checkpoint
   - Wandb & SwanLab & Mlflow & Tensorboard tracking
+  - Rollout visualization dashboard bundle (`rollout_visualization/`)
 
 ## Requirements
 
@@ -95,6 +96,17 @@ bash examples/qwen2_5_vl_7b_geo3k_grpo.sh
 
 ```bash
 python3 scripts/model_merger.py --local_dir checkpoints/easy_r1/exp_name/global_step_1/actor
+```
+
+### Rollout Visualization (Web Prototype)
+
+See `rollout_visualization/README.md` for usage.
+
+```bash
+bash rollout_visualization/run.sh
+# or:
+python rollout_visualization/server.py --host 0.0.0.0 --port 8765 --static-dir rollout_visualization
+# Open: http://localhost:8765/
 ```
 
 > [!TIP]

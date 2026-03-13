@@ -281,6 +281,12 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         loss = pg_loss
 
+                    # entropy regularization: adds entropy bonus to encourage exploration and
+                    # prevent mode collapse, especially useful when combined with online_filtering.
+                    if self.config.entropy_coeff > 0:
+                        loss = loss - self.config.entropy_coeff * pg_metrics["entropy_loss"]
+                        metrics["actor/entropy_coeff"] = self.config.entropy_coeff
+
                     loss = loss * torch.sum(response_mask) * self.world_size / total_response_tokens
                     loss.backward()
 
