@@ -106,3 +106,6 @@ trainer:
   save_checkpoint_path: checkpoints/qwen3-8b-rl
   load_checkpoint_path: null
   find_last_checkpoint: true
+  save_rollout_to_file: true
+  save_rollout_include_multimodal: true
+  save_rollout_include_timeline: true

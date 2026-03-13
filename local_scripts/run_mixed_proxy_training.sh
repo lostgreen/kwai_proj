@@ -17,22 +17,22 @@ mkdir -p "$(dirname "${BAD_SAMPLES_LOG}")"
 
 # ---- 实验配置 ----
 project_name='EasyR1-mixed-proxy'
-exp_name='qwen3_vl_mixed_proxy_training_8gpu'
+exp_name='qwen3_vl_mixed_proxy_training_2gpu_new'
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"   # 替换为你的模型路径
-TRAIN_FILE="proxy_data/mixed_train_cot.jsonl"              # CoT prompt 版本（选择题要求 <think>...<answer>）
-TEST_FILE="proxy_data/youcook2_val_small.jsonl"             # 验证集
+TRAIN_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/proxy_train_text_options.jsonl"              # CoT prompt 版本（选择题要求 <think>...<answer>）
+TEST_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/proxy_val_text_options.jsonl"             # 验证集
 IMAGE_DIR=""                                                 # 视频已使用绝对路径则留空
 
 # ---- 训练超参数 ----
-ROLLOUT_BS=16           # rollout batch size
-GLOBAL_BS=16            # actor 更新 global batch size
+ROLLOUT_BS=8           # rollout batch size
+GLOBAL_BS=8           # actor 更新 global batch size
 MB_PER_UPDATE=1         # 每设备每次更新 micro batch
 MB_PER_EXP=1            # 每设备每次 experience 收集 micro batch
 ROLLOUT_N=8             # 每个 prompt 生成的候选回复数
 TP_SIZE=2               # vLLM Tensor Parallel size
-N_GPUS_PER_NODE=8       # 每节点 GPU 数
+N_GPUS_PER_NODE=2       # 每节点 GPU 数
 NNODES=1                # 节点数
 
 # ---- 序列长度 & 视频 ----
@@ -53,7 +53,8 @@ KL_COEF=0.1
 
 # ---- 任务采样权重 ----
 # temporal_seg 占 40%, 4 种代理任务各占 15%
-TASK_WEIGHTS='{"temporal_seg":0.40,"add":0.15,"delete":0.15,"replace":0.15,"sort":0.15}'
+# TASK_WEIGHTS='{"temporal_seg":0.40,"add":0.15,"delete":0.15,"replace":0.15,"sort":0.15}'
+TASK_WEIGHTS='{"add":0.5,"replace":0.5}'
 
 # ---- Reward (统一多任务 reward 函数) ----
 REWARD_FUNCTION="verl/reward_function/mixed_proxy_reward.py:compute_score"
@@ -96,7 +97,7 @@ python3 -m verl.trainer.main \
     worker.rollout.temperature=0.7 \
     worker.rollout.top_p=0.9 \
     worker.rollout.tensor_parallel_size="${TP_SIZE}" \
-    worker.rollout.gpu_memory_utilization=0.5 \
+    worker.rollout.gpu_memory_utilization=0.4 \
     worker.reward.reward_function="${REWARD_FUNCTION}" \
     worker.reward.reward_type=batch \
     trainer.project_name="${project_name}" \
@@ -104,9 +105,9 @@ python3 -m verl.trainer.main \
     trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \
     trainer.nnodes="${NNODES}" \
     trainer.total_epochs=1 \
-    trainer.val_freq=100 \
+    trainer.val_freq=10 \
     trainer.val_generations_to_log=4 \
-    trainer.save_freq=50 \
+    trainer.save_freq=20 \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="/m2v_intern/xuboshen/zgw/RL-Models/${exp_name}" \
     data.val_batch_size=8

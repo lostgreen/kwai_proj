@@ -27,7 +27,7 @@ python proxy_data/build_text_option_proxy.py \
   --shuffle \
   --min-context 3 \
   --max-context 4 \
-    --replace-context-len 5 \
+  --replace-context-len 5 \
   --validate-clips \
   --duration-tol 1.5
 """
