@@ -390,11 +390,29 @@ function enterStep(step,taskCounts){
 }
 async function loadGroups(){
   const task=document.getElementById('sidebarTask').value;
-  const res=await api.groups(curStep,task);
-  if(!res.ok){document.getElementById('groupList').innerHTML='<div style="padding:12px;color:var(--danger);font-size:12px">加载失败</div>';return;}
-  curStepGroups=res.groups||[];
-  renderGroupList(curStepGroups);
-  if(curStepGroups.length) selectGroup(curStepGroups[0].uid);
+
+  // Try preloaded data first (works even when API proxy blocks requests)
+  const pre=window.__PRELOADED__;
+  if(pre&&pre.all_groups){
+    let gs=pre.all_groups;
+    if(curStep!=null) gs=gs.filter(g=>g.step==curStep);
+    if(task&&task!='all') gs=gs.filter(g=>g.problem_type==task);
+    curStepGroups=gs;
+    renderGroupList(curStepGroups);
+    if(curStepGroups.length) selectGroup(curStepGroups[0].uid);
+    return;
+  }
+
+  // Fallback: API call
+  try{
+    const res=await api.groups(curStep,task);
+    if(!res.ok){document.getElementById('groupList').innerHTML='<div style="padding:12px;color:var(--danger);font-size:12px">加载失败</div>';return;}
+    curStepGroups=res.groups||[];
+    renderGroupList(curStepGroups);
+    if(curStepGroups.length) selectGroup(curStepGroups[0].uid);
+  }catch(e){
+    document.getElementById('groupList').innerHTML='<div style="padding:12px;color:var(--danger);font-size:12px">加载失败: '+e.message+'</div>';
+  }
 }
 function filterGroups(){loadGroups();}
 function renderGroupList(gs){
@@ -430,11 +448,22 @@ function selectGroup(uid){
 async function renderGroup(uid){
   const main=document.getElementById('groupMain');
   main.innerHTML='<div class="card" style="padding:20px;text-align:center"><span class="spin"></span> 加载中…</div>';
-  let res;
-  try{ res=await api.group(uid,30); }
-  catch(e){main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;}
-  if(!res.ok){main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">'+res.error+'</div>';return;}
-  const g=res.group;
+
+  let g;
+  // Try preloaded data first
+  const pre=window.__PRELOADED__;
+  if(pre&&pre.all_details&&pre.all_details[uid]){
+    g=pre.all_details[uid];
+  } else {
+    // Fallback: API call
+    try{
+      const res=await api.group(uid,30);
+      if(!res.ok){main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">'+(res.error||'加载失败')+'</div>';return;}
+      g=res.group;
+    }catch(e){
+      main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
+    }
+  }
   const frames=g.frame_strip||[];
   const nF=frames.length;
   const maxT=Number(g.timeline_max_t)||nF||60;

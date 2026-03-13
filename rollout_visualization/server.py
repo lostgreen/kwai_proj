@@ -587,18 +587,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         content = file_path.read_bytes()
 
-        # Inject pre-loaded data into index.html so it works without API calls
+        # Inject ALL pre-loaded data into index.html so the dashboard works
+        # fully offline (no API calls needed except for video frame strips).
         if file_path.name == "index.html" and self.store and self.store.rollout_dir:
+            all_groups_list = self.store.query_groups(step=None, task=None, query=None, limit=5000)
+            all_group_details = {}
+            for uid in self.store.group_order:
+                try:
+                    detail = self.store.get_group_detail(uid, max_frames=30)
+                    all_group_details[uid] = detail
+                except Exception:
+                    pass
             preload = {
                 "summary": self.store.summary(),
                 "steps": self.store.get_steps_summary(),
+                "all_groups": all_groups_list,
+                "all_details": all_group_details,
             }
             inject = (
                 b'<script>window.__PRELOADED__='
                 + json.dumps(preload, ensure_ascii=False).encode("utf-8")
                 + b';</script>\n'
             )
-            # Insert right before </head> or at the start of the file
             marker = b'</head>'
             if marker in content:
                 content = content.replace(marker, inject + marker, 1)
