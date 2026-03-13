@@ -99,11 +99,12 @@ class RolloutStore:
     def _resolve_local_path(self, path_text: str) -> Path:
         candidate = Path(path_text).expanduser()
         if not candidate.is_absolute():
+            # Relative paths are resolved against repo root; prevent traversal.
             candidate = (self.root / candidate).resolve()
+            if self.root not in candidate.parents and candidate != self.root:
+                raise ValueError(f"Relative path must stay inside repo root: {candidate}")
         else:
             candidate = candidate.resolve()
-        if self.root not in candidate.parents and candidate != self.root:
-            raise ValueError(f"Path must stay inside repo root: {candidate}")
         return candidate
 
     def load(self, rollout_dir_text: str, log_file_text: Optional[str]) -> dict[str, Any]:
