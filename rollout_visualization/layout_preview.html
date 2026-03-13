@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Rollout Insight Studio · Layout Preview</title>
+<style>
+:root{
+  --bg:#0a0f1f; --panel:rgba(17,24,39,0.74); --border:rgba(148,163,184,0.22);
+  --text:#e5e7eb; --muted:#9ca3af; --ok:#34d399; --warn:#f59e0b;
+  --danger:#fb7185; --blue:#60a5fa; --violet:#a78bfa; --r:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  background:radial-gradient(1200px 500px at 8% -10%,rgba(37,99,235,.35),transparent 70%),
+    radial-gradient(900px 450px at 92% 0%,rgba(16,185,129,.26),transparent 65%),var(--bg);
+  min-height:100vh}
+.page{display:none;padding:20px;max-width:1440px;margin:0 auto}
+.page.active{display:block}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);
+  backdrop-filter:blur(8px);box-shadow:0 8px 28px rgba(2,6,23,.24)}
+h1{font-size:26px;font-weight:700}h2{font-size:18px;font-weight:700}
+h3{font-size:13px;font-weight:600;color:#d1d5db}
+.muted{color:var(--muted);font-size:12px}
+.badge{font-size:11px;display:inline-block;border-radius:999px;padding:3px 9px;
+  border:1px solid rgba(148,163,184,.35);color:#dbeafe;white-space:nowrap}
+.chip{font-size:11px;display:inline-block;border-radius:6px;padding:2px 7px;
+  background:rgba(148,163,184,.12);color:#cbd5e1}
+.preview-banner{padding:8px 16px;margin-bottom:14px;
+  background:linear-gradient(90deg,rgba(251,113,133,.18),rgba(52,211,153,.18));
+  border:1px solid rgba(251,113,133,.3);border-radius:var(--r);font-size:12px;color:#fda4af}
+.preview-banner code{background:rgba(255,255,255,.08);padding:1px 6px;border-radius:4px;color:#93c5fd}
+.input,.btn,select{border-radius:10px;padding:9px 12px;font-size:13px;
+  border:1px solid rgba(148,163,184,.3);background:rgba(15,23,42,.7);color:var(--text)}
+.btn{border:none;font-weight:600;cursor:pointer;padding:9px 18px;color:#08131f;
+  background:linear-gradient(135deg,#7dd3fc,#34d399)}
+/* ── Overview ── */
+.stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:0 0 16px}
+.stat{padding:12px 14px}.stat .k{color:var(--muted);font-size:11px;margin-bottom:6px}
+.stat .v{font-size:22px;font-weight:700}
+.step-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;padding:0 0 20px}
+.step-card{padding:14px 16px;cursor:pointer;display:grid;gap:8px;transition:border-color .2s}
+.step-card:hover{border-color:rgba(96,165,250,.5)}
+.step-minibar{width:100%;height:5px;border-radius:999px;background:rgba(148,163,184,.18);overflow:hidden;display:flex;gap:1px}
+/* ── Chart ── */
+.chart-section{padding:16px 18px;margin-bottom:12px}
+.chart-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px}
+.chart-legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;user-select:none;transition:opacity .2s}
+.legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.chart-svg{display:block;background:rgba(2,6,23,.3);border:1px solid rgba(148,163,184,.18);border-radius:10px}
+.smooth-control{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.smooth-control input[type=range]{accent-color:#34d399;width:130px;cursor:pointer}
+/* ── Detail layout ── */
+.detail-layout{display:grid;grid-template-columns:290px 1fr;gap:12px}
+.detail-header{display:flex;align-items:center;gap:12px;padding:14px 18px;margin-bottom:12px;flex-wrap:wrap}
+.back-btn{background:rgba(148,163,184,.12);border:1px solid rgba(148,163,184,.25);
+  color:var(--text);border-radius:10px;padding:6px 14px;font-size:13px;cursor:pointer}
+.back-btn:hover{background:rgba(148,163,184,.22)}
+.group-sidebar{padding:14px;display:grid;gap:8px;align-content:start;max-height:calc(100vh - 120px);overflow:hidden}
+.group-list{overflow-y:auto;border:1px solid rgba(148,163,184,.18);border-radius:10px;max-height:560px}
+.group-row{padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(148,163,184,.1);display:grid;gap:3px}
+.group-row:hover{background:rgba(96,165,250,.1)}
+.group-row.active{background:rgba(52,211,153,.14)}
+.group-main{display:grid;gap:12px;align-content:start;overflow:hidden}
+/* ── Sync frame+timeline ── */
+.sync-wrap{padding:14px;display:grid;gap:0}
+.sync-outer{overflow-x:hidden;border-radius:8px}
+/* ── Frame items ── */
+.frame-item{flex-shrink:0;display:grid;gap:3px;width:88px}
+.frame-img{width:88px;height:50px;border-radius:7px;border:1.5px solid rgba(148,163,184,.2);
+  background:rgba(148,163,184,.1);display:flex;align-items:center;justify-content:center;
+  font-size:19px;position:relative;overflow:hidden}
+.frame-img.mod{border-color:rgba(245,158,11,.65);background:rgba(245,158,11,.08)}
+.frame-mod-badge{position:absolute;top:2px;right:2px;font-size:7px;padding:1px 3px;
+  background:rgba(245,158,11,.85);border-radius:3px;color:#08131f;font-weight:700;line-height:1.2}
+.frame-label{font-size:9px;color:var(--muted);text-align:center;line-height:1}
+.sync-slider-row{padding:4px 0 2px;display:flex;align-items:center;gap:8px}
+.sync-slider{flex:1;accent-color:#34d399;cursor:pointer}
+/* ── Timeline ── */
+.tl-label-col{width:64px;flex-shrink:0;display:flex;flex-direction:column;padding-right:6px}
+.tl-label-item{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);white-space:nowrap}
+.tl-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.tl-ruler-wrap{overflow-x:hidden}
+.tl-ruler{position:relative;height:18px}
+.tl-tick{position:absolute;top:0;transform:translateX(-50%);font-size:9px;color:var(--muted);white-space:nowrap}
+.tl-lanes-outer{overflow-x:hidden}
+.tl-lane-row{display:flex;align-items:center;height:22px;gap:0;margin-bottom:3px}
+.tl-lane{flex:1;position:relative;height:18px;border-radius:999px;background:rgba(148,163,184,.14);overflow:hidden}
+.seg-blk{position:absolute;top:2px;bottom:2px;border-radius:999px;opacity:.9}
+.tl-divider{height:1px;background:rgba(148,163,184,.12);margin:3px 0}
+/* ── Modification band ── */
+.mod-band{margin-top:8px;padding:7px 12px;border-radius:8px;
+  background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);
+  display:flex;align-items:center;gap:10px;font-size:11px;flex-wrap:wrap}
+.mod-band-title{color:#fbbf24;font-weight:700}
+.mod-timeline{flex:1;min-width:120px;height:8px;background:rgba(148,163,184,.15);border-radius:999px;position:relative}
+.mod-timeline-seg{position:absolute;top:0;bottom:0;background:rgba(245,158,11,.6);border-radius:999px}
+/* ── Sort ── */
+.sort-rollout-panel{padding:10px 0;border-bottom:1px solid rgba(148,163,184,.1)}
+.sort-rollout-panel:last-child{border-bottom:none}
+.sort-rollout-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.sort-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px}
+.sort-clip{border-radius:10px;border:2px solid transparent;background:rgba(2,6,23,.4);overflow:hidden}
+.sort-clip-img{width:100%;aspect-ratio:16/9;background:rgba(148,163,184,.1);
+  display:flex;align-items:center;justify-content:center;font-size:22px}
+.sort-clip-meta{padding:3px 5px;display:flex;justify-content:space-between;align-items:center;font-size:10px}
+.sort-clip-delta{font-size:9px;padding:1px 4px;border-radius:4px;font-weight:600}
+.sort-ok{border-color:rgba(52,211,153,.6)}.sort-ok .sort-clip-delta{background:rgba(52,211,153,.2);color:#34d399}
+.sort-d1{border-color:rgba(245,158,11,.6)}.sort-d1 .sort-clip-delta{background:rgba(245,158,11,.2);color:#f59e0b}
+.sort-d2{border-color:rgba(251,113,133,.55)}.sort-d2 .sort-clip-delta{background:rgba(251,113,133,.2);color:#fb7185}
+/* ── Choice ── */
+.choice-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:8px}
+.choice-card{border-radius:10px;border:2px solid rgba(148,163,184,.22);background:rgba(2,6,23,.4);overflow:hidden}
+.choice-card.c-pred{border-color:rgba(96,165,250,.7)}
+.choice-card.c-gt{border-color:rgba(52,211,153,.7)}
+.choice-card.c-both{border-color:rgba(167,139,250,.8)}
+.choice-thumb{width:100%;aspect-ratio:16/9;background:rgba(148,163,184,.08);
+  display:flex;align-items:center;justify-content:center;font-size:28px}
+.choice-foot{padding:5px 8px;display:flex;justify-content:space-between;align-items:center;font-size:11px;gap:4px}
+.choice-text-grid{display:grid;gap:7px}
+.choice-text-card{border-radius:10px;border:2px solid rgba(148,163,184,.22);
+  background:rgba(2,6,23,.4);padding:10px 12px;display:grid;gap:4px}
+.choice-text-card.c-gt{border-color:rgba(52,211,153,.7)}
+.choice-text-card.c-pred{border-color:rgba(96,165,250,.7)}
+/* ── Misc ── */
+.mono{font-family:"JetBrains Mono","Fira Code",monospace;font-size:11px;line-height:1.45;
+  white-space:pre-wrap;word-break:break-word;padding:8px 10px;
+  background:rgba(2,6,23,.38);border-radius:8px;border:1px solid rgba(148,163,184,.18);
+  max-height:90px;overflow-y:auto;color:#94a3b8;margin-top:6px}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:rgba(148,163,184,.25);border-radius:999px}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ PAGE 1: OVERVIEW ═══════════════ -->
+<div id="pg-overview" class="page active">
+  <div class="preview-banner">
+    🖼 <strong>布局预览（静态 mock）</strong> — 点击 Step 卡片进入详情页；实际后端运行
+    <code>bash rollout_visualization/run.sh</code>
+  </div>
+  <div class="card" style="padding:20px;margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px">
+      <div>
+        <h1>Rollout Insight Studio</h1>
+        <p class="muted" style="margin-top:4px">多任务 RL 训练 rollout 可视化分析平台</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input class="input" style="width:310px" value="checkpoints/qwen3_vl_mixed_proxy_training/rollouts"/>
+        <button class="btn">加载数据</button>
+      </div>
+    </div>
+    <p class="muted" style="font-size:12px;color:#93c5fd;margin-top:8px">✓ 已加载：160 groups / 1280 samples / 50 steps</p>
+  </div>
+
+  <div class="stats-row">
+    <article class="stat card"><div class="k">Groups</div><div class="v" style="color:var(--blue)">160</div></article>
+    <article class="stat card"><div class="k">Samples</div><div class="v">1280</div></article>
+    <article class="stat card"><div class="k">Steps</div><div class="v">50</div></article>
+    <article class="stat card"><div class="k">最新奖励</div><div class="v" style="color:var(--ok)" id="latestRew">—</div></article>
+    <article class="stat card"><div class="k">seg 占比</div><div class="v" style="color:var(--warn)">41.7%</div></article>
+  </div>
+
+  <!-- Reward curves -->
+  <div class="card chart-section" style="margin-bottom:12px">
+    <div class="chart-header">
+      <span style="font-size:13px;font-weight:600;color:#d1d5db">📈 奖励曲线</span>
+      <div class="smooth-control">
+        <span>Smooth</span>
+        <input type="range" id="smoothSlider" min="0" max="98" value="60"
+          oninput="onSmooth(this.value)"/>
+        <span id="smoothVal" style="min-width:28px;text-align:right">0.60</span>
+      </div>
+    </div>
+    <div class="chart-legend" id="chartLegend"></div>
+    <svg id="rewardChart" class="chart-svg" viewBox="0 0 820 180" style="width:100%;height:180px"></svg>
+  </div>
+
+  <div style="padding:0 0 8px">
+    <h2 style="color:#d1d5db;font-size:14px;font-weight:600">
+      按 Step 浏览 <span class="muted">— 点击进入详情</span>
+    </h2>
+  </div>
+  <div class="step-grid" id="stepGrid"></div>
+</div>
+
+<!-- ═══════════════ PAGE 2: DETAIL ═══════════════ -->
+<div id="pg-detail" class="page">
+  <div class="detail-header card">
+    <button class="back-btn" onclick="showPage('pg-overview')">← 返回总览</button>
+    <h2 style="margin:0" id="detailTitle">Step 12</h2>
+    <div id="detailBadges" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+  </div>
+  <div class="detail-layout">
+    <aside class="card group-sidebar">
+      <h3>Groups <span class="muted" id="groupCount"></span></h3>
+      <select class="input" style="width:100%" id="sidebarTask" onchange="filterGroups()">
+        <option value="all">全部任务</option>
+        <option>temporal_seg</option><option>add</option>
+        <option>delete</option><option>replace</option><option>sort</option>
+      </select>
+      <div class="group-list" id="groupList"></div>
+    </aside>
+    <div class="group-main" id="groupMain">
+      <div class="card" style="padding:40px;text-align:center;color:var(--muted)">← 从左侧选择一条样本</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════ CONSTANTS ══════════════════════ */
+const FW = 92, FG = 4, STRIDE = FW + FG;  // frame width, gap, stride
+const LABEL_W = 68;                         // label column width
+
+const TC = {temporal_seg:'#fb7185',add:'#60a5fa',delete:'#34d399',replace:'#f59e0b',sort:'#a78bfa'};
+const taskColor = t => TC[t.replace(/_video|_text/,'')] || '#94a3b8';
+const rewColor = r => r>=.7?'#34d399':r>=.5?'#f59e0b':'#fb7185';
+
+/* ══════════════════════ CHART DATA ══════════════════════ */
+function genCurve(base, slope, noise, seed=1) {
+  return Array.from({length:50}, (_,i) => {
+    const n = Math.sin(seed*7.3+i*1.7)*.5+.5;
+    return Math.min(1, Math.max(0, base + slope*(i/49) + Math.sin(i*.4)*.03 + (n-.5)*noise));
+  });
+}
+const CURVES = {
+  overall:     genCurve(.28,.40,.04,1),
+  temporal_seg:genCurve(.22,.48,.05,2),
+  add:         genCurve(.35,.42,.06,3),
+  'delete':    genCurve(.30,.38,.06,4),
+  replace:     genCurve(.25,.36,.07,5),
+  sort:        genCurve(.18,.55,.06,6),
+};
+const CCOLORS = {
+  overall:'#e5e7eb', temporal_seg:'#fb7185', add:'#60a5fa',
+  'delete':'#34d399', replace:'#f59e0b', sort:'#a78bfa',
+};
+let hidden = new Set();
+
+function ema(data, a) {
+  if(a<.01) return [...data];
+  let s=[data[0]];
+  for(let i=1;i<data.length;i++) s.push(a*s[i-1]+(1-a)*data[i]);
+  return s;
+}
+
+function drawChart(a=.6){
+  const svg = document.getElementById('rewardChart');
+  const W=820,H=180,PL=38,PR=10,PT=12,PB=28;
+  const pw=W-PL-PR, ph=H-PT-PB;
+  const xs=i=>PL+(i/49)*pw, ys=v=>PT+(1-v)*ph;
+  let d='';
+  // Grid
+  [0,.25,.5,.75,1].forEach(v=>{
+    const y=ys(v);
+    d+=`<line x1="${PL}" y1="${y}" x2="${PL+pw}" y2="${y}" stroke="rgba(148,163,184,.08)" stroke-width="1"/>`;
+    d+=`<text x="${PL-4}" y="${y+4}" text-anchor="end" font-size="9" fill="#6b7280">${v.toFixed(2)}</text>`;
+  });
+  [0,10,20,30,40,49].forEach(i=>{
+    const x=xs(i);
+    d+=`<text x="${x}" y="${H-8}" text-anchor="middle" font-size="9" fill="#6b7280">${i+1}</text>`;
+    d+=`<line x1="${x}" y1="${PT}" x2="${x}" y2="${H-PB}" stroke="rgba(148,163,184,.05)" stroke-width="1"/>`;
+  });
+  d+=`<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${H-PB}" stroke="rgba(148,163,184,.25)" stroke-width="1"/>`;
+  d+=`<line x1="${PL}" y1="${H-PB}" x2="${PL+pw}" y2="${H-PB}" stroke="rgba(148,163,184,.25)" stroke-width="1"/>`;
+  // Lines
+  Object.entries(CURVES).forEach(([name,data])=>{
+    if(hidden.has(name)) return;
+    const sm=ema(data,a);
+    const pts=sm.map((_,i)=>`${xs(i)},${ys(sm[i])}`).join(' ');
+    const isAll=name==='overall';
+    d+=`<polyline points="${pts}" fill="none" stroke="${CCOLORS[name]}" stroke-width="${isAll?2.5:1.5}" stroke-opacity="${isAll?.92:.7}"/>`;
+  });
+  svg.innerHTML=d;
+  // Update latest reward stat
+  const lat = document.getElementById('latestRew');
+  if(lat) lat.textContent = CURVES.overall[49].toFixed(3);
+}
+
+function buildLegend(){
+  document.getElementById('chartLegend').innerHTML =
+    Object.entries(CCOLORS).map(([n,c])=>`
+      <div class="legend-item" id="leg-${n}" onclick="toggleCurve('${n}')">
+        <div class="legend-dot" style="background:${c}"></div>
+        <span style="color:${c}">${n}</span>
+      </div>`).join('');
+}
+function toggleCurve(n){
+  hidden.has(n)?hidden.delete(n):hidden.add(n);
+  document.getElementById('leg-'+n).style.opacity=hidden.has(n)?.3:1;
+  drawChart(+document.getElementById('smoothSlider').value/100);
+}
+function onSmooth(v){
+  document.getElementById('smoothVal').textContent=(v/100).toFixed(2);
+  drawChart(v/100);
+}
+
+/* ══════════════════════ OVERVIEW ══════════════════════ */
+const STEPS = Array.from({length:50},(_,i)=>({
+  step:i+1,
+  mean_reward:+(0.29+(i/49)*.38+Math.sin(i*.5)*.04+Math.sin(i*7.3)*.02-.01),
+  tasks:{temporal_seg:2,sort:1,add:1},
+}));
+
+function buildOverview(){
+  const grid=document.getElementById('stepGrid');
+  STEPS.forEach(s=>{
+    const el=document.createElement('div');
+    el.className='card step-card';
+    const rc=rewColor(s.mean_reward);
+    const segs=Object.entries(s.tasks).map(([t,n])=>
+      `<div style="flex:${n};height:100%;background:${taskColor(t)}"></div>`
+    ).join('');
+    el.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:20px;font-weight:700;color:var(--blue)">Step ${s.step}</span>
+        <span style="font-size:15px;font-weight:700;color:${rc}">${s.mean_reward.toFixed(3)}</span>
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap">${
+        Object.keys(s.tasks).map(t=>
+          `<span class="badge" style="border-color:${taskColor(t)}66;font-size:10px">${t}</span>`
+        ).join('')}</div>
+      <div class="step-minibar">${segs}</div>
+      <div class="muted" style="font-size:11px">${s.tasks.temporal_seg*8+s.tasks.sort*8+s.tasks.add*8} samples</div>`;
+    el.onclick=()=>enterStep(s.step);
+    grid.appendChild(el);
+  });
+}
+
+/* ══════════════════════ MOCK DATA ══════════════════════ */
+const SEG_FRAMES = ['🍳','🔪','🥘','🧂','🔥','🍽','🥗','🫕','🍲','🥙',
+  '🔪','🧅','🥦','🫑','🫒','🧄','🌶','🫘','🫐','🍅',
+  '🍜','🫕','🥘','🍲','🍱','🥗','🥙','🫔','🌮','🍛'];
+
+const MOCK_GROUPS = [
+  {uid:'fbfad9c0',task:'temporal_seg', n:8,mean_reward:.623},
+  {uid:'c2e81b34',task:'temporal_seg', n:8,mean_reward:.379},
+  {uid:'a17fd290',task:'add_video',    n:8,mean_reward:.875},
+  {uid:'b3c44e12',task:'add_text',     n:8,mean_reward:.500},
+  {uid:'d9e0f781',task:'sort',         n:8,mean_reward:.756},
+  {uid:'e0a11c43',task:'replace_video',n:8,mean_reward:.625},
+];
+
+const MOCK = {
+  temporal_seg:{
+    frames:SEG_FRAMES, max_t:120,
+    gt_segs:[[0,18],[20,35],[37,52],[55,78],[80,105],[108,120]],
+    gt_text:'<events>\n[0,18] washing vegetables\n[20,35] cutting\n[37,52] frying\n[55,78] simmering\n[80,105] tasting & seasoning\n[108,120] plating\n</events>',
+    rollouts:[
+      {reward:.847,segs:[[0,17],[20,34],[38,53],[56,79],[82,106],[109,120]]},
+      {reward:.612,segs:[[0,22],[25,44],[48,70],[75,105],[108,120]]},
+      {reward:.124,segs:[[0,60],[65,120]]},
+    ]
+  },
+  add_video:{
+    frames:['🎬','🎬','🎬','🎬','🎬','🎬'],
+    options:[
+      {letter:'A',emoji:'🥦',text:'chopping broccoli'},
+      {letter:'B',emoji:'🧅',text:'slicing onions'},
+      {letter:'C',emoji:'🔥',text:'heating pan'},
+      {letter:'D',emoji:'🥘',text:'stir frying',gt:true,pred:true},
+    ],
+    rollouts:[
+      {reward:1.0,pred:'D',response:'<think>D is the next logical step after oil is added.</think>\n<answer>D</answer>'},
+      {reward:0.0,pred:'B',response:'<think>B might come next based on ingredients visible.</think>\n<answer>B</answer>'},
+    ]
+  },
+  add_text:{
+    frames:['🥦','🥦','🥦','🥦'],
+    options:[
+      {letter:'A',text:'Add 2 tablespoons of oil to the pan and heat over medium-high.'},
+      {letter:'B',text:'Stir the vegetables and cook for another 3 minutes.'},
+      {letter:'C',text:'Slice the onions into thin rings and set aside.',gt:true},
+      {letter:'D',text:'Pour the prepared sauce over the cooked noodles.'},
+    ],
+    rollouts:[
+      {reward:1.0,pred:'C',response:'<think>C matches the visual context best.</think>\n<answer>C</answer>'},
+      {reward:0.0,pred:'A',response:'<think>Maybe A since we see oil.</think>\n<answer>A</answer>'},
+    ]
+  },
+  sort:{
+    frames:['🎬','🎬','🎬','🎬','🎬','🎬','🎬','🎬'],
+    gt_order:[1,2,3,4,5],
+    clips:[
+      {id:1,emoji:'🧹',label:'cleaning'},
+      {id:2,emoji:'🔪',label:'chopping'},
+      {id:3,emoji:'🔥',label:'heating'},
+      {id:4,emoji:'🥘',label:'frying'},
+      {id:5,emoji:'🍽',label:'plating'},
+    ],
+    rollouts:[
+      {reward:.833,pred:[1,3,2,5,4],response:'<think>Prep then heat then chop → fry → plate seems logical.</think>\n<answer>13254</answer>'},
+      {reward:.500,pred:[1,2,5,3,4],response:'<think>Prep, chop, then plate then heat then fry?</think>\n<answer>12534</answer>'},
+      {reward:.167,pred:[3,1,4,2,5],response:'<think>The order is hard to determine from clips alone.</think>\n<answer>31425</answer>'},
+    ]
+  },
+  replace_video:{
+    frames:['🥦','🥦','🥦','🥦','🥦','🥦','🥦','🥦','🥦','🥦'],
+    max_t:100,
+    modification_seg:{start:40,end:62,description:'frying replaced with boiling'},
+    options:[
+      {letter:'A',emoji:'🍳',text:'frying eggs'},
+      {letter:'B',emoji:'🥘',text:'stir frying',gt:true},
+      {letter:'C',emoji:'🥗',text:'tossing salad'},
+      {letter:'D',emoji:'🫕',text:'simmering soup',pred:true},
+    ],
+    rollouts:[
+      {reward:0.0,pred:'D',response:'<think>D — simmering soup matches what I see in the clip.</think>\n<answer>D</answer>'},
+      {reward:1.0,pred:'B',response:'<think>B — clearly shows stir frying matching the edit.</think>\n<answer>B</answer>'},
+    ]
+  },
+};
+
+/* ══════════════════════ ROUTING ══════════════════════ */
+function showPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  window.scrollTo(0,0);
+}
+
+let curStep=null, curGroups=MOCK_GROUPS;
+function enterStep(step){
+  curStep=step;
+  document.getElementById('detailTitle').textContent=`Step ${step}`;
+  const info=STEPS.find(s=>s.step===step);
+  document.getElementById('detailBadges').innerHTML=Object.entries(info?.tasks||{}).map(([t,n])=>
+    `<span class="badge" style="border-color:${taskColor(t)}66">${t} ×${n}</span>`
+  ).join('');
+  curGroups=MOCK_GROUPS;
+  renderGroupList(curGroups);
+  showPage('pg-detail');
+  selectGroup(curGroups[0]);
+}
+function filterGroups(){
+  const v=document.getElementById('sidebarTask').value;
+  curGroups=v==='all'?MOCK_GROUPS:MOCK_GROUPS.filter(g=>g.task.startsWith(v));
+  renderGroupList(curGroups);
+  if(curGroups.length) selectGroup(curGroups[0]);
+}
+function renderGroupList(gs){
+  document.getElementById('groupCount').textContent=`(${gs.length})`;
+  const list=document.getElementById('groupList');
+  list.innerHTML='';
+  gs.forEach(g=>{
+    const el=document.createElement('div');
+    el.className='group-row'; el.id='gr-'+g.uid;
+    const rc=rewColor(g.mean_reward);
+    el.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px">
+        <span class="badge" style="border-color:${taskColor(g.task)}66">${g.task}</span>
+        <span style="font-weight:700;color:${rc}">${g.mean_reward.toFixed(3)}</span>
+      </div>
+      <div style="font-family:monospace;font-size:10px;color:var(--muted)">${g.uid}… n=${g.n}</div>`;
+    el.onclick=()=>selectGroup(g);
+    list.appendChild(el);
+  });
+}
+function selectGroup(g){
+  document.querySelectorAll('.group-row').forEach(e=>e.classList.remove('active'));
+  const r=document.getElementById('gr-'+g.uid);
+  if(r){r.classList.add('active');r.scrollIntoView({block:'nearest'});}
+  renderGroup(g);
+}
+
+/* ══════════════════════ GROUP MAIN ══════════════════════ */
+function renderGroup(g){
+  const data=MOCK[g.task]||MOCK.temporal_seg;
+  const uid=g.uid;
+  const frames=data.frames||[];
+  const nF=frames.length;
+  const maxT=data.max_t||nF;
+  const modSeg=data.modification_seg||null;
+  const innerW=nF*STRIDE+16;  // total scrollable width
+
+  // meta bar
+  let html=`
+    <div class="card" style="padding:10px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span class="badge" style="border-color:${taskColor(g.task)}66">${g.task}</span>
+      <span class="badge">step ${curStep}</span>
+      <span class="badge">uid ${uid}…</span>
+      <span class="badge">n=${g.n}</span>
+      <span class="badge" style="border-color:${g.mean_reward>=.7?'rgba(52,211,153,.5)':g.mean_reward>=.5?'rgba(245,158,11,.5)':'rgba(251,113,133,.5)'}">
+        μ reward ${g.mean_reward.toFixed(3)}
+      </span>
+    </div>`;
+
+  // Build frame HTML
+  function makeFrames(highlightMod){
+    return frames.map((f,i)=>{
+      const ts=Math.round(i*maxT/nF);
+      const inM=highlightMod&&modSeg&&ts>=modSeg.start&&ts<=modSeg.end;
+      return `<div class="frame-item">
+        <div class="frame-img${inM?' mod':''}">
+          ${f}${inM?'<span class="frame-mod-badge">mod</span>':''}
+        </div>
+        <div class="frame-label">${ts}s</div>
+      </div>`;
+    }).join('');
+  }
+
+  if(g.task==='temporal_seg'){
+    /* ─── Synchronized frame + timeline ─── */
+    const rollouts=data.rollouts||[];
+    const toLeft=t=>((t/maxT)*innerW).toFixed(1)+'px';
+    const toWidth=(s,e)=>(((e-s)/maxT)*innerW).toFixed(1)+'px';
+
+    // Ruler
+    const numTicks=8;
+    let ruler='';
+    for(let i=0;i<=numTicks;i++){
+      const t=Math.round(i/numTicks*maxT);
+      const px=(i/numTicks*innerW).toFixed(1);
+      ruler+=`<span class="tl-tick" style="left:${px}px">${t}s</span>`;
+    }
+
+    // GT lane segments
+    const gtSegs=(data.gt_segs||[]).map(([s,e])=>
+      `<div class="seg-blk" style="left:${toLeft(s)};width:${toWidth(s,e)};background:#f87171"></div>`
+    ).join('');
+
+    // Pred lane segments
+    const predLanes=rollouts.map((r,ri)=>{
+      const rc=rewColor(r.reward);
+      const segs=(r.segs||[]).map(([s,e])=>
+        `<div class="seg-blk" style="left:${toLeft(s)};width:${toWidth(s,e)};background:${rc}"></div>`
+      ).join('');
+      return `<div style="height:18px;position:relative;background:rgba(148,163,184,.14);border-radius:999px;overflow:hidden;margin-bottom:3px">${segs}</div>`;
+    }).join('');
+
+    // Label column items (heights must match tl rows below)
+    const labelItems=[
+      // spacer for frame track (~72px) + ruler (~26px) = ~98px
+      `<div style="height:98px"></div>`,
+      // GT label (22px row)
+      `<div class="tl-label-item" style="height:22px;color:#f87171">
+         <div class="tl-dot" style="background:#f87171"></div>GT
+       </div>`,
+      // divider spacer
+      `<div style="height:7px"></div>`,
+      // pred labels
+      ...rollouts.map((r,ri)=>{
+        const rc=rewColor(r.reward);
+        return `<div class="tl-label-item" style="height:21px;color:${rc}">
+          <div class="tl-dot" style="background:${rc}"></div>
+          R${ri+1} <span style="font-size:9px">${r.reward.toFixed(2)}</span>
+        </div>`;
+      }),
+    ].join('');
+
+    html+=`
+      <div class="card sync-wrap">
+        <h3 style="margin-bottom:10px">
+          📽 帧条 + ⏱ 时间轴
+          <span class="muted">（同步滚动，拖动滑块浏览 · ${maxT}s 视频）</span>
+        </h3>
+        <div style="display:flex;gap:0;align-items:flex-start">
+          <!-- Fixed label column -->
+          <div style="width:${LABEL_W}px;flex-shrink:0;display:flex;flex-direction:column">
+            ${labelItems}
+          </div>
+          <!-- Scrollable column: frames + ruler + GT + preds -->
+          <div style="flex:1;overflow:hidden" id="so-${uid}">
+            <div style="width:${innerW}px">
+              <!-- Frame track -->
+              <div style="display:flex;gap:${FG}px;padding:10px 8px">
+                ${makeFrames(false)}
+              </div>
+              <!-- Ruler -->
+              <div style="position:relative;height:18px;margin:4px 0 4px">
+                ${ruler}
+              </div>
+              <!-- GT lane -->
+              <div style="height:18px;position:relative;background:rgba(148,163,184,.14);border-radius:999px;overflow:hidden;margin-bottom:7px">
+                ${gtSegs}
+              </div>
+              <div style="height:1px;background:rgba(148,163,184,.12);margin-bottom:3px"></div>
+              <!-- Pred lanes -->
+              ${predLanes}
+            </div>
+          </div>
+        </div>
+        <!-- Shared slider (offset to align with scrollable column) -->
+        <div style="padding:6px 0 2px ${LABEL_W}px;display:flex;align-items:center;gap:8px">
+          <span style="font-size:10px;color:var(--muted)">0s</span>
+          <input type="range" class="sync-slider" min="0" max="100" value="0"
+            style="flex:1;accent-color:#34d399"
+            oninput="syncScroll('${uid}',this.value)"/>
+          <span style="font-size:10px;color:var(--muted)">${maxT}s</span>
+        </div>
+      </div>
+      <div class="card" style="padding:12px 14px">
+        <h3 style="margin-bottom:8px">📄 GT 文本</h3>
+        <pre class="mono">${data.gt_text||''}</pre>
+      </div>`;
+
+  } else {
+    /* ─── Standalone frame strip (other tasks) ─── */
+    let modBand='';
+    if(modSeg){
+      const p1=((modSeg.start/maxT)*100).toFixed(1);
+      const pw=(((modSeg.end-modSeg.start)/maxT)*100).toFixed(1);
+      modBand=`
+        <div class="mod-band">
+          <span class="mod-band-title">✂ 修改区域</span>
+          <span style="color:#fbbf24">${modSeg.start}s – ${modSeg.end}s</span>
+          <span style="color:var(--muted)">${modSeg.description||''}</span>
+          <div class="mod-timeline">
+            <div class="mod-timeline-seg" style="left:${p1}%;width:${pw}%"></div>
+          </div>
+        </div>`;
+    }
+    html+=`
+      <div class="card" style="padding:14px">
+        <h3 style="margin-bottom:10px">📽 输入帧条
+          <span class="muted">（1fps 采样）</span>
+        </h3>
+        <div style="overflow:hidden;border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.35)">
+          <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:auto;scrollbar-width:none">
+            ${makeFrames(true)}
+          </div>
+        </div>
+        ${modBand}
+        <div style="padding:4px 0 2px;display:flex;align-items:center;gap:8px">
+          <span style="font-size:10px;color:var(--muted)">0s</span>
+          <input type="range" style="flex:1;accent-color:#34d399" min="0" max="${nF-1}" value="0"
+            oninput="scrollFT('${uid}',this.value,${nF})"/>
+          <span style="font-size:10px;color:var(--muted)">${maxT}s</span>
+        </div>
+      </div>`;
+
+    if(g.task==='sort')  html+=renderSort(data);
+    else                 html+=renderChoice(g.task,data);
+  }
+
+  document.getElementById('groupMain').innerHTML=html;
+}
+
+/* ── Scroll helpers ── */
+function syncScroll(uid,val){
+  const o=document.getElementById('so-'+uid);
+  if(!o) return;
+  o.scrollLeft=(val/100)*(o.scrollWidth-o.clientWidth);
+}
+function scrollFT(uid,val,n){
+  const t=document.getElementById('ft-'+uid);
+  if(!t) return;
+  t.scrollLeft=(val/Math.max(1,n-1))*(t.scrollWidth-t.clientWidth);
+}
+
+/* ══════════════════════ SORT ══════════════════════ */
+function renderSort(data){
+  const gt=data.gt_order||[];
+  const clips=data.clips||[];
+  const panels=(data.rollouts||[]).map((r,ri)=>{
+    const rc=rewColor(r.reward);
+    const cards=(r.pred||gt).map((id,pi)=>{
+      const clip=clips.find(c=>c.id===id)||{id,emoji:'🎬',label:`#${id}`};
+      const gi=gt.indexOf(id);
+      const d=Math.abs(pi-gi);
+      const cls=d===0?'sort-ok':d===1?'sort-d1':'sort-d2';
+      const dl=d===0?'✓0':pi>gi?`+${pi-gi}`:`${pi-gi}`;
+      return `
+        <div class="sort-clip ${cls}">
+          <div class="sort-clip-img">${clip.emoji}</div>
+          <div class="sort-clip-meta">
+            <span style="font-size:10px;font-weight:700;color:var(--muted)">#${pi+1}→GT#${gi+1}</span>
+            <span class="sort-clip-delta">Δ${dl}</span>
+          </div>
+          <div style="padding:0 5px 5px;font-size:9px;color:var(--muted)">${clip.label}</div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="sort-rollout-panel">
+        <div class="sort-rollout-header">
+          <span class="badge">Rollout #${ri+1}</span>
+          <span style="color:${rc};font-weight:700;font-size:13px">${r.reward.toFixed(3)}</span>
+          <span class="chip">Pred: ${(r.pred||[]).join('')}</span>
+          <span class="chip">GT: ${gt.join('')}</span>
+        </div>
+        <div class="sort-grid">${cards}</div>
+        <pre class="mono">${r.response||''}</pre>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card" style="padding:14px">
+      <h3 style="margin-bottom:10px">🃏 Sort 可视化
+        <span class="muted">— 每条 rollout 按预测顺序排列，边框 = 位置偏移量</span>
+      </h3>
+      <div style="display:flex;gap:12px;margin-bottom:10px;font-size:11px">
+        <span><i style="display:inline-block;width:10px;height:10px;border:2px solid #34d399;border-radius:2px;margin-right:4px;vertical-align:middle"></i>正确 Δ0</span>
+        <span><i style="display:inline-block;width:10px;height:10px;border:2px solid #f59e0b;border-radius:2px;margin-right:4px;vertical-align:middle"></i>偏移 Δ1</span>
+        <span><i style="display:inline-block;width:10px;height:10px;border:2px solid #fb7185;border-radius:2px;margin-right:4px;vertical-align:middle"></i>偏移 Δ≥2</span>
+      </div>
+      ${panels}
+    </div>`;
+}
+
+/* ══════════════════════ CHOICE ══════════════════════ */
+function renderChoice(taskType,data){
+  const isVid=taskType.includes('video');
+  const opts=data.options||[];
+  let optHTML='';
+  if(isVid){
+    const cards=opts.map(o=>{
+      const cls=o.gt&&o.pred?'c-both':o.gt?'c-gt':o.pred?'c-pred':'';
+      const tag=o.gt&&o.pred?'✓ GT=Pred':o.gt?'✓ GT':o.pred?'← Pred':'';
+      return `
+        <div class="choice-card ${cls}">
+          <div class="choice-thumb">${o.emoji||'🎬'}</div>
+          <div class="choice-foot">
+            <b style="font-size:14px">${o.letter}</b>
+            <span style="font-size:10px;color:var(--muted);flex:1;padding:0 4px;overflow:hidden;text-overflow:ellipsis">${o.text}</span>
+            ${tag?`<span class="chip">${tag}</span>`:''}
+          </div>
+        </div>`;
+    }).join('');
+    optHTML=`<div class="choice-grid">${cards}</div>`;
+  } else {
+    const cards=opts.map(o=>{
+      const cls=o.gt?'c-gt':o.pred?'c-pred':'';
+      return `
+        <div class="choice-text-card ${cls}">
+          <div style="display:flex;gap:8px;align-items:center;font-size:12px">
+            <b style="font-size:16px">${o.letter}.</b>
+            ${o.gt?'<span class="chip">✓ GT</span>':''}
+            ${o.pred&&!o.gt?'<span class="chip" style="border:1px solid rgba(96,165,250,.5)">← Pred</span>':''}
+          </div>
+          <div style="font-size:12px;line-height:1.5;color:#cbd5e1">${o.text}</div>
+        </div>`;
+    }).join('');
+    optHTML=`<div class="choice-text-grid">${cards}</div>`;
+  }
+  const rolloutItems=(data.rollouts||[]).map((r,i)=>{
+    const rc=rewColor(r.reward);
+    return `
+      <div style="padding:8px 0;border-bottom:1px solid rgba(148,163,184,.1);display:grid;gap:4px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="badge">Rollout #${i+1}</span>
+          <span style="color:${rc};font-weight:700;font-size:13px">${r.reward.toFixed(3)}</span>
+          <span class="chip">Pred: ${r.pred}</span>
+        </div>
+        <pre class="mono">${r.response||''}</pre>
+      </div>`;
+  }).join('');
+  const typeLabel=isVid?'选项为视频片段':'选项为文本';
+  return `
+    <div class="card" style="padding:14px">
+      <h3 style="margin-bottom:8px">🎯 选项 <span class="muted">（${typeLabel}）</span></h3>
+      ${optHTML}
+    </div>
+    <div class="card" style="padding:14px">
+      <h3 style="margin-bottom:8px">🔄 Rollout 详情</h3>
+      ${rolloutItems}
+    </div>`;
+}
+
+/* ══════════════════════ INIT ══════════════════════ */
+buildOverview();
+buildLegend();
+requestAnimationFrame(()=>drawChart(.6));
+</script>
+</body>
+</html>
