@@ -80,6 +80,8 @@
    - 若能得到时长，则 `duration_sec >= --min-duration`
    - 文件必须真实存在
    - 如果指定 `--subset training` 或 `--subset validation`，只保留对应子集
+   - 会用 `ffprobe` 检查视频是否可读、是否存在 video stream
+   - 如果文件名/标注里的事件时长与实际视频时长相差超过 `--max-duration-diff-sec`，会直接过滤
 5. 打乱顺序后，按 `--max-samples` 截断。
 6. 如果指定 `--make-reverse`：
    - 用 `ffmpeg -vf reverse -an` 生成 `reverse`
@@ -109,6 +111,8 @@
 - 这里不再导出新的 forward 视频，`forward_video_path` 直接引用现有 `clip_path`。
 - 真正新增的离线素材主要是 `reverse`，这也是当前最需要补的部分。
 - 如果后面要做 `aot_t2v`，仍然可以额外打开 `--make-composite`。
+- 如果某个视频虽然存在，但 `ffprobe`/`ffmpeg` 读不出来，脚本现在会跳过该样本，不再让整批任务直接报错退出。
+- 可以通过 `--invalid-report-jsonl` 把被过滤/失败的样本和原因写出来，方便回查。
 
 ### 2. `annotate_event_captions.py`
 
@@ -215,11 +219,13 @@ pip install openai pillow decord
 python proxy_data/temporal_aot/build_event_aot_data.py \
   --clip-db-json /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/extracted_clips_database.json \
   --subset training \
-  --output-jsonl /path/to/aot_event_manifest.jsonl \
-  --reverse-dir /path/to/reverse_clips \
+  --output-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
+  --reverse-dir /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/reverse_clips \
+  --invalid-report-jsonl proxy_data/temporal_aot/data/aot_invalid_clips.jsonl \
   --make-reverse \
   --max-samples 1000 \
-  --min-duration 3
+  --min-duration 3 \
+  --max-duration-diff-sec 2.0
 ```
 
 如果只想先生成 manifest，不落 reverse：
@@ -256,6 +262,8 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
 - `--subset` 只在 `--clip-db-json` 模式下生效
 - `--max-samples` 控制最终参与 AoT 构造的 event clip 数量
 - `--min-duration` 用于过滤过短事件
+- `--max-duration-diff-sec` 用于过滤“文件名/标注时长”和“真实视频时长”差太多的 clip
+- `--invalid-report-jsonl` 会记录被过滤或 reverse/composite 生成失败的样本
 - 这一步已经完成路径级去重
 - 如果不加 `--make-reverse`，manifest 里的 `reverse_video_path` 会为空
 

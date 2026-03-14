@@ -35,6 +35,7 @@ import random
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 
 EVENT_RE = re.compile(r"(?P<video>.+)_event(?P<event>\d+)_(?P<start>\d+)_(?P<end>\d+)\.mp4$")
@@ -156,6 +157,130 @@ def load_event_clips_from_db(clip_db_json: str, min_duration: int, subset: str) 
     return items
 
 
+def probe_video(video_path: str) -> dict[str, Any]:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_streams",
+        "-show_format",
+        video_path,
+    ]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout or "{}")
+
+
+def parse_float(value: Any) -> float | None:
+    try:
+        if value in (None, "", "N/A"):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_video_stats(probe_data: dict[str, Any]) -> dict[str, Any]:
+    streams = probe_data.get("streams", [])
+    video_stream = None
+    for stream in streams:
+        if isinstance(stream, dict) and stream.get("codec_type") == "video":
+            video_stream = stream
+            break
+
+    if video_stream is None:
+        raise ValueError("no video stream found")
+
+    actual_duration = parse_float(video_stream.get("duration"))
+    if actual_duration is None:
+        actual_duration = parse_float(probe_data.get("format", {}).get("duration"))
+
+    nb_frames = video_stream.get("nb_frames")
+    if nb_frames not in (None, "", "N/A"):
+        try:
+            nb_frames = int(nb_frames)
+        except (TypeError, ValueError):
+            nb_frames = None
+    else:
+        nb_frames = None
+
+    return {
+        "actual_duration_sec": actual_duration,
+        "width": video_stream.get("width"),
+        "height": video_stream.get("height"),
+        "codec_name": video_stream.get("codec_name"),
+        "nb_frames": nb_frames,
+    }
+
+
+def validate_record(
+    record: dict,
+    min_duration: int,
+    max_duration_diff_sec: float,
+) -> tuple[bool, dict[str, Any]]:
+    video_path = record["video_path"]
+    if not os.path.exists(video_path):
+        return False, {"reason": "missing_file"}
+
+    try:
+        probe_data = probe_video(video_path)
+        stats = extract_video_stats(probe_data)
+    except subprocess.CalledProcessError as exc:
+        return False, {"reason": "ffprobe_failed", "detail": str(exc)}
+    except (json.JSONDecodeError, ValueError) as exc:
+        return False, {"reason": "invalid_video", "detail": str(exc)}
+
+    actual_duration = stats.get("actual_duration_sec")
+    if actual_duration is None:
+        return False, {"reason": "missing_duration"}
+    if actual_duration < float(min_duration):
+        return False, {"reason": "actual_duration_too_short", "actual_duration_sec": actual_duration}
+
+    expected_duration = record.get("duration_sec")
+    if expected_duration is not None:
+        duration_diff = abs(float(expected_duration) - actual_duration)
+        if duration_diff > max_duration_diff_sec:
+            return False, {
+                "reason": "duration_mismatch",
+                "expected_duration_sec": expected_duration,
+                "actual_duration_sec": actual_duration,
+                "duration_diff_sec": duration_diff,
+            }
+        stats["duration_diff_sec"] = duration_diff
+    else:
+        stats["duration_diff_sec"] = None
+
+    return True, stats
+
+
+def filter_valid_records(
+    records: list[dict],
+    min_duration: int,
+    max_duration_diff_sec: float,
+) -> tuple[list[dict], list[dict]]:
+    valid_records: list[dict] = []
+    skipped_records: list[dict] = []
+    for record in records:
+        is_valid, info = validate_record(
+            record,
+            min_duration=min_duration,
+            max_duration_diff_sec=max_duration_diff_sec,
+        )
+        if not is_valid:
+            skipped_records.append(
+                {
+                    "clip_key": record.get("clip_key"),
+                    "video_path": record.get("video_path"),
+                    **info,
+                }
+            )
+            continue
+        record.update(info)
+        valid_records.append(record)
+    return valid_records, skipped_records
+
+
 def run_ffmpeg(cmd: list[str], dry_run: bool) -> None:
     if dry_run:
         print("[DRY RUN]", " ".join(cmd))
@@ -220,10 +345,17 @@ def main() -> None:
     parser.add_argument("--output-jsonl", required=True, help="Output manifest JSONL")
     parser.add_argument("--max-samples", type=int, default=0, help="Max number of unique event clips to keep (0 = all)")
     parser.add_argument("--min-duration", type=int, default=3, help="Minimum event clip duration in seconds")
+    parser.add_argument(
+        "--max-duration-diff-sec",
+        type=float,
+        default=2.0,
+        help="Max allowed diff between metadata duration and probed video duration",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
     parser.add_argument("--subset", default="", help="Optional subset filter for clip DB input, e.g. training or validation")
     parser.add_argument("--reverse-dir", default="", help="Directory to save reversed clips")
     parser.add_argument("--composite-dir", default="", help="Directory to save T2V composite clips")
+    parser.add_argument("--invalid-report-jsonl", default="", help="Optional JSONL path to save skipped invalid clips")
     parser.add_argument("--black-video", default="", help="Reusable black screen clip path")
     parser.add_argument("--black-gap-sec", type=float, default=2.0, help="Black gap duration for T2V composite")
     parser.add_argument("--make-reverse", action="store_true", help="Export reversed clips with ffmpeg")
@@ -243,6 +375,11 @@ def main() -> None:
         )
     else:
         records = load_unique_event_clips(args.input_jsonl, min_duration=args.min_duration)
+    records, skipped_records = filter_valid_records(
+        records,
+        min_duration=args.min_duration,
+        max_duration_diff_sec=args.max_duration_diff_sec,
+    )
     random.shuffle(records)
     if args.max_samples > 0:
         records = records[: args.max_samples]
@@ -255,6 +392,7 @@ def main() -> None:
         if args.dry_run or not os.path.exists(black_video_path):
             build_black_clip(black_video_path, duration_sec=args.black_gap_sec, dry_run=args.dry_run)
 
+    written_count = 0
     os.makedirs(os.path.dirname(args.output_jsonl) or ".", exist_ok=True)
     with open(args.output_jsonl, "w", encoding="utf-8") as out:
         for record in records:
@@ -263,23 +401,34 @@ def main() -> None:
             reverse_path = ""
             composite_path = ""
 
-            if args.make_reverse:
-                if not args.reverse_dir:
-                    raise ValueError("--reverse-dir is required when --make-reverse is set")
-                reverse_path = os.path.join(args.reverse_dir, f"{clip_key}_rev.mp4")
-                if args.dry_run or not os.path.exists(reverse_path):
-                    build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
-
-            if args.make_composite:
-                if not reverse_path:
+            try:
+                if args.make_reverse:
                     if not args.reverse_dir:
-                        raise ValueError("--reverse-dir is required to build composite clips")
+                        raise ValueError("--reverse-dir is required when --make-reverse is set")
                     reverse_path = os.path.join(args.reverse_dir, f"{clip_key}_rev.mp4")
                     if args.dry_run or not os.path.exists(reverse_path):
                         build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
-                composite_path = os.path.join(args.composite_dir, f"{clip_key}_t2v.mp4")
-                if args.dry_run or not os.path.exists(composite_path):
-                    build_composite_clip(forward_path, black_video_path, reverse_path, composite_path, dry_run=args.dry_run)
+
+                if args.make_composite:
+                    if not reverse_path:
+                        if not args.reverse_dir:
+                            raise ValueError("--reverse-dir is required to build composite clips")
+                        reverse_path = os.path.join(args.reverse_dir, f"{clip_key}_rev.mp4")
+                        if args.dry_run or not os.path.exists(reverse_path):
+                            build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
+                    composite_path = os.path.join(args.composite_dir, f"{clip_key}_t2v.mp4")
+                    if args.dry_run or not os.path.exists(composite_path):
+                        build_composite_clip(forward_path, black_video_path, reverse_path, composite_path, dry_run=args.dry_run)
+            except subprocess.CalledProcessError as exc:
+                skipped_records.append(
+                    {
+                        "clip_key": clip_key,
+                        "video_path": forward_path,
+                        "reason": "ffmpeg_generation_failed",
+                        "detail": str(exc),
+                    }
+                )
+                continue
 
             out_record = {
                 **record,
@@ -289,8 +438,18 @@ def main() -> None:
                 "black_gap_sec": args.black_gap_sec if args.make_composite else 0.0,
             }
             out.write(json.dumps(out_record, ensure_ascii=False) + "\n")
+            written_count += 1
 
-    print(f"Wrote {len(records)} records to {args.output_jsonl}")
+    if args.invalid_report_jsonl:
+        os.makedirs(os.path.dirname(args.invalid_report_jsonl) or ".", exist_ok=True)
+        with open(args.invalid_report_jsonl, "w", encoding="utf-8") as f:
+            for item in skipped_records:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    print(f"Wrote {written_count} records to {args.output_jsonl}")
+    print(f"Skipped {len(skipped_records)} invalid/failed records")
+    if args.invalid_report_jsonl:
+        print(f"Wrote invalid report to {args.invalid_report_jsonl}")
 
 
 if __name__ == "__main__":
