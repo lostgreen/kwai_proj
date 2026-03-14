@@ -44,7 +44,7 @@ MAX_PIXELS=49152
 MIN_PIXELS=3136
 
 # ---- 学习率 & 算法 ----
-LR=8e-7                 # 混合训练建议比单任务低 20~30%
+LR=5e-6                 # 混合训练建议比单任务低 20~30%
 ADV_ESTIMATOR=ema_grpo  # 使用 EMA-GRPO, 按 problem_type 分任务归一化
 
 # ---- KL 正则化 ----

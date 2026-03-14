@@ -98,7 +98,31 @@ def get_level1_prompt(clip_duration_sec: float) -> str:
 #     }
 #   ]
 # }
-_LEVEL2_BASE = "TODO: Level 2 activity-level annotation prompt — to be provided."
+_LEVEL2_BASE = """Identify the core, instructional steps that drive the task progression in the video. You need to extract specific, continuous action segments with clear start and end boundaries.
+
+For each step, provide:
+- step_id: Sequential ID.
+- parent_phase_id: The phase_id of the macro phase this step belongs to.
+- start_time / end_time: Precise boundary timestamps.
+- instruction: A description of the step using an imperative or verb-object structure (e.g., "Slice the onions into thin strips").
+- visual_keywords: 3 to 5 key visual elements or action cues present in the segment (output as an array of strings, e.g., ["knife", "onion", "cutting board", "slicing"]).
+
+Remember, temporal gaps between consecutive steps are allowed.
+
+Output JSON format example:
+{
+  "meso_steps": [
+    {
+      "step_id": 1,
+      "parent_phase_id": 1,
+      "start_time": "00:20",
+      "end_time": "00:45",
+      "instruction": "Slice the onion and set aside",
+      "visual_keywords": ["knife", "onion", "chopping"]
+    }
+  ]
+}
+"""
 
 
 def get_level2_prompt(
@@ -149,7 +173,32 @@ def get_level2_prompt(
 #     }
 #   ]
 # }
-_LEVEL3_BASE = "TODO: Level 3 step-level annotation prompt — to be provided."
+_LEVEL3_BASE = """Now, deep dive into the core steps (Level 2) and break them down into semantically complete sub-steps or key state chunks (typically lasting 5-15 seconds).
+Ignore micro body movements. Focus strictly on continuous operation units that result in a substantial, visually contrastive change in the state of the core target object.
+
+For each key state chunk, provide:
+- chunk_id: Sequential ID.
+- parent_step_id: The step_id of the core step this chunk belongs to.
+- start_time / end_time: Timestamps for this operation unit.
+- sub_action: A brief description of the sub-step (e.g., "Continuously chop the onion and push it into the bowl").
+- pre_state: The explicit visual state of the target object BEFORE the operation begins (e.g., "Halved onions resting on the cutting board").
+- post_state: The explicit visual state of the target object AFTER the operation concludes (e.g., "Onions are fully minced and transferred into a bowl").
+
+Output JSON format example:
+{
+  "key_state_chunks": [
+    {
+      "chunk_id": 1,
+      "parent_step_id": 1,
+      "start_time": "00:22",
+      "end_time": "00:35",
+      "sub_action": "Mince onion and transfer",
+      "pre_state": "Halved onions resting on the cutting board",
+      "post_state": "Onions are fully minced and transferred into a bowl"
+    }
+  ]
+}
+"""
 
 
 def get_level3_prompt(

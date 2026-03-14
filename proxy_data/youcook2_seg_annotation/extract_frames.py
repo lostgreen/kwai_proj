@@ -3,12 +3,12 @@
 extract_frames.py — Extract 1fps frames from YouCook2 windowed clips using ffmpeg.
 
 Usage:
-    python extract_frames.py \
+    python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/extract_frames.py \
         --jsonl proxy_data/youcook2_train_easyr1.jsonl \
-        --video-dir /path/to/Youcook2_windowed \
-        --output-dir proxy_data/youcook2_seg_annotation/frames \
-        [--workers 8] \
-        [--limit 100]
+        --video-dir /m2v_intern/xuboshen/zgw/data/Youcook2_windowed \
+        --output-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames \
+        --workers 8 \
+        --limit 1000
 
 Output layout:
     frames/
