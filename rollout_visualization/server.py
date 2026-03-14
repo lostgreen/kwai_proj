@@ -23,6 +23,18 @@ _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg"}
 _CHOICE_TASKS = {"add", "delete", "replace", "aot_v2t", "aot_t2v"}
 
 
+def _phase_rank(phase: str) -> int:
+    return 0 if phase == "train" else 1
+
+
+def _make_step_key(phase: str, step: int) -> str:
+    return f"{phase}:{step}"
+
+
+def _format_step_label(phase: str, step: int) -> str:
+    return f"Val {step}" if phase == "val" else f"Step {step}"
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -119,7 +131,7 @@ class RolloutStore:
             if not log_file.exists():
                 raise FileNotFoundError(f"log_file not found: {log_file}")
 
-        rollout_files = sorted(rollout_dir.glob("step_*.jsonl"))
+        rollout_files = sorted(rollout_dir.glob("step_*.jsonl")) + sorted(rollout_dir.glob("val_step_*.jsonl"))
         if not rollout_files:
             rollout_files = sorted(rollout_dir.glob("*.jsonl"))
         if not rollout_files:
@@ -151,6 +163,7 @@ class RolloutStore:
                 self.groups.keys(),
                 key=lambda uid: (
                     self.groups[uid].get("step", 0),
+                    _phase_rank(str(self.groups[uid].get("phase", "train"))),
                     -self.groups[uid].get("mean_reward", 0.0),
                 ),
             )
@@ -158,6 +171,7 @@ class RolloutStore:
 
     def _consume_record(self, record: dict[str, Any]) -> None:
         step = int(record.get("step", 0))
+        phase = str(record.get("phase") or "train")
         uid = str(record.get("uid") or f"step-{step}-sample-{self.total_samples}")
         task = str(record.get("problem_type") or "unknown")
         reward = _safe_float(record.get("reward"), 0.0)
@@ -182,6 +196,9 @@ class RolloutStore:
             group = {
                 "uid": uid,
                 "step": step,
+                "phase": phase,
+                "step_key": _make_step_key(phase, step),
+                "step_label": _format_step_label(phase, step),
                 "problem_type": task,
                 "data_type": record.get("data_type"),
                 "prompt": str(record.get("prompt") or ""),
@@ -222,13 +239,30 @@ class RolloutStore:
         return sorted(points, key=lambda x: x["step"])
 
     def _build_curve_from_groups(self) -> list[dict[str, float]]:
-        step_map: dict[int, list[float]] = {}
+        step_map: dict[str, dict[str, Any]] = {}
         for group in self.groups.values():
-            step_map.setdefault(int(group["step"]), []).append(float(group["mean_reward"]))
+            step_key = str(group.get("step_key"))
+            if step_key not in step_map:
+                step_map[step_key] = {
+                    "step": int(group.get("step", 0)),
+                    "phase": str(group.get("phase", "train")),
+                    "step_label": str(group.get("step_label") or ""),
+                    "rewards": [],
+                }
+            step_map[step_key]["rewards"].append(float(group.get("mean_reward", 0)))
         points = []
-        for step, vals in step_map.items():
-            points.append({"step": float(step), "reward": sum(vals) / max(len(vals), 1)})
-        return sorted(points, key=lambda x: x["step"])
+        for step_key, info in step_map.items():
+            vals = info["rewards"]
+            points.append(
+                {
+                    "step": float(info["step"]),
+                    "phase": info["phase"],
+                    "step_key": step_key,
+                    "step_label": info["step_label"],
+                    "reward": sum(vals) / max(len(vals), 1),
+                }
+            )
+        return sorted(points, key=lambda x: (x["step"], _phase_rank(str(x.get("phase", "train")))))
 
     def _build_task_curves(self) -> dict[str, list[dict[str, float]]]:
         """Per-task mean-reward curve over training steps."""
@@ -247,20 +281,32 @@ class RolloutStore:
 
     def get_steps_summary(self) -> list[dict[str, Any]]:
         """Per-step summary: step, mean_reward, task_counts, n_groups."""
-        step_data: dict[int, dict[str, Any]] = {}
+        step_data: dict[str, dict[str, Any]] = {}
         for g in self.groups.values():
             step = int(g.get("step", 0))
-            if step not in step_data:
-                step_data[step] = {"step": step, "rewards": [], "tasks": {}, "n_groups": 0}
-            step_data[step]["rewards"].append(float(g.get("mean_reward", 0)))
+            phase = str(g.get("phase", "train"))
+            step_key = _make_step_key(phase, step)
+            if step_key not in step_data:
+                step_data[step_key] = {
+                    "step": step,
+                    "phase": phase,
+                    "step_key": step_key,
+                    "step_label": _format_step_label(phase, step),
+                    "rewards": [],
+                    "tasks": {},
+                    "n_groups": 0,
+                }
+            step_data[step_key]["rewards"].append(float(g.get("mean_reward", 0)))
             task = str(g.get("problem_type") or "unknown")
-            step_data[step]["tasks"][task] = step_data[step]["tasks"].get(task, 0) + 1
-            step_data[step]["n_groups"] += 1
+            step_data[step_key]["tasks"][task] = step_data[step_key]["tasks"].get(task, 0) + 1
+            step_data[step_key]["n_groups"] += 1
         result = []
-        for s in sorted(step_data):
-            d = step_data[s]
+        for _, d in sorted(step_data.items(), key=lambda item: (item[1]["step"], _phase_rank(item[1]["phase"]))):
             result.append({
-                "step": s,
+                "step": d["step"],
+                "phase": d["phase"],
+                "step_key": d["step_key"],
+                "step_label": d["step_label"],
                 "mean_reward": sum(d["rewards"]) / max(len(d["rewards"]), 1),
                 "n_groups": d["n_groups"],
                 "task_counts": d["tasks"],
@@ -315,7 +361,7 @@ class RolloutStore:
         return {
             "group_count": group_count,
             "sample_count": self.total_samples,
-            "step_count": len({g.get("step") for g in self.groups.values()}),
+            "step_count": len({g.get("step_key") for g in self.groups.values()}),
             "mean_group_reward": mean_reward,
             "temporal_ratio": temporal_count / max(group_count, 1),
             "task_counts": self.task_counts,
@@ -325,12 +371,21 @@ class RolloutStore:
             "log_file": str(self.log_file) if self.log_file else None,
         }
 
-    def query_groups(self, step: Optional[int], task: Optional[str], query: Optional[str], limit: int) -> list[dict[str, Any]]:
+    def query_groups(
+        self,
+        step: Optional[int],
+        step_key: Optional[str],
+        task: Optional[str],
+        query: Optional[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
         query_lc = (query or "").strip().lower()
         rows = []
         for uid in self.group_order:
             g = self.groups[uid]
-            if step is not None and int(g.get("step", -1)) != step:
+            if step_key is not None and str(g.get("step_key")) != step_key:
+                continue
+            if step_key is None and step is not None and int(g.get("step", -1)) != step:
                 continue
             if task and task != "all" and str(g.get("problem_type")) != task:
                 continue
@@ -342,6 +397,9 @@ class RolloutStore:
                 {
                     "uid": g["uid"],
                     "step": g["step"],
+                    "phase": g.get("phase"),
+                    "step_key": g.get("step_key"),
+                    "step_label": g.get("step_label"),
                     "problem_type": g["problem_type"],
                     "mean_reward": g["mean_reward"],
                     "n_rollouts": len(g["attempts"]),
@@ -710,11 +768,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/groups":
             q = parse_qs(parsed.query)
             step = q.get("step", [None])[0]
+            step_key = q.get("step_key", [None])[0]
             task = q.get("task", [None])[0]
             query_text = q.get("q", [None])[0]
             limit = int(q.get("limit", ["500"])[0])
             step_int = int(step) if step and step != "all" else None
-            rows = self.store.query_groups(step=step_int, task=task, query=query_text, limit=max(1, min(limit, 5000)))
+            rows = self.store.query_groups(
+                step=step_int,
+                step_key=step_key,
+                task=task,
+                query=query_text,
+                limit=max(1, min(limit, 5000)),
+            )
             self._send_json(HTTPStatus.OK, {"ok": True, "groups": rows})
             return
 
@@ -802,7 +867,7 @@ def main() -> None:
             print("  Warming frame cache (first run extracts frames, subsequent runs use disk cache)...")
             store.warm_frame_cache(max_frames=30)
             # Pre-build the injected HTML blob
-            all_groups_list = store.query_groups(step=None, task=None, query=None, limit=5000)
+            all_groups_list = store.query_groups(step=None, step_key=None, task=None, query=None, limit=5000)
             all_group_details = {}
             for uid in store.group_order:
                 try:

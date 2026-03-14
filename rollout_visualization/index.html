@@ -172,12 +172,12 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
   </div>
 
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <h2 style="color:#374151;font-size:14px;font-weight:600">按 Step 浏览 <span class="muted">— 点击进入详情</span></h2>
+    <h2 style="color:#374151;font-size:14px;font-weight:600">按 Batch 浏览 <span class="muted">— 点击进入详情</span></h2>
     <span id="stepCountLabel" class="muted"></span>
   </div>
   <div class="step-grid" id="stepGrid">
     <div class="card" style="padding:20px;text-align:center;color:var(--muted);grid-column:1/-1">
-      加载数据后将显示步骤列表
+      加载数据后将显示批次列表
     </div>
   </div>
 </div>
@@ -186,7 +186,7 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
 <div id="pg-detail" class="page">
   <div class="detail-header card">
     <button class="back-btn" onclick="showPage('pg-overview')">← 返回总览</button>
-    <h2 style="margin:0" id="detailTitle">Step —</h2>
+    <h2 style="margin:0" id="detailTitle">Batch —</h2>
     <div id="detailBadges" style="display:flex;gap:6px;flex-wrap:wrap"></div>
     <div id="detailLoader" style="display:none"><span class="spin"></span> 加载中…</div>
   </div>
@@ -222,7 +222,7 @@ const taskColor=t=>TC[t.replace(/_video|_text/,'')]||'#94a3b8';
 const rewColor=r=>r>=.7?'#34d399':r>=.5?'#f59e0b':'#fb7185';
 
 /* ═══════════════ STATE ═══════════════ */
-let curSummary=null, curSteps=[], curStepGroups=[], curStep=null;
+let curSummary=null, curSteps=[], curStepGroups=[], curStep=null, curStepKey=null, curStepLabel='';
 let chartData={}, hiddenCurves=new Set();
 
 /* ═══════════════ API ═══════════════ */
@@ -235,9 +235,10 @@ const api={
   },
   async state(){return(await fetch('/api/state')).json()},
   async steps(){return(await fetch('/api/steps')).json()},
-  async groups(step,task){
+  async groups(step,stepKey,task){
     const q=new URLSearchParams({limit:500});
     if(step!=null) q.set('step',step);
+    if(stepKey) q.set('step_key',stepKey);
     if(task&&task!='all') q.set('task',task);
     return(await fetch('/api/groups?'+q)).json();
   },
@@ -283,7 +284,7 @@ function applyState(summary){
 
   buildLegend();
   drawChart(+document.getElementById('smoothSlider').value/100);
-  setStatus(`✓ 已加载: ${summary.group_count} groups / ${summary.sample_count} samples / ${summary.step_count} steps`);
+  setStatus(`✓ 已加载: ${summary.group_count} groups / ${summary.sample_count} samples / ${summary.step_count} batches`);
   loadSteps();
 }
 
@@ -292,20 +293,23 @@ async function loadSteps(){
   const res=await api.steps();
   if(!res.ok) return;
   curSteps=res.steps||[];
-  document.getElementById('stepCountLabel').textContent=curSteps.length+' steps';
+  document.getElementById('stepCountLabel').textContent=curSteps.length+' batches';
   buildStepGrid();
 }
 function buildStepGrid(){
   const grid=document.getElementById('stepGrid');
   grid.innerHTML='';
   if(!curSteps.length){
-    grid.innerHTML='<div class="card" style="padding:20px;text-align:center;color:var(--muted);grid-column:1/-1">暂无步骤</div>';
+    grid.innerHTML='<div class="card" style="padding:20px;text-align:center;color:var(--muted);grid-column:1/-1">暂无批次</div>';
     return;
   }
   curSteps.forEach(s=>{
     const el=document.createElement('div');
     el.className='card step-card';
     const rc=rewColor(s.mean_reward);
+    const stepLabel=s.step_label||(`Step ${s.step}`);
+    const phaseLabel=s.phase==='val'?'Val':'Train';
+    const titleColor=s.phase==='val'?'#be185d':'var(--blue)';
     const segs=Object.entries(s.task_counts||{}).map(([t,n])=>
       `<div style="flex:${n};height:100%;background:${taskColor(t)}"></div>`
     ).join('');
@@ -314,13 +318,14 @@ function buildStepGrid(){
     ).join('');
     el.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:20px;font-weight:700;color:var(--blue)">Step ${s.step}</span>
+        <span style="font-size:20px;font-weight:700;color:${titleColor}">${stepLabel}</span>
         <span style="font-size:15px;font-weight:700;color:${rc}">${s.mean_reward.toFixed(3)}</span>
       </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap"><span class="chip">${phaseLabel}</span></div>
       <div style="display:flex;gap:4px;flex-wrap:wrap">${badges}</div>
       <div class="step-minibar">${segs}</div>
       <div class="muted" style="font-size:11px">${s.n_groups} groups</div>`;
-    el.onclick=()=>enterStep(s.step,s.task_counts);
+    el.onclick=()=>enterStep(s.step,s.step_key,stepLabel,s.task_counts);
     grid.appendChild(el);
   });
 }
@@ -394,10 +399,12 @@ function showPage(id){
   document.getElementById(id).classList.add('active');
   window.scrollTo(0,0);
 }
-function enterStep(step,taskCounts){
+function enterStep(step,stepKey,stepLabel,taskCounts){
   curStep=step;
+  curStepKey=stepKey||null;
+  curStepLabel=stepLabel||(`Step ${step}`);
   showPage('pg-detail');
-  document.getElementById('detailTitle').textContent='Step '+step;
+  document.getElementById('detailTitle').textContent=curStepLabel;
   document.getElementById('detailBadges').innerHTML=
     Object.entries(taskCounts||{}).map(([t,n])=>
       `<span class="badge" style="border-color:${taskColor(t)}66">${t} ×${n}</span>`
@@ -411,7 +418,8 @@ async function loadGroups(){
   const pre=window.__PRELOADED__;
   if(pre&&pre.all_groups){
     let gs=pre.all_groups;
-    if(curStep!=null) gs=gs.filter(g=>g.step==curStep);
+    if(curStepKey) gs=gs.filter(g=>g.step_key===curStepKey);
+    else if(curStep!=null) gs=gs.filter(g=>g.step==curStep);
     if(task&&task!='all') gs=gs.filter(g=>g.problem_type==task);
     curStepGroups=gs;
     renderGroupList(curStepGroups);
@@ -421,7 +429,7 @@ async function loadGroups(){
 
   // Fallback: API call
   try{
-    const res=await api.groups(curStep,task);
+    const res=await api.groups(curStep,curStepKey,task);
     if(!res.ok){document.getElementById('groupList').innerHTML='<div style="padding:12px;color:var(--danger);font-size:12px">加载失败</div>';return;}
     curStepGroups=res.groups||[];
     renderGroupList(curStepGroups);

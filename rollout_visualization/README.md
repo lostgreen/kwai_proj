@@ -2,7 +2,7 @@
 
 这个文件夹是完整可视化系统打包版，包含：
 
-- `server.py`：后端服务（读取 rollout、按 uid 聚合、生成帧条数据）
+- `server.py`：后端服务（读取 train/val rollout、按 uid 聚合、生成帧条数据）
 - `index.html`：前端页面（帧条 + GT/Pred 时间轴 + n 次 rollout 对比）
 
 ## 1) 一键启动（推荐）
@@ -42,6 +42,7 @@ python rollout_visualization/server.py --host 0.0.0.0 --port 8765 --static-dir r
 ## 4) 你会看到什么
 
 - 顶部：全局统计 + reward 趋势 + 任务分布
+- 总览批次卡片：训练批次显示为 `Step N`，验证批次显示为 `Val N`
 - 左侧：uid group 列表（step/task/search 过滤）
 - 右侧：
   - 输入帧条（优先显示 base64 帧）
@@ -67,6 +68,11 @@ python rollout_visualization/server.py --host 0.0.0.0 --port 8765 --static-dir r
 
 - 分组键：`uid`
 - 标注字段：`ground_truth`
+
+rollout 文件名支持：
+
+- `step_000123.jsonl`
+- `val_step_000123.jsonl`
 
 ## 6) 推荐的训练配置
 
