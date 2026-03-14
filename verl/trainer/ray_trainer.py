@@ -656,9 +656,25 @@ class RayPPOTrainer:
                 ]
                 kept_sample_idxs = [idx for idx, uid in enumerate(uids) if uid in kept_uids]
                 if len(kept_sample_idxs) == 0:
-                    raise RuntimeError("No sample is kept after filtering. Please check your data.")
+                    print(
+                        "[online_filtering] No sample kept after filtering "
+                        f"(try={num_try_make_batch}, filter_low={self.config.algorithm.filter_low}, "
+                        f"filter_high={self.config.algorithm.filter_high})."
+                    )
+                    metrics["debug/online_filtering_empty_group"] = (
+                        metrics.get("debug/online_filtering_empty_group", 0) + 1
+                    )
+                    max_try_make_batch = self.config.trainer.max_try_make_batch
+                    if max_try_make_batch <= 0 or num_try_make_batch < max_try_make_batch:
+                        print("[online_filtering] Skip this generated batch and retry.")
+                        continue
 
-                new_batch = new_batch[kept_sample_idxs]
+                    print(
+                        "[online_filtering] Reached max_try_make_batch; "
+                        "fallback to unfiltered batch for this step."
+                    )
+                else:
+                    new_batch = new_batch[kept_sample_idxs]
 
             batch = DataProto.concat([batch, new_batch]) if batch is not None else new_batch
             current_batch_size = len(batch) // self.config.worker.rollout.n

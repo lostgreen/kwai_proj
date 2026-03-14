@@ -56,10 +56,10 @@ LR=8e-7
 ADV_ESTIMATOR=ema_grpo
 
 # online_filtering: DAPO 动态过滤
-#   filter_low=0.01  → 剔除"全错组"（mean reward < 0.01）
-#   filter_high=0.99 → 剔除"全对组"（mean reward > 0.99）
-# 两类组 GRPO advantage 均为 0，产生无效梯度
-ONLINE_FILTERING=true
+# 说明：当前 proxy_train_text_options.jsonl 只有 add/replace，且 reward 是严格格式门控。
+# 训练初期模型经常不给 <answer> 标签，整组 reward 会全 0，导致所有 sample 被过滤掉。
+# 因此这里默认关闭 online_filtering，先让模型学会格式；稳定后再打开。
+ONLINE_FILTERING=false
 FILTER_LOW=0.01
 FILTER_HIGH=0.99
 
@@ -75,8 +75,8 @@ CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
 
 # ---- 任务采样权重 ----
-# temporal_seg 占 40%, 4 种代理任务各占 15%
-TASK_WEIGHTS='{"temporal_seg":0.40,"add":0.15,"delete":0.15,"replace":0.15,"sort":0.15}'
+# 当前数据只有 add / replace，两者各占 50%
+TASK_WEIGHTS='{"add":0.5,"replace":0.5}'
 
 # ---- Reward (统一多任务 reward 函数, 严格格式模式) ----
 REWARD_FUNCTION="verl/reward_function/mixed_proxy_reward.py:compute_score"
