@@ -63,12 +63,12 @@ from prompts import (
 # Frame helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def frames_to_base64(frame_dir: Path, max_frames: int = 64) -> list[str]:
+def frames_to_base64(frame_dir: Path, max_frames: int = 64) -> tuple[list[str], list[int]]:
     """
     Load JPEG frames from `frame_dir`, evenly sample up to `max_frames`.
 
     Returns:
-        (b64_list, indices) where b64_list are base64 data URLs and
+        (b64_list, indices) where b64_list are raw base64-encoded JPEG strings and
         indices are 1-based frame numbers (= seconds since clip start for 1fps).
     """
     frame_files = sorted(frame_dir.glob("*.jpg"))
@@ -82,7 +82,7 @@ def frames_to_base64(frame_dir: Path, max_frames: int = 64) -> list[str]:
     for fp in frame_files:
         with open(fp, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
-            b64_list.append(f"data:image/jpeg;base64,{b64}")
+            b64_list.append(b64)
         # filename is %04d.jpg (1-indexed); numeric value = second within clip
         try:
             indices.append(int(fp.stem))
@@ -174,6 +174,8 @@ def call_vlm(
 
     Uses response_format={"type": "json_object"} for structured output.
     API key is taken from `api_key` or NOVITA_API_KEY / OPENAI_API_KEY env vars.
+    Frame payloads follow the Novita example format:
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
     """
     try:
         from openai import OpenAI
@@ -190,7 +192,7 @@ def call_vlm(
         content.append({"type": "text", "text": f"[Frame {fid}]"})
         content.append({
             "type": "image_url",
-            "image_url": {"url": b64, "detail": "low"},
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
         })
 
     messages = [
