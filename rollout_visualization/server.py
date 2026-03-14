@@ -20,6 +20,7 @@ _SEGMENT_PATTERN = re.compile(r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg"}
+_CHOICE_TASKS = {"add", "delete", "replace", "aot_v2t", "aot_t2v"}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -363,7 +364,7 @@ class RolloutStore:
         # Detect [MISSING] position for replace/add/delete tasks
         detail["missing_clip_index"] = self._detect_missing_position(detail)
         task = str(detail.get("problem_type") or "")
-        if task in ("add", "delete", "replace"):
+        if task in _CHOICE_TASKS:
             detail["choice_meta"] = self._build_choice_meta(detail)
         elif task == "sort":
             detail["sort_meta"] = self._build_sort_meta(detail)

@@ -49,6 +49,7 @@ python rollout_visualization/server.py --host 0.0.0.0 --port 8765 --static-dir r
   - 同一 uid 的 `n` 次 rollout 对比
   - `temporal_seg`：每次 rollout 的 GT/Pred 时间轴
   - 其他任务：输入输出与 proxy 简析
+  - `aot_v2t` / `aot_t2v`：复用 choice 视图，展示帧条、A/B 选项、模型推理与最终答案
 
 ## 5) 数据兼容说明
 

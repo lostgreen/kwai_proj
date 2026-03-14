@@ -197,6 +197,7 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
         <option value="all">全部任务</option>
         <option>temporal_seg</option><option>add</option>
         <option>delete</option><option>replace</option><option>sort</option>
+        <option>aot_v2t</option><option>aot_t2v</option>
       </select>
       <div class="group-list" id="groupList">
         <div style="padding:14px;text-align:center;color:var(--muted);font-size:12px">暂无数据</div>
@@ -215,7 +216,7 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
 <script>
 /* ═══════════════ CONSTANTS ═══════════════ */
 const FW=104, FG=4, STRIDE=FW+FG, LABEL_W=68;
-const TC={temporal_seg:'#fb7185',add:'#60a5fa',delete:'#34d399',replace:'#f59e0b',sort:'#a78bfa'};
+const TC={temporal_seg:'#fb7185',add:'#60a5fa',delete:'#34d399',replace:'#f59e0b',sort:'#a78bfa',aot_v2t:'#0f766e',aot_t2v:'#be185d'};
 const CLIP_COLORS=['#60a5fa','#34d399','#f59e0b','#a78bfa','#fb7185','#38bdf8','#e879f9','#fbbf24'];
 const taskColor=t=>TC[t.replace(/_video|_text/,'')]||'#94a3b8';
 const rewColor=r=>r>=.7?'#34d399':r>=.5?'#f59e0b':'#fb7185';
@@ -326,7 +327,7 @@ function buildStepGrid(){
 
 /* ═══════════════ CHART ═══════════════ */
 const CCOLORS={overall:'#475569',temporal_seg:'#e11d48',add:'#2563eb',
-  'delete':'#059669',replace:'#d97706',sort:'#7c3aed'};
+  'delete':'#059669',replace:'#d97706',sort:'#7c3aed',aot_v2t:'#0f766e',aot_t2v:'#be185d'};
 function ema(data,a){
   if(a<.01)return[...data];
   let s=[data[0]];
