@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+from tqdm.auto import tqdm
 
 from prompts import SYSTEM_PROMPT, get_forward_reverse_caption_prompt
 
@@ -202,11 +203,14 @@ def main() -> None:
     pair_path = os.path.join(args.output_dir, "caption_pairs.jsonl")
 
     records = load_manifest(args.manifest_jsonl, max_samples=args.max_samples)
-    forward_items: list[dict] = []
-    reverse_items: list[dict] = []
-    pair_items: list[dict] = []
+    pair_count = 0
 
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+    with (
+        open(forward_path, "w", encoding="utf-8", buffering=1) as forward_file,
+        open(reverse_path, "w", encoding="utf-8", buffering=1) as reverse_file,
+        open(pair_path, "w", encoding="utf-8", buffering=1) as pair_file,
+        ThreadPoolExecutor(max_workers=args.workers) as executor,
+    ):
         futures = [
             executor.submit(
                 annotate_one,
@@ -221,22 +225,17 @@ def main() -> None:
             )
             for record in records
         ]
-        for future in as_completed(futures):
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Annotating captions", unit="clip"):
             f_item, r_item, p_item = future.result()
-            forward_items.append(f_item)
-            reverse_items.append(r_item)
-            pair_items.append(p_item)
+            forward_file.write(json.dumps(f_item, ensure_ascii=False) + "\n")
+            reverse_file.write(json.dumps(r_item, ensure_ascii=False) + "\n")
+            pair_file.write(json.dumps(p_item, ensure_ascii=False) + "\n")
+            forward_file.flush()
+            reverse_file.flush()
+            pair_file.flush()
+            pair_count += 1
 
-    for path, items in (
-        (forward_path, forward_items),
-        (reverse_path, reverse_items),
-        (pair_path, pair_items),
-    ):
-        with open(path, "w", encoding="utf-8") as f:
-            for item in items:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
-
-    print(f"Wrote {len(pair_items)} caption pairs to {pair_path}")
+    print(f"Wrote {pair_count} caption pairs to {pair_path}")
 
 
 if __name__ == "__main__":

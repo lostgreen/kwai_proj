@@ -136,6 +136,7 @@
 
 - 这个脚本本身不做去重，默认上游 manifest 已经去重。
 - 如果上游没有真的生成 reverse，脚本会回退到 forward 视频继续标注，所以建议至少先跑 `--make-reverse`。
+- 输出文件会按样本逐行写入；如果中途手动中断，已经完成的结果会保留在 JSONL 里。
 
 ### 3. `build_aot_mcq.py`
 
@@ -211,6 +212,7 @@ pip install openai pillow decord tqdm
 - `ffmpeg`
 - 一个 OpenAI-compatible VLM endpoint
 - `build_event_aot_data.py` 运行时会显示 `tqdm` 进度条
+- `annotate_event_captions.py` 运行时也会显示 `tqdm` 进度条
 
 ## 1. 生成 event manifest + reverse 素材
 
@@ -270,12 +272,26 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
 
 ## 2. 标注 forward / reverse caption
 
+先配置 API key。你可以二选一：
+
+```bash
+export NOVITA_API_KEY=your_novita_api_key
+```
+
+或者：
+
+```bash
+export OPENAI_API_KEY=your_api_key
+```
+
+如果不想配环境变量，也可以在命令行里直接传 `--api-key xxx`。
+
 ```bash
 python proxy_data/temporal_aot/annotate_event_captions.py \
-  --manifest-jsonl /path/to/aot_event_manifest.jsonl \
-  --output-dir /path/to/aot_annotations \
-  --api-base http://localhost:8000/v1 \
-  --model Qwen3-VL-7B \
+  --manifest-jsonl /home/xuboshen/zgw/EasyR1/proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
+  --output-dir /home/xuboshen/zgw/EasyR1/proxy_data/temporal_aot/data/aot_annotations \
+  --api-base https://api.novita.ai/v3/openai \
+  --model pa/gmn-2.5-pr \
   --workers 4 \
   --max-frames 16 \
   --max-samples 500
