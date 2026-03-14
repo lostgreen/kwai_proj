@@ -203,13 +203,14 @@
 ## 0. 依赖
 
 ```bash
-pip install openai pillow decord
+pip install openai pillow decord tqdm
 ```
 
 另外需要：
 
 - `ffmpeg`
 - 一个 OpenAI-compatible VLM endpoint
+- `build_event_aot_data.py` 运行时会显示 `tqdm` 进度条
 
 ## 1. 生成 event manifest + reverse 素材
 

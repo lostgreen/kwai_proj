@@ -37,6 +37,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from tqdm.auto import tqdm
+
 
 EVENT_RE = re.compile(r"(?P<video>.+)_event(?P<event>\d+)_(?P<start>\d+)_(?P<end>\d+)\.mp4$")
 
@@ -261,7 +263,7 @@ def filter_valid_records(
 ) -> tuple[list[dict], list[dict]]:
     valid_records: list[dict] = []
     skipped_records: list[dict] = []
-    for record in records:
+    for record in tqdm(records, desc="Validating clips", unit="clip"):
         is_valid, info = validate_record(
             record,
             min_duration=min_duration,
@@ -285,7 +287,15 @@ def run_ffmpeg(cmd: list[str], dry_run: bool) -> None:
     if dry_run:
         print("[DRY RUN]", " ".join(cmd))
         return
-    subprocess.run(cmd, check=True)
+    quiet_cmd = [
+        cmd[0],
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostats",
+        *cmd[1:],
+    ]
+    subprocess.run(quiet_cmd, check=True)
 
 
 def build_reverse_clip(src_path: str, dst_path: str, dry_run: bool) -> None:
@@ -395,7 +405,7 @@ def main() -> None:
     written_count = 0
     os.makedirs(os.path.dirname(args.output_jsonl) or ".", exist_ok=True)
     with open(args.output_jsonl, "w", encoding="utf-8") as out:
-        for record in records:
+        for record in tqdm(records, desc="Building AoT data", unit="clip"):
             clip_key = record["clip_key"]
             forward_path = record["video_path"]
             reverse_path = ""
