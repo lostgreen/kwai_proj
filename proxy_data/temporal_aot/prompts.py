@@ -10,7 +10,9 @@ These prompts are intentionally short and structured so they can be reused by:
 
 SYSTEM_PROMPT = (
     "You are a careful video understanding assistant. "
-    "Focus on temporal direction and describe what is visually happening. "
+    "Your job is to describe the visible temporal order of actions, not just the objects or the overall activity. "
+    "Pay close attention to what happens first, what changes in the middle, and what state appears at the end. "
+    "If the motion appears reversed or temporally unnatural, describe the observed reversed order instead of normalizing it into a plausible forward action. "
     "Do not speculate beyond the visible actions."
 )
 
@@ -21,14 +23,17 @@ def get_forward_reverse_caption_prompt() -> str:
     Intended to be used independently on forward and reversed versions.
     """
     return (
-        "Watch the video carefully and write one concise caption describing the action sequence.\n"
+        "Watch the video carefully and write one concise sentence describing the observed action sequence in time order.\n"
         "Requirements:\n"
-        "1. Mention the visible action order when it is clear.\n"
-        "2. Avoid generic descriptions like 'someone is cooking'.\n"
-        "3. Keep it to one sentence.\n"
-        "4. Output valid JSON with keys: caption, confidence.\n"
+        "1. Describe the sequence using explicit temporal order, such as 'first', 'then', 'finally', or equivalent phrasing.\n"
+        "2. Mention the visible start state and the visible end state when possible.\n"
+        "3. Focus on what is actually seen changing over time, not just the overall task category.\n"
+        "4. If the clip appears temporally reversed or visually unnatural, describe that observed reversed order instead of rewriting it as a normal forward action.\n"
+        "5. Avoid generic descriptions like 'someone is cooking'.\n"
+        "6. Keep it to one sentence.\n"
+        "7. Output valid JSON with keys: caption, confidence.\n"
         "Example:\n"
-        "{\"caption\": \"A person places cheese on bread and then puts the sandwich into a pan.\", "
+        "{\"caption\": \"First a person sprinkles seasoning into a bowl, then they stir the mixture, and finally they taste it with a finger.\", "
         "\"confidence\": 0.82}"
     )
 
