@@ -26,8 +26,8 @@ exp_name='qwen3_vl_mixed_proxy_dapo_8gpu'
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"   # 替换为你的模型路径
-TRAIN_FILE="proxy_data/mixed_train_cot.jsonl"              # CoT prompt 版本（选择题要求 <think>...<answer>）
-TEST_FILE="proxy_data/youcook2_val_small.jsonl"             # 验证集
+TRAIN_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/proxy_train_text_options.jsonl"   # CoT prompt 版本（选择题要求 <think>...<answer>）
+TEST_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/proxy_val_text_options.jsonl"       # 验证集
 IMAGE_DIR=""                                                 # 视频已使用绝对路径则留空
 
 # ---- 训练超参数 ----

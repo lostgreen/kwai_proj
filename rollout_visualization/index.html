@@ -771,7 +771,9 @@ function renderChoice(g){
   const prompt=String(g.prompt||'');
 
   // Parse text options from prompt A. B. C. D.
-  const optPat=/\b([A-D])\.\s+(.+?)(?=\n[A-D]\.|$)/gs;
+  // Stop at next option letter, blank line, or end-of-string so the last option
+  // does not swallow the CoT instruction block that follows.
+  const optPat=/\b([A-D])\.\s+(.+?)(?=\n[A-D]\.\s|\n\n|$)/gs;
   const parsedOpts=[];
   let m;
   while((m=optPat.exec(prompt))!==null) parsedOpts.push({letter:m[1],text:m[2].trim()});

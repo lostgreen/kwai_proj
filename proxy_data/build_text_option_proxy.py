@@ -279,25 +279,53 @@ def load_videos(anno_path, event_clips_root, min_events=4):
     return videos, sentence_pool_by_recipe
 
 
-def sample_negative_sentences(recipe_pool, global_pool, anchor_video_id, gt_sentence, k=3):
-    """优先同 recipe_type 采样负例文本，不够则从全局补齐。"""
-    cands = [x for x in recipe_pool if x[0] != anchor_video_id and x[2] != gt_sentence]
-    if len(cands) < k:
-        extra = [x for x in global_pool if x[0] != anchor_video_id and x[2] != gt_sentence]
-        cands.extend(extra)
+def sample_negative_sentences(sentence_pool_by_recipe, anchor_video_id,
+                              anchor_recipe_type, gt_sentence,
+                              same_video_other_sentences, k=3):
+    """
+    采样 k 个负例文本，混合两类干扰项以保证可区分性：
+      1. 从别的菜谱（不同 recipe_type）采样 1-2 个句子（容易区分的干扰项）
+      2. 从相同视频的其他事件采样剩余句子（较难但可区分的干扰项）
+    如果同视频其他事件不够，从同菜谱不同视频补齐。
+    """
+    n_cross = random.randint(1, min(2, k))
+    n_same = k - n_cross
 
-    # 去重（按句子）
-    uniq = []
-    seen = set()
-    for _, _, sent in cands:
-        if sent in seen:
+    used = {gt_sentence}
+    result = []
+
+    # ---- 1. 从不同菜谱采样 n_cross 个 ----
+    cross_cands = set()
+    for rt, pool in sentence_pool_by_recipe.items():
+        if rt == anchor_recipe_type:
             continue
-        seen.add(sent)
-        uniq.append(sent)
+        for _, _, sent in pool:
+            if sent not in used:
+                cross_cands.add(sent)
 
-    if len(uniq) < k:
+    if len(cross_cands) < n_cross:
         return None
-    return random.sample(uniq, k)
+
+    sampled_cross = random.sample(sorted(cross_cands), n_cross)
+    result.extend(sampled_cross)
+    used.update(sampled_cross)
+
+    # ---- 2. 从同视频其他事件采样 n_same 个（严格，不再回退到同菜谱其他视频） ----
+    same_vid_cands = []
+    seen_same_vid = set()
+    for s in same_video_other_sentences:
+        if s in used or s in seen_same_vid:
+            continue
+        seen_same_vid.add(s)
+        same_vid_cands.append(s)
+
+    if len(same_vid_cands) < n_same:
+        return None
+
+    sampled_same = random.sample(same_vid_cands, n_same)
+    result.extend(sampled_same)
+
+    return result
 
 
 def format_add_prompt(num_ctx, options, cot=True):
@@ -366,7 +394,7 @@ def format_replace_prompt(total_steps, missing_pos, options, cot=True):
     return "\n".join(lines)
 
 
-def build_add_sample(v, sentence_pool_by_recipe, global_pool, min_ctx=2, max_ctx=4, cot=True):
+def build_add_sample(v, sentence_pool_by_recipe, min_ctx=2, max_ctx=4, cot=True):
     events = v["events"]
     if len(events) < min_ctx + 1:
         return None
@@ -378,11 +406,16 @@ def build_add_sample(v, sentence_pool_by_recipe, global_pool, min_ctx=2, max_ctx
     ctx_events = events[start:start + ctx_len]
     gt_event = events[start + ctx_len]
 
+    # 同视频其他事件的句子（排除上下文和 gt）
+    used_ids = {ev["id"] for ev in ctx_events} | {gt_event["id"]}
+    same_video_other = [ev["sentence"] for ev in events if ev["id"] not in used_ids]
+
     negs = sample_negative_sentences(
-        recipe_pool=sentence_pool_by_recipe[v["recipe_type"]],
-        global_pool=global_pool,
+        sentence_pool_by_recipe=sentence_pool_by_recipe,
         anchor_video_id=v["video_id"],
+        anchor_recipe_type=v["recipe_type"],
         gt_sentence=gt_event["sentence"],
+        same_video_other_sentences=same_video_other,
         k=3,
     )
     if negs is None:
@@ -416,7 +449,7 @@ def build_add_sample(v, sentence_pool_by_recipe, global_pool, min_ctx=2, max_ctx
     }
 
 
-def build_replace_sample(v, sentence_pool_by_recipe, global_pool, seq_len=5, cot=True):
+def build_replace_sample(v, sentence_pool_by_recipe, seq_len=5, cot=True):
     events = v["events"]
     if len(events) < seq_len:
         return None
@@ -430,11 +463,16 @@ def build_replace_sample(v, sentence_pool_by_recipe, global_pool, seq_len=5, cot
     missing_pos = random.randint(1, seq_len - 2)
     gt_event = seq_events[missing_pos]
 
+    # 同视频其他事件的句子（排除序列中的所有事件）
+    seq_event_ids = {ev["id"] for ev in seq_events}
+    same_video_other = [ev["sentence"] for ev in events if ev["id"] not in seq_event_ids]
+
     negs = sample_negative_sentences(
-        recipe_pool=sentence_pool_by_recipe[v["recipe_type"]],
-        global_pool=global_pool,
+        sentence_pool_by_recipe=sentence_pool_by_recipe,
         anchor_video_id=v["video_id"],
+        anchor_recipe_type=v["recipe_type"],
         gt_sentence=gt_event["sentence"],
+        same_video_other_sentences=same_video_other,
         k=3,
     )
     if not negs:
@@ -548,10 +586,6 @@ def main():
     if not videos:
         raise RuntimeError("校验后无可用视频，请放宽过滤条件或检查 clip 根目录")
 
-    global_pool = []
-    for recipe_type in sentence_pool_by_recipe:
-        global_pool.extend(sentence_pool_by_recipe[recipe_type])
-
     samples = []
     stats = Counter()
     ctx_stats = Counter()
@@ -561,7 +595,6 @@ def main():
             s = build_add_sample(
                 v,
                 sentence_pool_by_recipe=sentence_pool_by_recipe,
-                global_pool=global_pool,
                 min_ctx=args.min_context,
                 max_ctx=args.max_context,
                 cot=not args.no_cot,
@@ -575,7 +608,6 @@ def main():
             s = build_replace_sample(
                 v,
                 sentence_pool_by_recipe=sentence_pool_by_recipe,
-                global_pool=global_pool,
                 seq_len=args.replace_context_len,
                 cot=not args.no_cot,
             )
