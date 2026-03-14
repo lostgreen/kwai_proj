@@ -56,12 +56,13 @@ LR=8e-7
 ADV_ESTIMATOR=ema_grpo
 
 # online_filtering: DAPO 动态过滤
-# 说明：当前 proxy_train_text_options.jsonl 只有 add/replace，且 reward 是严格格式门控。
-# 训练初期模型经常不给 <answer> 标签，整组 reward 会全 0，导致所有 sample 被过滤掉。
-# 因此这里默认关闭 online_filtering，先让模型学会格式；稳定后再打开。
-ONLINE_FILTERING=false
+# 过滤单位是“同一个 prompt 的 ROLLOUT_N 个回复”。
+# 仅当组均值满足 filter_low < mean(reward[filter_key]) < filter_high 时才参与更新。
+# 因此均值为 0.0 / 1.0 的退化组会被剔除；若连续多次都没有保留样本，则回退到未过滤 batch。
+ONLINE_FILTERING=true
 FILTER_LOW=0.01
 FILTER_HIGH=0.99
+MAX_TRY_MAKE_BATCH=10
 
 # DAPO: 关闭 KL 惩罚（允许模型大步探索新格式，不被 ref policy 约束）
 DISABLE_KL=true
@@ -132,7 +133,8 @@ python3 -m verl.trainer.main \
     trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \
     trainer.nnodes="${NNODES}" \
     trainer.total_epochs=1 \
-    trainer.val_freq=100 \
+    trainer.max_try_make_batch="${MAX_TRY_MAKE_BATCH}" \
+    trainer.val_freq=10 \
     trainer.val_generations_to_log=4 \
     trainer.save_freq=50 \
     trainer.logger="[file,tensorboard]" \
