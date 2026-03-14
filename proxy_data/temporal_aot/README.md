@@ -307,10 +307,10 @@ python proxy_data/temporal_aot/annotate_event_captions.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl /path/to/aot_event_manifest.jsonl \
-  --caption-pairs /path/to/aot_annotations/caption_pairs.jsonl \
-  --v2t-output /path/to/v2t_train.jsonl \
-  --t2v-output /path/to/t2v_train.jsonl \
+  --manifest-jsonl /home/xuboshen/zgw/EasyR1/proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
+  --caption-pairs /home/xuboshen/zgw/EasyR1/proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
+  --v2t-output /home/xuboshen/zgw/EasyR1/proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
+  --t2v-output /home/xuboshen/zgw/EasyR1/proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
   --max-samples 500 \
   --min-confidence 0.6
 ```
@@ -325,7 +325,39 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 - `problem_type = aot_v2t`
 - `problem_type = aot_t2v`
 
-## 4. 推荐启动顺序
+## 4. 混合 YouCook2 + AoT 训练/验证集
+
+如果你想把：
+
+- `proxy_data/youcook2_train_easyr1.jsonl`
+- `v2t_train.jsonl`
+- `t2v_train.jsonl`
+
+混成一个新的训练集/验证集，可以直接用：
+
+```bash
+python proxy_data/temporal_aot/mix_aot_with_youcook2.py \
+  --seg-jsonl proxy_data/youcook2_train_easyr1.jsonl \
+  --v2t-jsonl /path/to/v2t_train.jsonl \
+  --t2v-jsonl /path/to/t2v_train.jsonl \
+  --train-output proxy_data/temporal_aot/data/mixed_aot_train.jsonl \
+  --val-output proxy_data/temporal_aot/data/mixed_aot_val.jsonl \
+  --train-per-source 400 \
+  --val-per-source 30 \
+  --seed 42
+```
+
+默认逻辑：
+
+- `youcook2_train_easyr1.jsonl` 抽 400 条 train，30 条 val
+- `v2t_train.jsonl` 抽 400 条 train，30 条 val
+- `t2v_train.jsonl` 抽 400 条 train，30 条 val
+- 每个来源内部 train / val 不重叠
+- 最终再分别打乱，输出混合后的 train / val
+- 如果 `youcook2_train_easyr1.jsonl` 的 `problem_type` 为空，会自动补成 `temporal_seg`
+- 输出时会额外写入 `metadata.mix_source`，方便后续检查样本来源
+
+## 5. 推荐启动顺序
 
 1. 先直接用 `extracted_clips_database.json` 跑出一批 manifest
 2. 打开 `--make-reverse`，确认 reverse 视频可用
@@ -333,7 +365,7 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 4. 先构造 `V2T`
 5. 只有确认需要 `T2V` 时，再生成 composite
 
-## 5. 当前实现的注意点
+## 6. 当前实现的注意点
 
 1. `annotate_event_captions.py` 在缺少 `reverse_video_path` 时，会回退到 forward 视频继续标注。
 2. `build_aot_mcq.py` 只有在 manifest 存在 `composite_video_path` 时才会产出 `aot_t2v`。
