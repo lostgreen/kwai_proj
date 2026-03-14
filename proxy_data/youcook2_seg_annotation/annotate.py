@@ -48,8 +48,11 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
 
 from prompts import (
     SYSTEM_PROMPT,
@@ -63,27 +66,54 @@ from prompts import (
 # Frame helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def frames_to_base64(frame_dir: Path, max_frames: int = 64) -> tuple[list[str], list[int]]:
+def format_mmss(total_seconds: int) -> str:
+    minutes, seconds = divmod(max(0, int(total_seconds)), 60)
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def encode_frame_to_base64(frame_path: Path, resize_max_width: int = 0, jpeg_quality: int = 60) -> str:
+    with Image.open(frame_path) as img:
+        img = img.convert("RGB")
+        if resize_max_width > 0 and img.width > resize_max_width:
+            new_height = max(1, round(img.height * resize_max_width / img.width))
+            img = img.resize((resize_max_width, new_height), Image.Resampling.LANCZOS)
+
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG", quality=jpeg_quality, optimize=True)
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def frames_to_base64(
+    frame_dir: Path,
+    max_frames: int = 64,
+    sample_every: int = 1,
+    resize_max_width: int = 0,
+    jpeg_quality: int = 60,
+) -> tuple[list[str], list[int]]:
     """
-    Load JPEG frames from `frame_dir`, evenly sample up to `max_frames`.
+    Load JPEG frames from `frame_dir`, optionally sub-sample and resize them.
 
     Returns:
         (b64_list, indices) where b64_list are raw base64-encoded JPEG strings and
-        indices are 1-based frame numbers (= seconds since clip start for 1fps).
+        indices are frame numbers derived from filenames.
     """
     frame_files = sorted(frame_dir.glob("*.jpg"))
     if not frame_files:
         return [], []
-    if len(frame_files) > max_frames:
+    sample_every = max(1, sample_every)
+    if sample_every > 1:
+        frame_files = frame_files[::sample_every]
+    if max_frames > 0 and len(frame_files) > max_frames:
         stride = (len(frame_files) - 1) / (max_frames - 1)
         frame_files = [frame_files[round(i * stride)] for i in range(max_frames)]
     b64_list = []
     indices = []
     for fp in frame_files:
-        with open(fp, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-            b64_list.append(b64)
-        # filename is %04d.jpg (1-indexed); numeric value = second within clip
+        b64_list.append(encode_frame_to_base64(
+            fp,
+            resize_max_width=resize_max_width,
+            jpeg_quality=jpeg_quality,
+        ))
         try:
             indices.append(int(fp.stem))
         except ValueError:
@@ -170,7 +200,7 @@ def call_vlm(
     Message layout:
         system: system_prompt
         user:   [text: user_text]
-                [text: "[Frame {i}]"] [image: frame_i]  × n_frames
+                [text: "[Timestamp MM:SS | Frame {i}]"] [image: frame_i]  × n_frames
 
     Uses response_format={"type": "json_object"} for structured output.
     API key is taken from `api_key` or NOVITA_API_KEY / OPENAI_API_KEY env vars.
@@ -189,7 +219,7 @@ def call_vlm(
     content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
     for i, b64 in enumerate(frame_b64_list):
         fid = frame_indices[i] if i < len(frame_indices) else i + 1
-        content.append({"type": "text", "text": f"[Frame {fid}]"})
+        content.append({"type": "text", "text": f"[Timestamp {format_mmss(fid)} | Frame {fid}]"})
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
@@ -260,6 +290,9 @@ def annotate_clip(
     api_key: str,
     model: str,
     max_frames_per_call: int,
+    level1_target_fps: float,
+    level1_resize_max_width: int,
+    level1_jpeg_quality: int,
     overwrite: bool,
 ) -> dict:
     """
@@ -293,31 +326,56 @@ def annotate_clip(
     # Load frames
     frame_dir = frames_base / key
     frame_meta = load_frame_meta(frame_dir)
-    frame_b64, frame_indices = frames_to_base64(frame_dir, max_frames=max_frames_per_call)
-    if not frame_b64:
-        return {"clip_key": key, "ok": False,
-                "error": f"no frames found in {frame_dir}", "skipped": False}
+    source_fps = float(frame_meta.get("fps") or 1.0)
 
     # Get clip duration from metadata
     clip_duration = float(
         frame_meta.get("annotation_end_sec")
         or meta.get("clip_end")
         or meta.get("clip_duration")
-        or len(frame_indices)
+        or count_extracted_frames(frame_dir)
     )
     n_total_frames = count_extracted_frames(frame_dir)
 
     # Build annotation
     try:
         if level == 1:
+            sample_every = 1
+            if level1_target_fps > 0 and source_fps > level1_target_fps:
+                sample_every = max(1, round(source_fps / level1_target_fps))
+            frame_b64, frame_indices = frames_to_base64(
+                frame_dir,
+                max_frames=max_frames_per_call,
+                sample_every=sample_every,
+                resize_max_width=level1_resize_max_width,
+                jpeg_quality=level1_jpeg_quality,
+            )
+            if not frame_b64:
+                return {"clip_key": key, "ok": False,
+                        "error": f"no frames found in {frame_dir}", "skipped": False}
             prompt_text = get_level1_prompt(clip_duration)
             raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT,
                            prompt_text, frame_b64, frame_indices)
             parsed = parse_json_from_response(raw)
             result_key = "level1"
-            result_val = parsed
+            result_val = {
+                **parsed,
+                "_sampling": {
+                    "source_fps": source_fps,
+                    "target_fps": level1_target_fps,
+                    "sample_every": sample_every,
+                    "resize_max_width": level1_resize_max_width,
+                    "jpeg_quality": level1_jpeg_quality,
+                    "n_sampled_frames": len(frame_indices),
+                    "sampled_frame_indices": frame_indices,
+                },
+            }
 
         elif level == 2:
+            frame_b64, frame_indices = frames_to_base64(frame_dir, max_frames=max_frames_per_call)
+            if not frame_b64:
+                return {"clip_key": key, "ok": False,
+                        "error": f"no frames found in {frame_dir}", "skipped": False}
             l1 = existing.get("level1")
             if l1 is None:
                 return {"clip_key": key, "ok": False,
@@ -330,6 +388,10 @@ def annotate_clip(
             result_val = parsed
 
         elif level == 3:
+            frame_b64, frame_indices = frames_to_base64(frame_dir, max_frames=max_frames_per_call)
+            if not frame_b64:
+                return {"clip_key": key, "ok": False,
+                        "error": f"no frames found in {frame_dir}", "skipped": False}
             l1 = existing.get("level1")
             l2 = existing.get("level2")
             if l1 is None or l2 is None:
@@ -401,6 +463,12 @@ def main() -> None:
                         help="Model name to pass to the API")
     parser.add_argument("--max-frames-per-call", type=int, default=32,
                         help="Max frames to include per API call (memory limit)")
+    parser.add_argument("--level1-target-fps", type=float, default=0.5,
+                        help="Effective FPS for Level 1 on top of pre-extracted frames")
+    parser.add_argument("--level1-resize-max-width", type=int, default=384,
+                        help="Resize Level 1 frames before upload; <=0 disables resizing")
+    parser.add_argument("--level1-jpeg-quality", type=int, default=60,
+                        help="JPEG quality used when recompressing Level 1 frames before upload")
     parser.add_argument("--workers", type=int, default=2,
                         help="Parallel annotation workers")
     parser.add_argument("--limit", type=int, default=0,
@@ -442,6 +510,13 @@ def main() -> None:
 
     print(f"Annotating {len(records)} clips at Level {args.level}")
     print(f"API: {args.api_base}  model: {args.model}  workers: {args.workers}")
+    if args.level == 1:
+        print(
+            "Level 1 sampling: "
+            f"target_fps={args.level1_target_fps}  "
+            f"resize_max_width={args.level1_resize_max_width}  "
+            f"jpeg_quality={args.level1_jpeg_quality}"
+        )
     print(f"Frames: {frames_base}  Output: {output_dir}\n")
 
     ok_count = skipped_count = error_count = 0
@@ -452,7 +527,11 @@ def main() -> None:
                 annotate_clip,
                 rec, frames_base, output_dir, args.level,
                 args.api_base, api_key, args.model,
-                args.max_frames_per_call, args.overwrite,
+                args.max_frames_per_call,
+                args.level1_target_fps,
+                args.level1_resize_max_width,
+                args.level1_jpeg_quality,
+                args.overwrite,
             ): rec
             for rec in records
         }
