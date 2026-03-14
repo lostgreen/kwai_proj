@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Build event-level AoT manifests from existing proxy data.
+Build event-level AoT manifests from existing event clip annotations.
 
 This script treats a single event clip as the atomic unit.
 It can:
-1. collect unique event clips from proxy/mixed JSONL
+1. collect unique event clips from extracted clip annotations or proxy JSONL
 2. optionally export reversed clips offline
 3. optionally build T2V composite clips: forward + black + reverse
 
-Example:
-python proxy_data/temporal_aot/build_event_aot_data.py \
-  --input-jsonl proxy_data/proxy_train_easyr1.jsonl \
-  --output-jsonl /tmp/aot_event_manifest.jsonl \
-  --reverse-dir /tmp/aot_reverse \
-  --composite-dir /tmp/aot_t2v \
-  --make-reverse \
-  --make-composite \
-  --max-samples 500
+Recommended input is the extracted clip database JSON, for example:
+{
+  "GLd3aX16zBg": [
+    {
+      "clip_path": ".../GLd3aX16zBg_event00_90_102.mp4",
+      "original_video_id": "GLd3aX16zBg",
+      "recipe_type": "113",
+      "subset": "training",
+      "sentence": "spread margarine on two slices of white bread",
+      "segment_in_original": [90, 102],
+      "event_id": 0,
+      "sequence_index": 0
+    }
+  ]
+}
 """
 
 from __future__ import annotations
@@ -63,6 +69,25 @@ def parse_event_meta(video_path: str) -> dict:
     return meta
 
 
+def merge_clip_metadata(base_meta: dict, clip_info: dict) -> dict:
+    merged = dict(base_meta)
+    segment = clip_info.get("segment_in_original")
+    if isinstance(segment, list) and len(segment) == 2:
+        start_sec, end_sec = segment
+        if isinstance(start_sec, (int, float)) and isinstance(end_sec, (int, float)):
+            merged["start_sec"] = int(start_sec)
+            merged["end_sec"] = int(end_sec)
+            merged["duration_sec"] = int(end_sec) - int(start_sec)
+
+    merged["event_id"] = clip_info.get("event_id", merged.get("event_id"))
+    merged["source_video_id"] = clip_info.get("original_video_id", merged.get("source_video_id"))
+    merged["recipe_type"] = clip_info.get("recipe_type")
+    merged["subset"] = clip_info.get("subset")
+    merged["sentence"] = clip_info.get("sentence")
+    merged["sequence_index"] = clip_info.get("sequence_index")
+    return merged
+
+
 def load_unique_event_clips(input_jsonl: str, min_duration: int) -> list[dict]:
     seen = set()
     items: list[dict] = []
@@ -91,6 +116,43 @@ def load_unique_event_clips(input_jsonl: str, min_duration: int) -> list[dict]:
                 meta["recipe_type"] = metadata.get("recipe_type")
                 meta["source_task_type"] = metadata.get("task_type")
                 items.append(meta)
+    return items
+
+
+def load_event_clips_from_db(clip_db_json: str, min_duration: int, subset: str) -> list[dict]:
+    seen = set()
+    items: list[dict] = []
+    with open(clip_db_json, encoding="utf-8") as f:
+        db = json.load(f)
+
+    if not isinstance(db, dict):
+        raise ValueError("Clip database JSON must be a dict: video_id -> list[clip_info]")
+
+    for original_video_id, clips in db.items():
+        if not isinstance(clips, list):
+            continue
+        for clip_info in clips:
+            if not isinstance(clip_info, dict):
+                continue
+            clip_path = clip_info.get("clip_path")
+            if not isinstance(clip_path, str):
+                continue
+            if clip_path in seen:
+                continue
+            if subset and clip_info.get("subset") != subset:
+                continue
+            meta = parse_event_meta(clip_path)
+            meta = merge_clip_metadata(meta, clip_info)
+            if not meta.get("source_video_id"):
+                meta["source_video_id"] = original_video_id
+            duration = meta.get("duration_sec")
+            if duration is not None and duration < min_duration:
+                continue
+            if not os.path.exists(clip_path):
+                continue
+            seen.add(clip_path)
+            meta["video_path"] = clip_path
+            items.append(meta)
     return items
 
 
@@ -153,11 +215,13 @@ def build_composite_clip(forward_path: str, black_path: str, reverse_path: str, 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build event-level AoT manifest and optional reverse/composite videos.")
-    parser.add_argument("--input-jsonl", required=True, help="Source JSONL, e.g. proxy_train_easyr1.jsonl")
+    parser.add_argument("--clip-db-json", default="", help="Extracted clip database JSON, recommended input")
+    parser.add_argument("--input-jsonl", default="", help="Fallback source JSONL, e.g. proxy_train_easyr1.jsonl")
     parser.add_argument("--output-jsonl", required=True, help="Output manifest JSONL")
     parser.add_argument("--max-samples", type=int, default=0, help="Max number of unique event clips to keep (0 = all)")
     parser.add_argument("--min-duration", type=int, default=3, help="Minimum event clip duration in seconds")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
+    parser.add_argument("--subset", default="", help="Optional subset filter for clip DB input, e.g. training or validation")
     parser.add_argument("--reverse-dir", default="", help="Directory to save reversed clips")
     parser.add_argument("--composite-dir", default="", help="Directory to save T2V composite clips")
     parser.add_argument("--black-video", default="", help="Reusable black screen clip path")
@@ -168,7 +232,17 @@ def main() -> None:
     args = parser.parse_args()
 
     random.seed(args.seed)
-    records = load_unique_event_clips(args.input_jsonl, min_duration=args.min_duration)
+    if bool(args.clip_db_json) == bool(args.input_jsonl):
+        raise ValueError("Specify exactly one of --clip-db-json or --input-jsonl")
+
+    if args.clip_db_json:
+        records = load_event_clips_from_db(
+            args.clip_db_json,
+            min_duration=args.min_duration,
+            subset=args.subset,
+        )
+    else:
+        records = load_unique_event_clips(args.input_jsonl, min_duration=args.min_duration)
     random.shuffle(records)
     if args.max_samples > 0:
         records = records[: args.max_samples]
