@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-annotate.py — Hierarchical DVC annotation pipeline for YouCook2 windowed clips.
+annotate.py — Hierarchical DVC annotation pipeline for YouCook2 segmentation data.
 
 Supports 3 annotation levels (Level 1 is active; Level 2 & 3 are reserved).
 
 Usage:
-    # Annotate all clips at Level 1 only (single level, recommended first pass):
+    # 旧模式：基于 JSONL 对应的样本进行标注
     python annotate.py \
         --jsonl proxy_data/youcook2_train_easyr1.jsonl \
         --frames-dir proxy_data/youcook2_seg_annotation/frames \
@@ -17,8 +17,13 @@ Usage:
         [--workers 2] \
         [--limit 50]
 
-    # If frames are not pre-extracted, you can pass --video-dir to extract inline:
-    python annotate.py ... --video-dir /path/to/Youcook2_windowed
+    # 新模式：直接标注 frames 目录下的所有原视频抽帧结果
+    python annotate.py \
+        --frames-dir proxy_data/youcook2_seg_annotation/frames \
+        --output-dir proxy_data/youcook2_seg_annotation/annotations \
+        --level 1 \
+        --api-base http://localhost:8000/v1 \
+        --model Qwen3-VL-7B
 
 Output:
     annotations/{clip_key}.json  — per-clip annotation result:
@@ -88,6 +93,59 @@ def frames_to_base64(frame_dir: Path, max_frames: int = 64) -> list[str]:
 
 def clip_key_from_path(video_path: str) -> str:
     return Path(video_path).stem
+
+
+def load_frame_meta(frame_dir: Path) -> dict[str, Any]:
+    meta_path = frame_dir / "meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def count_extracted_frames(frame_dir: Path) -> int:
+    return len(list(frame_dir.glob("*.jpg")))
+
+
+def build_record_from_frame_dir(frame_dir: Path) -> dict | None:
+    meta = load_frame_meta(frame_dir)
+    source_video_path = meta.get("source_video_path") or meta.get("record_video_path")
+    if not source_video_path:
+        jpg_files = sorted(frame_dir.glob("*.jpg"))
+        if not jpg_files:
+            return None
+        source_video_path = frame_dir.name
+
+    clip_key = meta.get("clip_key") or frame_dir.name
+    annotation_end_sec = meta.get("annotation_end_sec")
+    clip_duration = meta.get("annotation_end_sec") or meta.get("window_end_sec")
+
+    return {
+        "videos": [source_video_path],
+        "metadata": {
+            "clip_key": clip_key,
+            "clip_end": annotation_end_sec,
+            "clip_duration": clip_duration,
+            "clip_start": meta.get("annotation_start_sec", 0),
+            "video_id": meta.get("video_id") or clip_key,
+            "source_mode": meta.get("source_mode"),
+        },
+    }
+
+
+def load_records_from_frames_dir(frames_base: Path, limit: int = 0) -> list[dict]:
+    records: list[dict] = []
+    for frame_dir in sorted(p for p in frames_base.iterdir() if p.is_dir()):
+        record = build_record_from_frame_dir(frame_dir)
+        if record is not None:
+            records.append(record)
+    if limit > 0:
+        records = records[:limit]
+    return records
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,7 +270,8 @@ def annotate_clip(
         return {"clip_key": "?", "ok": False, "error": "no videos field", "skipped": False}
 
     vid_path = videos[0]
-    key = clip_key_from_path(vid_path)
+    meta = record.get("metadata") or {}
+    key = str(meta.get("clip_key") or clip_key_from_path(vid_path))
     out_file = output_dir / f"{key}.json"
 
     # Load existing annotation if present
@@ -231,14 +290,20 @@ def annotate_clip(
 
     # Load frames
     frame_dir = frames_base / key
+    frame_meta = load_frame_meta(frame_dir)
     frame_b64, frame_indices = frames_to_base64(frame_dir, max_frames=max_frames_per_call)
     if not frame_b64:
         return {"clip_key": key, "ok": False,
                 "error": f"no frames found in {frame_dir}", "skipped": False}
 
     # Get clip duration from metadata
-    meta = record.get("metadata") or {}
-    clip_duration = float(meta.get("clip_duration") or len(frame_b64))
+    clip_duration = float(
+        frame_meta.get("annotation_end_sec")
+        or meta.get("clip_end")
+        or meta.get("clip_duration")
+        or len(frame_indices)
+    )
+    n_total_frames = count_extracted_frames(frame_dir)
 
     # Build annotation
     try:
@@ -287,8 +352,14 @@ def annotate_clip(
     ann: dict[str, Any] = {
         "clip_key": key,
         "video_path": vid_path,
+        "source_video_path": frame_meta.get("source_video_path") or vid_path,
+        "source_mode": frame_meta.get("source_mode") or "windowed_clip",
+        "annotation_start_sec": frame_meta.get("annotation_start_sec"),
+        "annotation_end_sec": frame_meta.get("annotation_end_sec") or clip_duration,
+        "window_start_sec": frame_meta.get("window_start_sec", meta.get("clip_start")),
+        "window_end_sec": frame_meta.get("window_end_sec", meta.get("clip_end")),
         "clip_duration_sec": clip_duration,
-        "n_frames": len(frame_b64),
+        "n_frames": n_total_frames,
         "frame_dir": str(frame_dir),
         "level1": None,
         "level2": None,
@@ -312,8 +383,8 @@ def main() -> None:
         description="Hierarchical DVC annotation pipeline for YouCook2",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--jsonl", required=True,
-                        help="Input JSONL (e.g. youcook2_train_easyr1.jsonl)")
+    parser.add_argument("--jsonl", default=None,
+                        help="可选：输入 JSONL。若不提供，则直接遍历 --frames-dir 下所有样本。")
     parser.add_argument("--frames-dir", required=True,
                         help="Root directory of pre-extracted 1fps frames")
     parser.add_argument("--output-dir", required=True,
@@ -338,26 +409,32 @@ def main() -> None:
 
     api_key = args.api_key or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
 
-    # Load JSONL
-    jsonl_path = Path(args.jsonl)
-    if not jsonl_path.exists():
-        print(f"ERROR: JSONL not found: {jsonl_path}", file=sys.stderr)
+    frames_base = Path(args.frames_dir)
+    if not frames_base.exists():
+        print(f"ERROR: frames-dir not found: {frames_base}", file=sys.stderr)
         sys.exit(1)
 
     records: list[dict] = []
-    with open(jsonl_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
+    if args.jsonl:
+        jsonl_path = Path(args.jsonl)
+        if not jsonl_path.exists():
+            print(f"ERROR: JSONL not found: {jsonl_path}", file=sys.stderr)
+            sys.exit(1)
 
-    if args.limit > 0:
-        records = records[: args.limit]
+        with open(jsonl_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
 
-    frames_base = Path(args.frames_dir)
+        if args.limit > 0:
+            records = records[: args.limit]
+    else:
+        records = load_records_from_frames_dir(frames_base, limit=args.limit)
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

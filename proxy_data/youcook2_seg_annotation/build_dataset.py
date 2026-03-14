@@ -55,7 +55,7 @@ def build_record(ann: dict, level: int) -> dict | None:
     if clip_duration <= 0:
         return None
 
-    video_path = ann.get("video_path", "")
+    video_path = ann.get("source_video_path") or ann.get("video_path", "")
 
     # Build user prompt text
     if level == 1:
