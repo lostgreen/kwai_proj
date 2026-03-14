@@ -108,6 +108,11 @@ def _flatten_paths(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _rollout_filepath(rollout_dir: str, phase: str, step: int) -> str:
+    prefix = "val_step" if phase == "val" else "step"
+    return os.path.join(rollout_dir, f"{prefix}_{step:06d}.jsonl")
+
+
 class Role(IntEnum):
     """
     To create more roles dynamically, you can subclass Role and add new members
@@ -423,31 +428,36 @@ class RayPPOTrainer:
         else:
             print(f"No dataloader state found at {dataloader_path}, will start from scratch.")
 
-    def _save_train_rollouts(self, batch: DataProto) -> None:
-        """Save training rollouts at current step to {save_checkpoint_path}/rollouts/step_XXXXXX.jsonl."""
+    def _save_rollouts(
+        self,
+        batch: DataProto,
+        scores: list[float],
+        multimodal_sources: list[Any],
+        phase: str,
+        append: bool = False,
+    ) -> None:
         if not self.config.trainer.save_rollout_to_file:
             return
 
         rollout_dir = os.path.join(self.config.trainer.save_checkpoint_path, "rollouts")
         os.makedirs(rollout_dir, exist_ok=True)
-        filepath = os.path.join(rollout_dir, f"step_{self.global_step:06d}.jsonl")
+        filepath = _rollout_filepath(rollout_dir, phase=phase, step=self.global_step)
 
         prompt_ids = batch.batch["prompts"]       # (B, prompt_len)
         response_ids = batch.batch["responses"]   # (B, response_len)
-        scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
         uids = batch.non_tensor_batch.get("uid", [None] * len(scores))
         ground_truths = batch.non_tensor_batch.get("ground_truth", [None] * len(scores))
         problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(scores))
         data_types = batch.non_tensor_batch.get("data_type", [None] * len(scores))
         problem_ids = batch.non_tensor_batch.get("problem_id", [None] * len(scores))
         problems = batch.non_tensor_batch.get("problem_reserved_text", [None] * len(scores))
-        multimodal_sources = batch.non_tensor_batch.get("multi_modal_data", [None] * len(scores))
 
         total = len(scores)
         n = self.config.trainer.save_rollout_n_per_step
         indices = list(range(total)) if n <= 0 else list(range(min(n, total)))
 
-        with open(filepath, "w", encoding="utf-8") as f:
+        mode = "a" if append else "w"
+        with open(filepath, mode, encoding="utf-8") as f:
             for i in indices:
                 prompt_text = self.tokenizer.decode(prompt_ids[i], skip_special_tokens=True)
                 response_text = self.tokenizer.decode(response_ids[i], skip_special_tokens=True)
@@ -461,6 +471,7 @@ class RayPPOTrainer:
                     image_paths = _flatten_paths(mm_source_json.get("images"))
 
                 record = {
+                    "phase": phase,
                     "step": self.global_step,
                     "uid": str(uids[i]) if uids[i] is not None else None,
                     "problem_type": problem_type,
@@ -490,7 +501,22 @@ class RayPPOTrainer:
                     }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-        print(f"[rollout] step {self.global_step}: saved {len(indices)}/{total} samples → {filepath}")
+        print(f"[rollout] {phase} step {self.global_step}: saved {len(indices)}/{total} samples → {filepath}")
+
+    def _save_train_rollouts(self, batch: DataProto) -> None:
+        """Save training rollouts at current step to {save_checkpoint_path}/rollouts/step_XXXXXX.jsonl."""
+        scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+        multimodal_sources = batch.non_tensor_batch.get("multi_modal_data", [None] * len(scores))
+        self._save_rollouts(batch, scores=scores, multimodal_sources=multimodal_sources, phase="train")
+
+    def _save_val_rollouts(
+        self,
+        batch: DataProto,
+        reward_tensor: torch.Tensor,
+        multimodal_sources: list[Any],
+    ) -> None:
+        scores = reward_tensor.sum(-1).cpu().tolist()
+        self._save_rollouts(batch, scores=scores, multimodal_sources=multimodal_sources, phase="val", append=True)
 
     def _maybe_log_val_generations(
         self, inputs: list[str], outputs: list[str], labels: list[str], scores: list[float]
@@ -517,13 +543,22 @@ class RayPPOTrainer:
         reward_metrics_lst = defaultdict(list)
         length_metrics_lst = defaultdict(list)
         print("Start validation...")
+        if self.config.trainer.save_rollout_to_file:
+            rollout_dir = os.path.join(self.config.trainer.save_checkpoint_path, "rollouts")
+            filepath = _rollout_filepath(rollout_dir, phase="val", step=self.global_step)
+            if os.path.exists(filepath):
+                os.remove(filepath)
         self.actor_rollout_ref_wg.prepare_rollout_engine()
         for batch_dict in self.val_dataloader:
             test_batch = DataProto.from_single_dict(batch_dict)
+            test_batch.non_tensor_batch["uid"] = np.array(
+                [f"val-{uuid.uuid4()}" for _ in range(len(test_batch.batch))], dtype=object
+            )
             test_gen_batch = test_batch.pop(
                 batch_keys=["input_ids", "attention_mask", "position_ids"],
                 non_tensor_batch_keys=["raw_prompt_ids", "multi_modal_data"],
             )
+            multimodal_sources = test_gen_batch.non_tensor_batch.get("multi_modal_data", np.array([], dtype=object))
             repeat_times = self.config.worker.rollout.val_override_config.get("n", 1)
             test_gen_batch.meta_info = self.config.worker.rollout.val_override_config
             test_gen_batch.meta_info["min_pixels"] = self.config.data.min_pixels
@@ -540,6 +575,13 @@ class RayPPOTrainer:
 
             # evaluate using reward_function
             reward_tensor, reward_metrics = ray.get(self.val_reward_fn.compute_reward.remote(test_batch))
+
+            repeated_multimodal_sources = np.repeat(multimodal_sources, repeat_times, axis=0)
+            self._save_val_rollouts(
+                test_batch,
+                reward_tensor=reward_tensor,
+                multimodal_sources=repeated_multimodal_sources.tolist(),
+            )
 
             # store generations
             input_ids = test_batch.batch["prompts"]
