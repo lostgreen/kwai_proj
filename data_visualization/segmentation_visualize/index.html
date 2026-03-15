@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Segmentation Visualize</title>
+<style>
+:root{
+  --bg:#eef2f6;
+  --panel:rgba(255,255,255,.9);
+  --border:rgba(71,85,105,.18);
+  --text:#142033;
+  --muted:#66758c;
+  --blue:#2d6cdf;
+  --teal:#159a8c;
+  --amber:#e49d1c;
+  --rose:#d4577c;
+  --danger:#dc2626;
+  --shadow:0 18px 42px rgba(18,34,58,.08);
+  --radius:18px;
+  --frame-w:88px;
+  --frame-gap:6px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--text);
+  min-height:100vh;
+  background:
+    radial-gradient(900px 500px at -5% -10%, rgba(45,108,223,.14), transparent 60%),
+    radial-gradient(900px 500px at 110% 0%, rgba(21,154,140,.1), transparent 55%),
+    linear-gradient(180deg, #f7fafc 0%, var(--bg) 100%);
+}
+button,input,textarea{font:inherit}
+.page{max-width:1600px;margin:0 auto;padding:22px}
+.card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+  backdrop-filter:blur(10px);
+}
+.hero{padding:18px 20px;margin-bottom:14px}
+.hero-top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap}
+.title{font-size:28px;font-weight:750;letter-spacing:-.02em}
+.subtitle{color:var(--muted);margin-top:6px;font-size:13px}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.input{
+  min-width:320px;
+  padding:11px 13px;
+  border-radius:13px;
+  border:1px solid rgba(71,85,105,.2);
+  background:rgba(255,255,255,.84);
+  color:var(--text);
+}
+.btn{
+  border:none;
+  border-radius:13px;
+  padding:11px 16px;
+  background:linear-gradient(135deg,#7ac5ff,#5fdbb5);
+  color:#08243a;
+  font-weight:700;
+  cursor:pointer;
+}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.status{margin-top:10px;font-size:12px;color:var(--blue);min-height:18px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.stat{padding:14px 16px}
+.stat-k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.stat-v{font-size:28px;font-weight:760;margin-top:6px}
+.layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:14px}
+.sidebar{padding:14px;display:grid;gap:10px;align-content:start;max-height:calc(100vh - 190px);overflow:hidden}
+.sidebar-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.sidebar-title{font-size:15px;font-weight:700}
+.search{width:100%;min-width:0;padding:10px 12px;border-radius:12px;border:1px solid rgba(71,85,105,.18)}
+.clip-list{overflow:auto;border:1px solid rgba(71,85,105,.12);border-radius:14px;background:rgba(245,248,252,.72)}
+.clip-row{padding:12px 13px;border-bottom:1px solid rgba(71,85,105,.08);cursor:pointer;display:grid;gap:5px}
+.clip-row:last-child{border-bottom:none}
+.clip-row:hover{background:rgba(45,108,223,.06)}
+.clip-row.active{background:rgba(21,154,140,.1)}
+.clip-top{display:flex;justify-content:space-between;gap:10px;align-items:center}
+.clip-key{font-size:13px;font-weight:700}
+.badge{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:700}
+.warning{background:rgba(220,38,38,.1);color:var(--danger)}
+.ok{background:rgba(21,154,140,.12);color:var(--teal)}
+.clip-meta{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:3px 7px;border-radius:999px;background:rgba(71,85,105,.08);font-size:10px;color:#425066}
+.main{display:grid;gap:14px;align-content:start;min-width:0}
+.clip-header{padding:16px 18px}
+.clip-head-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.clip-title{font-size:24px;font-weight:780}
+.clip-subtitle{font-size:13px;color:var(--muted);margin-top:6px}
+.meta-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:14px}
+.meta-box{padding:10px 12px;border-radius:14px;background:rgba(245,248,252,.78);border:1px solid rgba(71,85,105,.08)}
+.meta-k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.meta-v{font-size:15px;font-weight:700;margin-top:6px;word-break:break-word}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.toggle{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border-radius:999px;background:rgba(245,248,252,.78);border:1px solid rgba(71,85,105,.1);font-size:12px}
+.timeline-card{padding:16px 16px 18px}
+.legend{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.legend-item{display:flex;gap:7px;align-items:center;font-size:12px;color:var(--muted)}
+.legend-dot{width:10px;height:10px;border-radius:50%}
+.sync-shell{overflow-x:auto;overflow-y:hidden;padding-bottom:4px}
+.sync-inner{min-width:max-content}
+.frame-row{display:flex;gap:var(--frame-gap);margin-bottom:12px}
+.frame-card{width:var(--frame-w);flex:0 0 auto;display:grid;gap:5px;cursor:pointer}
+.frame-thumb{
+  width:var(--frame-w);
+  height:56px;
+  border-radius:12px;
+  border:2px solid rgba(71,85,105,.14);
+  overflow:hidden;
+  background:linear-gradient(135deg, rgba(45,108,223,.06), rgba(21,154,140,.06));
+  position:relative;
+}
+.frame-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.frame-thumb.active{border-color:var(--blue);box-shadow:0 0 0 3px rgba(45,108,223,.12)}
+.frame-thumb .sample-mark{
+  position:absolute;top:4px;right:4px;width:8px;height:8px;border-radius:999px;background:var(--teal);
+  box-shadow:0 0 0 2px rgba(255,255,255,.9)
+}
+.frame-label{text-align:center;font-size:10px;color:var(--muted);font-family:"JetBrains Mono","SF Mono",monospace}
+.lane-block{margin-bottom:14px}
+.lane-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px}
+.lane-title{font-size:13px;font-weight:750}
+.lane-meta{font-size:11px;color:var(--muted)}
+.lane-track{
+  position:relative;
+  height:54px;
+  border-radius:16px;
+  border:1px solid rgba(71,85,105,.1);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.8), rgba(241,245,249,.9)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(71,85,105,.045) 0,
+      rgba(71,85,105,.045) calc(var(--frame-w) + var(--frame-gap) - 1px),
+      transparent calc(var(--frame-w) + var(--frame-gap) - 1px),
+      transparent calc(var(--frame-w) + var(--frame-gap))
+    );
+}
+.segment{
+  position:absolute;
+  top:7px;
+  height:40px;
+  border-radius:13px;
+  padding:7px 9px;
+  overflow:hidden;
+  cursor:pointer;
+  transition:transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+  border:1px solid rgba(15,23,42,.08);
+}
+.segment:hover{transform:translateY(-1px)}
+.segment.active{box-shadow:0 12px 24px rgba(15,23,42,.18);transform:translateY(-1px)}
+.segment.muted{opacity:.28}
+.seg-l1{background:linear-gradient(135deg, rgba(45,108,223,.95), rgba(21,154,140,.92));color:white}
+.seg-l2{background:linear-gradient(135deg, rgba(244,173,52,.94), rgba(229,123,33,.92));color:#291505}
+.seg-l3{background:linear-gradient(135deg, rgba(222,88,131,.94), rgba(160,83,219,.92));color:white}
+.segment-label{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.segment-time{font-size:10px;opacity:.9;margin-top:2px;font-family:"JetBrains Mono","SF Mono",monospace}
+.bottom-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:14px}
+.detail-card,.diag-card{padding:16px}
+.section-title{font-size:16px;font-weight:760;margin-bottom:10px}
+.detail-empty{color:var(--muted);font-size:13px;line-height:1.6}
+.detail-stack{display:grid;gap:10px}
+.detail-pill{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:10px;font-weight:700;margin-right:6px}
+.detail-body{padding:12px 14px;border-radius:14px;background:rgba(245,248,252,.8);border:1px solid rgba(71,85,105,.08)}
+.detail-k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.detail-v{font-size:14px;font-weight:700;margin-top:4px;line-height:1.45}
+.detail-p{margin-top:8px;font-size:13px;line-height:1.6;color:#344154}
+.keyword-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.raw-box{
+  margin-top:8px;
+  max-height:220px;
+  overflow:auto;
+  background:rgba(15,23,42,.92);
+  color:#dbe6f6;
+  padding:12px;
+  border-radius:14px;
+  font-size:11px;
+  line-height:1.55;
+  font-family:"JetBrains Mono","SF Mono",monospace;
+  white-space:pre-wrap;
+}
+.diag-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.diag-box{padding:12px 13px;border-radius:14px;background:rgba(245,248,252,.8);border:1px solid rgba(71,85,105,.08)}
+.diag-num{font-size:23px;font-weight:780;margin-top:6px}
+.diag-list{margin-top:10px;display:grid;gap:8px}
+.diag-item{padding:10px 12px;border-radius:12px;background:rgba(245,248,252,.8);border:1px solid rgba(71,85,105,.08);font-size:12px;line-height:1.55}
+.frame-modal{
+  position:fixed;inset:0;background:rgba(9,15,29,.7);display:none;align-items:center;justify-content:center;z-index:1000
+}
+.frame-modal.active{display:flex}
+.frame-modal-inner{max-width:min(92vw,1200px);max-height:90vh;padding:16px;background:rgba(255,255,255,.92);border-radius:22px}
+.frame-modal img{display:block;max-width:100%;max-height:calc(90vh - 32px);border-radius:16px}
+.frame-modal-close{position:absolute;top:18px;right:18px;border:none;background:white;border-radius:999px;padding:10px 12px;cursor:pointer}
+@media (max-width: 1180px){
+  .layout{grid-template-columns:1fr}
+  .sidebar{max-height:none}
+  .bottom-grid{grid-template-columns:1fr}
+}
+@media (max-width: 900px){
+  .stats,.meta-grid,.diag-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .input{min-width:240px}
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <section class="hero card">
+    <div class="hero-top">
+      <div>
+        <div class="title">Segmentation Visualize</div>
+        <div class="subtitle">1fps 帧条、三层时间轴和文本标注联动查看器</div>
+      </div>
+      <div class="toolbar">
+        <input id="annotationDir" class="input" placeholder="输入 annotations 目录路径" />
+        <button id="loadBtn" class="btn" onclick="loadAnnotations()">加载标注</button>
+      </div>
+    </div>
+    <div id="statusMsg" class="status"></div>
+  </section>
+
+  <section class="stats">
+    <article class="stat card"><div class="stat-k">Clips</div><div class="stat-v" id="statClips">-</div></article>
+    <article class="stat card"><div class="stat-k">With L1</div><div class="stat-v" id="statL1">-</div></article>
+    <article class="stat card"><div class="stat-k">With L2</div><div class="stat-v" id="statL2">-</div></article>
+    <article class="stat card"><div class="stat-k">With L3</div><div class="stat-v" id="statL3">-</div></article>
+  </section>
+
+  <section class="layout">
+    <aside class="sidebar card">
+      <div class="sidebar-head">
+        <div class="sidebar-title">Clips</div>
+        <div class="chip" id="clipCounter">0</div>
+      </div>
+      <input id="searchInput" class="search" placeholder="搜索 clip_key" oninput="filterClips()" />
+      <div id="clipList" class="clip-list">
+        <div class="clip-row"><div class="clip-key">加载 annotations 目录后显示</div></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="clip-header card" id="clipHeader">
+        <div class="clip-title">选择一个 clip</div>
+        <div class="clip-subtitle">左侧加载并选择标注样本后，这里会显示基础信息。</div>
+      </section>
+
+      <section class="timeline-card card" id="timelineCard">
+        <div class="section-title">Timeline</div>
+        <div class="detail-empty">这里会显示 1fps 帧条和三层时序标注。</div>
+      </section>
+
+      <section class="bottom-grid">
+        <article class="detail-card card" id="detailCard">
+          <div class="section-title">Selection</div>
+          <div class="detail-empty">hover 或 click 时间段 / 帧后，这里会显示文本详情。</div>
+        </article>
+        <article class="diag-card card" id="diagCard">
+          <div class="section-title">Diagnostics</div>
+          <div class="detail-empty">这里会显示每层的 coverage、gap、overlap 和 parent 越界检查。</div>
+        </article>
+      </section>
+    </main>
+  </section>
+</div>
+
+<div id="frameModal" class="frame-modal" onclick="closeFrameModal()">
+  <button class="frame-modal-close" onclick="closeFrameModal()">关闭</button>
+  <div class="frame-modal-inner" onclick="event.stopPropagation()">
+    <img id="frameModalImg" src="" alt="frame preview" />
+  </div>
+</div>
+
+<script>
+const UI = {
+  clips: [],
+  filteredClips: [],
+  activeClipKey: null,
+  activeClip: null,
+  hoveredSegmentId: null,
+  selectedSegmentId: null,
+  selectedFrameIdx: null,
+};
+
+const COLORS = {
+  level1: "#2d6cdf",
+  level2: "#e49d1c",
+  level3: "#d4577c",
+};
+
+const STRIDE = 94;
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]));
+}
+
+function setStatus(message, isError = false) {
+  const el = document.getElementById("statusMsg");
+  el.textContent = message || "";
+  el.style.color = isError ? "var(--danger)" : "var(--blue)";
+}
+
+function setLoading(isLoading) {
+  const btn = document.getElementById("loadBtn");
+  btn.disabled = isLoading;
+  btn.textContent = isLoading ? "加载中..." : "加载标注";
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+async function loadAnnotations() {
+  const annotationDir = document.getElementById("annotationDir").value.trim();
+  if (!annotationDir) {
+    setStatus("请先输入 annotations 目录路径。", true);
+    return;
+  }
+
+  setLoading(true);
+  try {
+    const result = await fetchJson(`/api/load-data?annotation_dir=${encodeURIComponent(annotationDir)}`);
+    applySummary(result.summary);
+    setStatus(`已加载 ${result.summary.clip_count} 个 clips`);
+    if (UI.filteredClips.length > 0) {
+      await selectClip(UI.filteredClips[0].clip_key);
+    }
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function applySummary(summary) {
+  UI.clips = summary.clips || [];
+  UI.filteredClips = [...UI.clips];
+  document.getElementById("statClips").textContent = summary.clip_count ?? 0;
+  document.getElementById("statL1").textContent = summary.level1_count ?? 0;
+  document.getElementById("statL2").textContent = summary.level2_count ?? 0;
+  document.getElementById("statL3").textContent = summary.level3_count ?? 0;
+  renderClipList();
+}
+
+function filterClips() {
+  const query = document.getElementById("searchInput").value.trim().toLowerCase();
+  UI.filteredClips = UI.clips.filter((clip) => !query || clip.clip_key.toLowerCase().includes(query));
+  renderClipList();
+}
+
+function renderClipList() {
+  const list = document.getElementById("clipList");
+  document.getElementById("clipCounter").textContent = UI.filteredClips.length;
+  if (!UI.filteredClips.length) {
+    list.innerHTML = `<div class="clip-row"><div class="clip-key">没有匹配的 clips</div></div>`;
+    return;
+  }
+  list.innerHTML = UI.filteredClips.map((clip) => `
+    <div class="clip-row ${clip.clip_key === UI.activeClipKey ? "active" : ""}" onclick="selectClip('${encodeURIComponent(clip.clip_key)}', true)">
+      <div class="clip-top">
+        <div class="clip-key">${escapeHtml(clip.clip_key)}</div>
+        <div class="badge ${clip.warning_count ? "warning" : "ok"}">${clip.warning_count ? `${clip.warning_count} warnings` : "clean"}</div>
+      </div>
+      <div class="clip-meta">
+        <span class="chip">${escapeHtml(clip.duration_label)}</span>
+        <span class="chip">${clip.n_frames} frames</span>
+        <span class="chip">L1 ${clip.level1_segments}</span>
+        <span class="chip">L2 ${clip.level2_segments}</span>
+        <span class="chip">L3 ${clip.level3_segments}</span>
+      </div>
+    </div>
+  `).join("");
+}
+
+async function selectClip(encodedKey, fromList = false) {
+  const clipKey = fromList ? decodeURIComponent(encodedKey) : encodedKey;
+  UI.activeClipKey = clipKey;
+  UI.activeClip = null;
+  UI.hoveredSegmentId = null;
+  UI.selectedSegmentId = null;
+  UI.selectedFrameIdx = null;
+  renderClipList();
+  document.getElementById("clipHeader").innerHTML = `<div class="clip-title">加载 ${escapeHtml(clipKey)}...</div>`;
+
+  try {
+    const clip = await fetchJson(`/api/clip/${encodeURIComponent(clipKey)}`);
+    UI.activeClip = clip;
+    renderActiveClip();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function renderActiveClip() {
+  renderHeader();
+  renderTimeline();
+  renderDiagnostics();
+  renderSelection();
+}
+
+function renderHeader() {
+  const clip = UI.activeClip;
+  const warningCount =
+    (clip.diagnostics.level1.overlap_count || 0) +
+    (clip.diagnostics.level2.overlap_count || 0) +
+    (clip.diagnostics.level3.overlap_count || 0) +
+    (clip.diagnostics.level2_parent_violations || []).length +
+    (clip.diagnostics.level3_parent_violations || []).length;
+
+  document.getElementById("clipHeader").innerHTML = `
+    <div class="clip-head-top">
+      <div>
+        <div class="clip-title">${escapeHtml(clip.clip_key)}</div>
+        <div class="clip-subtitle">
+          ${escapeHtml(clip.source_mode || "unknown source")} · frame_dir: ${escapeHtml(clip.frame_dir || "-")}
+        </div>
+      </div>
+      <div class="controls">
+        <label class="toggle"><input type="checkbox" checked onchange="toggleLevel('level1', this.checked)"> L1</label>
+        <label class="toggle"><input type="checkbox" checked onchange="toggleLevel('level2', this.checked)"> L2</label>
+        <label class="toggle"><input type="checkbox" checked onchange="toggleLevel('level3', this.checked)"> L3</label>
+      </div>
+    </div>
+    <div class="meta-grid">
+      <div class="meta-box"><div class="meta-k">Duration</div><div class="meta-v">${escapeHtml(mmss(clip.clip_duration_sec))}</div></div>
+      <div class="meta-box"><div class="meta-k">Frames</div><div class="meta-v">${clip.n_frames}</div></div>
+      <div class="meta-box"><div class="meta-k">L1 Sampling</div><div class="meta-v">${clip.sampling.target_fps || "-"} fps</div></div>
+      <div class="meta-box"><div class="meta-k">Annotated At</div><div class="meta-v">${escapeHtml(clip.annotated_at || "-")}</div></div>
+      <div class="meta-box"><div class="meta-k">Warnings</div><div class="meta-v">${warningCount}</div></div>
+    </div>
+  `;
+}
+
+function mmss(totalSeconds) {
+  const total = Math.max(0, Number(totalSeconds || 0));
+  const minutes = String(Math.floor(total / 60)).padStart(2, "0");
+  const seconds = String(Math.floor(total % 60)).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function toggleLevel(levelKey, visible) {
+  document.querySelectorAll(`[data-lane="${levelKey}"]`).forEach((node) => {
+    node.style.display = visible ? "" : "none";
+  });
+}
+
+function renderTimeline() {
+  const clip = UI.activeClip;
+  const sampled = new Set((clip.sampling.sampled_frame_indices || []).map((value) => Number(value)));
+  const totalWidth = Math.max(clip.n_frames * STRIDE, 600);
+
+  document.getElementById("timelineCard").innerHTML = `
+    <div class="section-title">Timeline</div>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level1}"></span>Level 1 Macro Phase</div>
+      <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level2}"></span>Level 2 Meso Step</div>
+      <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level3}"></span>Level 3 Key State Chunk</div>
+      <div class="legend-item"><span class="legend-dot" style="background:var(--teal)"></span>L1 采样帧</div>
+    </div>
+    <div class="sync-shell">
+      <div class="sync-inner" style="width:${totalWidth}px">
+        <div class="frame-row" id="frameRow">
+          ${Array.from({ length: clip.n_frames }, (_, i) => {
+            const frameIdx = i + 1;
+            return `
+              <div class="frame-card" onclick="selectFrame(${frameIdx})">
+                <div class="frame-thumb ${UI.selectedFrameIdx === frameIdx ? "active" : ""}" id="frame-${frameIdx}">
+                  <img loading="lazy" src="/api/frame/${encodeURIComponent(clip.clip_key)}/${frameIdx}?mode=thumb" alt="frame ${frameIdx}" onclick="openFrameModal(event, ${frameIdx})" />
+                  ${sampled.has(frameIdx) ? `<span class="sample-mark" title="used in L1 sampling"></span>` : ""}
+                </div>
+                <div class="frame-label">${String(frameIdx).padStart(4, "0")} · ${mmss(frameIdx)}</div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+        ${renderLane("level1", "Level 1 Macro Phases", clip.levels.level1 || [], totalWidth)}
+        ${renderLane("level2", "Level 2 Meso Steps", clip.levels.level2 || [], totalWidth)}
+        ${renderLane("level3", "Level 3 Key State Chunks", clip.levels.level3 || [], totalWidth)}
+      </div>
+    </div>
+  `;
+
+  applyActiveState();
+}
+
+function renderLane(levelKey, title, segments, totalWidth) {
+  return `
+    <div class="lane-block" data-lane="${levelKey}">
+      <div class="lane-head">
+        <div class="lane-title">${title}</div>
+        <div class="lane-meta">${segments.length} segments</div>
+      </div>
+      <div class="lane-track" style="width:${totalWidth}px">
+        ${segments.map((segment) => {
+          const left = Math.max(0, (segment.frame_start - 1) * STRIDE);
+          const width = Math.max(STRIDE - 6, (segment.frame_end - segment.frame_start + 1) * STRIDE - 8);
+          return `
+            <div
+              class="segment seg-${levelKey === "level1" ? "l1" : levelKey === "level2" ? "l2" : "l3"}"
+              id="${segment.id}"
+              style="left:${left}px;width:${width}px"
+              onmouseenter="hoverSegment('${segment.id}')"
+              onmouseleave="clearHover()"
+              onclick="selectSegment('${segment.id}')"
+            >
+              <div class="segment-label">${escapeHtml(segment.label)}</div>
+              <div class="segment-time">${escapeHtml(segment.start_time)} - ${escapeHtml(segment.end_time)}</div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function hoverSegment(segmentId) {
+  UI.hoveredSegmentId = segmentId;
+  applyActiveState();
+  renderSelection();
+}
+
+function clearHover() {
+  UI.hoveredSegmentId = null;
+  applyActiveState();
+  renderSelection();
+}
+
+function selectSegment(segmentId) {
+  UI.selectedSegmentId = UI.selectedSegmentId === segmentId ? null : segmentId;
+  UI.selectedFrameIdx = null;
+  applyActiveState();
+  renderSelection();
+}
+
+function selectFrame(frameIdx) {
+  UI.selectedFrameIdx = UI.selectedFrameIdx === frameIdx ? null : frameIdx;
+  UI.selectedSegmentId = null;
+  applyActiveState();
+  renderSelection();
+}
+
+function openFrameModal(event, frameIdx) {
+  event.stopPropagation();
+  const modal = document.getElementById("frameModal");
+  const img = document.getElementById("frameModalImg");
+  img.src = `/api/frame/${encodeURIComponent(UI.activeClip.clip_key)}/${frameIdx}?mode=full`;
+  modal.classList.add("active");
+}
+
+function closeFrameModal() {
+  document.getElementById("frameModal").classList.remove("active");
+}
+
+function findSegment(segmentId) {
+  const clip = UI.activeClip;
+  if (!clip) return null;
+  for (const levelKey of ["level1", "level2", "level3"]) {
+    const found = (clip.levels[levelKey] || []).find((segment) => segment.id === segmentId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function currentTarget() {
+  if (UI.selectedSegmentId) return { type: "segment", value: findSegment(UI.selectedSegmentId) };
+  if (UI.hoveredSegmentId) return { type: "segment", value: findSegment(UI.hoveredSegmentId) };
+  if (UI.selectedFrameIdx != null) return { type: "frame", value: UI.selectedFrameIdx };
+  return null;
+}
+
+function activeSegmentIds() {
+  const target = currentTarget();
+  if (!target || target.type !== "segment" || !target.value) return [];
+  const segment = target.value;
+  const ids = new Set([segment.id]);
+  if (segment.level === 1) {
+    (UI.activeClip.levels.level2 || []).forEach((child) => {
+      if (child.parent_id === segment.id) ids.add(child.id);
+    });
+    const childIds = new Set(
+      (UI.activeClip.levels.level2 || [])
+        .filter((child) => child.parent_id === segment.id)
+        .map((child) => child.id)
+    );
+    (UI.activeClip.levels.level3 || []).forEach((chunk) => {
+      if (childIds.has(chunk.parent_id)) ids.add(chunk.id);
+    });
+  } else if (segment.level === 2) {
+    if (segment.parent_id) ids.add(segment.parent_id);
+    (UI.activeClip.levels.level3 || []).forEach((child) => {
+      if (child.parent_id === segment.id) ids.add(child.id);
+    });
+  } else if (segment.level === 3) {
+    if (segment.parent_id) ids.add(segment.parent_id);
+    const parent = findSegment(segment.parent_id);
+    if (parent && parent.parent_id) ids.add(parent.parent_id);
+  }
+  return [...ids];
+}
+
+function applyActiveState() {
+  const target = currentTarget();
+  const ids = new Set(activeSegmentIds());
+  document.querySelectorAll(".segment").forEach((node) => {
+    node.classList.remove("active", "muted");
+    if (!target || target.type !== "segment") return;
+    if (ids.has(node.id)) node.classList.add("active");
+    else node.classList.add("muted");
+  });
+
+  document.querySelectorAll(".frame-thumb").forEach((node) => node.classList.remove("active"));
+  if (!UI.activeClip) return;
+
+  if (target && target.type === "segment" && target.value) {
+    for (let frameIdx = target.value.frame_start; frameIdx <= target.value.frame_end; frameIdx += 1) {
+      const el = document.getElementById(`frame-${frameIdx}`);
+      if (el) el.classList.add("active");
+    }
+  } else if (target && target.type === "frame") {
+    const el = document.getElementById(`frame-${target.value}`);
+    if (el) el.classList.add("active");
+  }
+}
+
+function renderSelection() {
+  const target = currentTarget();
+  const card = document.getElementById("detailCard");
+  if (!UI.activeClip || !target) {
+    card.innerHTML = `
+      <div class="section-title">Selection</div>
+      <div class="detail-empty">hover 或 click 时间段 / 帧后，这里会显示文本详情。</div>
+    `;
+    return;
+  }
+
+  if (target.type === "frame") {
+    const hits = UI.activeClip.frame_hits[String(target.value)] || [];
+    card.innerHTML = `
+      <div class="section-title">Frame ${String(target.value).padStart(4, "0")}</div>
+      <div class="detail-stack">
+        <div class="detail-body">
+          <div class="detail-k">Timestamp</div>
+          <div class="detail-v">${escapeHtml(mmss(target.value))}</div>
+          <div class="detail-p">该帧命中的 segments 数量：${hits.length}</div>
+          <div class="keyword-row">
+            ${hits.map((hit) => `<span class="chip">L${hit.level} · ${escapeHtml(hit.label)}</span>`).join("") || `<span class="chip">无 segment 命中</span>`}
+          </div>
+        </div>
+        <div class="detail-body">
+          <div class="detail-k">Frame Detail</div>
+          <div class="detail-p">点击帧缩略图可以放大查看原图。</div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const segment = target.value;
+  const levelName = `Level ${segment.level}`;
+  const parent = segment.parent_id ? findSegment(segment.parent_id) : null;
+  const rawDetail = JSON.stringify(segment.details || {}, null, 2);
+
+  let extra = "";
+  if (segment.level === 1) {
+    extra = `<div class="detail-p">${escapeHtml(segment.details.narrative_summary || "无 narrative summary")}</div>`;
+  } else if (segment.level === 2) {
+    extra = `
+      <div class="detail-p">${escapeHtml(segment.details.instruction || "")}</div>
+      <div class="keyword-row">${(segment.details.visual_keywords || []).map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("")}</div>
+    `;
+  } else if (segment.level === 3) {
+    extra = `
+      <div class="detail-p"><strong>Pre:</strong> ${escapeHtml(segment.details.pre_state || "-")}</div>
+      <div class="detail-p"><strong>Post:</strong> ${escapeHtml(segment.details.post_state || "-")}</div>
+    `;
+  }
+
+  card.innerHTML = `
+    <div class="section-title">Selection</div>
+    <div class="detail-stack">
+      <div class="detail-body">
+        <span class="detail-pill" style="background:${segment.level === 1 ? "rgba(45,108,223,.12);color:#1e4ca3" : segment.level === 2 ? "rgba(228,157,28,.16);color:#91570b" : "rgba(212,87,124,.14);color:#9d2145"}">${levelName}</span>
+        <div class="detail-v">${escapeHtml(segment.label)}</div>
+        <div class="detail-p">${escapeHtml(segment.start_time)} - ${escapeHtml(segment.end_time)} · frames ${segment.frame_start}-${segment.frame_end}</div>
+        ${extra}
+      </div>
+      <div class="detail-body">
+        <div class="detail-k">Parent</div>
+        <div class="detail-v">${parent ? escapeHtml(parent.label) : "无"}</div>
+        <div class="detail-p">${parent ? `${escapeHtml(parent.start_time)} - ${escapeHtml(parent.end_time)}` : "当前层级无父节点"}</div>
+      </div>
+      <div class="detail-body">
+        <div class="detail-k">Raw Detail</div>
+        <div class="raw-box">${escapeHtml(rawDetail)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDiagnostics() {
+  const clip = UI.activeClip;
+  const diag = clip.diagnostics;
+  document.getElementById("diagCard").innerHTML = `
+    <div class="section-title">Diagnostics</div>
+    <div class="diag-grid">
+      ${renderDiagBox("Level 1", diag.level1)}
+      ${renderDiagBox("Level 2", diag.level2)}
+      ${renderDiagBox("Level 3", diag.level3)}
+    </div>
+    <div class="diag-list">
+      ${renderViolationList("L2 parent violations", diag.level2_parent_violations)}
+      ${renderViolationList("L3 parent violations", diag.level3_parent_violations)}
+    </div>
+  `;
+}
+
+function renderDiagBox(title, item) {
+  return `
+    <div class="diag-box">
+      <div class="meta-k">${title}</div>
+      <div class="diag-num">${item.count}</div>
+      <div class="detail-p">coverage ${(item.coverage_ratio * 100).toFixed(1)}%</div>
+      <div class="detail-p">gaps ${item.gap_count} · overlaps ${item.overlap_count}</div>
+    </div>
+  `;
+}
+
+function renderViolationList(title, items) {
+  if (!items || !items.length) {
+    return `<div class="diag-item"><strong>${title}:</strong> none</div>`;
+  }
+  return `
+    <div class="diag-item">
+      <strong>${title}:</strong>
+      ${items.map((item) => `${escapeHtml(item.child_id)} -> ${escapeHtml(item.parent_id || item.reason)}`).join("<br />")}
+    </div>
+  `;
+}
+</script>
+</body>
+</html>
