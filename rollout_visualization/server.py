@@ -481,9 +481,14 @@ class RolloutStore:
         cache_key = f"{uid}@{max(1, int(timeline_fps))}"
         if cache_key in self.timeline_frame_cache:
             return self.timeline_frame_cache[cache_key]
+        disk_frames = self._load_timeline_frame_disk_cache(uid, timeline_fps=timeline_fps)
+        if disk_frames is not None:
+            self.timeline_frame_cache[cache_key] = disk_frames
+            return disk_frames
         group = self.groups[uid]
         frames = self._extract_timeline_frames(group, timeline_max_t=timeline_max_t, timeline_fps=timeline_fps)
         self.timeline_frame_cache[cache_key] = frames
+        self._save_timeline_frame_disk_cache(uid, frames, timeline_fps=timeline_fps)
         return frames
 
     def _frame_cache_dir(self) -> Optional[Path]:
@@ -491,6 +496,12 @@ class RolloutStore:
             return None
         cache_dir = self.rollout_dir / ".frame_cache"
         return cache_dir
+
+    def _timeline_frame_cache_dir(self, timeline_fps: int = 1) -> Optional[Path]:
+        if not self.rollout_dir:
+            return None
+        fps = max(1, int(timeline_fps))
+        return self.rollout_dir / f".timeline_frame_cache_{fps}fps"
 
     def _load_frame_disk_cache(self, uid: str) -> Optional[tuple[list[str], list[int]]]:
         cache_dir = self._frame_cache_dir()
@@ -522,6 +533,41 @@ class RolloutStore:
             cache_file = cache_dir / safe_name
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump({"frames": frames, "clip_boundaries": clip_boundaries or []}, f)
+        except Exception:
+            pass
+
+    def _load_timeline_frame_disk_cache(self, uid: str, timeline_fps: int = 1) -> Optional[list[dict[str, Any]]]:
+        cache_dir = self._timeline_frame_cache_dir(timeline_fps=timeline_fps)
+        if cache_dir is None:
+            return None
+        safe_name = re.sub(r'[^\w\-.]', '_', uid) + ".json"
+        cache_file = cache_dir / safe_name
+        if not cache_file.exists():
+            return None
+        try:
+            with open(cache_file, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+        return None
+
+    def _save_timeline_frame_disk_cache(
+        self,
+        uid: str,
+        frames: list[dict[str, Any]],
+        timeline_fps: int = 1,
+    ) -> None:
+        cache_dir = self._timeline_frame_cache_dir(timeline_fps=timeline_fps)
+        if cache_dir is None:
+            return
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r'[^\w\-.]', '_', uid) + ".json"
+            cache_file = cache_dir / safe_name
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(frames, f)
         except Exception:
             pass
 
@@ -557,6 +603,45 @@ class RolloutStore:
                 self._save_frame_disk_cache(uid, [], [])
         if total > 0:
             print(f"\r  Frame cache: {total} groups, {cached} from cache, {extracted} extracted, {with_frames} with frames")
+
+    def warm_timeline_frame_cache(self, timeline_fps: int = 1) -> None:
+        """Pre-extract and cache timeline frames for temporal_seg groups."""
+        target_uids = [uid for uid in self.group_order if str(self.groups[uid].get("problem_type")) == "temporal_seg"]
+        total = len(target_uids)
+        if total <= 0:
+            return
+        cached = 0
+        extracted = 0
+        with_frames = 0
+        fps = max(1, int(timeline_fps))
+        for i, uid in enumerate(target_uids):
+            cache_key = f"{uid}@{fps}"
+            if cache_key in self.timeline_frame_cache:
+                cached += 1
+                if self.timeline_frame_cache[cache_key]:
+                    with_frames += 1
+                continue
+            disk_frames = self._load_timeline_frame_disk_cache(uid, timeline_fps=fps)
+            if disk_frames is not None:
+                self.timeline_frame_cache[cache_key] = disk_frames
+                cached += 1
+                if disk_frames:
+                    with_frames += 1
+                continue
+            print(f"\r  Extracting {fps}fps seg timeline frames: {i+1}/{total} ...", end="", flush=True)
+            try:
+                detail = self.get_group_detail(uid, max_frames=30, timeline_fps=fps)
+                frames = detail.get("timeline_frame_strip", []) or []
+                if frames:
+                    with_frames += 1
+                extracted += 1
+            except Exception:
+                self.timeline_frame_cache[cache_key] = []
+                self._save_timeline_frame_disk_cache(uid, [], timeline_fps=fps)
+        print(
+            f"\r  {fps}fps seg timeline cache: {total} groups, {cached} from cache, "
+            f"{extracted} extracted, {with_frames} with frames"
+        )
 
     def _extract_frames(self, group: dict[str, Any], max_frames: int) -> list[str]:
         frames: list[str] = []
@@ -984,12 +1069,16 @@ def main() -> None:
             print(f"Pre-loaded rollout data from: {args.rollout_dir}")
             print("  Warming frame cache (first run extracts frames, subsequent runs use disk cache)...")
             store.warm_frame_cache(max_frames=30)
+            print("  Warming 1fps temporal-seg timeline cache for preloaded HTML...")
+            store.warm_timeline_frame_cache(timeline_fps=1)
             # Pre-build the injected HTML blob
             all_groups_list = store.query_groups(step=None, step_key=None, task=None, query=None, limit=5000)
             all_group_details = {}
             for uid in store.group_order:
                 try:
-                    all_group_details[uid] = store.get_group_detail(uid, max_frames=30)
+                    group = store.groups.get(uid) or {}
+                    timeline_fps = 1 if str(group.get("problem_type")) == "temporal_seg" else 0
+                    all_group_details[uid] = store.get_group_detail(uid, max_frames=30, timeline_fps=timeline_fps)
                 except Exception:
                     pass
             preload = {
