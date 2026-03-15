@@ -568,6 +568,15 @@ async function renderGroup(uid){
       </span>
     </div>`;
 
+  const promptText=promptToPlainText(g.prompt||'');
+  if(promptText){
+    html+=`
+      <div class="card" style="padding:12px 14px">
+        <h3 style="margin-bottom:8px">📝 问题</h3>
+        <pre class="mono">${esc(promptText)}</pre>
+      </div>`;
+  }
+
   if(task==='temporal_seg'){
     /* ── Temporal seg: synchronized frame + timeline ── */
     const attempts=g.attempts||[];
@@ -625,7 +634,7 @@ async function renderGroup(uid){
         </h3>
         <div style="display:flex;gap:0;align-items:flex-start">
           <div style="width:${LABEL_W}px;flex-shrink:0;display:flex;flex-direction:column">${labelItems}</div>
-          <div style="flex:1;overflow:hidden" id="so-${uid}">
+          <div class="sync-outer" style="flex:1" id="so-${uid}" onscroll="updateSyncSlider('${uid}')">
             <div style="width:${innerW}px">
               <div style="display:flex;gap:${FG}px;padding:10px 8px">${framesHTML}</div>
               <div style="position:relative;height:18px;margin:4px 0 6px">${ruler}</div>
@@ -637,7 +646,7 @@ async function renderGroup(uid){
         </div>
         <div style="padding:6px 0 2px ${LABEL_W}px;display:flex;align-items:center;gap:8px">
           <span style="font-size:10px;color:var(--muted)">0s</span>
-          <input type="range" class="sync-slider" min="0" max="100" value="0"
+          <input type="range" class="sync-slider" min="0" max="100" value="0" id="ss-${uid}"
             style="flex:1;accent-color:#34d399"
             oninput="syncScroll('${uid}',this.value)"/>
           <span style="font-size:10px;color:var(--muted)">${maxT}s</span>
@@ -714,6 +723,13 @@ function syncScroll(uid,val){
   const o=document.getElementById('so-'+uid);
   if(!o) return;
   o.scrollLeft=(val/100)*(o.scrollWidth-o.clientWidth);
+}
+function updateSyncSlider(uid){
+  const o=document.getElementById('so-'+uid);
+  const s=document.getElementById('ss-'+uid);
+  if(!o||!s) return;
+  const maxScroll=Math.max(0,o.scrollWidth-o.clientWidth);
+  s.value=maxScroll>0 ? ((o.scrollLeft/maxScroll)*100).toFixed(1) : 0;
 }
 function scrollFT(uid,val,n){
   const t=document.getElementById('ft-'+uid);
@@ -839,6 +855,14 @@ function renderChoice(g){
 /* ═══════════════ UTILS ═══════════════ */
 function esc(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function promptToPlainText(s){
+  return String(s||'')
+    .replace(/<\s*video\s*>/gi,'[video]')
+    .replace(/<\s*image\s*>/gi,'[image]')
+    .replace(/<\s*audio\s*>/gi,'[audio]')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
 }
 function zoomFrame(idx){
   const frames=window._currentFrames||[];
