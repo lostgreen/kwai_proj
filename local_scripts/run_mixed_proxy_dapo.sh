@@ -194,6 +194,8 @@ python3 -m verl.trainer.main \
     trainer.val_freq=10 \
     trainer.val_generations_to_log=4 \
     trainer.save_freq=20 \
+    trainer.save_filtered_rollout_to_file=true \
+    trainer.save_filtered_rollout_n_per_step=-1 \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="/m2v_intern/xuboshen/zgw/RL-Models/${exp_name}" \
     data.val_batch_size=8

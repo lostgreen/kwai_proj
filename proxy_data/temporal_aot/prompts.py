@@ -46,7 +46,11 @@ def get_v2t_prompt(option_a: str, option_b: str) -> str:
         "<video>\n\n"
         "Which caption best matches the temporal direction of this video?\n"
         f"Options:\nA. {option_a}\nB. {option_b}\n\n"
-        "Think inside <think> </think> and output only the final option letter inside <answer> </answer>."
+        "First, carefully observe the visual content of the video from beginning to end. "
+        "Pay attention to what happens first, what changes in the middle, and what state appears at the end. "
+        "Then compare both captions against the visible temporal order and reason about which caption matches the video better.\n\n"
+        "Think step by step inside <think> </think> tags, then provide your final answer "
+        "(a single letter A or B) inside <answer> </answer> tags."
     )
 
 
@@ -56,5 +60,9 @@ def get_t2v_prompt(caption: str) -> str:
         "<video>\n\n"
         f'Which segment best matches the caption "{caption}"?\n'
         "Options:\nA. The first segment\nB. The second segment\n\n"
-        "Think inside <think> </think> and output only the final option letter inside <answer> </answer>."
+        "First, carefully observe both segments and use the black screen as the boundary between them. "
+        "Reason about the visible action order in the first segment and in the second segment, "
+        "then compare them with the caption to decide which segment matches better.\n\n"
+        "Think step by step inside <think> </think> tags, then provide your final answer "
+        "(a single letter A or B) inside <answer> </answer> tags."
     )
