@@ -2,13 +2,15 @@
 """
 混合代理任务 + 时序分割统一 Reward 函数。
 
-支持 5 种任务类型（由 problem_type 字段区分）:
+支持 7 种任务类型（由 problem_type 字段区分）:
 
 1. add      — 选择题：选下一步视频，精确匹配字母
 2. delete   — 选择题：找出不属于序列的视频，精确匹配字母
 3. replace  — 选择题：选填缺失步骤的视频，精确匹配字母
 4. sort     — 排序题：按时间排列视频片段，jigsaw displacement reward
 5. temporal_seg — 时序分割：F1-IoU reward（复用 youcook2_temporal_seg_reward）
+6. aot_v2t  — 选择题：判断单段视频的时间方向，精确匹配字母
+7. aot_t2v  — 选择题：在双段视频中匹配描述，精确匹配字母
 
 格式要求（严格模式）:
 - add/delete/replace: 必须包含 <answer>字母</answer>，
@@ -260,6 +262,8 @@ _TASK_REWARD_DISPATCH = {
     "add":          _choice_reward,
     "delete":       _choice_reward,
     "replace":      _choice_reward,
+    "aot_v2t":      _choice_reward,
+    "aot_t2v":      _choice_reward,
     "sort":         _sort_reward,
     "temporal_seg": _temporal_seg_reward,
 }
@@ -278,7 +282,7 @@ def compute_score(
         reward_inputs: list of dict, 每个 dict 包含:
             - response: str (模型回复)
             - ground_truth: str (标准答案)
-            - problem_type: str (任务类型: add/delete/replace/sort/temporal_seg)
+            - problem_type: str (任务类型: add/delete/replace/aot_v2t/aot_t2v/sort/temporal_seg)
             - data_type: str (数据类型, 通常为 "video")
 
     Returns:

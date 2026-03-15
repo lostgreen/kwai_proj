@@ -13,7 +13,11 @@
 #
 # 详细机制请参见: docs/ema_dapo_mechanism.md
 # ============================================================
+set -euo pipefail
 set -x
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 # ---- 环境变量 ----
 export DECORD_EOF_RETRY_MAX=2048001
@@ -21,14 +25,14 @@ export BAD_SAMPLES_LOG="$(pwd)/bad_samples.txt"
 mkdir -p "$(dirname "${BAD_SAMPLES_LOG}")"
 
 # ---- 实验配置 ----
-project_name='EasyR1-mixed-proxy'
-exp_name='qwen3_vl_mixed_proxy_dapo_2gpu_filtered'
+project_name="${PROJECT_NAME:-EasyR1-temporal-aot}"
+exp_name="${EXP_NAME:-qwen3_vl_temporal_aot_dapo_2gpu_filtered}"
 
 # ---- 模型 & 数据 ----
-MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"   # 替换为你的模型路径
-TRAIN_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/proxy_train_text_options.jsonl"   # CoT prompt 版本（选择题要求 <think>...<answer>）
-TEST_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/proxy_val_text_options.jsonl"       # 验证集
-IMAGE_DIR=""                                                 # 视频已使用绝对路径则留空
+MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"   # 替换为你的模型路径
+TRAIN_FILE="${TRAIN_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_train.jsonl}"
+TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_val.jsonl}"
+IMAGE_DIR="${IMAGE_DIR:-}"                                                 # 视频已使用绝对路径则留空
 
 # ---- 训练超参数 ----
 ROLLOUT_BS=8           # rollout batch size
@@ -76,8 +80,61 @@ CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
 
 # ---- 任务采样权重 ----
-# 当前数据只有 add / replace，两者各占 50%
-TASK_WEIGHTS='{"add":0.5,"replace":0.5}'
+# 自动从训练集读取 problem_type，避免每次换数据手改权重。
+# TASK_WEIGHT_MODE:
+#   - equal / uniform: 对训练集中出现的每个任务平均采样
+#   - proportional / count: 按训练集样本占比采样
+TASK_WEIGHT_MODE="${TASK_WEIGHT_MODE:-equal}"
+if [[ ! -f "${TRAIN_FILE}" ]]; then
+    echo "Train file not found: ${TRAIN_FILE}" >&2
+    exit 1
+fi
+if [[ -z "${TASK_WEIGHTS:-}" ]]; then
+    TASK_WEIGHTS="$(
+python3 - "${TRAIN_FILE}" "${TASK_WEIGHT_MODE}" <<'PY'
+import json
+import sys
+from collections import Counter
+
+path = sys.argv[1]
+mode = sys.argv[2].strip().lower()
+counter = Counter()
+
+with open(path, encoding="utf-8") as f:
+    for line_no, line in enumerate(f, 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Failed to parse {path}:{line_no}: {exc}")
+        task = str(obj.get("problem_type") or "").strip()
+        if task:
+            counter[task] += 1
+
+if not counter:
+    raise SystemExit(f"No non-empty problem_type found in {path}")
+
+task_names = sorted(counter)
+if mode in {"equal", "uniform"}:
+    weights = {task: 1.0 / len(task_names) for task in task_names}
+elif mode in {"proportional", "count", "counts", "auto"}:
+    total = sum(counter.values())
+    weights = {task: counter[task] / total for task in task_names}
+else:
+    raise SystemExit(
+        f"Unsupported TASK_WEIGHT_MODE={mode!r}. "
+        "Use equal/uniform or proportional/count."
+    )
+
+summary = ", ".join(f"{task}={counter[task]}" for task in task_names)
+sys.stderr.write(f"Detected task counts from {path}: {summary}\n")
+sys.stderr.write(f"Using task weights ({mode}): {json.dumps(weights, ensure_ascii=False)}\n")
+print(json.dumps(weights, ensure_ascii=False, separators=(",", ":")))
+PY
+)"
+fi
 
 # ---- Reward (统一多任务 reward 函数, 严格格式模式) ----
 REWARD_FUNCTION="verl/reward_function/mixed_proxy_reward.py:compute_score"
