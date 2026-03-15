@@ -343,6 +343,26 @@ def filter_valid_records(
     return valid_records, skipped_records
 
 
+def ensure_composite_stats(record: dict) -> dict[str, Any]:
+    width = record.get("width")
+    height = record.get("height")
+    fps = record.get("avg_frame_rate")
+    if width and height and fps:
+        return {
+            "width": width,
+            "height": height,
+            "avg_frame_rate": fps,
+        }
+
+    probe_data = probe_video(record["video_path"])
+    stats = extract_video_stats(probe_data)
+    return {
+        "width": stats.get("width"),
+        "height": stats.get("height"),
+        "avg_frame_rate": stats.get("avg_frame_rate"),
+    }
+
+
 def run_ffmpeg(cmd: list[str], dry_run: bool) -> None:
     if dry_run:
         print("[DRY RUN]", " ".join(cmd))
@@ -482,13 +502,13 @@ def main() -> None:
         bad_clip_keys, bad_video_paths = load_bad_sample_index(args.bad_samples_jsonl)
         records, known_bad_records = filter_known_bad_records(records, bad_clip_keys, bad_video_paths)
         skipped_records.extend(known_bad_records)
-
-    records, invalid_records = filter_valid_records(
-        records,
-        min_duration=args.min_duration,
-        max_duration_diff_sec=args.max_duration_diff_sec,
-    )
-    skipped_records.extend(invalid_records)
+    else:
+        records, invalid_records = filter_valid_records(
+            records,
+            min_duration=args.min_duration,
+            max_duration_diff_sec=args.max_duration_diff_sec,
+        )
+        skipped_records.extend(invalid_records)
     random.shuffle(records)
     if args.max_samples > 0:
         records = records[: args.max_samples]
@@ -525,6 +545,7 @@ def main() -> None:
                         reverse_path = os.path.join(args.reverse_dir, f"{clip_key}_rev.mp4")
                         if args.dry_run or not os.path.exists(reverse_path):
                             build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
+                    composite_stats = ensure_composite_stats(record)
                     composite_path = os.path.join(args.composite_dir, f"{clip_key}_t2v.mp4")
                     if args.dry_run or not os.path.exists(composite_path):
                         build_composite_clip(
@@ -532,12 +553,12 @@ def main() -> None:
                             black_video_path,
                             reverse_path,
                             composite_path,
-                            width=record.get("width"),
-                            height=record.get("height"),
-                            fps=record.get("avg_frame_rate"),
+                            width=composite_stats.get("width"),
+                            height=composite_stats.get("height"),
+                            fps=composite_stats.get("avg_frame_rate"),
                             dry_run=args.dry_run,
                         )
-            except subprocess.CalledProcessError as exc:
+            except (subprocess.CalledProcessError, json.JSONDecodeError, ValueError) as exc:
                 skipped_records.append(
                     {
                         "clip_key": clip_key,
