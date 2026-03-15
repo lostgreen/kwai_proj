@@ -5,7 +5,7 @@
 
 用法:
     python scripts/visualize_training.py \
-        -i /m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_mixed_proxy_training_2gpu/experiment_log.jsonl \
+        -i /m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_mixed_proxy_dapo_2gpu/experiment_log.jsonl \
         -o checkpoints/training_curves.png
 
     # 交互模式（弹窗预览）

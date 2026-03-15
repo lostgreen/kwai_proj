@@ -20,13 +20,13 @@ bash data_visualization/segmentation_visualize/run.sh
 ```bash
 python data_visualization/segmentation_visualize/server.py \
   --host 127.0.0.1 \
-  --port 8787 \
+  --port 8890 \
   --static-dir data_visualization/segmentation_visualize
 ```
 
 打开：
 
-`http://127.0.0.1:8787/`
+`http://127.0.0.1:8890/`
 
 ## Usage
 
