@@ -246,27 +246,42 @@ let curSummary=null, curSteps=[], curStepGroups=[], curStep=null, curStepKey=nul
 let chartData={}, hiddenCurves=new Set();
 
 /* ═══════════════ API ═══════════════ */
+async function requestJson(url){
+  const res=await fetch(url);
+  const text=await res.text();
+  let payload=null;
+  try{
+    payload=text ? JSON.parse(text) : {};
+  }catch(_err){
+    const snippet=(text||'').trim().slice(0,180) || `${res.status} ${res.statusText}`;
+    throw new Error(`HTTP ${res.status}: ${snippet}`);
+  }
+  if(!res.ok){
+    throw new Error(payload&&payload.error ? payload.error : `HTTP ${res.status}`);
+  }
+  return payload;
+}
+
 const api={
   async load(rolloutDir,logFile){
     const q=new URLSearchParams({rollout_dir:rolloutDir});
     if(logFile) q.set('log_file',logFile);
-    const r=await fetch('/api/load-data?'+q);
-    return r.json();
+    return requestJson('/api/load-data?'+q);
   },
-  async state(){return(await fetch('/api/state')).json()},
-  async steps(){return(await fetch('/api/steps')).json()},
+  async state(){return requestJson('/api/state')},
+  async steps(){return requestJson('/api/steps')},
   async groups(step,stepKey,task){
     const q=new URLSearchParams({limit:500});
     if(step!=null) q.set('step',step);
     if(stepKey) q.set('step_key',stepKey);
     if(task&&task!='all') q.set('task',task);
-    return(await fetch('/api/groups?'+q)).json();
+    return requestJson('/api/groups?'+q);
   },
   async group(uid,maxFrames=30){
-    return(await fetch(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}`)).json();
+    return requestJson(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}`);
   },
   async groupTimeline(uid,maxFrames=30,timelineFps=1){
-    return(await fetch(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}&timeline_fps=${timelineFps}`)).json();
+    return requestJson(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}&timeline_fps=${timelineFps}`);
   },
 };
 
@@ -506,18 +521,26 @@ async function renderGroup(uid){
   } else if(preloadedGroup && preloadedGroup.problem_type==='temporal_seg'){
     try{
       const res=await api.groupTimeline(uid,60,1);
-      if(!res.ok){main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">'+(res.error||'加载失败')+'</div>';return;}
       g=res.group;
     }catch(e){
-      main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
+      try{
+        const fallback=await api.group(uid,30);
+        g=fallback.group;
+      }catch(e2){
+        main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
+      }
     }
   } else {
     try{
       const res=await api.groupTimeline(uid,60,1);
-      if(!res.ok){main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">'+(res.error||'加载失败')+'</div>';return;}
       g=res.group;
     }catch(e){
-      main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
+      try{
+        const fallback=await api.group(uid,30);
+        g=fallback.group;
+      }catch(e2){
+        main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
+      }
     }
   }
   const frames=g.frame_strip||[];
