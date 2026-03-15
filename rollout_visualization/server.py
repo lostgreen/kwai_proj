@@ -4,6 +4,7 @@
 import argparse
 import base64
 import json
+import math
 import re
 import threading
 from http import HTTPStatus
@@ -33,6 +34,12 @@ def _make_step_key(phase: str, step: int) -> str:
 
 def _format_step_label(phase: str, step: int) -> str:
     return f"Val {step}" if phase == "val" else f"Step {step}"
+
+
+def _format_mmss(total_seconds: Any) -> str:
+    total = max(0, int(_safe_float(total_seconds, 0.0)))
+    minutes, seconds = divmod(total, 60)
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -107,6 +114,7 @@ class RolloutStore:
         self.task_counts: dict[str, int] = {}
         self.step_curve: list[dict[str, float]] = []
         self.frame_cache: dict[str, list[str]] = {}
+        self.timeline_frame_cache: dict[str, list[dict[str, Any]]] = {}
         self.total_samples = 0
 
     def _resolve_local_path(self, path_text: str) -> Path:
@@ -410,7 +418,7 @@ class RolloutStore:
                 break
         return rows
 
-    def get_group_detail(self, uid: str, max_frames: int = 30) -> dict[str, Any]:
+    def get_group_detail(self, uid: str, max_frames: int = 30, timeline_fps: int = 0) -> dict[str, Any]:
         group = self.groups.get(uid)
         if group is None:
             raise KeyError(f"uid not found: {uid}")
@@ -422,6 +430,8 @@ class RolloutStore:
         # Detect [MISSING] position for replace/add/delete tasks
         detail["missing_clip_index"] = self._detect_missing_position(detail)
         task = str(detail.get("problem_type") or "")
+        if task == "temporal_seg" and timeline_fps >= 1:
+            detail["timeline_frame_strip"] = self._get_timeline_frame_strip(uid, detail["timeline_max_t"], timeline_fps)
         if task in _CHOICE_TASKS:
             detail["choice_meta"] = self._build_choice_meta(detail)
         elif task == "sort":
@@ -465,6 +475,15 @@ class RolloutStore:
         frames = self._extract_frames(group, max_frames=max_frames)
         self.frame_cache[uid] = frames
         self._save_frame_disk_cache(uid, frames, group.get("_clip_boundaries", []))
+        return frames
+
+    def _get_timeline_frame_strip(self, uid: str, timeline_max_t: float, timeline_fps: int = 1) -> list[dict[str, Any]]:
+        cache_key = f"{uid}@{max(1, int(timeline_fps))}"
+        if cache_key in self.timeline_frame_cache:
+            return self.timeline_frame_cache[cache_key]
+        group = self.groups[uid]
+        frames = self._extract_timeline_frames(group, timeline_max_t=timeline_max_t, timeline_fps=timeline_fps)
+        self.timeline_frame_cache[cache_key] = frames
         return frames
 
     def _frame_cache_dir(self) -> Optional[Path]:
@@ -583,6 +602,104 @@ class RolloutStore:
         clip_boundaries = [b for b in clip_boundaries if b < len(frames)]
         group["_clip_boundaries"] = clip_boundaries
         return frames[:max_frames]
+
+    def _extract_timeline_frames(
+        self,
+        group: dict[str, Any],
+        timeline_max_t: float,
+        timeline_fps: int = 1,
+    ) -> list[dict[str, Any]]:
+        fps = max(1, int(timeline_fps))
+        max_second = max(0, int(math.ceil(_safe_float(timeline_max_t, 0.0))))
+        candidates: list[Any] = []
+        seen_paths: set[str] = set()
+        mm = group.get("multi_modal_source")
+        if isinstance(mm, dict):
+            for v in mm.get("videos") or []:
+                if isinstance(v, str):
+                    seen_paths.add(v)
+                candidates.append(v)
+        for vp in group.get("video_paths") or []:
+            if str(vp) not in seen_paths:
+                candidates.append(vp)
+
+        for candidate in candidates:
+            frames = self._candidate_to_timeline_frames(candidate, max_second=max_second, timeline_fps=fps)
+            if frames:
+                return frames
+
+        fallback = self._get_frame_strip(str(group.get("uid")), max_frames=min(200, max_second + 1))
+        if not fallback:
+            return []
+        if len(fallback) == 1:
+            return [{"second": 0, "timestamp": _format_mmss(0), "src": fallback[0]}]
+
+        mapped = []
+        for idx, src in enumerate(fallback):
+            second = int(round((idx / max(len(fallback) - 1, 1)) * max_second))
+            mapped.append({"second": second, "timestamp": _format_mmss(second), "src": src})
+        return mapped
+
+    def _candidate_to_timeline_frames(
+        self,
+        candidate: Any,
+        max_second: int,
+        timeline_fps: int = 1,
+    ) -> list[dict[str, Any]]:
+        if candidate is None:
+            return []
+        if isinstance(candidate, str):
+            value = candidate.strip()
+            path = Path(value)
+            if not path.is_absolute():
+                path = (self.root / path).resolve()
+            if not path.exists():
+                return []
+            if path.suffix.lower() in _VIDEO_EXTS:
+                return self._video_file_to_timeline_frames(path, max_second=max_second, timeline_fps=timeline_fps)
+            return []
+        return []
+
+    def _video_file_to_timeline_frames(
+        self,
+        video_path: Path,
+        max_second: int,
+        timeline_fps: int = 1,
+    ) -> list[dict[str, Any]]:
+        try:
+            import decord
+            decord.bridge.set_bridge("native")
+            vr = decord.VideoReader(str(video_path))
+            total = len(vr)
+            if total <= 0:
+                return []
+            avg_fps = _safe_float(getattr(vr, "get_avg_fps", lambda: 0.0)(), 0.0)
+            if avg_fps <= 0:
+                avg_fps = 1.0
+            step = 1.0 / float(max(1, timeline_fps))
+            ticks = []
+            t = 0.0
+            limit = max_second + 1e-6
+            while t <= limit:
+                ticks.append(round(t, 3))
+                t += step
+            frames = []
+            for tick in ticks:
+                frame_idx = min(total - 1, max(0, int(round(tick * avg_fps))))
+                frame_np = vr[frame_idx].asnumpy()
+                image = Image.fromarray(frame_np)
+                image.thumbnail((240, 140), Image.LANCZOS)
+                whole_second = int(round(tick))
+                frames.append(
+                    {
+                        "second": whole_second if timeline_fps == 1 else tick,
+                        "timestamp": _format_mmss(whole_second) if timeline_fps == 1 else f"{tick:.1f}s",
+                        "src": _image_to_data_url(image),
+                    }
+                )
+            return frames
+        except Exception:
+            return []
 
     def _candidate_to_frames(self, candidate: Any, max_frames: int) -> list[str]:
         if max_frames <= 0 or candidate is None:
@@ -791,8 +908,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             q = parse_qs(parsed.query)
             max_frames = int(q.get("max_frames", ["30"])[0])
             max_frames = max(4, min(max_frames, 200))
+            timeline_fps = int(q.get("timeline_fps", ["0"])[0] or 0)
             try:
-                detail = self.store.get_group_detail(uid, max_frames=max_frames)
+                detail = self.store.get_group_detail(uid, max_frames=max_frames, timeline_fps=timeline_fps)
             except KeyError as e:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": str(e)})
                 return

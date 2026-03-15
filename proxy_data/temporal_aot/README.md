@@ -38,6 +38,8 @@
    读取 manifest 和 caption pairs，筛掉低置信度或正反描述没有差异的样本，构造 `aot_v2t` / `aot_t2v` 训练数据。
 4. `prompts.py`
    统一维护标注和 MCQ 用的 prompt 模板。
+5. `rebalance_aot_answers.py`
+   在 filter 之后对保留下来的 AOT 样本做 A/B 选项重排，把最终答案分布尽量打平，同时不丢样本。
 
 ## 脚本逻辑
 
@@ -168,6 +170,38 @@
 - `SYSTEM_PROMPT`：约束模型关注时序方向
 - `get_forward_reverse_caption_prompt()`：单段视频 caption 标注
 - `get_v2t_prompt()` / `get_t2v_prompt()`：最终 MCQ 问题模板
+
+### 5. `rebalance_aot_answers.py`
+
+职责：在 offline / online filter 之后，对最终保留下来的 `aot_v2t` / `aot_t2v` 样本重新平衡答案分布。
+
+实际逻辑：
+
+1. 读取过滤后的 mixed JSONL。
+2. 仅处理 `aot_t2v` / `aot_v2t`。
+3. 找到当前多数答案（`A` 或 `B`）。
+4. 随机挑选一部分多数类样本，交换选项顺序：
+   - `aot_v2t`：交换 caption 的 `A/B` 顺序
+   - `aot_t2v`：交换 `The first segment` / `The second segment` 的 `A/B` 顺序
+5. 同步翻转 `answer`，并在 `metadata` 里写入重平衡标记。
+6. 输出样本数不变，只让 A/B 尽量接近 `1:1`。
+
+最常用的跑法：
+
+```bash
+python proxy_data/temporal_aot/rebalance_aot_answers.py \
+  --input-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.jsonl \
+  --output-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.balanced.jsonl
+```
+
+如果想把所有 AOT 样本放在一起统一打平，而不是按 `problem_type` 分开打平：
+
+```bash
+python proxy_data/temporal_aot/rebalance_aot_answers.py \
+  --input-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.jsonl \
+  --output-jsonl /tmp/mixed_aot_train.balanced.jsonl \
+  --balance-scope all
+```
 
 ## 检查结论
 

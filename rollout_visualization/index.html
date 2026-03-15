@@ -81,6 +81,25 @@ h3{font-size:13px;font-weight:600;color:#374151}
 .frame-modal-overlay img{max-width:90vw;max-height:90vh;border-radius:12px;box-shadow:0 0 40px rgba(0,0,0,.5)}
 .sync-slider-row{padding:4px 0 2px;display:flex;align-items:center;gap:8px}
 .sync-slider{flex:1;accent-color:#34d399;cursor:pointer}
+.sync-shell{width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;padding-bottom:4px;cursor:grab}
+.sync-shell.dragging{cursor:grabbing;user-select:none}
+.sync-inner{display:inline-block;min-width:max-content}
+.scroll-control{
+  display:flex;align-items:center;gap:10px;margin-top:10px;margin-bottom:4px;
+  padding:8px 10px;border-radius:12px;background:rgba(241,245,249,.72);border:1px solid rgba(100,116,139,.12)
+}
+.scroll-control .meta{font-size:11px;color:var(--muted);white-space:nowrap}
+.scroll-slider{flex:1;accent-color:#34d399;cursor:pointer}
+.timeline-frame-row{display:flex;gap:6px;margin-bottom:12px}
+.timeline-frame-item{width:88px;flex:0 0 auto;display:grid;gap:5px;cursor:pointer}
+.timeline-frame-thumb{
+  width:88px;height:56px;border-radius:12px;border:2px solid rgba(100,116,139,.16);
+  background:rgba(241,245,249,.6);display:flex;align-items:center;justify-content:center;
+  color:var(--muted);font-size:10px;overflow:hidden;position:relative
+}
+.timeline-frame-thumb:hover{border-color:var(--blue);box-shadow:0 0 8px rgba(96,165,250,.24)}
+.timeline-frame-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.timeline-frame-label{text-align:center;font-size:10px;color:var(--muted);font-family:"JetBrains Mono","Fira Code",monospace}
 .tl-label-item{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);white-space:nowrap}
 .tl-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .tl-tick{position:absolute;top:0;transform:translateX(-50%);font-size:9px;color:var(--muted);white-space:nowrap}
@@ -216,6 +235,7 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
 <script>
 /* ═══════════════ CONSTANTS ═══════════════ */
 const FW=104, FG=4, STRIDE=FW+FG, LABEL_W=68;
+const SEG_FW=88, SEG_GAP=6, SEG_STRIDE=SEG_FW+SEG_GAP;
 const TC={temporal_seg:'#fb7185',add:'#60a5fa',delete:'#34d399',replace:'#f59e0b',sort:'#a78bfa',aot_v2t:'#0f766e',aot_t2v:'#be185d'};
 const CLIP_COLORS=['#60a5fa','#34d399','#f59e0b','#a78bfa','#fb7185','#38bdf8','#e879f9','#fbbf24'];
 const taskColor=t=>TC[t.replace(/_video|_text/,'')]||'#94a3b8';
@@ -244,6 +264,9 @@ const api={
   },
   async group(uid,maxFrames=30){
     return(await fetch(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}`)).json();
+  },
+  async groupTimeline(uid,maxFrames=30,timelineFps=1){
+    return(await fetch(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}&timeline_fps=${timelineFps}`)).json();
   },
 };
 
@@ -474,14 +497,23 @@ async function renderGroup(uid){
   main.innerHTML='<div class="card" style="padding:20px;text-align:center"><span class="spin"></span> 加载中…</div>';
 
   let g;
-  // Try preloaded data first
   const pre=window.__PRELOADED__;
-  if(pre&&pre.all_details&&pre.all_details[uid]){
-    g=pre.all_details[uid];
-  } else {
-    // Fallback: API call
+  const preloadedGroup=pre&&pre.all_details&&pre.all_details[uid] ? pre.all_details[uid] : null;
+  if(preloadedGroup && preloadedGroup.problem_type!=='temporal_seg'){
+    g=preloadedGroup;
+  } else if(preloadedGroup && preloadedGroup.problem_type==='temporal_seg' && preloadedGroup.timeline_frame_strip){
+    g=preloadedGroup;
+  } else if(preloadedGroup && preloadedGroup.problem_type==='temporal_seg'){
     try{
-      const res=await api.group(uid,30);
+      const res=await api.groupTimeline(uid,60,1);
+      if(!res.ok){main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">'+(res.error||'加载失败')+'</div>';return;}
+      g=res.group;
+    }catch(e){
+      main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
+    }
+  } else {
+    try{
+      const res=await api.groupTimeline(uid,60,1);
       if(!res.ok){main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">'+(res.error||'加载失败')+'</div>';return;}
       g=res.group;
     }catch(e){
@@ -580,14 +612,26 @@ async function renderGroup(uid){
   if(task==='temporal_seg'){
     /* ── Temporal seg: synchronized frame + timeline ── */
     const attempts=g.attempts||[];
-    const toLeft=t=>((t/maxT)*innerW).toFixed(1)+'px';
-    const toWidth=(s,e)=>(((e-s)/maxT)*innerW).toFixed(1)+'px';
-    const numTicks=8;
+    const timelineFrames=(g.timeline_frame_strip||[]).length
+      ? g.timeline_frame_strip
+      : (nF>0 ? frames.map((src,idx)=>{
+          const sec=nF>1?Math.round((idx*Math.max(1,maxT))/Math.max(1,nF-1)):0;
+          return {second:sec,timestamp:formatMMSS(sec),src};
+        }) : []);
+    window._currentFrames=timelineFrames.map(f=>f.src||'');
+    const timelineMaxSec=Math.max(0, Math.ceil(maxT));
+    const timelineWidth=Math.max((timelineFrames.length||1)*SEG_STRIDE, 600);
+    const toLeft=t=>(Math.max(0,_num(t))*SEG_STRIDE).toFixed(1)+'px';
+    const toWidth=(s,e)=>(Math.max(SEG_STRIDE-8, (_num(e)-_num(s))*SEG_STRIDE-8)).toFixed(1)+'px';
+    const tickStep=Math.max(1, Math.ceil(Math.max(1,timelineMaxSec)/8));
     let ruler='';
-    for(let i=0;i<=numTicks;i++){
-      const t=Math.round(i/numTicks*maxT);
-      const px=(i/numTicks*innerW).toFixed(1);
+    for(let t=0;t<=timelineMaxSec;t+=tickStep){
+      const px=(t*SEG_STRIDE).toFixed(1);
       ruler+=`<span class="tl-tick" style="left:${px}px">${t}s</span>`;
+    }
+    if(timelineMaxSec>0&&timelineMaxSec%tickStep!==0){
+      const px=(timelineMaxSec*SEG_STRIDE).toFixed(1);
+      ruler+=`<span class="tl-tick" style="left:${px}px">${timelineMaxSec}s</span>`;
     }
     // GT segments (use first attempt that has ground_truth segs)
     let gtSegsHTML='';
@@ -600,6 +644,16 @@ async function renderGroup(uid){
         break;
       }
     }
+    const timelineFramesHTML=timelineFrames.map((frame,idx)=>{
+      const sec=_num(frame.second, idx);
+      const ts=frame.timestamp||formatMMSS(sec);
+      const src=frame.src||'';
+      const imgHTML=src?`<img src="${src}" alt="${ts}" draggable="false"/>`:`<span>${ts}</span>`;
+      return `<div class="timeline-frame-item" onclick="zoomFrame(${idx})">
+        <div class="timeline-frame-thumb">${imgHTML}</div>
+        <div class="timeline-frame-label">${ts}</div>
+      </div>`;
+    }).join('');
     // Per-attempt pred lanes
     const predLanes=attempts.map((r,ri)=>{
       const rc=rewColor(r.reward);
@@ -611,7 +665,7 @@ async function renderGroup(uid){
     }).join('');
 
     const labelItems=[
-      `<div style="height:${nF>0?74:20}px"></div>`,  // spacer for frame strip
+      `<div style="height:${timelineFrames.length>0?74:20}px"></div>`,
       `<div style="height:26px"></div>`,               // spacer for ruler
       `<div class="tl-label-item" style="height:22px;color:#f87171">
          <div class="tl-dot" style="background:#f87171"></div>GT
@@ -629,14 +683,14 @@ async function renderGroup(uid){
     html+=`
       <div class="card" style="padding:14px">
         <h3 style="margin-bottom:10px">
-          📽 帧条 + ⏱ 时间轴
-          <span class="muted">（同步滚动 · ${maxT}s · ${nF} 帧）</span>
+          📽 1fps 帧条 + ⏱ 时间轴
+          <span class="muted">（同步滚动 · ${timelineMaxSec}s · ${timelineFrames.length} 帧）</span>
         </h3>
         <div style="display:flex;gap:0;align-items:flex-start">
           <div style="width:${LABEL_W}px;flex-shrink:0;display:flex;flex-direction:column">${labelItems}</div>
-          <div class="sync-outer" style="flex:1" id="so-${uid}" onscroll="updateSyncSlider('${uid}')">
-            <div style="width:${innerW}px">
-              <div style="display:flex;gap:${FG}px;padding:10px 8px">${framesHTML}</div>
+          <div class="sync-shell" style="flex:1" id="so-${uid}">
+            <div class="sync-inner" style="width:${timelineWidth}px">
+              <div class="timeline-frame-row">${timelineFramesHTML}</div>
               <div style="position:relative;height:18px;margin:4px 0 6px">${ruler}</div>
               <div class="tl-lane" style="margin-bottom:7px">${gtSegsHTML}</div>
               <div style="height:1px;background:rgba(100,116,139,.08);margin-bottom:3px"></div>
@@ -644,12 +698,11 @@ async function renderGroup(uid){
             </div>
           </div>
         </div>
-        <div style="padding:6px 0 2px ${LABEL_W}px;display:flex;align-items:center;gap:8px">
-          <span style="font-size:10px;color:var(--muted)">0s</span>
-          <input type="range" class="sync-slider" min="0" max="100" value="0" id="ss-${uid}"
-            style="flex:1;accent-color:#34d399"
+        <div class="scroll-control" style="margin-left:${LABEL_W}px">
+          <div class="meta">拖动时间轴</div>
+          <input type="range" class="scroll-slider" min="0" max="1000" value="0" id="ss-${uid}"
             oninput="syncScroll('${uid}',this.value)"/>
-          <span style="font-size:10px;color:var(--muted)">${maxT}s</span>
+          <div class="meta">0-${timelineMaxSec}s</div>
         </div>
       </div>`;
 
@@ -716,25 +769,75 @@ async function renderGroup(uid){
   }
 
   main.innerHTML=html;
+  if(task==='temporal_seg') initSegTimelineScroll(uid);
 }
 
 /* ═══════════════ SCROLL ═══════════════ */
 function syncScroll(uid,val){
   const o=document.getElementById('so-'+uid);
   if(!o) return;
-  o.scrollLeft=(val/100)*(o.scrollWidth-o.clientWidth);
+  const maxScroll=Math.max(0,o.scrollWidth-o.clientWidth);
+  if(maxScroll<=0) return;
+  o.scrollLeft=(Number(val)/1000)*maxScroll;
 }
 function updateSyncSlider(uid){
   const o=document.getElementById('so-'+uid);
   const s=document.getElementById('ss-'+uid);
   if(!o||!s) return;
   const maxScroll=Math.max(0,o.scrollWidth-o.clientWidth);
-  s.value=maxScroll>0 ? ((o.scrollLeft/maxScroll)*100).toFixed(1) : 0;
+  s.value=maxScroll>0 ? String(Math.round((o.scrollLeft/maxScroll)*1000)) : '0';
 }
 function scrollFT(uid,val,n){
   const t=document.getElementById('ft-'+uid);
   if(!t) return;
   t.scrollLeft=(val/Math.max(1,n-1))*(t.scrollWidth-t.clientWidth);
+}
+function initSegTimelineScroll(uid){
+  const shell=document.getElementById('so-'+uid);
+  const slider=document.getElementById('ss-'+uid);
+  if(!shell||!slider) return;
+  const syncFromScroll=()=>updateSyncSlider(uid);
+  shell.addEventListener('scroll', syncFromScroll, {passive:true});
+  updateSyncSlider(uid);
+  let dragging=false, startX=0, startLeft=0;
+  const onMove=(e)=>{
+    if(!dragging) return;
+    const dx=e.clientX-startX;
+    if(Math.abs(dx)>4) window._suppressFrameClickUntil=Date.now()+120;
+    shell.scrollLeft=startLeft-dx;
+  };
+  const onUp=()=>{
+    if(!dragging) return;
+    dragging=false;
+    shell.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+  shell.addEventListener('mousedown', (e)=>{
+    if(e.button!==0) return;
+    dragging=true;
+    startX=e.clientX;
+    startLeft=shell.scrollLeft;
+    shell.classList.add('dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+  shell.addEventListener('touchstart', (e)=>{
+    const touch=e.touches&&e.touches[0];
+    if(!touch) return;
+    dragging=true;
+    startX=touch.clientX;
+    startLeft=shell.scrollLeft;
+  }, {passive:true});
+  shell.addEventListener('touchmove', (e)=>{
+    if(!dragging) return;
+    const touch=e.touches&&e.touches[0];
+    if(!touch) return;
+    const dx=touch.clientX-startX;
+    if(Math.abs(dx)>4) window._suppressFrameClickUntil=Date.now()+120;
+    shell.scrollLeft=startLeft-dx;
+  }, {passive:true});
+  shell.addEventListener('touchend', ()=>{dragging=false;}, {passive:true});
 }
 
 /* ═══════════════ SORT ═══════════════ */
@@ -856,6 +959,16 @@ function renderChoice(g){
 function esc(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+function _num(v,d=0){
+  const n=Number(v);
+  return Number.isFinite(n)?n:d;
+}
+function formatMMSS(totalSeconds){
+  const total=Math.max(0, Math.round(_num(totalSeconds,0)));
+  const mm=String(Math.floor(total/60)).padStart(2,'0');
+  const ss=String(total%60).padStart(2,'0');
+  return `${mm}:${ss}`;
+}
 function promptToPlainText(s){
   return String(s||'')
     .replace(/<\s*video\s*>/gi,'[video]')
@@ -865,6 +978,7 @@ function promptToPlainText(s){
     .trim();
 }
 function zoomFrame(idx){
+  if(window._suppressFrameClickUntil && Date.now() < window._suppressFrameClickUntil) return;
   const frames=window._currentFrames||[];
   const src=frames[idx];
   if(!src) return;
