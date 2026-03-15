@@ -60,6 +60,17 @@ def image_to_data_url(image: Image.Image, max_width: int = 160) -> str:
     return f"data:image/jpeg;base64,{payload}"
 
 
+def print_progress(prefix: str, current: int, total: int) -> None:
+    total = max(total, 1)
+    current = max(0, min(current, total))
+    width = 28
+    filled = int(width * current / total)
+    bar = "#" * filled + "-" * (width - filled)
+    percent = 100.0 * current / total
+    end = "\n" if current >= total else ""
+    print(f"\r{prefix} [{bar}] {current}/{total} ({percent:5.1f}%)", end=end, flush=True)
+
+
 def normalize_frame_range(start_sec: int, end_sec: int, n_frames: int) -> tuple[int, int]:
     start_idx = max(1, int(start_sec))
     end_idx = max(start_idx, int(end_sec))
@@ -360,6 +371,25 @@ class SegmentationStore:
 
     def list_clip_keys(self) -> list[str]:
         return list(self.clip_order)
+
+    def select_preload_clip_keys(
+        self,
+        max_samples: int = 0,
+        prefer_complete: bool = True,
+    ) -> list[str]:
+        ranked = list(self.clip_order)
+        if prefer_complete:
+            ranked.sort(
+                key=lambda clip_key: (
+                    0 if self.clips[clip_key]["summary"]["has_level3"] else 1,
+                    0 if self.clips[clip_key]["summary"]["has_level2"] else 1,
+                    0 if self.clips[clip_key]["summary"]["has_level1"] else 1,
+                    clip_key,
+                )
+            )
+        if max_samples and max_samples > 0:
+            ranked = ranked[:max_samples]
+        return ranked
 
     def get_clip(self, clip_key: str) -> Optional[dict[str, Any]]:
         clip = self.clips.get(clip_key)
@@ -677,6 +707,17 @@ def main() -> None:
         default=None,
         help="Pre-load annotation directory or a single annotation json on startup",
     )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=0,
+        help="Preload at most N clip details into HTML (0 = all clips)",
+    )
+    parser.add_argument(
+        "--prefer-complete",
+        action="store_true",
+        help="Prioritize clips with level1+level2+level3 when selecting preloaded samples",
+    )
     args = parser.parse_args()
 
     static_dir = Path(args.static_dir).expanduser().resolve()
@@ -689,16 +730,37 @@ def main() -> None:
         try:
             summary = store.load(args.annotation_dir)
             print(f"Pre-loaded annotation data from: {args.annotation_dir}")
-            print("  Building embedded frame strips and clip details...")
+            selected_clip_keys = store.select_preload_clip_keys(
+                max_samples=args.max_samples,
+                prefer_complete=args.prefer_complete,
+            )
+            n_complete = sum(
+                1
+                for clip_key in selected_clip_keys
+                if store.clips[clip_key]["summary"]["has_level1"]
+                and store.clips[clip_key]["summary"]["has_level2"]
+                and store.clips[clip_key]["summary"]["has_level3"]
+            )
+            print(
+                "  Building embedded frame strips and clip details..."
+                f" selected={len(selected_clip_keys)}"
+                f" complete_l123={n_complete}"
+                f" total_available={summary['clip_count']}"
+            )
             all_details = {}
-            for clip_key in store.list_clip_keys():
+            total_selected = len(selected_clip_keys)
+            for i, clip_key in enumerate(selected_clip_keys, 1):
                 clip = store.get_clip(clip_key)
                 if clip is not None:
                     all_details[clip_key] = clip
+                print_progress("  Preloading clips", i, total_selected)
             preload = {
                 "summary": summary,
                 "all_details": all_details,
                 "annotation_dir": args.annotation_dir,
+                "preloaded_clip_keys": selected_clip_keys,
+                "max_samples": args.max_samples,
+                "prefer_complete": args.prefer_complete,
             }
             preloaded_html = (
                 b'<script>window.__PRELOADED__='

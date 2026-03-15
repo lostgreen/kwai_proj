@@ -19,6 +19,7 @@ bash data_visualization/segmentation_visualize/run.sh
 
 ```bash
 ANNOTATION_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
+MAX_SAMPLES=200 \
 PORT=8890 \
 bash data_visualization/segmentation_visualize/run.sh
 ```
@@ -30,7 +31,9 @@ python data_visualization/segmentation_visualize/server.py \
   --host 127.0.0.1 \
   --port 8890 \
   --static-dir data_visualization/segmentation_visualize \
-  --annotation-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations
+  --annotation-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
+  --max-samples 200 \
+  --prefer-complete
 ```
 
 打开：
@@ -40,8 +43,10 @@ python data_visualization/segmentation_visualize/server.py \
 如果通过 `run.sh` 或 `--annotation-dir` 启动，服务会在启动时直接：
 
 - 解析 annotation 数据
-- 生成每个 clip 的 base64 帧条
+- 按优先级选择要预热的 clips
+- 生成这些 clips 的 base64 帧条
 - 把 `summary + all_details` 预注入页面 HTML
+- 在终端打印预加载进度条
 
 这样页面打开后就能直接渲染，使用方式更接近 `rollout_visualization`。
 
@@ -68,6 +73,18 @@ proxy_data/youcook2_seg_annotation/annotations
 - 帧条图片由后端在 `GET /api/clip/<clip_key>` 中直接内嵌成 base64 data URL，不再逐帧二次请求
 
 如果已经用启动参数预加载，页面会自动渲染，不需要再手动输入路径。
+
+## Preload Strategy
+
+- `MAX_SAMPLES=0` 表示预加载全部 clips
+- `MAX_SAMPLES>0` 时，只预热前 `N` 个 clip 的详情和 base64 帧条
+- 开启 `--prefer-complete` 或 `PREFER_COMPLETE=1` 时，预热顺序会优先选择同时具备 `level1 + level2 + level3` 的样本
+
+注意：
+
+- 这里的 `max_samples` 只影响“启动时预注入到 HTML 的样本数”
+- clip 列表和元数据仍然可以保留全量
+- 没有被预热的 clip，后续点开时仍可由后端按需生成
 
 ## API
 
