@@ -34,6 +34,7 @@ import os
 import random
 import re
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +184,15 @@ def parse_float(value: Any) -> float | None:
         return None
 
 
+def parse_ratio(value: Any) -> float | None:
+    if value in (None, "", "N/A", "0/0"):
+        return None
+    try:
+        return float(Fraction(str(value)))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return parse_float(value)
+
+
 def extract_video_stats(probe_data: dict[str, Any]) -> dict[str, Any]:
     streams = probe_data.get("streams", [])
     video_stream = None
@@ -213,7 +223,57 @@ def extract_video_stats(probe_data: dict[str, Any]) -> dict[str, Any]:
         "height": video_stream.get("height"),
         "codec_name": video_stream.get("codec_name"),
         "nb_frames": nb_frames,
+        "avg_frame_rate": parse_ratio(video_stream.get("avg_frame_rate")) or parse_ratio(video_stream.get("r_frame_rate")),
     }
+
+
+def load_bad_sample_index(bad_samples_jsonl: str) -> tuple[set[str], set[str]]:
+    clip_keys: set[str] = set()
+    video_paths: set[str] = set()
+    with open(bad_samples_jsonl, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            clip_key = obj.get("clip_key")
+            if isinstance(clip_key, str) and clip_key:
+                clip_keys.add(clip_key)
+            for path_key in ("video_path", "forward_video_path"):
+                video_path = obj.get(path_key)
+                if isinstance(video_path, str) and video_path:
+                    video_paths.add(video_path)
+    return clip_keys, video_paths
+
+
+def filter_known_bad_records(
+    records: list[dict],
+    bad_clip_keys: set[str],
+    bad_video_paths: set[str],
+) -> tuple[list[dict], list[dict]]:
+    kept_records: list[dict] = []
+    skipped_records: list[dict] = []
+    for record in records:
+        clip_key = record.get("clip_key")
+        video_path = record.get("video_path")
+        if (isinstance(clip_key, str) and clip_key in bad_clip_keys) or (
+            isinstance(video_path, str) and video_path in bad_video_paths
+        ):
+            skipped_records.append(
+                {
+                    "clip_key": clip_key,
+                    "video_path": video_path,
+                    "reason": "known_bad_sample",
+                }
+            )
+            continue
+        kept_records.append(record)
+    return kept_records, skipped_records
 
 
 def validate_record(
@@ -328,8 +388,35 @@ def build_black_clip(dst_path: str, duration_sec: float, dry_run: bool) -> None:
     run_ffmpeg(cmd, dry_run=dry_run)
 
 
-def build_composite_clip(forward_path: str, black_path: str, reverse_path: str, dst_path: str, dry_run: bool) -> None:
+def format_fps_value(fps: float | None) -> str:
+    if fps is None or fps <= 0:
+        return "25"
+    return f"{fps:.6f}".rstrip("0").rstrip(".")
+
+
+def build_composite_clip(
+    forward_path: str,
+    black_path: str,
+    reverse_path: str,
+    dst_path: str,
+    width: int | None,
+    height: int | None,
+    fps: float | None,
+    dry_run: bool,
+) -> None:
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    black_filters = []
+    if width and height:
+        black_filters.append(f"scale={width}:{height}")
+    black_filters.append(f"fps={format_fps_value(fps)}")
+    black_filters.extend(["setsar=1", "format=yuv420p"])
+    black_filter = ",".join(black_filters)
+    filter_complex = (
+        "[0:v]setsar=1,format=yuv420p[fwd];"
+        f"[1:v]{black_filter}[gap];"
+        "[2:v]setsar=1,format=yuv420p[rev];"
+        "[fwd][gap][rev]concat=n=3:v=1:a=0[outv]"
+    )
     cmd = [
         "ffmpeg",
         "-y",
@@ -340,7 +427,7 @@ def build_composite_clip(forward_path: str, black_path: str, reverse_path: str, 
         "-i",
         reverse_path,
         "-filter_complex",
-        "[0:v][1:v][2:v]concat=n=3:v=1:a=0[outv]",
+        filter_complex,
         "-map",
         "[outv]",
         dst_path,
@@ -366,6 +453,11 @@ def main() -> None:
     parser.add_argument("--reverse-dir", default="", help="Directory to save reversed clips")
     parser.add_argument("--composite-dir", default="", help="Directory to save T2V composite clips")
     parser.add_argument("--invalid-report-jsonl", default="", help="Optional JSONL path to save skipped invalid clips")
+    parser.add_argument(
+        "--bad-samples-jsonl",
+        default="",
+        help="Optional JSONL path of previously known bad samples to skip by clip_key/video_path",
+    )
     parser.add_argument("--black-video", default="", help="Reusable black screen clip path")
     parser.add_argument("--black-gap-sec", type=float, default=2.0, help="Black gap duration for T2V composite")
     parser.add_argument("--make-reverse", action="store_true", help="Export reversed clips with ffmpeg")
@@ -385,11 +477,18 @@ def main() -> None:
         )
     else:
         records = load_unique_event_clips(args.input_jsonl, min_duration=args.min_duration)
-    records, skipped_records = filter_valid_records(
+    skipped_records: list[dict] = []
+    if args.bad_samples_jsonl:
+        bad_clip_keys, bad_video_paths = load_bad_sample_index(args.bad_samples_jsonl)
+        records, known_bad_records = filter_known_bad_records(records, bad_clip_keys, bad_video_paths)
+        skipped_records.extend(known_bad_records)
+
+    records, invalid_records = filter_valid_records(
         records,
         min_duration=args.min_duration,
         max_duration_diff_sec=args.max_duration_diff_sec,
     )
+    skipped_records.extend(invalid_records)
     random.shuffle(records)
     if args.max_samples > 0:
         records = records[: args.max_samples]
@@ -428,7 +527,16 @@ def main() -> None:
                             build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
                     composite_path = os.path.join(args.composite_dir, f"{clip_key}_t2v.mp4")
                     if args.dry_run or not os.path.exists(composite_path):
-                        build_composite_clip(forward_path, black_video_path, reverse_path, composite_path, dry_run=args.dry_run)
+                        build_composite_clip(
+                            forward_path,
+                            black_video_path,
+                            reverse_path,
+                            composite_path,
+                            width=record.get("width"),
+                            height=record.get("height"),
+                            fps=record.get("avg_frame_rate"),
+                            dry_run=args.dry_run,
+                        )
             except subprocess.CalledProcessError as exc:
                 skipped_records.append(
                     {

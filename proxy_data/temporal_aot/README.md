@@ -77,6 +77,7 @@
 4. 过滤条件：
    - `clip_path` / `video_path` 必须是字符串
    - 同一个路径只保留一次
+   - 如果指定 `--bad-samples-jsonl`，会先按 `clip_key` / `video_path` 跳过已知坏样本
    - 若能得到时长，则 `duration_sec >= --min-duration`
    - 文件必须真实存在
    - 如果指定 `--subset training` 或 `--subset validation`，只保留对应子集
@@ -89,6 +90,7 @@
 7. 如果指定 `--make-composite`：
    - 确保 `reverse` 已存在
    - 生成或复用黑屏视频
+   - black gap 会在拼接前自动对齐到当前样本的分辨率和帧率
    - 拼接 `forward + black + reverse`
    - 保存到 `--composite-dir/{clip_key}_t2v.mp4`
 8. 输出 manifest，每条记录包含：
@@ -113,6 +115,7 @@
 - 如果后面要做 `aot_t2v`，仍然可以额外打开 `--make-composite`。
 - 如果某个视频虽然存在，但 `ffprobe`/`ffmpeg` 读不出来，脚本现在会跳过该样本，不再让整批任务直接报错退出。
 - 可以通过 `--invalid-report-jsonl` 把被过滤/失败的样本和原因写出来，方便回查。
+- `--invalid-report-jsonl` 输出的 JSONL 也可以直接回灌给 `--bad-samples-jsonl`，下次运行时跳过这些样本，减少重复过滤。
 
 ### 2. `annotate_event_captions.py`
 
@@ -231,6 +234,22 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
   --max-duration-diff-sec 2.0
 ```
 
+如果想复用上次记录下来的坏样本列表，避免再做一遍 `ffprobe` / `ffmpeg`：
+
+```bash
+python proxy_data/temporal_aot/build_event_aot_data.py \
+  --clip-db-json /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/extracted_clips_database.json \
+  --subset training \
+  --output-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
+  --reverse-dir /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/reverse_clips \
+  --invalid-report-jsonl proxy_data/temporal_aot/data/aot_invalid_clips.jsonl \
+  --bad-samples-jsonl proxy_data/temporal_aot/data/aot_invalid_clips.jsonl \
+  --make-reverse \
+  --max-samples 1000 \
+  --min-duration 3 \
+  --max-duration-diff-sec 2.0
+```
+
 如果只想先生成 manifest，不落 reverse：
 
 ```bash
@@ -248,14 +267,14 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
 python proxy_data/temporal_aot/build_event_aot_data.py \
   --clip-db-json /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/extracted_clips_database.json \
   --subset training \
-  --output-jsonl /path/to/aot_event_manifest.jsonl \
-  --reverse-dir /path/to/reverse_clips \
-  --composite-dir /path/to/t2v_composite \
+  --output-jsonl proxy_data/temporal_aot/data/aot_event_manifest_all.jsonl \
+  --reverse-dir /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/reverse_clips \
+  --composite-dir /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/composite_clips \
   --make-reverse \
   --make-composite \
-  --black-gap-sec 2.0 \
   --max-samples 1000 \
   --min-duration 3
+
 ```
 
 兼容旧流程时，也可以继续传 `--input-jsonl`，但不再是推荐方式。
@@ -267,6 +286,7 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
 - `--min-duration` 用于过滤过短事件
 - `--max-duration-diff-sec` 用于过滤“文件名/标注时长”和“真实视频时长”差太多的 clip
 - `--invalid-report-jsonl` 会记录被过滤或 reverse/composite 生成失败的样本
+- `--bad-samples-jsonl` 可直接复用历史 `invalid-report`，提前跳过这些样本
 - 这一步已经完成路径级去重
 - 如果不加 `--make-reverse`，manifest 里的 `reverse_video_path` 会为空
 
