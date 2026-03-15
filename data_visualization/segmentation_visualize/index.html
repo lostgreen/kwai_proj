@@ -459,8 +459,8 @@ function toggleLevel(levelKey, visible) {
 
 function renderTimeline() {
   const clip = UI.activeClip;
-  const sampled = new Set((clip.sampling.sampled_frame_indices || []).map((value) => Number(value)));
   const totalWidth = Math.max(clip.n_frames * STRIDE, 600);
+  const frames = Array.isArray(clip.frame_strip) ? clip.frame_strip : [];
 
   document.getElementById("timelineCard").innerHTML = `
     <div class="section-title">Timeline</div>
@@ -473,15 +473,19 @@ function renderTimeline() {
     <div class="sync-shell">
       <div class="sync-inner" style="width:${totalWidth}px">
         <div class="frame-row" id="frameRow">
-          ${Array.from({ length: clip.n_frames }, (_, i) => {
-            const frameIdx = i + 1;
+          ${frames.map((frame) => {
+            const frameIdx = frame.frame_idx;
             return `
               <div class="frame-card" onclick="selectFrame(${frameIdx})">
                 <div class="frame-thumb ${UI.selectedFrameIdx === frameIdx ? "active" : ""}" id="frame-${frameIdx}">
-                  <img loading="lazy" src="/api/frame/${encodeURIComponent(clip.clip_key)}/${frameIdx}?mode=thumb" alt="frame ${frameIdx}" onclick="openFrameModal(event, ${frameIdx})" />
-                  ${sampled.has(frameIdx) ? `<span class="sample-mark" title="used in L1 sampling"></span>` : ""}
+                  ${
+                    frame.src
+                      ? `<img loading="lazy" src="${frame.src}" alt="frame ${frameIdx}" onclick="openFrameModal(event, ${frameIdx})" />`
+                      : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted)">missing</div>`
+                  }
+                  ${frame.sampled ? `<span class="sample-mark" title="used in L1 sampling"></span>` : ""}
                 </div>
-                <div class="frame-label">${String(frameIdx).padStart(4, "0")} · ${mmss(frameIdx)}</div>
+                <div class="frame-label">${String(frameIdx).padStart(4, "0")} · ${escapeHtml(frame.timestamp || mmss(frameIdx))}</div>
               </div>
             `;
           }).join("")}
@@ -556,7 +560,9 @@ function openFrameModal(event, frameIdx) {
   event.stopPropagation();
   const modal = document.getElementById("frameModal");
   const img = document.getElementById("frameModalImg");
-  img.src = `/api/frame/${encodeURIComponent(UI.activeClip.clip_key)}/${frameIdx}?mode=full`;
+  const frame = (UI.activeClip.frame_strip || []).find((item) => item.frame_idx === frameIdx);
+  if (!frame || !frame.src) return;
+  img.src = frame.src;
   modal.classList.add("active");
 }
 

@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import argparse
+import base64
 import io
 import json
 import mimetypes
@@ -49,6 +47,17 @@ def format_mmss(total_seconds: Any) -> str:
     total = max(0, int(safe_float(total_seconds)))
     minutes, seconds = divmod(total, 60)
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def image_to_data_url(image: Image.Image, max_width: int = 160) -> str:
+    image = image.convert("RGB")
+    if max_width > 0 and image.width > max_width:
+        ratio = max_width / float(image.width)
+        image = image.resize((max_width, max(1, int(image.height * ratio))))
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=85)
+    payload = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/jpeg;base64,{payload}"
 
 
 def normalize_frame_range(start_sec: int, end_sec: int, n_frames: int) -> tuple[int, int]:
@@ -295,7 +304,7 @@ class SegmentationStore:
         self.annotation_dir: Optional[Path] = None
         self.clips: dict[str, dict[str, Any]] = {}
         self.clip_order: list[str] = []
-        self.frame_cache: dict[tuple[str, int, str], bytes] = {}
+        self.frame_cache: dict[str, list[dict[str, Any]]] = {}
 
     def load(self, annotation_dir_text: str) -> dict[str, Any]:
         annotation_dir = resolve_path(self.root, annotation_dir_text)
@@ -351,13 +360,14 @@ class SegmentationStore:
 
     def get_clip(self, clip_key: str) -> Optional[dict[str, Any]]:
         clip = self.clips.get(clip_key)
-        return clip["payload"] if clip else None
+        if clip is None:
+            return None
+        payload = clip["payload"]
+        if "frame_strip" not in payload:
+            payload["frame_strip"] = self._build_frame_strip(payload)
+        return payload
 
     def get_frame_bytes(self, clip_key: str, frame_idx: int, mode: str = "thumb") -> Optional[bytes]:
-        cache_key = (clip_key, frame_idx, mode)
-        if cache_key in self.frame_cache:
-            return self.frame_cache[cache_key]
-
         clip = self.clips.get(clip_key)
         if clip is None:
             return None
@@ -377,8 +387,6 @@ class SegmentationStore:
                 payload = buf.getvalue()
         except Exception:
             return None
-
-        self.frame_cache[cache_key] = payload
         return payload
 
     def _build_clip(self, raw: dict[str, Any], file_path: Path) -> dict[str, Any]:
@@ -451,6 +459,44 @@ class SegmentationStore:
             "payload": payload,
         }
 
+    def _build_frame_strip(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        clip_key = str(payload.get("clip_key") or "")
+        if clip_key in self.frame_cache:
+            return self.frame_cache[clip_key]
+
+        frame_dir_text = str(payload.get("frame_dir") or "")
+        n_frames = int(payload.get("n_frames") or 0)
+        sampled = set((payload.get("sampling") or {}).get("sampled_frame_indices") or [])
+        strip: list[dict[str, Any]] = []
+
+        frame_dir: Optional[Path] = None
+        if frame_dir_text:
+            try:
+                frame_dir = resolve_path(self.root, frame_dir_text)
+            except ValueError:
+                frame_dir = None
+
+        for frame_idx in range(1, n_frames + 1):
+            frame_path = self._resolve_frame_path_from_dir(frame_dir, frame_idx) if frame_dir else None
+            src = None
+            if frame_path is not None and frame_path.exists():
+                try:
+                    with Image.open(frame_path) as image:
+                        src = image_to_data_url(image, max_width=160)
+                except Exception:
+                    src = None
+            strip.append(
+                {
+                    "frame_idx": frame_idx,
+                    "timestamp": format_mmss(frame_idx),
+                    "sampled": frame_idx in sampled,
+                    "src": src,
+                }
+            )
+
+        self.frame_cache[clip_key] = strip
+        return strip
+
     def _resolve_frame_path(self, clip: dict[str, Any], frame_idx: int) -> Optional[Path]:
         frame_dir_text = str(clip["payload"].get("frame_dir") or "")
         if not frame_dir_text:
@@ -471,6 +517,19 @@ class SegmentationStore:
             if candidate.exists():
                 return candidate
 
+        for candidate in frame_dir.glob(f"{frame_idx:04d}.*"):
+            if candidate.suffix.lower() in IMAGE_EXTS:
+                return candidate
+        return None
+
+    def _resolve_frame_path_from_dir(self, frame_dir: Path, frame_idx: int) -> Optional[Path]:
+        primary = frame_dir / f"{frame_idx:04d}.jpg"
+        if primary.exists():
+            return primary
+        for ext in sorted(IMAGE_EXTS):
+            candidate = frame_dir / f"{frame_idx:04d}{ext}"
+            if candidate.exists():
+                return candidate
         for candidate in frame_dir.glob(f"{frame_idx:04d}.*"):
             if candidate.suffix.lower() in IMAGE_EXTS:
                 return candidate

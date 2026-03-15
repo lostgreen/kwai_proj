@@ -48,6 +48,7 @@ proxy_data/youcook2_seg_annotation/annotations
 - 右侧是当前 clip 的帧条和三层时间轴
 - hover 任意 segment 会联动高亮
 - click segment 或 frame 会在下方锁定详情
+- 帧条图片由后端在 `GET /api/clip/<clip_key>` 中直接内嵌成 base64 data URL，不再逐帧二次请求
 
 ## API
 
@@ -55,4 +56,3 @@ proxy_data/youcook2_seg_annotation/annotations
 - `GET /api/state`
 - `GET /api/clips?search=...`
 - `GET /api/clip/<clip_key>`
-- `GET /api/frame/<clip_key>/<frame_idx>?mode=thumb|full`
