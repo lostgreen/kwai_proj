@@ -71,6 +71,22 @@ def print_progress(prefix: str, current: int, total: int) -> None:
     print(f"\r{prefix} [{bar}] {current}/{total} ({percent:5.1f}%)", end=end, flush=True)
 
 
+def build_subset_summary(
+    base_summary: dict[str, Any],
+    selected_summaries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "loaded": base_summary.get("loaded", False),
+        "annotation_dir": base_summary.get("annotation_dir", ""),
+        "clip_count": len(selected_summaries),
+        "level1_count": sum(1 for clip in selected_summaries if clip.get("has_level1")),
+        "level2_count": sum(1 for clip in selected_summaries if clip.get("has_level2")),
+        "level3_count": sum(1 for clip in selected_summaries if clip.get("has_level3")),
+        "clips": selected_summaries,
+        "total_available_clip_count": base_summary.get("clip_count", len(selected_summaries)),
+    }
+
+
 def normalize_frame_range(start_sec: int, end_sec: int, n_frames: int) -> tuple[int, int]:
     start_idx = max(1, int(start_sec))
     end_idx = max(start_idx, int(end_sec))
@@ -754,8 +770,14 @@ def main() -> None:
                 if clip is not None:
                     all_details[clip_key] = clip
                 print_progress("  Preloading clips", i, total_selected)
+            selected_summaries = [
+                store.clips[clip_key]["summary"]
+                for clip_key in selected_clip_keys
+                if clip_key in store.clips
+            ]
+            preload_summary = build_subset_summary(summary, selected_summaries)
             preload = {
-                "summary": summary,
+                "summary": preload_summary,
                 "all_details": all_details,
                 "annotation_dir": args.annotation_dir,
                 "preloaded_clip_keys": selected_clip_keys,
