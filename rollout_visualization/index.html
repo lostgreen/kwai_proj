@@ -523,24 +523,14 @@ async function renderGroup(uid){
       const res=await api.groupTimeline(uid,60,1);
       g=res.group;
     }catch(e){
-      try{
-        const fallback=await api.group(uid,30);
-        g=fallback.group;
-      }catch(e2){
-        main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
-      }
+      g=preloadedGroup;
     }
   } else {
     try{
-      const res=await api.groupTimeline(uid,60,1);
+      const res=await api.group(uid,30);
       g=res.group;
     }catch(e){
-      try{
-        const fallback=await api.group(uid,30);
-        g=fallback.group;
-      }catch(e2){
-        main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
-      }
+      main.innerHTML='<div class="card" style="padding:20px;color:var(--danger)">加载失败: '+e.message+'</div>';return;
     }
   }
   const frames=g.frame_strip||[];
