@@ -98,16 +98,21 @@ def get_level1_prompt(clip_duration_sec: float) -> str:
 #     }
 #   ]
 # }
-_LEVEL2_BASE = """Identify the core, instructional steps that drive the task progression in the video. You need to extract specific, continuous action segments with clear start and end boundaries.
+_LEVEL2_BASE = """Identify the core logical events (Meso Steps) that drive the task progression within this macro phase.
 
-For each step, provide:
+CRITICAL GRANULARITY RULES FOR LEVEL 2:
+1. [Aggregation Rule]: A Level 2 step MUST be a complete "Logical Event" or "Workflow", NOT an isolated atomic action. 
+2. [Anti-Fragmentation]: DO NOT extract single, momentary physical actions (e.g., "pick up a spoon", "place filling", "fold a corner"). These are Level 3 details.
+3. [Good vs. Bad Example]: 
+   - BAD (Too granular): "Place a spoonful of filling onto the wrapper" (1 second).
+   - GOOD (Correct Level 2): "Assemble the wonton by filling and folding the wrapper" (15-20 seconds).
+
+For each grouped step, provide:
 - step_id: Sequential ID.
 - parent_phase_id: The phase_id of the macro phase this step belongs to.
-- start_time / end_time: Precise boundary timestamps.
-- instruction: A description of the step using an imperative or verb-object structure (e.g., "Slice the onions into thin strips").
-- visual_keywords: 3 to 5 key visual elements or action cues present in the segment (output as an array of strings, e.g., ["knife", "onion", "cutting board", "slicing"]).
-
-Remember, temporal gaps between consecutive steps are allowed.
+- start_time / end_time: Precise boundary timestamps covering the ENTIRE logical event.
+- instruction: A high-level description of the completed workflow (e.g., "Assemble the dumplings").
+- visual_keywords: 3 to 5 key visual elements present across this workflow.
 
 Output JSON format example:
 {
@@ -115,10 +120,10 @@ Output JSON format example:
     {
       "step_id": 1,
       "parent_phase_id": 1,
-      "start_time": "00:20",
-      "end_time": "00:45",
-      "instruction": "Slice the onion and set aside",
-      "visual_keywords": ["knife", "onion", "chopping"]
+      "start_time": "01:42",
+      "end_time": "02:03",
+      "instruction": "Assemble one wonton by filling and folding it",
+      "visual_keywords": ["wonton wrapper", "meat filling", "hands folding"]
     }
   ]
 }
@@ -173,16 +178,20 @@ def get_level2_prompt(
 #     }
 #   ]
 # }
-_LEVEL3_BASE = """Now, deep dive into the core steps (Level 2) and break them down into semantically complete sub-steps or key state chunks (typically lasting 5-15 seconds).
-Ignore micro body movements. Focus strictly on continuous operation units that result in a substantial, visually contrastive change in the state of the core target object.
+_LEVEL3_BASE = """Now, deep dive into the given Level 2 core step and break it down into Atomic State Transitions (Level 3).
 
-For each key state chunk, provide:
+CRITICAL GRANULARITY RULES FOR LEVEL 3:
+1. [Physics over Recipe]: You are NO LONGER writing recipe instructions. Your focus MUST shift entirely to the physical, visual changes of the objects.
+2. [State Transition Focus]: Only extract moments where a target object undergoes a VISUAL, IRREVERSIBLE change (e.g., deformation, separation, merging, material state change).
+3. [Ignore Empty Motions]: Ignore purely human limb movements (like reaching for a tool or moving a hand) if the object's state doesn't change.
+
+For each atomic state transition chunk, provide:
 - chunk_id: Sequential ID.
 - parent_step_id: The step_id of the core step this chunk belongs to.
-- start_time / end_time: Timestamps for this operation unit.
-- sub_action: A brief description of the sub-step (e.g., "Continuously chop the onion and push it into the bowl").
-- pre_state: The explicit visual state of the target object BEFORE the operation begins (e.g., "Halved onions resting on the cutting board").
-- post_state: The explicit visual state of the target object AFTER the operation concludes (e.g., "Onions are fully minced and transferred into a bowl").
+- start_time / end_time: The specific timestamps where the state transition occurs (can be just 1-3 seconds).
+- sub_action: A brief description of the specific interaction.
+- pre_state: The EXPLICIT visual state of the target object BEFORE the interaction (e.g., "A flat, empty wonton wrapper").
+- post_state: The EXPLICIT visual state of the target object AFTER the interaction (e.g., "A dollop of meat filling is now resting in the center of the wrapper").
 
 Output JSON format example:
 {
@@ -190,11 +199,11 @@ Output JSON format example:
     {
       "chunk_id": 1,
       "parent_step_id": 1,
-      "start_time": "00:22",
-      "end_time": "00:35",
-      "sub_action": "Mince onion and transfer",
-      "pre_state": "Halved onions resting on the cutting board",
-      "post_state": "Onions are fully minced and transferred into a bowl"
+      "start_time": "01:42",
+      "end_time": "01:43",
+      "sub_action": "Deposit filling",
+      "pre_state": "A flat, empty wonton wrapper",
+      "post_state": "A dollop of meat filling is resting on the wrapper"
     }
   ]
 }

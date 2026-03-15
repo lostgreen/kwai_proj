@@ -70,8 +70,17 @@ python proxy_data/youcook2_seg_annotation/annotate.py \
     --model pa/gmn-2.5-pr \
     --workers 4 \
     --limit 5 \
-    --max-frames-per-call 1024 \
-    --overwrite
+    --max-frames-per-call 1024 
+
+  python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/annotate.py \
+    --frames-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames \
+    --output-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
+    --level 3 \
+    --api-base https://api.novita.ai/v3/openai \
+    --model pa/gmn-2.5-pr \
+    --workers 4 \
+    --limit 5 \
+    --max-frames-per-call 1024 
 
 ```
 

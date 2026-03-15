@@ -34,6 +34,8 @@ python data_visualization/segmentation_visualize/server.py \
   --annotation-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
   --max-samples 200 \
   --prefer-complete
+
+ python data_visualization/segmentation_visualize/server.py   --host 127.0.0.1   --port 8890   --static-dir data_visualization/segmentation_visualize   --annotation-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations   --max-samples 5   --prefer-complete
 ```
 
 打开：

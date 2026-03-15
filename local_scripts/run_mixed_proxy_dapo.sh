@@ -115,7 +115,7 @@ fi
 # TASK_WEIGHT_MODE:
 #   - equal / uniform: 对训练集中出现的每个任务平均采样
 #   - proportional / count: 按训练集样本占比采样
-TASK_WEIGHT_MODE="${TASK_WEIGHT_MODE:-equal}"
+TASK_WEIGHT_MODE="${TASK_WEIGHT_MODE:-count}"
 if [[ ! -f "${TRAIN_FILE}" ]]; then
     echo "Train file not found: ${TRAIN_FILE}" >&2
     exit 1
