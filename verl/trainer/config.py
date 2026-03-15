@@ -154,10 +154,6 @@ class TrainerConfig:
     """whether to save training rollouts to a JSONL file at every step"""
     save_rollout_n_per_step: int = -1
     """how many rollout samples to save per step, -1 means save all"""
-    save_filtered_rollout_to_file: bool = False
-    """whether to save samples dropped by online filtering to a JSONL file"""
-    save_filtered_rollout_n_per_step: int = -1
-    """how many filtered samples to save per step, -1 means save all"""
     save_rollout_include_multimodal: bool = True
     """whether to save multimodal source metadata (e.g. video/image paths) in rollout jsonl"""
     save_rollout_include_timeline: bool = True

@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
-# 混合训练脚本 (DAPO 变体):
-#   EMA-GRPO advantage + DAPO 动态过滤 + Clip-Higher + Token-Loss + Entropy 正则
+# 混合训练脚本:
+#   EMA-GRPO + KL loss + 离线 rollout 筛选
 #
 # 与 run_mixed_proxy_training.sh 的核心区别:
-#   1) online_filtering=true  — 动态剔除"全对组"和"全错组"，仅保留有学习信号的组
-#   2) disable_kl=true         — 移除 KL 惩罚项（DAPO 原则：不限制探索）
-#   3) entropy_coeff=0.005     — Entropy 正则，防止动态过滤后模式坍塌
-#   4) clip_ratio_high=0.3     — Clip-Higher，允许更大的正向更新步长
-#   5) loss_avg_mode=token     — Token-level 损失（DAPO 标准做法）
-#   6) adv_estimator=ema_grpo  — 保留 EMA 基线（多任务奖励尺度归一化）
+#   1) 训练前先离线 rollout 一遍训练集，仅保留 8 个 rollout 奖励不全相同的样本
+#   2) 训练时关闭 online filtering，保留基础框架行为
+#   3) adv_estimator=ema_grpo  — 保留 EMA 基线
+#   4) use_kl_loss=true        — EMA-GRPO 使用 ref model + KL loss
 #
 # 详细机制请参见: docs/ema_dapo_mechanism.md
 # ============================================================
@@ -26,13 +24,14 @@ mkdir -p "$(dirname "${BAD_SAMPLES_LOG}")"
 
 # ---- 实验配置 ----
 project_name="${PROJECT_NAME:-EasyR1-temporal-aot}"
-exp_name="${EXP_NAME:-qwen3_vl_temporal_aot_dapo_2gpu_filtered}"
+exp_name="${EXP_NAME:-qwen3_vl_temporal_aot_dapo_2gpu_offline_filtered}"
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"   # 替换为你的模型路径
-TRAIN_FILE="${TRAIN_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_train.jsonl}"
+TRAIN_SOURCE_FILE="${TRAIN_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_train.jsonl}"
 TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_val.jsonl}"
 IMAGE_DIR="${IMAGE_DIR:-}"                                                 # 视频已使用绝对路径则留空
+TRAIN_FILE="${TRAIN_SOURCE_FILE}"
 
 # ---- 训练超参数 ----
 ROLLOUT_BS=8           # rollout batch size
@@ -55,32 +54,64 @@ MIN_PIXELS=3136
 # ---- 学习率 & 算法 ----
 LR=8e-7
 
-# ---- DAPO 核心参数 ----
-# adv_estimator: 保留 EMA-GRPO（多任务奖励尺度归一化的关键）
+# ---- 核心算法参数 ----
 ADV_ESTIMATOR=ema_grpo
 
-# online_filtering: DAPO 动态过滤
-# 过滤单位是“同一个 prompt 的 ROLLOUT_N 个回复”。
-# 仅当组均值满足 filter_low < mean(reward[filter_key]) < filter_high 时才参与更新。
-# 因此均值为 0.0 / 1.0 的退化组会被剔除；若连续多次都没有保留样本，则回退到未过滤 batch。
-ONLINE_FILTERING=true
-FILTER_LOW=0.01
-FILTER_HIGH=0.99
-MAX_TRY_MAKE_BATCH=10
+# 训练阶段关闭 online filtering，改为训练前离线筛选。
+ONLINE_FILTERING=false
 
-# DAPO: 关闭 KL 惩罚（允许模型大步探索新格式，不被 ref policy 约束）
-DISABLE_KL=true
+# EMA-GRPO 需要 ref model + KL loss
+DISABLE_KL=false
 
-# Entropy 正则: 防止动态过滤后 rollout 分布过度收窄
-# 推荐范围: 0.001 ~ 0.01; 0.0 = 关闭
+# Entropy 正则
 ENTROPY_COEFF=0.005
 
 # Clip-Higher: DAPO 非对称 clip（允许更大的正向更新）
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
 
+# ---- Reward (统一多任务 reward 函数, 严格格式模式) ----
+REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_proxy_reward.py:compute_score}"
+
+# ---- 离线 rollout 筛选 ----
+OFFLINE_FILTER="${OFFLINE_FILTER:-true}"
+OFFLINE_FILTER_FORCE="${OFFLINE_FILTER_FORCE:-false}"
+OFFLINE_FILTER_MAX_SAMPLES="${OFFLINE_FILTER_MAX_SAMPLES:-0}"
+OFFLINE_FILTER_OUTPUT="${OFFLINE_FILTER_OUTPUT:-${TRAIN_SOURCE_FILE%.jsonl}.offline_filtered.jsonl}"
+OFFLINE_FILTER_REPORT="${OFFLINE_FILTER_REPORT:-${TRAIN_SOURCE_FILE%.jsonl}.offline_filter_report.jsonl}"
+OFFLINE_FILTER_BACKEND="${OFFLINE_FILTER_BACKEND:-vllm}"
+OFFLINE_FILTER_GPU_MEMORY_UTILIZATION="${OFFLINE_FILTER_GPU_MEMORY_UTILIZATION:-0.8}"
+OFFLINE_FILTER_MAX_MODEL_LEN="${OFFLINE_FILTER_MAX_MODEL_LEN:-0}"
+OFFLINE_FILTER_MAX_BATCHED_TOKENS="${OFFLINE_FILTER_MAX_BATCHED_TOKENS:-16384}"
+
+if [[ "${OFFLINE_FILTER}" == "true" ]]; then
+    if [[ "${OFFLINE_FILTER_FORCE}" == "true" || ! -f "${OFFLINE_FILTER_OUTPUT}" ]]; then
+        python3 "${REPO_ROOT}/local_scripts/offline_rollout_filter.py" \
+            --input_jsonl "${TRAIN_SOURCE_FILE}" \
+            --output_jsonl "${OFFLINE_FILTER_OUTPUT}" \
+            --report_jsonl "${OFFLINE_FILTER_REPORT}" \
+            --model_path "${MODEL_PATH}" \
+            --reward_function "${REWARD_FUNCTION}" \
+            --backend "${OFFLINE_FILTER_BACKEND}" \
+            --num_rollouts "${ROLLOUT_N}" \
+            --temperature 0.7 \
+            --top_p 0.9 \
+            --max_new_tokens "${MAX_RESPONSE_LEN}" \
+            --video_fps "${VIDEO_FPS}" \
+            --max_frames "${MAX_FRAMES}" \
+            --max_pixels "${MAX_PIXELS}" \
+            --min_pixels "${MIN_PIXELS}" \
+            --max_samples "${OFFLINE_FILTER_MAX_SAMPLES}" \
+            --tensor_parallel_size "${TP_SIZE}" \
+            --gpu_memory_utilization "${OFFLINE_FILTER_GPU_MEMORY_UTILIZATION}" \
+            --max_model_len "${OFFLINE_FILTER_MAX_MODEL_LEN}" \
+            --max_num_batched_tokens "${OFFLINE_FILTER_MAX_BATCHED_TOKENS}"
+    fi
+    TRAIN_FILE="${OFFLINE_FILTER_OUTPUT}"
+fi
+
 # ---- 任务采样权重 ----
-# 自动从训练集读取 problem_type，避免每次换数据手改权重。
+# 自动从最终训练集读取 problem_type，避免每次换数据手改权重。
 # TASK_WEIGHT_MODE:
 #   - equal / uniform: 对训练集中出现的每个任务平均采样
 #   - proportional / count: 按训练集样本占比采样
@@ -136,9 +167,6 @@ PY
 )"
 fi
 
-# ---- Reward (统一多任务 reward 函数, 严格格式模式) ----
-REWARD_FUNCTION="verl/reward_function/mixed_proxy_reward.py:compute_score"
-
 # ---- 启动训练 ----
 python3 -m verl.trainer.main \
     config=examples/config_ema_grpo_64.yaml \
@@ -162,11 +190,8 @@ python3 -m verl.trainer.main \
     data.task_key="problem_type" \
     algorithm.adv_estimator="${ADV_ESTIMATOR}" \
     algorithm.disable_kl="${DISABLE_KL}" \
-    algorithm.use_kl_loss=false \
+    algorithm.use_kl_loss=true \
     algorithm.online_filtering="${ONLINE_FILTERING}" \
-    algorithm.filter_key=overall \
-    algorithm.filter_low="${FILTER_LOW}" \
-    algorithm.filter_high="${FILTER_HIGH}" \
     worker.actor.global_batch_size="${GLOBAL_BS}" \
     worker.actor.micro_batch_size_per_device_for_update="${MB_PER_UPDATE}" \
     worker.actor.micro_batch_size_per_device_for_experience="${MB_PER_EXP}" \
@@ -190,12 +215,9 @@ python3 -m verl.trainer.main \
     trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \
     trainer.nnodes="${NNODES}" \
     trainer.total_epochs=1 \
-    trainer.max_try_make_batch="${MAX_TRY_MAKE_BATCH}" \
     trainer.val_freq=10 \
     trainer.val_generations_to_log=4 \
     trainer.save_freq=20 \
-    trainer.save_filtered_rollout_to_file=true \
-    trainer.save_filtered_rollout_n_per_step=-1 \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="/m2v_intern/xuboshen/zgw/RL-Models/${exp_name}" \
     data.val_batch_size=8

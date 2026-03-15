@@ -113,10 +113,6 @@ def _rollout_filepath(rollout_dir: str, phase: str, step: int) -> str:
     return os.path.join(rollout_dir, f"{prefix}_{step:06d}.jsonl")
 
 
-def _filtered_rollout_filepath(rollout_dir: str, step: int) -> str:
-    return os.path.join(rollout_dir, f"filtered_step_{step:06d}.jsonl")
-
-
 class Role(IntEnum):
     """
     To create more roles dynamically, you can subclass Role and add new members
@@ -513,99 +509,6 @@ class RayPPOTrainer:
         multimodal_sources = batch.non_tensor_batch.get("multi_modal_data", [None] * len(scores))
         self._save_rollouts(batch, scores=scores, multimodal_sources=multimodal_sources, phase="train")
 
-    def _save_filtered_rollouts(
-        self,
-        batch: DataProto,
-        kept_sample_idxs: list[int],
-        filter_scores: list[float],
-        uid2mean: dict[str, float],
-        try_make_batch: int,
-    ) -> None:
-        if not self.config.trainer.save_filtered_rollout_to_file:
-            return
-
-        kept_idx_set = set(int(idx) for idx in kept_sample_idxs)
-        dropped_indices = [idx for idx in range(len(filter_scores)) if idx not in kept_idx_set]
-        if not dropped_indices:
-            return
-
-        rollout_dir = os.path.join(self.config.trainer.save_checkpoint_path, "filtered_rollouts")
-        os.makedirs(rollout_dir, exist_ok=True)
-        filepath = _filtered_rollout_filepath(rollout_dir, step=self.global_step)
-
-        prompt_ids = batch.batch["prompts"]
-        response_ids = batch.batch["responses"]
-        token_level_scores = batch.batch["token_level_scores"].sum(-1).detach().cpu().tolist()
-        uids = batch.non_tensor_batch.get("uid", [None] * len(filter_scores))
-        ground_truths = batch.non_tensor_batch.get("ground_truth", [None] * len(filter_scores))
-        problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(filter_scores))
-        data_types = batch.non_tensor_batch.get("data_type", [None] * len(filter_scores))
-        problem_ids = batch.non_tensor_batch.get("problem_id", [None] * len(filter_scores))
-        problems = batch.non_tensor_batch.get("problem_reserved_text", [None] * len(filter_scores))
-        multimodal_sources = batch.non_tensor_batch.get("multi_modal_data", [None] * len(filter_scores))
-
-        n = self.config.trainer.save_filtered_rollout_n_per_step
-        indices = dropped_indices if n <= 0 else dropped_indices[:n]
-
-        with open(filepath, "a", encoding="utf-8") as f:
-            for i in indices:
-                prompt_text = self.tokenizer.decode(prompt_ids[i], skip_special_tokens=True)
-                response_text = self.tokenizer.decode(response_ids[i], skip_special_tokens=True)
-                problem_type = str(problem_types[i]) if problem_types[i] is not None else None
-                mm_source = multimodal_sources[i] if i < len(multimodal_sources) else None
-                mm_source_json = _to_jsonable(mm_source) if self.config.trainer.save_rollout_include_multimodal else None
-                video_paths = []
-                image_paths = []
-                if isinstance(mm_source_json, dict):
-                    video_paths = _flatten_paths(mm_source_json.get("videos"))
-                    image_paths = _flatten_paths(mm_source_json.get("images"))
-
-                uid_raw = uids[i] if i < len(uids) else None
-                uid = str(uid_raw) if uid_raw is not None else None
-                group_mean = float(uid2mean.get(uid_raw, 0.0)) if uid_raw is not None else None
-                record = {
-                    "phase": "train_filter",
-                    "step": self.global_step,
-                    "try_make_batch": int(try_make_batch),
-                    "uid": uid,
-                    "problem_type": problem_type,
-                    "data_type": str(data_types[i]) if data_types[i] is not None else None,
-                    "problem_id": str(problem_ids[i]) if problem_ids[i] is not None else None,
-                    "problem": str(problems[i]) if problems[i] is not None else None,
-                    "prompt": prompt_text,
-                    "response": response_text,
-                    "ground_truth": str(ground_truths[i]) if ground_truths[i] is not None else None,
-                    "reward": float(token_level_scores[i]),
-                    "filter_key": self.config.algorithm.filter_key,
-                    "filter_score": float(filter_scores[i]),
-                    "group_mean_score": group_mean,
-                    "filter_low": float(self.config.algorithm.filter_low),
-                    "filter_high": float(self.config.algorithm.filter_high),
-                    "kept_by_online_filtering": False,
-                    "video_paths": video_paths,
-                    "image_paths": image_paths,
-                    "multi_modal_source": mm_source_json,
-                }
-                if self.config.trainer.save_rollout_include_timeline and problem_type == "temporal_seg":
-                    pred_segments = _extract_temporal_segments(response_text)
-                    gt_segments = _extract_temporal_segments(record["ground_truth"])
-                    max_t = 0.0
-                    if pred_segments:
-                        max_t = max(max_t, max(seg[1] for seg in pred_segments))
-                    if gt_segments:
-                        max_t = max(max_t, max(seg[1] for seg in gt_segments))
-                    record["temporal_segments"] = {
-                        "predicted": pred_segments,
-                        "ground_truth": gt_segments,
-                        "max_t": max_t,
-                    }
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-        print(
-            f"[online_filtering] step {self.global_step}: saved "
-            f"{len(indices)}/{len(dropped_indices)} filtered samples -> {filepath}"
-        )
-
     def _save_val_rollouts(
         self,
         batch: DataProto,
@@ -794,13 +697,6 @@ class RayPPOTrainer:
                     if avg_score > self.config.algorithm.filter_low and avg_score < self.config.algorithm.filter_high
                 ]
                 kept_sample_idxs = [idx for idx, uid in enumerate(uids) if uid in kept_uids]
-                self._save_filtered_rollouts(
-                    new_batch,
-                    kept_sample_idxs=kept_sample_idxs,
-                    filter_scores=filter_scores,
-                    uid2mean=uid2mean,
-                    try_make_batch=num_try_make_batch,
-                )
                 if len(kept_sample_idxs) == 0:
                     print(
                         "[online_filtering] No sample kept after filtering "
