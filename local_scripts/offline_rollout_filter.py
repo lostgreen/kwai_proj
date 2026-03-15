@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from tqdm.auto import tqdm
 from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
 
 from verl.utils.dataset import process_image, process_video
@@ -52,7 +53,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_model_len", type=int, default=0)
     parser.add_argument("--max_num_batched_tokens", type=int, default=16384)
     parser.add_argument("--dtype", default="bfloat16")
-    parser.add_argument("--disable_tqdm", action="store_true")
     return parser.parse_args()
 
 
@@ -288,7 +288,7 @@ def generate_with_vllm(example: dict[str, Any], processor, llm, sampling_params,
         if mm_kwargs is not None:
             request["mm_processor_kwargs"] = mm_kwargs
 
-    outputs = llm.generate([request], sampling_params=sampling_params, use_tqdm=not args.disable_tqdm)
+    outputs = llm.generate([request], sampling_params=sampling_params, use_tqdm=False)
     return [output.text for output in outputs[0].outputs]
 
 
@@ -317,7 +317,8 @@ def main() -> None:
     kept = 0
     dropped = 0
     with output_path.open("w", encoding="utf-8") as fout, report_path.open("w", encoding="utf-8") as freport:
-        for idx, item in enumerate(items):
+        progress = tqdm(items, desc="offline_filter", total=len(items), dynamic_ncols=True)
+        for idx, item in enumerate(progress):
             try:
                 if args.backend == "vllm":
                     responses = generate_with_vllm(item, processor, llm, sampling_params, args)
@@ -358,6 +359,7 @@ def main() -> None:
                     "responses": responses,
                 }
                 freport.write(json.dumps(report, ensure_ascii=False) + "\n")
+                progress.set_postfix(kept=kept, dropped=dropped, refresh=False)
 
             except Exception as exc:
                 dropped += 1
@@ -370,6 +372,7 @@ def main() -> None:
                     "prompt": item.get("prompt", ""),
                 }
                 freport.write(json.dumps(report, ensure_ascii=False) + "\n")
+                progress.set_postfix(kept=kept, dropped=dropped, refresh=False)
 
             if (idx + 1) % args.log_every == 0 or (idx + 1) == len(items):
                 print(
