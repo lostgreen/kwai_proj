@@ -358,6 +358,9 @@ class SegmentationStore:
             return clips
         return [clip for clip in clips if query_lower in clip["clip_key"].lower()]
 
+    def list_clip_keys(self) -> list[str]:
+        return list(self.clip_order)
+
     def get_clip(self, clip_key: str) -> Optional[dict[str, Any]]:
         clip = self.clips.get(clip_key)
         if clip is None:
@@ -547,6 +550,10 @@ class SegmentationHandler(BaseHTTPRequestHandler):
     def static_dir(self) -> Path:
         return self.server.static_dir  # type: ignore[attr-defined]
 
+    @property
+    def preloaded_html(self) -> Optional[bytes]:
+        return self.server.preloaded_html  # type: ignore[attr-defined]
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/"):
@@ -632,6 +639,12 @@ class SegmentationHandler(BaseHTTPRequestHandler):
 
         mime_type, _ = mimetypes.guess_type(str(target))
         payload = target.read_bytes()
+        if target.name == "index.html" and self.preloaded_html:
+            marker = b"</head>"
+            if marker in payload:
+                payload = payload.replace(marker, self.preloaded_html + marker, 1)
+            else:
+                payload = self.preloaded_html + payload
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mime_type or "application/octet-stream")
         self.send_header("Content-Length", str(len(payload)))
@@ -659,15 +672,47 @@ def main() -> None:
         default=str(Path(__file__).resolve().parent),
         help="Directory for index.html and assets",
     )
+    parser.add_argument(
+        "--annotation-dir",
+        default=None,
+        help="Pre-load annotation directory or a single annotation json on startup",
+    )
     args = parser.parse_args()
 
     static_dir = Path(args.static_dir).expanduser().resolve()
     if not static_dir.exists():
         raise FileNotFoundError(f"static-dir not found: {static_dir}")
 
+    store = SegmentationStore(static_dir.parents[1])
+    preloaded_html: Optional[bytes] = None
+    if args.annotation_dir:
+        try:
+            summary = store.load(args.annotation_dir)
+            print(f"Pre-loaded annotation data from: {args.annotation_dir}")
+            print("  Building embedded frame strips and clip details...")
+            all_details = {}
+            for clip_key in store.list_clip_keys():
+                clip = store.get_clip(clip_key)
+                if clip is not None:
+                    all_details[clip_key] = clip
+            preload = {
+                "summary": summary,
+                "all_details": all_details,
+                "annotation_dir": args.annotation_dir,
+            }
+            preloaded_html = (
+                b'<script>window.__PRELOADED__='
+                + json.dumps(preload, ensure_ascii=False).encode("utf-8")
+                + b";</script>\n"
+            )
+            print(f"  Ready. Preloaded HTML inject size: {len(preloaded_html) / 1024:.0f} KB")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] Failed to pre-load annotation data: {exc}")
+
     server = ThreadingHTTPServer((args.host, args.port), SegmentationHandler)
     server.static_dir = static_dir  # type: ignore[attr-defined]
-    server.store = SegmentationStore(static_dir.parents[1])  # type: ignore[attr-defined]
+    server.store = store  # type: ignore[attr-defined]
+    server.preloaded_html = preloaded_html  # type: ignore[attr-defined]
 
     print(f"Segmentation visualization server running at http://{args.host}:{args.port}/")
     print(f"Static dir: {static_dir}")

@@ -279,6 +279,7 @@ const UI = {
   filteredClips: [],
   activeClipKey: null,
   activeClip: null,
+  allDetails: {},
   hoveredSegmentId: null,
   selectedSegmentId: null,
   selectedFrameIdx: null,
@@ -355,6 +356,24 @@ function applySummary(summary) {
   renderClipList();
 }
 
+function bootPreloaded() {
+  const preload = window.__PRELOADED__;
+  if (!preload || !preload.summary) return;
+  UI.allDetails = preload.all_details || {};
+  document.getElementById("annotationDir").value = preload.annotation_dir || preload.summary.annotation_dir || "";
+  applySummary(preload.summary);
+  setStatus(`已预加载 ${preload.summary.clip_count || 0} 个 clips`);
+  if (UI.filteredClips.length > 0) {
+    const first = UI.filteredClips[0].clip_key;
+    UI.activeClipKey = first;
+    UI.activeClip = UI.allDetails[first] || null;
+    renderClipList();
+    if (UI.activeClip) {
+      renderActiveClip();
+    }
+  }
+}
+
 function filterClips() {
   const query = document.getElementById("searchInput").value.trim().toLowerCase();
   UI.filteredClips = UI.clips.filter((clip) => !query || clip.clip_key.toLowerCase().includes(query));
@@ -396,7 +415,8 @@ async function selectClip(encodedKey, fromList = false) {
   document.getElementById("clipHeader").innerHTML = `<div class="clip-title">加载 ${escapeHtml(clipKey)}...</div>`;
 
   try {
-    const clip = await fetchJson(`/api/clip/${encodeURIComponent(clipKey)}`);
+    const clip = UI.allDetails[clipKey] || await fetchJson(`/api/clip/${encodeURIComponent(clipKey)}`);
+    UI.allDetails[clipKey] = clip;
     UI.activeClip = clip;
     renderActiveClip();
   } catch (error) {
@@ -755,6 +775,8 @@ function renderViolationList(title, items) {
     </div>
   `;
 }
+
+bootPreloaded();
 </script>
 </body>
 </html>
