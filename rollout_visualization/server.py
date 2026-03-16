@@ -101,6 +101,49 @@ def _parse_answer_tag(text: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _compact_detail_for_preload(detail: dict[str, Any]) -> dict[str, Any]:
+    task = str(detail.get("problem_type") or "")
+    compact = {
+        "uid": detail.get("uid"),
+        "step": detail.get("step"),
+        "phase": detail.get("phase"),
+        "step_key": detail.get("step_key"),
+        "step_label": detail.get("step_label"),
+        "problem_type": task,
+        "mean_reward": detail.get("mean_reward"),
+        "prompt": detail.get("prompt"),
+        "ground_truth": detail.get("ground_truth"),
+        "missing_clip_index": detail.get("missing_clip_index"),
+        "clip_boundaries": detail.get("clip_boundaries") or [],
+        "timeline_max_t": detail.get("timeline_max_t"),
+        "choice_meta": detail.get("choice_meta"),
+        "sort_meta": detail.get("sort_meta"),
+        "attempts": [],
+    }
+
+    if task == "temporal_seg":
+        compact["timeline_frame_strip"] = detail.get("timeline_frame_strip") or []
+        compact["frame_strip"] = []
+        compact["clip_boundaries"] = []
+    else:
+        compact["frame_strip"] = detail.get("frame_strip") or []
+
+    for attempt in detail.get("attempts") or []:
+        compact_attempt = {
+            "reward": attempt.get("reward"),
+            "response": attempt.get("response"),
+        }
+        if task == "temporal_seg":
+            compact_attempt["temporal_segments"] = attempt.get("temporal_segments") or {}
+        if "pred_letter" in attempt:
+            compact_attempt["pred_letter"] = attempt.get("pred_letter")
+        if "pred_order" in attempt:
+            compact_attempt["pred_order"] = attempt.get("pred_order")
+        compact["attempts"].append(compact_attempt)
+
+    return compact
+
+
 class RolloutStore:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -1125,7 +1168,8 @@ def main() -> None:
                 try:
                     group = store.groups.get(uid) or {}
                     timeline_fps = 1 if str(group.get("problem_type")) == "temporal_seg" else 0
-                    all_group_details[uid] = store.get_group_detail(uid, max_frames=30, timeline_fps=timeline_fps)
+                    detail = store.get_group_detail(uid, max_frames=30, timeline_fps=timeline_fps)
+                    all_group_details[uid] = _compact_detail_for_preload(detail)
                 except Exception:
                     pass
             preload = {
