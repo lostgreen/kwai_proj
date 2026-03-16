@@ -27,10 +27,14 @@ Strictly adhere to the following timestamp annotation rules:
 visual actions. Skip irrelevant segments such as host monologues, meaningless static shots, \
 B-roll, or transition effects. DO NOT force adjacent segments to be perfectly contiguous; \
 gaps between timestamps are expected and encouraged.
-2. [Precise Boundaries]: The 'start_time' must capture the exact moment an action or \
+2. [Task-Relevance First]: ONLY keep segments that materially advance preparation, cooking, \
+assembly, or finalization of the target dish. Exclude pure narration, face-to-camera talking, \
+beauty shots, eating/tasting reactions, unrelated setup/cleanup, idle waiting with no visible \
+food change, and tool-only motions that do not affect ingredients or the dish.
+3. [Precise Boundaries]: The 'start_time' must capture the exact moment an action or \
 intention begins, and the 'end_time' must mark the exact moment the action concludes or \
 the visual state solidifies.
-3. [Formatting]: Output strictly in valid JSON format."""
+4. [Formatting]: Output strictly in valid JSON format."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,8 +44,16 @@ the visual state solidifies.
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL1_BASE = """\
 Analyze the instructional video and segment it into high-level macro phases \
-(typically 3 to 5 phases). These phases should represent the global narrative steps \
-required to complete the ultimate task.
+(typically 3 to 5 phases). These phases should represent the major cooking-oriented \
+subgoals required to complete the dish, not every visible scene change.
+
+LEVEL 1 DEFINITION:
+- A Level 1 phase is a broad task stage such as ingredient preparation, sauce making, \
+cooking/heating, assembly, or plating/finalization.
+- A Level 1 phase may be relatively long and may contain multiple fine-grained actions inside it.
+- Level 1 phases do NOT need to cover the whole clip. Skip intros, outros, talking-only spans, \
+beauty shots, unrelated serving/eating moments, or any content not advancing the dish.
+- Prefer grouping by recipe intent, not by camera cut or tiny motion change.
 
 For each phase, provide:
 - phase_id: Sequential ID (starting from 1).
@@ -98,7 +110,12 @@ def get_level1_prompt(clip_duration_sec: float) -> str:
 #     }
 #   ]
 # }
-_LEVEL2_BASE = """Identify the core logical events (Meso Steps) that drive the task progression within this macro phase.
+_LEVEL2_BASE = """Identify the core cooking events (Level 2 meso steps) that drive task progression within this macro phase.
+
+LEVEL 2 DEFINITION:
+- A Level 2 step is a cooking event: a multi-second, goal-directed workflow inside the current macro phase.
+- It must directly transform ingredients, cookware contents, or the dish state, OR complete a meaningful recipe subgoal.
+- It is smaller than a macro phase but larger than a single atomic motion.
 
 CRITICAL GRANULARITY RULES FOR LEVEL 2:
 1. [Aggregation Rule]: A Level 2 step MUST be a complete "Logical Event" or "Workflow", NOT an isolated atomic action. 
@@ -106,12 +123,19 @@ CRITICAL GRANULARITY RULES FOR LEVEL 2:
 3. [Good vs. Bad Example]: 
    - BAD (Too granular): "Place a spoonful of filling onto the wrapper" (1 second).
    - GOOD (Correct Level 2): "Assemble the wonton by filling and folding the wrapper" (15-20 seconds).
+4. [Cooking-Only Filter]: ONLY keep events that are truly part of making the dish. Exclude:
+   - talking or explaining without corresponding food manipulation
+   - showing ingredients/tools without using them
+   - idle hand motion, repositioning, or tool pickup with no food-state change
+   - waiting/resting/heating spans with no visible progress
+   - beauty shots, serving, tasting, or reaction shots unless the instructional goal is specifically plating/final garnish
+5. [Empty Is Valid]: If this macro phase contains no cooking-relevant event after filtering, return an empty list: {"meso_steps": []}.
 
 For each grouped step, provide:
 - step_id: Sequential ID.
 - parent_phase_id: The phase_id of the macro phase this step belongs to.
 - start_time / end_time: Precise boundary timestamps covering the ENTIRE logical event.
-- instruction: A high-level description of the completed workflow (e.g., "Assemble the dumplings").
+- instruction: A high-level description of the completed cooking event (e.g., "Assemble the dumplings").
 - visual_keywords: 3 to 5 key visual elements present across this workflow.
 
 Output JSON format example:
@@ -184,6 +208,7 @@ CRITICAL GRANULARITY RULES FOR LEVEL 3:
 1. [Physics over Recipe]: You are NO LONGER writing recipe instructions. Your focus MUST shift entirely to the physical, visual changes of the objects.
 2. [State Transition Focus]: Only extract moments where a target object undergoes a VISUAL, IRREVERSIBLE change (e.g., deformation, separation, merging, material state change).
 3. [Ignore Empty Motions]: Ignore purely human limb movements (like reaching for a tool or moving a hand) if the object's state doesn't change.
+4. [Food-Relevance Filter]: Ignore narration, waiting, presentation, tasting, and any motion unrelated to a visible state change in ingredients, cookware contents, or the dish.
 
 For each atomic state transition chunk, provide:
 - chunk_id: Sequential ID.
