@@ -2,42 +2,22 @@
 """
 annotate.py — Hierarchical DVC annotation pipeline for YouCook2 segmentation data.
 
-Supports 3 annotation levels (Level 1 is active; Level 2 & 3 are reserved).
+Three annotation levels with distinct strategies:
+  Level 1: Warped-Time Segmentation — uniform sampling → virtual frame index → map back
+  Level 2: Phase-Based Event Detection — uses L1 phases as scope, detects events per phase
+  Level 3: Local Temporal Grounding — given L2 event + text query → pinpoint atomic moments
 
 Usage:
-    # 旧模式：基于 JSONL 对应的样本进行标注
-    python annotate.py \
-        --jsonl proxy_data/youcook2_train_easyr1.jsonl \
-        --frames-dir proxy_data/youcook2_seg_annotation/frames \
-        --output-dir proxy_data/youcook2_seg_annotation/annotations \
-        --level 1 \
-        --api-base http://localhost:8000/v1 \
-        --model Qwen3-VL-7B \
-        [--api-key YOUR_KEY] \
-        [--workers 2] \
-        [--limit 50]
-
-    # 新模式：直接标注 frames 目录下的所有原视频抽帧结果
     python annotate.py \
         --frames-dir proxy_data/youcook2_seg_annotation/frames \
         --output-dir proxy_data/youcook2_seg_annotation/annotations \
         --level 1 \
-        --api-base http://localhost:8000/v1 \
-        --model Qwen3-VL-7B
+        --api-base https://api.novita.ai/v3/openai \
+        --model pa/gmn-2.5-pr \
+        --workers 4 --limit 50
 
 Output:
-    annotations/{clip_key}.json  — per-clip annotation result:
-    {
-        "clip_key": "GLd3aX16zBg_90_174",
-        "video_path": "...",
-        "clip_duration_sec": 84.0,
-        "level1": {<macro_phases>},   # from Level 1 LLM call
-        "level2": null,               # filled by level 2 pass
-        "level3": null,               # filled by level 3 pass
-        "n_frames": 84,
-        "frame_dir": "...",
-        "annotated_at": "2025-..."
-    }
+    annotations/{clip_key}.json
 """
 
 import argparse
@@ -71,26 +51,6 @@ def format_mmss(total_seconds: int) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def parse_mmss(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return max(0, int(value))
-    if not isinstance(value, str):
-        return None
-    parts = value.strip().split(":")
-    if len(parts) != 2:
-        return None
-    try:
-        minutes = int(parts[0])
-        seconds = int(parts[1])
-    except ValueError:
-        return None
-    if minutes < 0 or seconds < 0:
-        return None
-    return minutes * 60 + seconds
-
-
 def encode_frame_to_base64(frame_path: Path, resize_max_width: int = 0, jpeg_quality: int = 60) -> str:
     with Image.open(frame_path) as img:
         img = img.convert("RGB")
@@ -104,150 +64,103 @@ def encode_frame_to_base64(frame_path: Path, resize_max_width: int = 0, jpeg_qua
 
 
 def frame_stem_to_index(frame_path: Path, fallback_index: int) -> int:
+    """Frame filename stem → real second index (e.g. '0042' → 42)."""
     try:
         return int(frame_path.stem)
     except ValueError:
         return fallback_index
 
 
-def sample_frame_files(
-    frame_files: list[Path],
-    max_frames: int = 64,
-    sample_every: int = 1,
-) -> list[Path]:
-    if not frame_files:
+def get_all_frame_files(frame_dir: Path) -> list[Path]:
+    """Return sorted list of all JPEG frames in a directory."""
+    return sorted(frame_dir.glob("*.jpg"))
+
+
+def sample_uniform(frame_files: list[Path], n_sample: int) -> list[Path]:
+    """Uniformly sample exactly n_sample frames from a list."""
+    if not frame_files or n_sample <= 0:
         return []
-    sample_every = max(1, sample_every)
-    sampled = frame_files[::sample_every] if sample_every > 1 else list(frame_files)
-    if max_frames > 0 and len(sampled) > max_frames:
-        if max_frames == 1:
-            return [sampled[0]]
-        stride = (len(sampled) - 1) / (max_frames - 1)
-        sampled = [sampled[round(i * stride)] for i in range(max_frames)]
-    return sampled
+    if len(frame_files) <= n_sample:
+        return list(frame_files)
+    stride = (len(frame_files) - 1) / (n_sample - 1)
+    return [frame_files[round(i * stride)] for i in range(n_sample)]
 
 
 def encode_frame_files(
     frame_files: list[Path],
     resize_max_width: int = 0,
     jpeg_quality: int = 60,
-) -> tuple[list[str], list[int]]:
-    b64_list = []
-    indices = []
-    for i, fp in enumerate(frame_files, 1):
-        b64_list.append(encode_frame_to_base64(
-            fp,
-            resize_max_width=resize_max_width,
-            jpeg_quality=jpeg_quality,
-        ))
-        indices.append(frame_stem_to_index(fp, i))
-    return b64_list, indices
+) -> list[str]:
+    """Encode frame files to base64 JPEG strings."""
+    return [
+        encode_frame_to_base64(fp, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+        for fp in frame_files
+    ]
 
 
-def frames_to_base64(
+def get_frames_in_time_range(
     frame_dir: Path,
-    max_frames: int = 64,
-    sample_every: int = 1,
-    resize_max_width: int = 0,
-    jpeg_quality: int = 60,
-) -> tuple[list[str], list[int]]:
+    start_sec: int,
+    end_sec: int,
+) -> list[Path]:
+    """Return frame files whose stem index falls within [start_sec, end_sec]."""
+    result = []
+    for fp in get_all_frame_files(frame_dir):
+        idx = frame_stem_to_index(fp, -1)
+        if start_sec <= idx <= end_sec:
+            result.append(fp)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 1: Warped-Time mapping
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_warped_frame_mapping(
+    frame_files: list[Path],
+    n_sample: int = 32,
+) -> tuple[list[Path], list[dict[str, int]]]:
     """
-    Load JPEG frames from `frame_dir`, optionally sub-sample and resize them.
+    Uniformly sample n_sample frames and build a warped_idx → real_sec mapping.
 
     Returns:
-        (b64_list, indices) where b64_list are raw base64-encoded JPEG strings and
-        indices are frame numbers derived from filenames.
+        sampled_files: Frame paths in warped order.
+        mapping: List of {"warped_idx": 1..N, "real_sec": <original second>}.
     """
-    frame_files = sorted(frame_dir.glob("*.jpg"))
-    if not frame_files:
-        return [], []
-    sampled_files = sample_frame_files(
-        frame_files,
-        max_frames=max_frames,
-        sample_every=sample_every,
-    )
-    return encode_frame_files(
-        sampled_files,
-        resize_max_width=resize_max_width,
-        jpeg_quality=jpeg_quality,
-    )
+    sampled = sample_uniform(frame_files, n_sample)
+    mapping = []
+    for warped_idx, fp in enumerate(sampled, 1):
+        real_sec = frame_stem_to_index(fp, warped_idx)
+        mapping.append({"warped_idx": warped_idx, "real_sec": real_sec})
+    return sampled, mapping
 
 
-def frames_for_time_range_to_base64(
-    frame_dir: Path,
-    start_time: Any,
-    end_time: Any,
-    max_frames: int = 64,
-    resize_max_width: int = 0,
-    jpeg_quality: int = 60,
-) -> tuple[list[str], list[int]]:
-    start_sec = parse_mmss(start_time)
-    end_sec = parse_mmss(end_time)
-    if start_sec is None or end_sec is None:
-        return [], []
-
-    if end_sec < start_sec:
-        start_sec, end_sec = end_sec, start_sec
-
-    start_idx = max(1, start_sec)
-    end_idx = max(start_idx, end_sec)
-
-    frame_files = []
-    for i, fp in enumerate(sorted(frame_dir.glob("*.jpg")), 1):
-        frame_idx = frame_stem_to_index(fp, i)
-        if start_idx <= frame_idx <= end_idx:
-            frame_files.append(fp)
-
-    if not frame_files:
-        return [], []
-
-    sampled_files = sample_frame_files(frame_files, max_frames=max_frames, sample_every=1)
-    return encode_frame_files(
-        sampled_files,
-        resize_max_width=resize_max_width,
-        jpeg_quality=jpeg_quality,
-    )
+def warped_to_real_sec(warped_idx: int, mapping: list[dict[str, int]]) -> int | None:
+    """Look up the real-second timestamp for a warped frame index."""
+    for entry in mapping:
+        if entry["warped_idx"] == warped_idx:
+            return entry["real_sec"]
+    # Clamp to nearest if exact match not found
+    if not mapping:
+        return None
+    if warped_idx <= mapping[0]["warped_idx"]:
+        return mapping[0]["real_sec"]
+    if warped_idx >= mapping[-1]["warped_idx"]:
+        return mapping[-1]["real_sec"]
+    # Linear interpolation between surrounding entries
+    for i in range(len(mapping) - 1):
+        if mapping[i]["warped_idx"] <= warped_idx <= mapping[i + 1]["warped_idx"]:
+            # Snap to closest
+            left, right = mapping[i], mapping[i + 1]
+            frac = (warped_idx - left["warped_idx"]) / (right["warped_idx"] - left["warped_idx"])
+            return round(left["real_sec"] + frac * (right["real_sec"] - left["real_sec"]))
+    return None
 
 
-def compact_level1_result(level1_result: dict[str, Any]) -> dict[str, Any]:
-    phases = level1_result.get("macro_phases")
-    return {"macro_phases": phases if isinstance(phases, list) else []}
 
-
-def compact_level2_result(level2_result: dict[str, Any]) -> dict[str, Any]:
-    steps = level2_result.get("meso_steps")
-    return {"meso_steps": steps if isinstance(steps, list) else []}
-
-
-def sorted_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def sort_key(item: dict[str, Any]) -> tuple[int, int]:
-        start_sec = parse_mmss(item.get("start_time"))
-        end_sec = parse_mmss(item.get("end_time"))
-        return (
-            start_sec if start_sec is not None else sys.maxsize,
-            end_sec if end_sec is not None else sys.maxsize,
-        )
-
-    return sorted(
-        segments,
-        key=sort_key,
-    )
-
-
-def build_segment_prompt(
-    base_prompt: str,
-    segment_kind: str,
-    segment_id: Any,
-    start_time: Any,
-    end_time: Any,
-) -> str:
-    return (
-        f"You are annotating only {segment_kind} {segment_id}.\n"
-        f"Restrict all outputs to the time range {start_time} to {end_time}.\n"
-        "The provided frames cover only this time range, and their timestamps remain absolute within the full clip.\n\n"
-        f"{base_prompt}"
-    )
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Utility helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def clip_key_from_path(video_path: str) -> str:
     return Path(video_path).stem
@@ -307,7 +220,7 @@ def load_records_from_frames_dir(frames_base: Path, limit: int = 0) -> list[dict
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenAI-compatible API client via openai library
+# OpenAI-compatible API client
 # ─────────────────────────────────────────────────────────────────────────────
 
 def call_vlm(
@@ -317,23 +230,16 @@ def call_vlm(
     system_prompt: str,
     user_text: str,
     frame_b64_list: list[str],
-    frame_indices: list[int],
+    frame_labels: list[str],
     max_tokens: int = 8192,
     temperature: float = 0.0,
     retries: int = 3,
 ) -> str:
     """
-    Call a VLM endpoint (OpenAI-compatible) with interleaved frame images.
+    Call a VLM endpoint with interleaved frame images.
 
-    Message layout:
-        system: system_prompt
-        user:   [text: user_text]
-                [text: "[Timestamp MM:SS | Frame {i}]"] [image: frame_i]  × n_frames
-
-    Uses response_format={"type": "json_object"} for structured output.
-    API key is taken from `api_key` or NOVITA_API_KEY / OPENAI_API_KEY env vars.
-    Frame payloads follow the Novita example format:
-        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+    Args:
+        frame_labels: Per-frame text labels (e.g. "[Frame 1]" or "[Timestamp 00:42 | Frame 42]").
     """
     try:
         from openai import OpenAI
@@ -343,11 +249,10 @@ def call_vlm(
     key = api_key or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
     client = OpenAI(api_key=key, base_url=api_base)
 
-    # Build user content: prompt text first, then interleaved frame labels + images
     content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
     for i, b64 in enumerate(frame_b64_list):
-        fid = frame_indices[i] if i < len(frame_indices) else i + 1
-        content.append({"type": "text", "text": f"[Timestamp {format_mmss(fid)} | Frame {fid}]"})
+        label = frame_labels[i] if i < len(frame_labels) else f"[Frame {i + 1}]"
+        content.append({"type": "text", "text": label})
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
@@ -377,17 +282,12 @@ def call_vlm(
 
 
 def parse_json_from_response(text: str) -> dict[str, Any]:
-    """
-    Extract and parse the first JSON block from the model response.
-    Tries bare JSON first, then looks for ```json ... ``` fence.
-    """
+    """Extract and parse the first JSON block from the model response."""
     text = text.strip()
-    # Try direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # Try extracting from code fence
     import re
     m = re.search(r"```(?:json)?\s*(\{[\s\S]+?\})\s*```", text)
     if m:
@@ -395,7 +295,6 @@ def parse_json_from_response(text: str) -> dict[str, Any]:
             return json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
-    # Try finding first { ... } block
     m2 = re.search(r"\{[\s\S]+\}", text)
     if m2:
         try:
@@ -403,6 +302,22 @@ def parse_json_from_response(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
     return {"_raw_response": text, "_parse_error": True}
+
+
+def call_and_parse(
+    api_base: str, api_key: str, model: str,
+    system_prompt: str, prompt_text: str,
+    frame_b64: list[str], frame_labels: list[str],
+) -> dict[str, Any] | None:
+    """Call VLM and parse response. Retries once on parse failure. Returns None on final failure."""
+    raw = call_vlm(api_base, api_key, model, system_prompt, prompt_text, frame_b64, frame_labels)
+    parsed = parse_json_from_response(raw)
+    if parsed.get("_parse_error"):
+        raw = call_vlm(api_base, api_key, model, system_prompt, prompt_text, frame_b64, frame_labels)
+        parsed = parse_json_from_response(raw)
+        if parsed.get("_parse_error"):
+            return None
+    return parsed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -418,9 +333,8 @@ def annotate_clip(
     api_key: str,
     model: str,
     max_frames_per_call: int,
-    level1_target_fps: float,
-    level1_resize_max_width: int,
-    level1_jpeg_quality: int,
+    resize_max_width: int,
+    jpeg_quality: int,
     overwrite: bool,
 ) -> dict:
     """
@@ -451,12 +365,10 @@ def annotate_clip(
     if not overwrite and existing.get(level_key) is not None:
         return {"clip_key": key, "ok": True, "error": None, "skipped": True}
 
-    # Load frames
+    # Load frames metadata
     frame_dir = frames_base / key
     frame_meta = load_frame_meta(frame_dir)
-    source_fps = float(frame_meta.get("fps") or 1.0)
 
-    # Get clip duration from metadata
     clip_duration = float(
         frame_meta.get("annotation_end_sec")
         or meta.get("clip_end")
@@ -465,183 +377,36 @@ def annotate_clip(
     )
     n_total_frames = count_extracted_frames(frame_dir)
 
-    # Build annotation
     try:
         if level == 1:
-            sample_every = 1
-            if level1_target_fps > 0 and source_fps > level1_target_fps:
-                sample_every = max(1, round(source_fps / level1_target_fps))
-            frame_b64, frame_indices = frames_to_base64(
-                frame_dir,
-                max_frames=max_frames_per_call,
-                sample_every=sample_every,
-                resize_max_width=level1_resize_max_width,
-                jpeg_quality=level1_jpeg_quality,
+            result_key, result_val = _annotate_level1(
+                frame_dir, clip_duration,
+                api_base, api_key, model,
+                max_frames_per_call, resize_max_width, jpeg_quality,
             )
-            if not frame_b64:
-                return {"clip_key": key, "ok": False,
-                        "error": f"no frames found in {frame_dir}", "skipped": False}
-            prompt_text = get_level1_prompt(clip_duration)
-            raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT,
-                           prompt_text, frame_b64, frame_indices)
-            parsed = parse_json_from_response(raw)
-            result_key = "level1"
-            result_val = {
-                **parsed,
-                "_sampling": {
-                    "source_fps": source_fps,
-                    "target_fps": level1_target_fps,
-                    "sample_every": sample_every,
-                    "resize_max_width": level1_resize_max_width,
-                    "jpeg_quality": level1_jpeg_quality,
-                    "n_sampled_frames": len(frame_indices),
-                    "sampled_frame_indices": frame_indices,
-                },
-            }
-
         elif level == 2:
             l1 = existing.get("level1")
             if l1 is None:
                 return {"clip_key": key, "ok": False,
                         "error": "level1 annotation missing; run level 1 first", "skipped": False}
-            phases = sorted_segments([
-                phase for phase in l1.get("macro_phases", [])
-                if isinstance(phase, dict)
-            ])
-            if not phases:
-                return {"clip_key": key, "ok": False,
-                        "error": "level1 macro_phases missing or empty", "skipped": False}
-
-            compact_l1 = compact_level1_result(l1)
-            collected_steps: list[dict[str, Any]] = []
-            segment_calls: list[dict[str, Any]] = []
-            for phase in phases:
-                phase_id = phase.get("phase_id", len(segment_calls) + 1)
-                start_time = phase.get("start_time")
-                end_time = phase.get("end_time")
-                frame_b64, frame_indices = frames_for_time_range_to_base64(
-                    frame_dir,
-                    start_time,
-                    end_time,
-                    max_frames=max_frames_per_call,
-                )
-                if not frame_b64:
-                    return {"clip_key": key, "ok": False,
-                            "error": f"no frames found for level1 phase {phase_id} ({start_time}-{end_time})",
-                            "skipped": False}
-
-                prompt_text = build_segment_prompt(
-                    get_level2_prompt(clip_duration, compact_l1),
-                    segment_kind="macro phase",
-                    segment_id=phase_id,
-                    start_time=start_time,
-                    end_time=end_time,
-                )
-                raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT,
-                               prompt_text, frame_b64, frame_indices)
-                parsed = parse_json_from_response(raw)
-                local_steps = parsed.get("meso_steps")
-                if not isinstance(local_steps, list):
-                    local_steps = []
-                for step in local_steps:
-                    if not isinstance(step, dict):
-                        continue
-                    normalized_step = dict(step)
-                    normalized_step["parent_phase_id"] = phase_id
-                    collected_steps.append(normalized_step)
-                segment_calls.append({
-                    "phase_id": phase_id,
-                    "phase_name": phase.get("phase_name"),
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "n_sampled_frames": len(frame_indices),
-                    "sampled_frame_indices": frame_indices,
-                })
-
-            ordered_steps = sorted_segments(collected_steps)
-            for step_id, step in enumerate(ordered_steps, 1):
-                step["step_id"] = step_id
-            result_key = "level2"
-            result_val = {
-                "meso_steps": ordered_steps,
-                "_segment_calls": segment_calls,
-            }
-
+            result_key, result_val = _annotate_level2(
+                frame_dir, clip_duration, l1,
+                api_base, api_key, model,
+                max_frames_per_call, resize_max_width, jpeg_quality,
+            )
         elif level == 3:
-            l1 = existing.get("level1")
             l2 = existing.get("level2")
-            if l1 is None or l2 is None:
+            if l2 is None:
                 return {"clip_key": key, "ok": False,
-                        "error": "level1/level2 annotation missing; run previous levels first",
-                        "skipped": False}
-            steps = sorted_segments([
-                step for step in l2.get("meso_steps", [])
-                if isinstance(step, dict)
-            ])
-            if not steps:
-                return {"clip_key": key, "ok": False,
-                        "error": "level2 meso_steps missing or empty", "skipped": False}
-
-            compact_l1 = compact_level1_result(l1)
-            compact_l2 = compact_level2_result(l2)
-            collected_chunks: list[dict[str, Any]] = []
-            segment_calls: list[dict[str, Any]] = []
-            for step in steps:
-                step_id = step.get("step_id", len(segment_calls) + 1)
-                start_time = step.get("start_time")
-                end_time = step.get("end_time")
-                frame_b64, frame_indices = frames_for_time_range_to_base64(
-                    frame_dir,
-                    start_time,
-                    end_time,
-                    max_frames=max_frames_per_call,
-                )
-                if not frame_b64:
-                    return {"clip_key": key, "ok": False,
-                            "error": f"no frames found for level2 step {step_id} ({start_time}-{end_time})",
-                            "skipped": False}
-
-                prompt_text = build_segment_prompt(
-                    get_level3_prompt(clip_duration, compact_l1, compact_l2),
-                    segment_kind="meso step",
-                    segment_id=step_id,
-                    start_time=start_time,
-                    end_time=end_time,
-                )
-                raw = call_vlm(api_base, api_key, model, SYSTEM_PROMPT,
-                               prompt_text, frame_b64, frame_indices)
-                parsed = parse_json_from_response(raw)
-                local_chunks = parsed.get("key_state_chunks")
-                if not isinstance(local_chunks, list):
-                    local_chunks = []
-                for chunk in local_chunks:
-                    if not isinstance(chunk, dict):
-                        continue
-                    normalized_chunk = dict(chunk)
-                    normalized_chunk["parent_step_id"] = step_id
-                    collected_chunks.append(normalized_chunk)
-                segment_calls.append({
-                    "step_id": step_id,
-                    "instruction": step.get("instruction"),
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "n_sampled_frames": len(frame_indices),
-                    "sampled_frame_indices": frame_indices,
-                })
-
-            ordered_chunks = sorted_segments(collected_chunks)
-            for chunk_id, chunk in enumerate(ordered_chunks, 1):
-                chunk["chunk_id"] = chunk_id
-            result_key = "level3"
-            result_val = {
-                "key_state_chunks": ordered_chunks,
-                "_segment_calls": segment_calls,
-            }
+                        "error": "level2 annotation missing; run level 2 first", "skipped": False}
+            result_key, result_val = _annotate_level3(
+                frame_dir, clip_duration, l2,
+                api_base, api_key, model,
+                max_frames_per_call, resize_max_width, jpeg_quality,
+            )
         else:
             return {"clip_key": key, "ok": False, "error": f"unsupported level {level}", "skipped": False}
 
-    except NotImplementedError as e:
-        return {"clip_key": key, "ok": False, "error": str(e), "skipped": False}
     except RuntimeError as e:
         return {"clip_key": key, "ok": False, "error": str(e)[:300], "skipped": False}
 
@@ -672,6 +437,261 @@ def annotate_clip(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Level 1: Warped-Time Macro Phase Segmentation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _annotate_level1(
+    frame_dir: Path,
+    clip_duration: float,
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+) -> tuple[str, dict[str, Any]]:
+    """
+    Level 1: Warped-Time Segmentation.
+
+    1. Uniformly sample N frames from the full video.
+    2. Label them [Frame 1] .. [Frame N] — no real timestamps.
+    3. Model predicts phase boundaries on the warped frame axis.
+    4. Map warped frame indices back to real seconds via the mapping table.
+    """
+    all_frames = get_all_frame_files(frame_dir)
+    if not all_frames:
+        raise RuntimeError(f"no frames found in {frame_dir}")
+
+    sampled_files, mapping = build_warped_frame_mapping(all_frames, n_sample=max_frames)
+    frame_b64 = encode_frame_files(sampled_files, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+    # Warped labels: [Frame 1], [Frame 2], ...
+    frame_labels = [f"[Frame {entry['warped_idx']}]" for entry in mapping]
+
+    prompt_text = get_level1_prompt(n_frames=len(sampled_files))
+    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+    if parsed is None:
+        raise RuntimeError("level1 JSON parse failed after retry")
+
+    # Map warped frame indices back to real seconds
+    phases = parsed.get("macro_phases")
+    if isinstance(phases, list):
+        for phase in phases:
+            if not isinstance(phase, dict):
+                continue
+            sf = phase.get("start_frame")
+            ef = phase.get("end_frame")
+            if isinstance(sf, (int, float)):
+                phase["start_time"] = warped_to_real_sec(int(sf), mapping)
+            if isinstance(ef, (int, float)):
+                phase["end_time"] = warped_to_real_sec(int(ef), mapping)
+
+    return "level1", {
+        **parsed,
+        "_warped_mapping": mapping,
+        "_sampling": {
+            "n_sampled_frames": len(sampled_files),
+            "resize_max_width": resize_max_width,
+            "jpeg_quality": jpeg_quality,
+        },
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 2: Phase-Based Event Detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _annotate_level2(
+    frame_dir: Path,
+    clip_duration: float,
+    l1_result: dict[str, Any],
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+) -> tuple[str, dict[str, Any]]:
+    """
+    Level 2: Phase-Based Event Detection.
+
+    Uses L1 macro phases as scope:
+      1. For each L1 phase, extract frames in [start_time, end_time].
+      2. Detect complete cooking events within that phase.
+      3. Collect all events across phases (no NMS needed since phases don't overlap).
+    """
+    phases = l1_result.get("macro_phases", [])
+    phases = sorted(
+        [p for p in phases if isinstance(p, dict)],
+        key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)),
+    )
+    if not phases:
+        raise RuntimeError("level1 macro_phases missing or empty")
+
+    all_events: list[dict[str, Any]] = []
+    phase_calls: list[dict[str, Any]] = []
+
+    for phase in phases:
+        phase_id = phase.get("phase_id", len(phase_calls) + 1)
+        start_time = phase.get("start_time")
+        end_time = phase.get("end_time")
+        phase_name = phase.get("phase_name", "")
+        narrative_summary = phase.get("narrative_summary", "")
+
+        if not isinstance(start_time, (int, float)) or not isinstance(end_time, (int, float)):
+            phase_calls.append({
+                "phase_id": phase_id, "phase_name": phase_name,
+                "start_time": start_time, "end_time": end_time,
+                "skipped": True, "skip_reason": "invalid time",
+            })
+            continue
+
+        phase_frames = get_frames_in_time_range(frame_dir, int(start_time), int(end_time))
+        if not phase_frames:
+            phase_calls.append({
+                "phase_id": phase_id, "phase_name": phase_name,
+                "start_time": start_time, "end_time": end_time,
+                "skipped": True, "skip_reason": "no frames",
+            })
+            continue
+
+        sampled = sample_uniform(phase_frames, max_frames)
+        frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+        # Real-time labels for L2
+        frame_labels = []
+        for fp in sampled:
+            idx = frame_stem_to_index(fp, 0)
+            frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+
+        prompt_text = get_level2_prompt(
+            int(start_time), int(end_time),
+            phase_name=phase_name, narrative_summary=narrative_summary,
+        )
+        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+
+        n_raw = 0
+        if parsed is not None:
+            events = parsed.get("events")
+            if isinstance(events, list):
+                for ev in events:
+                    if isinstance(ev, dict):
+                        st = ev.get("start_time")
+                        et = ev.get("end_time")
+                        if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
+                            ev["parent_phase_id"] = phase_id
+                            all_events.append(ev)
+                            n_raw += 1
+
+        phase_calls.append({
+            "phase_id": phase_id, "phase_name": phase_name,
+            "start_time": start_time, "end_time": end_time,
+            "n_sampled_frames": len(sampled),
+            "n_events_raw": n_raw,
+        })
+
+    # Re-number event_ids globally
+    all_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
+    for i, ev in enumerate(all_events, 1):
+        ev["event_id"] = i
+
+    return "level2", {
+        "events": all_events,
+        "_phase_calls": phase_calls,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 3: Local Temporal Grounding
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _annotate_level3(
+    frame_dir: Path,
+    clip_duration: float,
+    l2_result: dict[str, Any],
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+) -> tuple[str, dict[str, Any]]:
+    """
+    Level 3: Local Temporal Grounding.
+
+    For each L2 event:
+      1. Extract frames within the event time range.
+      2. Use the event instruction as the action query.
+      3. Model pinpoints atomic state-change moments.
+    """
+    events = l2_result.get("events", [])
+    events = sorted(
+        [e for e in events if isinstance(e, dict)],
+        key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)),
+    )
+    if not events:
+        raise RuntimeError("level2 events missing or empty")
+
+    all_results: list[dict[str, Any]] = []
+    segment_calls: list[dict[str, Any]] = []
+
+    for event in events:
+        event_id = event.get("event_id", len(segment_calls) + 1)
+        start_time = event.get("start_time")
+        end_time = event.get("end_time")
+        instruction = event.get("instruction", "")
+
+        if not isinstance(start_time, (int, float)) or not isinstance(end_time, (int, float)):
+            segment_calls.append({
+                "event_id": event_id, "instruction": instruction,
+                "start_time": start_time, "end_time": end_time,
+                "skipped": True, "skip_reason": "invalid time",
+            })
+            continue
+
+        ev_frames = get_frames_in_time_range(frame_dir, int(start_time), int(end_time))
+        if not ev_frames:
+            segment_calls.append({
+                "event_id": event_id, "instruction": instruction,
+                "start_time": start_time, "end_time": end_time,
+                "skipped": True, "skip_reason": "no frames",
+            })
+            continue
+
+        sampled = sample_uniform(ev_frames, max_frames)
+        frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+        # Real-time labels
+        frame_labels = []
+        for fp in sampled:
+            idx = frame_stem_to_index(fp, 0)
+            frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+
+        prompt_text = get_level3_prompt(int(start_time), int(end_time), instruction)
+        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+
+        if parsed is None:
+            segment_calls.append({
+                "event_id": event_id, "instruction": instruction,
+                "start_time": start_time, "end_time": end_time,
+                "skipped": True, "skip_reason": "parse failed",
+            })
+            continue
+
+        results = parsed.get("grounding_results")
+        if isinstance(results, list):
+            for r in results:
+                if isinstance(r, dict):
+                    r["parent_event_id"] = event_id
+                    all_results.append(r)
+
+        segment_calls.append({
+            "event_id": event_id, "instruction": instruction,
+            "start_time": start_time, "end_time": end_time,
+            "n_sampled_frames": len(sampled),
+            "n_grounding_results": len(results) if isinstance(results, list) else 0,
+        })
+
+    # Sort and re-number
+    all_results.sort(key=lambda r: (r.get("start_time", 0), r.get("end_time", 0)))
+    for i, r in enumerate(all_results, 1):
+        r["action_id"] = i
+
+    return "level3", {
+        "grounding_results": all_results,
+        "_segment_calls": segment_calls,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -687,7 +707,7 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write per-clip annotation JSON files")
     parser.add_argument("--level", type=int, choices=[1, 2, 3], default=1,
-                        help="Annotation level to run (1=macro, 2=activity, 3=step)")
+                        help="Annotation level (1=warped macro, 2=phase-based event, 3=grounding)")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -695,13 +715,11 @@ def main() -> None:
     parser.add_argument("--model", default="pa/gmn-2.5-pr",
                         help="Model name to pass to the API")
     parser.add_argument("--max-frames-per-call", type=int, default=32,
-                        help="Max frames to include per API call (memory limit)")
-    parser.add_argument("--level1-target-fps", type=float, default=0.5,
-                        help="Effective FPS for Level 1 on top of pre-extracted frames")
-    parser.add_argument("--level1-resize-max-width", type=int, default=384,
-                        help="Resize Level 1 frames before upload; <=0 disables resizing")
-    parser.add_argument("--level1-jpeg-quality", type=int, default=60,
-                        help="JPEG quality used when recompressing Level 1 frames before upload")
+                        help="Max frames per API call")
+    parser.add_argument("--resize-max-width", type=int, default=384,
+                        help="Resize frames before upload; <=0 disables resizing")
+    parser.add_argument("--jpeg-quality", type=int, default=60,
+                        help="JPEG quality for recompressing frames before upload")
     parser.add_argument("--workers", type=int, default=2,
                         help="Parallel annotation workers")
     parser.add_argument("--limit", type=int, default=0,
@@ -723,7 +741,6 @@ def main() -> None:
         if not jsonl_path.exists():
             print(f"ERROR: JSONL not found: {jsonl_path}", file=sys.stderr)
             sys.exit(1)
-
         with open(jsonl_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -732,7 +749,6 @@ def main() -> None:
                         records.append(json.loads(line))
                     except json.JSONDecodeError:
                         pass
-
         if args.limit > 0:
             records = records[: args.limit]
     else:
@@ -743,13 +759,9 @@ def main() -> None:
 
     print(f"Annotating {len(records)} clips at Level {args.level}")
     print(f"API: {args.api_base}  model: {args.model}  workers: {args.workers}")
-    if args.level == 1:
-        print(
-            "Level 1 sampling: "
-            f"target_fps={args.level1_target_fps}  "
-            f"resize_max_width={args.level1_resize_max_width}  "
-            f"jpeg_quality={args.level1_jpeg_quality}"
-        )
+    print(f"resize_max_width={args.resize_max_width}  jpeg_quality={args.jpeg_quality}")
+    if args.level == 2:
+        print(f"L2 phase-based: events detected per L1 macro phase")
     print(f"Frames: {frames_base}  Output: {output_dir}\n")
 
     ok_count = skipped_count = error_count = 0
@@ -761,9 +773,8 @@ def main() -> None:
                 rec, frames_base, output_dir, args.level,
                 args.api_base, api_key, args.model,
                 args.max_frames_per_call,
-                args.level1_target_fps,
-                args.level1_resize_max_width,
-                args.level1_jpeg_quality,
+                args.resize_max_width,
+                args.jpeg_quality,
                 args.overwrite,
             ): rec
             for rec in records

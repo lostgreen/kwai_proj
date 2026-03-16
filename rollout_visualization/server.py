@@ -144,6 +144,36 @@ def _compact_detail_for_preload(detail: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _select_preload_step_keys(
+    steps: list[dict[str, Any]],
+    train_step_interval: int,
+) -> set[str]:
+    interval = max(1, int(train_step_interval))
+    selected: set[str] = set()
+    train_steps = [s for s in steps if str(s.get("phase")) != "val"]
+    val_steps = [s for s in steps if str(s.get("phase")) == "val"]
+
+    for step_info in val_steps:
+        step_key = str(step_info.get("step_key") or "")
+        if step_key:
+            selected.add(step_key)
+
+    if not train_steps:
+        return selected
+
+    max_train_step = max(int(s.get("step", 0)) for s in train_steps)
+    min_train_step = min(int(s.get("step", 0)) for s in train_steps)
+    for step_info in train_steps:
+        step = int(step_info.get("step", 0))
+        step_key = str(step_info.get("step_key") or "")
+        if not step_key:
+            continue
+        if step == min_train_step or step == max_train_step or step % interval == 0:
+            selected.add(step_key)
+
+    return selected
+
+
 class RolloutStore:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -1144,6 +1174,12 @@ def main() -> None:
     )
     parser.add_argument("--rollout-dir", default=None, help="pre-load rollout directory on startup")
     parser.add_argument("--log-file", default=None, help="pre-load experiment log file on startup")
+    parser.add_argument(
+        "--preload-train-step-interval",
+        type=int,
+        default=20,
+        help="when preloading HTML, keep every N train steps; val steps are all kept",
+    )
     args = parser.parse_args()
 
     root = Path.cwd().resolve()
@@ -1162,11 +1198,38 @@ def main() -> None:
             print("  Warming 1fps temporal-seg timeline cache for preloaded HTML...")
             store.warm_timeline_frame_cache(timeline_fps=1)
             # Pre-build the injected HTML blob
-            all_groups_list = store.query_groups(step=None, step_key=None, task=None, query=None, limit=5000)
+            all_steps = store.get_steps_summary()
+            selected_step_keys = _select_preload_step_keys(
+                all_steps,
+                train_step_interval=args.preload_train_step_interval,
+            )
+            selected_steps = [s for s in all_steps if str(s.get("step_key") or "") in selected_step_keys]
+            print(
+                "  Preload steps: "
+                f"{len(selected_steps)}/{len(all_steps)} kept "
+                f"(train every {max(1, int(args.preload_train_step_interval))} steps, val all)"
+            )
+            all_groups_list = [
+                {
+                    "uid": g["uid"],
+                    "step": g["step"],
+                    "phase": g.get("phase"),
+                    "step_key": g.get("step_key"),
+                    "step_label": g.get("step_label"),
+                    "problem_type": g["problem_type"],
+                    "mean_reward": g["mean_reward"],
+                    "n_rollouts": len(g["attempts"]),
+                    "prompt_preview": str(g.get("prompt") or "")[:180],
+                }
+                for uid, g in ((uid, store.groups[uid]) for uid in store.group_order)
+                if str(g.get("step_key") or "") in selected_step_keys
+            ]
             all_group_details = {}
             for uid in store.group_order:
                 try:
                     group = store.groups.get(uid) or {}
+                    if str(group.get("step_key") or "") not in selected_step_keys:
+                        continue
                     timeline_fps = 1 if str(group.get("problem_type")) == "temporal_seg" else 0
                     detail = store.get_group_detail(uid, max_frames=30, timeline_fps=timeline_fps)
                     all_group_details[uid] = _compact_detail_for_preload(detail)
@@ -1174,7 +1237,7 @@ def main() -> None:
                     pass
             preload = {
                 "summary": store.summary(),
-                "steps": store.get_steps_summary(),
+                "steps": selected_steps,
                 "all_groups": all_groups_list,
                 "all_details": all_group_details,
             }
