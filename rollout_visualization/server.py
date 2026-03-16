@@ -22,6 +22,7 @@ _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTA
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg"}
 _CHOICE_TASKS = {"add", "delete", "replace", "aot_v2t", "aot_t2v"}
+_SEG_TIMELINE_MAX_FRAMES = 64
 
 
 def _phase_rank(phase: str) -> int:
@@ -431,7 +432,12 @@ class RolloutStore:
         detail["missing_clip_index"] = self._detect_missing_position(detail)
         task = str(detail.get("problem_type") or "")
         if task == "temporal_seg" and timeline_fps >= 1:
-            detail["timeline_frame_strip"] = self._get_timeline_frame_strip(uid, detail["timeline_max_t"], timeline_fps)
+            detail["timeline_frame_strip"] = self._get_timeline_frame_strip(
+                uid,
+                detail["timeline_max_t"],
+                timeline_fps,
+                max_frames=_SEG_TIMELINE_MAX_FRAMES,
+            )
         if task in _CHOICE_TASKS:
             detail["choice_meta"] = self._build_choice_meta(detail)
         elif task == "sort":
@@ -477,18 +483,29 @@ class RolloutStore:
         self._save_frame_disk_cache(uid, frames, group.get("_clip_boundaries", []))
         return frames
 
-    def _get_timeline_frame_strip(self, uid: str, timeline_max_t: float, timeline_fps: int = 1) -> list[dict[str, Any]]:
-        cache_key = f"{uid}@{max(1, int(timeline_fps))}"
+    def _get_timeline_frame_strip(
+        self,
+        uid: str,
+        timeline_max_t: float,
+        timeline_fps: int = 1,
+        max_frames: int = _SEG_TIMELINE_MAX_FRAMES,
+    ) -> list[dict[str, Any]]:
+        cache_key = f"{uid}@{max(1, int(timeline_fps))}fps_{max(1, int(max_frames))}f"
         if cache_key in self.timeline_frame_cache:
             return self.timeline_frame_cache[cache_key]
-        disk_frames = self._load_timeline_frame_disk_cache(uid, timeline_fps=timeline_fps)
+        disk_frames = self._load_timeline_frame_disk_cache(uid, timeline_fps=timeline_fps, max_frames=max_frames)
         if disk_frames is not None:
             self.timeline_frame_cache[cache_key] = disk_frames
             return disk_frames
         group = self.groups[uid]
-        frames = self._extract_timeline_frames(group, timeline_max_t=timeline_max_t, timeline_fps=timeline_fps)
+        frames = self._extract_timeline_frames(
+            group,
+            timeline_max_t=timeline_max_t,
+            timeline_fps=timeline_fps,
+            max_frames=max_frames,
+        )
         self.timeline_frame_cache[cache_key] = frames
-        self._save_timeline_frame_disk_cache(uid, frames, timeline_fps=timeline_fps)
+        self._save_timeline_frame_disk_cache(uid, frames, timeline_fps=timeline_fps, max_frames=max_frames)
         return frames
 
     def _frame_cache_dir(self) -> Optional[Path]:
@@ -497,11 +514,12 @@ class RolloutStore:
         cache_dir = self.rollout_dir / ".frame_cache"
         return cache_dir
 
-    def _timeline_frame_cache_dir(self, timeline_fps: int = 1) -> Optional[Path]:
+    def _timeline_frame_cache_dir(self, timeline_fps: int = 1, max_frames: int = _SEG_TIMELINE_MAX_FRAMES) -> Optional[Path]:
         if not self.rollout_dir:
             return None
         fps = max(1, int(timeline_fps))
-        return self.rollout_dir / f".timeline_frame_cache_{fps}fps"
+        frame_cap = max(1, int(max_frames))
+        return self.rollout_dir / f".timeline_frame_cache_{fps}fps_{frame_cap}f"
 
     def _load_frame_disk_cache(self, uid: str) -> Optional[tuple[list[str], list[int]]]:
         cache_dir = self._frame_cache_dir()
@@ -536,8 +554,13 @@ class RolloutStore:
         except Exception:
             pass
 
-    def _load_timeline_frame_disk_cache(self, uid: str, timeline_fps: int = 1) -> Optional[list[dict[str, Any]]]:
-        cache_dir = self._timeline_frame_cache_dir(timeline_fps=timeline_fps)
+    def _load_timeline_frame_disk_cache(
+        self,
+        uid: str,
+        timeline_fps: int = 1,
+        max_frames: int = _SEG_TIMELINE_MAX_FRAMES,
+    ) -> Optional[list[dict[str, Any]]]:
+        cache_dir = self._timeline_frame_cache_dir(timeline_fps=timeline_fps, max_frames=max_frames)
         if cache_dir is None:
             return None
         safe_name = re.sub(r'[^\w\-.]', '_', uid) + ".json"
@@ -558,8 +581,9 @@ class RolloutStore:
         uid: str,
         frames: list[dict[str, Any]],
         timeline_fps: int = 1,
+        max_frames: int = _SEG_TIMELINE_MAX_FRAMES,
     ) -> None:
-        cache_dir = self._timeline_frame_cache_dir(timeline_fps=timeline_fps)
+        cache_dir = self._timeline_frame_cache_dir(timeline_fps=timeline_fps, max_frames=max_frames)
         if cache_dir is None:
             return
         try:
@@ -604,7 +628,11 @@ class RolloutStore:
         if total > 0:
             print(f"\r  Frame cache: {total} groups, {cached} from cache, {extracted} extracted, {with_frames} with frames")
 
-    def warm_timeline_frame_cache(self, timeline_fps: int = 1) -> None:
+    def warm_timeline_frame_cache(
+        self,
+        timeline_fps: int = 1,
+        max_frames: int = _SEG_TIMELINE_MAX_FRAMES,
+    ) -> None:
         """Pre-extract and cache timeline frames for temporal_seg groups."""
         target_uids = [uid for uid in self.group_order if str(self.groups[uid].get("problem_type")) == "temporal_seg"]
         total = len(target_uids)
@@ -614,14 +642,15 @@ class RolloutStore:
         extracted = 0
         with_frames = 0
         fps = max(1, int(timeline_fps))
+        frame_cap = max(1, int(max_frames))
         for i, uid in enumerate(target_uids):
-            cache_key = f"{uid}@{fps}"
+            cache_key = f"{uid}@{fps}fps_{frame_cap}f"
             if cache_key in self.timeline_frame_cache:
                 cached += 1
                 if self.timeline_frame_cache[cache_key]:
                     with_frames += 1
                 continue
-            disk_frames = self._load_timeline_frame_disk_cache(uid, timeline_fps=fps)
+            disk_frames = self._load_timeline_frame_disk_cache(uid, timeline_fps=fps, max_frames=frame_cap)
             if disk_frames is not None:
                 self.timeline_frame_cache[cache_key] = disk_frames
                 cached += 1
@@ -637,10 +666,10 @@ class RolloutStore:
                 extracted += 1
             except Exception:
                 self.timeline_frame_cache[cache_key] = []
-                self._save_timeline_frame_disk_cache(uid, [], timeline_fps=fps)
+                self._save_timeline_frame_disk_cache(uid, [], timeline_fps=fps, max_frames=frame_cap)
         print(
-            f"\r  {fps}fps seg timeline cache: {total} groups, {cached} from cache, "
-            f"{extracted} extracted, {with_frames} with frames"
+            f"\r  {fps}fps seg timeline cache ({frame_cap} max frames): {total} groups, "
+            f"{cached} from cache, {extracted} extracted, {with_frames} with frames"
         )
 
     def _extract_frames(self, group: dict[str, Any], max_frames: int) -> list[str]:
@@ -693,8 +722,10 @@ class RolloutStore:
         group: dict[str, Any],
         timeline_max_t: float,
         timeline_fps: int = 1,
+        max_frames: int = _SEG_TIMELINE_MAX_FRAMES,
     ) -> list[dict[str, Any]]:
         fps = max(1, int(timeline_fps))
+        frame_cap = max(1, int(max_frames))
         max_second = max(0, int(math.ceil(_safe_float(timeline_max_t, 0.0))))
         candidates: list[Any] = []
         seen_paths: set[str] = set()
@@ -709,16 +740,23 @@ class RolloutStore:
                 candidates.append(vp)
 
         for candidate in candidates:
-            frames = self._candidate_to_timeline_frames(candidate, max_second=max_second, timeline_fps=fps)
+            frames = self._candidate_to_timeline_frames(
+                candidate,
+                max_second=max_second,
+                timeline_fps=fps,
+                max_frames=frame_cap,
+            )
             if frames:
                 return frames
 
-        fallback = self._get_frame_strip(str(group.get("uid")), max_frames=min(200, max_second + 1))
+        fallback = self._get_frame_strip(str(group.get("uid")), max_frames=min(frame_cap, 200, max_second + 1))
         if not fallback:
             return []
         if len(fallback) == 1:
             return [{"second": 0, "timestamp": _format_mmss(0), "src": fallback[0]}]
 
+        if len(fallback) > frame_cap:
+            fallback = _sample_evenly(fallback, frame_cap)
         mapped = []
         for idx, src in enumerate(fallback):
             second = int(round((idx / max(len(fallback) - 1, 1)) * max_second))
@@ -730,6 +768,7 @@ class RolloutStore:
         candidate: Any,
         max_second: int,
         timeline_fps: int = 1,
+        max_frames: int = _SEG_TIMELINE_MAX_FRAMES,
     ) -> list[dict[str, Any]]:
         if candidate is None:
             return []
@@ -741,7 +780,12 @@ class RolloutStore:
             if not path.exists():
                 return []
             if path.suffix.lower() in _VIDEO_EXTS:
-                return self._video_file_to_timeline_frames(path, max_second=max_second, timeline_fps=timeline_fps)
+                return self._video_file_to_timeline_frames(
+                    path,
+                    max_second=max_second,
+                    timeline_fps=timeline_fps,
+                    max_frames=max_frames,
+                )
             return []
         return []
 
@@ -750,6 +794,7 @@ class RolloutStore:
         video_path: Path,
         max_second: int,
         timeline_fps: int = 1,
+        max_frames: int = _SEG_TIMELINE_MAX_FRAMES,
     ) -> list[dict[str, Any]]:
         try:
             import decord
@@ -768,6 +813,8 @@ class RolloutStore:
             while t <= limit:
                 ticks.append(round(t, 3))
                 t += step
+            if len(ticks) > max_frames:
+                ticks = _sample_evenly(ticks, max_frames)
             frames = []
             for tick in ticks:
                 frame_idx = min(total - 1, max(0, int(round(tick * avg_fps))))
