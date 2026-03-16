@@ -495,8 +495,8 @@ function renderTimeline() {
     <div class="section-title">Timeline</div>
     <div class="legend">
       <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level1}"></span>Level 1 Macro Phase</div>
-      <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level2}"></span>Level 2 Meso Step</div>
-      <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level3}"></span>Level 3 Key State Chunk</div>
+      <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level2}"></span>Level 2 Cooking Event</div>
+      <div class="legend-item"><span class="legend-dot" style="background:${COLORS.level3}"></span>Level 3 Atomic Grounding</div>
       <div class="legend-item"><span class="legend-dot" style="background:var(--teal)"></span>L1 采样帧</div>
     </div>
     <div class="sync-shell" id="timelineScrollShell">
@@ -520,8 +520,8 @@ function renderTimeline() {
           }).join("")}
         </div>
         ${renderLane("level1", "Level 1 Macro Phases", clip.levels.level1 || [], totalWidth)}
-        ${renderLane("level2", "Level 2 Meso Steps", clip.levels.level2 || [], totalWidth)}
-        ${renderLane("level3", "Level 3 Key State Chunks", clip.levels.level3 || [], totalWidth)}
+        ${renderLane("level2", "Level 2 Cooking Events", clip.levels.level2 || [], totalWidth)}
+        ${renderLane("level3", "Level 3 Atomic Grounding", clip.levels.level3 || [], totalWidth)}
       </div>
     </div>
     <div class="scroll-control">

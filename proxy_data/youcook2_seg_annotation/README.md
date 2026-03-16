@@ -65,9 +65,9 @@ python proxy_data/youcook2_seg_annotation/extract_frames.py \
 L1 对全视频做 warped-time macro phase 分割：
 
 ```bash
-python annotate.py \
-  --frames-dir frames \
-  --output-dir annotations \
+python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/annotate.py \
+  --frames-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames \
+  --output-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
   --level 1 \
   --api-base https://api.novita.ai/v3/openai \
   --model pa/gmn-2.5-pr \
@@ -81,14 +81,14 @@ python annotate.py \
 L2 读取 L1 的 phase 结果，逐 phase 检测 cooking events。**必须先完成 L1**。
 
 ```bash
-python annotate.py \
-  --frames-dir frames \
-  --output-dir annotations \
+python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/annotate.py \
+  --frames-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames \
+  --output-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
   --level 2 \
   --api-base https://api.novita.ai/v3/openai \
   --model pa/gmn-2.5-pr \
   --workers 4 \
-  --limit 5 \
+  --limit 10 \
   --max-frames-per-call 1024
 ```
 
@@ -97,14 +97,14 @@ python annotate.py \
 L3 读取 L2 的 event 结果，逐 event 做 atomic temporal grounding。**必须先完成 L2**。
 
 ```bash
-python annotate.py \
-  --frames-dir frames \
-  --output-dir annotations \
+python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/annotate.py \
+  --frames-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames \
+  --output-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
   --level 3 \
   --api-base https://api.novita.ai/v3/openai \
   --model pa/gmn-2.5-pr \
   --workers 4 \
-  --limit 5 \
+  --limit 10 \
   --max-frames-per-call 1024
 ```
 

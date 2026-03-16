@@ -154,10 +154,10 @@ def build_l1_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
 
 def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str, Any]]:
     segments = []
-    for idx, item in enumerate(raw_level.get("meso_steps") or [], 1):
+    for idx, item in enumerate(raw_level.get("events") or [], 1):
         if not isinstance(item, dict):
             continue
-        step_id = item.get("step_id", idx)
+        event_id = item.get("event_id", idx)
         parent_phase_id = item.get("parent_phase_id")
         start_sec = parse_mmss(item.get("start_time"))
         end_sec = parse_mmss(item.get("end_time"))
@@ -166,9 +166,9 @@ def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
         frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames)
         segments.append(
             {
-                "id": f"l2-{step_id}",
+                "id": f"l2-{event_id}",
                 "level": 2,
-                "numeric_id": step_id,
+                "numeric_id": event_id,
                 "parent_numeric_id": parent_phase_id,
                 "parent_id": f"l1-{parent_phase_id}" if parent_phase_id is not None else None,
                 "start_time": item.get("start_time") or format_mmss(start_sec),
@@ -177,7 +177,7 @@ def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
                 "end_sec": end_sec,
                 "frame_start": frame_start,
                 "frame_end": frame_end,
-                "label": item.get("instruction") or f"Step {step_id}",
+                "label": item.get("instruction") or f"Event {event_id}",
                 "subtitle": ", ".join(item.get("visual_keywords") or []),
                 "details": {
                     "instruction": item.get("instruction"),
@@ -190,11 +190,11 @@ def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
 
 def build_l3_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str, Any]]:
     segments = []
-    for idx, item in enumerate(raw_level.get("key_state_chunks") or [], 1):
+    for idx, item in enumerate(raw_level.get("grounding_results") or [], 1):
         if not isinstance(item, dict):
             continue
-        chunk_id = item.get("chunk_id", idx)
-        parent_step_id = item.get("parent_step_id")
+        action_id = item.get("action_id", idx)
+        parent_event_id = item.get("parent_event_id")
         start_sec = parse_mmss(item.get("start_time"))
         end_sec = parse_mmss(item.get("end_time"))
         if start_sec is None or end_sec is None:
@@ -202,18 +202,18 @@ def build_l3_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
         frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames)
         segments.append(
             {
-                "id": f"l3-{chunk_id}",
+                "id": f"l3-{action_id}",
                 "level": 3,
-                "numeric_id": chunk_id,
-                "parent_numeric_id": parent_step_id,
-                "parent_id": f"l2-{parent_step_id}" if parent_step_id is not None else None,
+                "numeric_id": action_id,
+                "parent_numeric_id": parent_event_id,
+                "parent_id": f"l2-{parent_event_id}" if parent_event_id is not None else None,
                 "start_time": item.get("start_time") or format_mmss(start_sec),
                 "end_time": item.get("end_time") or format_mmss(end_sec),
                 "start_sec": start_sec,
                 "end_sec": end_sec,
                 "frame_start": frame_start,
                 "frame_end": frame_end,
-                "label": item.get("sub_action") or f"Chunk {chunk_id}",
+                "label": item.get("sub_action") or f"Action {action_id}",
                 "subtitle": item.get("post_state") or "",
                 "details": {
                     "sub_action": item.get("sub_action"),
@@ -494,7 +494,7 @@ class SegmentationStore:
             "levels": levels,
             "sampling": (raw.get("level1") or {}).get("_sampling") or {},
             "segment_calls": {
-                "level2": (raw.get("level2") or {}).get("_segment_calls") or [],
+                "level2": (raw.get("level2") or {}).get("_phase_calls") or [],
                 "level3": (raw.get("level3") or {}).get("_segment_calls") or [],
             },
             "diagnostics": diagnostics,
