@@ -206,14 +206,19 @@ _LEVEL3_BASE = """Now, deep dive into the given Level 2 core step and break it d
 
 CRITICAL GRANULARITY RULES FOR LEVEL 3:
 1. [Physics over Recipe]: You are NO LONGER writing recipe instructions. Your focus MUST shift entirely to the physical, visual changes of the objects.
-2. [State Transition Focus]: Only extract moments where a target object undergoes a VISUAL, IRREVERSIBLE change (e.g., deformation, separation, merging, material state change).
-3. [Ignore Empty Motions]: Ignore purely human limb movements (like reaching for a tool or moving a hand) if the object's state doesn't change.
-4. [Food-Relevance Filter]: Ignore narration, waiting, presentation, tasting, and any motion unrelated to a visible state change in ingredients, cookware contents, or the dish.
+2. [State Transition Focus]: Only extract moments where a target object undergoes a VISUAL, IRREVERSIBLE change (e.g., deformation, separation, merging, transfer, material state change).
+3. [Semantic Chunk, Not Instant]: A Level 3 chunk should be the SMALLEST COMPLETE visual event, not the narrowest contact instant. Include the short lead-in where the state change clearly begins and the short tail where the new state becomes stable.
+4. [Boundary Rule]: The start_time should be when the object starts entering the state change, not just the exact collision/contact frame. The end_time should be when the transfer/transformation is completed and the new visual state is clearly established.
+5. [Typical Duration]: Most Level 3 chunks should last about 2 to 6 seconds when visible at this sampling rate. Avoid 1-frame or 1-second spans unless the change is truly instantaneous and still visually complete.
+6. [Continuity Rule]: If several consecutive frames depict one uninterrupted micro-process with the same intent and target state change, merge them into one chunk rather than splitting too narrowly.
+7. [Ignore Empty Motions]: Ignore purely human limb movements (like reaching for a tool or moving a hand) if the object's state doesn't change.
+8. [Food-Relevance Filter]: Ignore narration, waiting, presentation, tasting, and any motion unrelated to a visible state change in ingredients, cookware contents, or the dish.
+9. [Example]: If minced garlic is poured into a pan across several frames, annotate the whole transfer-and-settle process (e.g., "add garlic to pan"), not only the single frame where garlic first touches the pan.
 
 For each atomic state transition chunk, provide:
 - chunk_id: Sequential ID.
 - parent_step_id: The step_id of the core step this chunk belongs to.
-- start_time / end_time: The specific timestamps where the state transition occurs (can be just 1-3 seconds).
+- start_time / end_time: The specific timestamps covering the full state-change chunk (typically about 2-6 seconds, but can be shorter if the change is truly instantaneous and visually complete).
 - sub_action: A brief description of the specific interaction.
 - pre_state: The EXPLICIT visual state of the target object BEFORE the interaction (e.g., "A flat, empty wonton wrapper").
 - post_state: The EXPLICIT visual state of the target object AFTER the interaction (e.g., "A dollop of meat filling is now resting in the center of the wrapper").
