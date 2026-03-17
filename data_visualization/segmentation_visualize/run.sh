@@ -3,7 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
-HOST="${HOST:-0.0.0.0}"
+# Guard against conda cross-compile HOST pollution (e.g. x86_64-conda-linux-gnu)
+_raw_host="${HOST:-0.0.0.0}"
+if [[ "$_raw_host" != "0.0.0.0" && "$_raw_host" != "127.0.0.1" && ! "$_raw_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  HOST="0.0.0.0"
+else
+  HOST="$_raw_host"
+fi
 PORT="${PORT:-8890}"
 MAX_SAMPLES="${MAX_SAMPLES:-0}"
 PREFER_COMPLETE="${PREFER_COMPLETE:-1}"
