@@ -132,6 +132,11 @@ python build_dataset.py \
   --output youcook2_hier_L3_train.jsonl \
   --level 3 \
   --l3-min-actions 3
+
+DATA_PATH=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_L3_train.jsonl \
+  PORT=8890 \
+  MAX_SAMPLES=10 \
+  bash data_visualization/segmentation_visualize/run.sh
 ```
 
 说明：
