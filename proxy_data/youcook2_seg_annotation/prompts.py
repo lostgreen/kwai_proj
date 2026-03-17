@@ -244,3 +244,121 @@ def get_level3_prompt(
         event_end=event_end_sec,
         action_query=action_query,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 3 Check: Model-based Quality Judge & Supplement (动作级审查)
+# Input:  frames within an L2 event clip + existing L3 grounding_results
+# Output: reviewed results with verdicts, corrections, and supplemented actions
+# ─────────────────────────────────────────────────────────────────────────────
+_LEVEL3_CHECK_BASE = """\
+You are a quality reviewer for temporal grounding annotations. You are viewing \
+frames from a cooking event clip ({event_start}s to {event_end}s). \
+The cooking event is: "{action_query}"
+
+Below are the EXISTING L3 atomic action annotations for this event:
+{existing_annotations}
+
+Your task: REVIEW each existing annotation AND identify any MISSING atomic actions.
+
+REVIEW CRITERIA:
+1. [Temporal Accuracy]: Does start_time/end_time match what is actually visible in \
+the frames? Is the boundary precise (start = physical contact begins, end = new \
+state established)?
+2. [State Description Quality]: Are pre_state and post_state specific, concrete, \
+and visually verifiable? Vague descriptions like "food on table" or "ingredients \
+ready" are INSUFFICIENT — they should describe exact visual appearance.
+3. [Relevance]: Does the sub_action describe a real physical state change of an \
+object? Exclude pure hand movements, tool pickups, or posture adjustments without \
+any object state change.
+4. [Granularity]: Is the action truly atomic (2-6s typical)? If a single annotation \
+covers multiple distinct state changes, it should be split.
+5. [Boundary Compliance]: start_time must be >= {event_start} and end_time must \
+be <= {event_end}.
+6. [Completeness]: Are there any visible atomic state-change moments in the frames \
+that are NOT covered by the existing annotations?
+
+For each existing annotation, output a verdict:
+- "keep": Annotation is correct as-is.
+- "revise": Annotation has issues — provide the corrected version.
+- "remove": Annotation is invalid (no real state change, or duplicate).
+
+Then, list any MISSING actions that should be added.
+
+Output JSON:
+{{
+  "reviews": [
+    {{
+      "action_id": 1,
+      "verdict": "keep"
+    }},
+    {{
+      "action_id": 2,
+      "verdict": "revise",
+      "revised": {{
+        "start_time": 45,
+        "end_time": 49,
+        "sub_action": "Corrected description of the physical interaction",
+        "pre_state": "More specific pre-state description",
+        "post_state": "More specific post-state description"
+      }}
+    }},
+    {{
+      "action_id": 3,
+      "verdict": "remove",
+      "reason": "No visible state change; just hand repositioning"
+    }}
+  ],
+  "supplements": [
+    {{
+      "start_time": 55,
+      "end_time": 59,
+      "sub_action": "Description of a missed atomic action",
+      "pre_state": "Pre-state of the missed action",
+      "post_state": "Post-state of the missed action"
+    }}
+  ]
+}}
+
+IMPORTANT:
+- You MUST review every existing annotation by action_id.
+- "supplements" can be an empty list if nothing is missing.
+- Do NOT invent actions that are not visible in the provided frames.
+- Be strict: vague or non-physical annotations should be revised or removed."""
+
+
+def get_level3_check_prompt(
+    event_start_sec: int,
+    event_end_sec: int,
+    action_query: str,
+    existing_results: list[dict],
+) -> str:
+    """
+    Build the Level 3 Check (Quality Judge & Supplement) user-turn prompt.
+
+    Args:
+        event_start_sec: Start of the L2 event clip (seconds).
+        event_end_sec: End of the L2 event clip (seconds).
+        action_query: The L2 event instruction.
+        existing_results: List of existing grounding_results dicts for this event.
+    """
+    import json as _json
+    # Format existing annotations compactly for the prompt
+    display_results = []
+    for r in existing_results:
+        display_results.append({
+            "action_id": r.get("action_id"),
+            "start_time": r.get("start_time"),
+            "end_time": r.get("end_time"),
+            "sub_action": r.get("sub_action"),
+            "pre_state": r.get("pre_state"),
+            "post_state": r.get("post_state"),
+        })
+    annotations_str = _json.dumps(display_results, ensure_ascii=False, indent=2)
+
+    return _LEVEL3_CHECK_BASE.format(
+        event_start=event_start_sec,
+        event_end=event_end_sec,
+        action_query=action_query,
+        existing_annotations=annotations_str,
+    )
