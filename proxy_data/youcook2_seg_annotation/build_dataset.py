@@ -72,6 +72,10 @@ def build_level1_records(ann: dict) -> list[dict]:
             "level": 1,
             "n_warped_frames": n_frames,
             "warped_mapping": mapping,
+            "n_frames": int(ann.get("n_frames") or 0),
+            "frame_dir": ann.get("frame_dir", ""),
+            "source_mode": ann.get("source_mode", ""),
+            "annotated_at": ann.get("annotated_at"),
         },
     }]
 
@@ -178,6 +182,10 @@ def build_level2_records(
                 "window_start_sec": win_start,
                 "window_end_sec": win_end,
                 "n_events_in_window": len(win_events),
+                "n_frames": int(ann.get("n_frames") or 0),
+                "frame_dir": ann.get("frame_dir", ""),
+                "source_mode": ann.get("source_mode", ""),
+                "annotated_at": ann.get("annotated_at"),
             },
         })
 
@@ -188,7 +196,7 @@ def build_level2_records(
 # Level 3: one record per L2 event (temporal grounding)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_level3_records(ann: dict) -> list[dict]:
+def build_level3_records(ann: dict, min_actions: int = 3) -> list[dict]:
     """Build training records for Level 3 (one per L2 event)."""
     l2 = ann.get("level2")
     l3 = ann.get("level3")
@@ -220,6 +228,8 @@ def build_level3_records(ann: dict) -> list[dict]:
             _strip_internal_keys(r) for r in all_results
             if isinstance(r, dict) and r.get("parent_event_id") == event_id
         ]
+        if len(event_results) < min_actions:
+            continue
 
         user_text = get_level3_prompt(int(start_time), int(end_time), instruction)
         full_user = f"Watch the following cooking video clip carefully:\n<video>\n\n{user_text}"
@@ -241,6 +251,11 @@ def build_level3_records(ann: dict) -> list[dict]:
                 "event_start_sec": int(start_time),
                 "event_end_sec": int(end_time),
                 "action_query": instruction,
+                "n_grounding_results": len(event_results),
+                "n_frames": int(ann.get("n_frames") or 0),
+                "frame_dir": ann.get("frame_dir", ""),
+                "source_mode": ann.get("source_mode", ""),
+                "annotated_at": ann.get("annotated_at"),
             },
         })
 
@@ -264,6 +279,11 @@ def main() -> None:
                         help="[Level 2] Sliding window stride in seconds for training data")
     parser.add_argument("--l2-min-events", type=int, default=2,
                         help="[Level 2] Minimum events per window to include in training data")
+    parser.add_argument("--l3-min-actions", type=int, default=3,
+                        help="[Level 3] Minimum grounding actions required per L2 event")
+    parser.add_argument("--complete-only", action="store_true",
+                        help="Only process clips that have all 3 levels annotated (L1+L2+L3). "
+                             "Useful when L1 has more clips than L2/L3.")
     args = parser.parse_args()
 
     ann_dir = Path(args.annotation_dir)
@@ -272,9 +292,27 @@ def main() -> None:
         sys.exit(1)
 
     ann_files = sorted(ann_dir.glob("*.json"))
-    print(f"Found {len(ann_files)} annotation files")
+    print(f"Found {len(ann_files)} annotation files in total")
+
+    if args.complete_only:
+        filtered = []
+        for af in ann_files:
+            try:
+                with open(af, encoding="utf-8") as f:
+                    d = json.load(f)
+                has_l1 = d.get("level1") and not d["level1"].get("_parse_error")
+                has_l2 = d.get("level2") and not d["level2"].get("_parse_error")
+                has_l3 = d.get("level3") and not d["level3"].get("_parse_error")
+                if has_l1 and has_l2 and has_l3:
+                    filtered.append(af)
+            except Exception:
+                pass
+        print(f"  --complete-only: {len(filtered)} clips have all 3 levels annotated (L1+L2+L3)")
+        ann_files = filtered
     if args.level == 2:
         print(f"L2 training windows: size={args.l2_window_size}s  stride={args.l2_stride}s  min_events={args.l2_min_events}")
+    elif args.level == 3:
+        print(f"L3 training filter: min_actions={args.l3_min_actions}")
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -300,7 +338,7 @@ def main() -> None:
                     min_events=args.l2_min_events,
                 )
             else:
-                records = build_level3_records(ann)
+                records = build_level3_records(ann, min_actions=args.l3_min_actions)
 
             if not records:
                 skipped += 1

@@ -92,7 +92,7 @@ button,input,textarea{font:inherit}
 .clip-head-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
 .clip-title{font-size:24px;font-weight:780}
 .clip-subtitle{font-size:13px;color:var(--muted);margin-top:6px}
-.meta-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:14px}
+.meta-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:14px}
 .meta-box{padding:10px 12px;border-radius:14px;background:rgba(245,248,252,.78);border:1px solid rgba(71,85,105,.08)}
 .meta-k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
 .meta-v{font-size:15px;font-weight:700;margin-top:6px;word-break:break-word}
@@ -219,11 +219,11 @@ button,input,textarea{font:inherit}
     <div class="hero-top">
       <div>
         <div class="title">Segmentation Visualize</div>
-        <div class="subtitle">1fps 帧条、三层时间轴和文本标注联动查看器</div>
+        <div class="subtitle">支持 annotations JSON 和 build_dataset JSONL 的时间轴联动查看器</div>
       </div>
       <div class="toolbar">
-        <input id="annotationDir" class="input" placeholder="输入 annotations 目录路径" />
-        <button id="loadBtn" class="btn" onclick="loadAnnotations()">加载标注</button>
+        <input id="annotationDir" class="input" placeholder="输入 annotations 目录 / annotation json / dataset jsonl 路径" />
+        <button id="loadBtn" class="btn" onclick="loadAnnotations()">加载数据</button>
       </div>
     </div>
     <div id="statusMsg" class="status"></div>
@@ -245,14 +245,14 @@ button,input,textarea{font:inherit}
       </div>
       <input id="searchInput" class="search" placeholder="搜索 clip_key" oninput="filterClips()" />
       <div id="clipList" class="clip-list">
-        <div class="clip-row"><div class="clip-key">加载 annotations 目录后显示</div></div>
+        <div class="clip-row"><div class="clip-key">加载数据路径后显示</div></div>
       </div>
     </aside>
 
     <main class="main">
       <section class="clip-header card" id="clipHeader">
         <div class="clip-title">选择一个 clip</div>
-        <div class="clip-subtitle">左侧加载并选择标注样本后，这里会显示基础信息。</div>
+        <div class="clip-subtitle">左侧加载并选择样本后，这里会显示基础信息。</div>
       </section>
 
       <section class="timeline-card card" id="timelineCard">
@@ -320,7 +320,7 @@ function setStatus(message, isError = false) {
 function setLoading(isLoading) {
   const btn = document.getElementById("loadBtn");
   btn.disabled = isLoading;
-  btn.textContent = isLoading ? "加载中..." : "加载标注";
+  btn.textContent = isLoading ? "加载中..." : "加载数据";
 }
 
 async function fetchJson(url) {
@@ -335,15 +335,16 @@ async function fetchJson(url) {
 async function loadAnnotations() {
   const annotationDir = document.getElementById("annotationDir").value.trim();
   if (!annotationDir) {
-    setStatus("请先输入 annotations 目录路径。", true);
+    setStatus("请先输入数据路径。", true);
     return;
   }
 
   setLoading(true);
   try {
-    const result = await fetchJson(`/api/load-data?annotation_dir=${encodeURIComponent(annotationDir)}`);
+    const result = await fetchJson(`/api/load-data?data_path=${encodeURIComponent(annotationDir)}`);
     applySummary(result.summary);
-    setStatus(`已加载 ${result.summary.clip_count} 个 clips`);
+    const kind = result.summary.data_kind === "dataset_jsonl" ? "dataset jsonl" : "annotation data";
+    setStatus(`已加载 ${result.summary.clip_count} 个 clips · ${kind}`);
     if (UI.filteredClips.length > 0) {
       await selectClip(UI.filteredClips[0].clip_key);
     }
@@ -368,10 +369,12 @@ function bootPreloaded() {
   const preload = window.__PRELOADED__;
   if (!preload || !preload.summary) return;
   UI.allDetails = preload.all_details || {};
-  document.getElementById("annotationDir").value = preload.annotation_dir || preload.summary.annotation_dir || "";
+  document.getElementById("annotationDir").value =
+    preload.data_path || preload.annotation_dir || preload.summary.data_path || preload.summary.annotation_dir || "";
   applySummary(preload.summary);
   const total = preload.summary.total_available_clip_count || preload.summary.clip_count || 0;
-  setStatus(`已预加载 ${preload.summary.clip_count || 0} / ${total} 个 clips`);
+  const kind = preload.summary.data_kind === "dataset_jsonl" ? "dataset jsonl" : "annotation data";
+  setStatus(`已预加载 ${preload.summary.clip_count || 0} / ${total} 个 clips · ${kind}`);
   if (UI.filteredClips.length > 0) {
     const first = UI.filteredClips[0].clip_key;
     UI.activeClipKey = first;
@@ -442,6 +445,15 @@ function renderActiveClip() {
 
 function renderHeader() {
   const clip = UI.activeClip;
+  const dataLabel = clip.data_kind === "dataset_jsonl" ? "dataset jsonl" : "annotation json";
+  const scopeLabel = clip.record_scope_label || (
+    clip.scope_start_sec != null && clip.scope_end_sec != null
+      ? `${mmss(clip.scope_start_sec)} - ${mmss(clip.scope_end_sec)}`
+      : "-"
+  );
+  const samplingLabel = clip.warped_mapping?.length
+    ? `${clip.warped_mapping.length} warped frames`
+    : (clip.sampling?.n_sampled_frames ? `${clip.sampling.n_sampled_frames} sampled` : "-");
   const warningCount =
     (clip.diagnostics.level1.overlap_count || 0) +
     (clip.diagnostics.level2.overlap_count || 0) +
@@ -454,7 +466,7 @@ function renderHeader() {
       <div>
         <div class="clip-title">${escapeHtml(clip.clip_key)}</div>
         <div class="clip-subtitle">
-          ${escapeHtml(clip.source_mode || "unknown source")} · frame_dir: ${escapeHtml(clip.frame_dir || "-")}
+          ${escapeHtml(dataLabel)} · ${escapeHtml(clip.problem_type || clip.source_mode || "unknown source")} · frame_dir: ${escapeHtml(clip.frame_dir || "-")}
         </div>
       </div>
       <div class="controls">
@@ -464,9 +476,11 @@ function renderHeader() {
       </div>
     </div>
     <div class="meta-grid">
+      <div class="meta-box"><div class="meta-k">Base Clip</div><div class="meta-v">${escapeHtml(clip.base_clip_key || clip.clip_key)}</div></div>
       <div class="meta-box"><div class="meta-k">Duration</div><div class="meta-v">${escapeHtml(mmss(clip.clip_duration_sec))}</div></div>
       <div class="meta-box"><div class="meta-k">Frames</div><div class="meta-v">${clip.n_frames}</div></div>
-      <div class="meta-box"><div class="meta-k">L1 Sampling</div><div class="meta-v">${clip.sampling.target_fps || "-"} fps</div></div>
+      <div class="meta-box"><div class="meta-k">Scope</div><div class="meta-v">${escapeHtml(scopeLabel)}</div></div>
+      <div class="meta-box"><div class="meta-k">Sampling</div><div class="meta-v">${escapeHtml(samplingLabel)}</div></div>
       <div class="meta-box"><div class="meta-k">Annotated At</div><div class="meta-v">${escapeHtml(clip.annotated_at || "-")}</div></div>
       <div class="meta-box"><div class="meta-k">Warnings</div><div class="meta-v">${warningCount}</div></div>
     </div>

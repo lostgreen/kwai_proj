@@ -130,8 +130,14 @@ python build_dataset.py \
 python build_dataset.py \
   --annotation-dir annotations \
   --output youcook2_hier_L3_train.jsonl \
-  --level 3
+  --level 3 \
+  --l3-min-actions 3
 ```
+
+说明：
+
+- L3 训练样本现在会过滤，只保留在对应 L2 event 内至少有 `3` 个 atomic grounding actions 的样本。
+- 如需调整阈值，可通过 `--l3-min-actions` 修改。
 
 ## Annotation JSON format
 

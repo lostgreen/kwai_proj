@@ -60,6 +60,18 @@ def image_to_data_url(image: Image.Image, max_width: int = 160) -> str:
     return f"data:image/jpeg;base64,{payload}"
 
 
+def parse_json_field(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def print_progress(prefix: str, current: int, total: int) -> None:
     total = max(total, 1)
     current = max(0, min(current, total))
@@ -78,6 +90,8 @@ def build_subset_summary(
     return {
         "loaded": base_summary.get("loaded", False),
         "annotation_dir": base_summary.get("annotation_dir", ""),
+        "data_path": base_summary.get("data_path", ""),
+        "data_kind": base_summary.get("data_kind", "annotation_json"),
         "clip_count": len(selected_summaries),
         "level1_count": sum(1 for clip in selected_summaries if clip.get("has_level1")),
         "level2_count": sum(1 for clip in selected_summaries if clip.get("has_level2")),
@@ -284,6 +298,8 @@ def compute_child_violations(
     violations = []
     for child in child_segments:
         parent_id = child.get("parent_numeric_id")
+        if parent_id is None:
+            continue
         parent = parent_map.get(parent_id)
         if parent is None:
             violations.append({"child_id": child["id"], "reason": "missing_parent"})
@@ -329,13 +345,19 @@ class SegmentationStore:
 
     def clear(self) -> None:
         self.annotation_dir: Optional[Path] = None
+        self.data_kind: str = ""
         self.clips: dict[str, dict[str, Any]] = {}
         self.clip_order: list[str] = []
         self.frame_cache: dict[str, list[dict[str, Any]]] = {}
 
     def load(self, annotation_dir_text: str) -> dict[str, Any]:
         annotation_dir = resolve_path(self.root, annotation_dir_text)
-        if annotation_dir.is_file():
+        data_kind = "annotation_json"
+        if annotation_dir.is_file() and annotation_dir.suffix.lower() == ".jsonl":
+            clips = self._load_dataset_jsonl(annotation_dir)
+            annotation_root = annotation_dir
+            data_kind = "dataset_jsonl"
+        elif annotation_dir.is_file():
             files = [annotation_dir]
             annotation_root = annotation_dir.parent
         elif annotation_dir.is_dir():
@@ -344,24 +366,26 @@ class SegmentationStore:
         else:
             raise FileNotFoundError(f"annotation path not found: {annotation_dir}")
 
-        if not files:
+        if data_kind != "dataset_jsonl" and not files:
             raise FileNotFoundError(f"No json files under {annotation_dir}")
 
-        clips: dict[str, dict[str, Any]] = {}
-        for file_path in files:
-            try:
-                with open(file_path, encoding="utf-8") as f:
-                    raw = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(raw, dict):
-                continue
-            clip = self._build_clip(raw, file_path)
-            clips[clip["summary"]["clip_key"]] = clip
+        if data_kind != "dataset_jsonl":
+            clips = {}
+            for file_path in files:
+                try:
+                    with open(file_path, encoding="utf-8") as f:
+                        raw = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                clip = self._build_clip(raw, file_path)
+                clips[clip["summary"]["clip_key"]] = clip
 
         with self._lock:
             self.clear()
             self.annotation_dir = annotation_root
+            self.data_kind = data_kind
             self.clips = clips
             self.clip_order = sorted(clips.keys())
             return self.summary()
@@ -371,6 +395,8 @@ class SegmentationStore:
         return {
             "loaded": bool(self.annotation_dir),
             "annotation_dir": str(self.annotation_dir) if self.annotation_dir else "",
+            "data_path": str(self.annotation_dir) if self.annotation_dir else "",
+            "data_kind": self.data_kind or "annotation_json",
             "clip_count": len(clips),
             "level1_count": sum(1 for clip in clips if clip["summary"]["has_level1"]),
             "level2_count": sum(1 for clip in clips if clip["summary"]["has_level2"]),
@@ -438,6 +464,25 @@ class SegmentationStore:
             return None
         return payload
 
+    def _load_dataset_jsonl(self, file_path: Path) -> dict[str, dict[str, Any]]:
+        clips: dict[str, dict[str, Any]] = {}
+        with open(file_path, encoding="utf-8") as f:
+            for line_no, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                clip = self._build_dataset_clip(raw, file_path, line_no)
+                clips[clip["summary"]["clip_key"]] = clip
+        if not clips:
+            raise FileNotFoundError(f"No valid dataset records found in {file_path}")
+        return clips
+
     def _build_clip(self, raw: dict[str, Any], file_path: Path) -> dict[str, Any]:
         clip_key = str(raw.get("clip_key") or file_path.stem)
         duration_sec = int(safe_float(raw.get("clip_duration_sec") or raw.get("annotation_end_sec") or 0))
@@ -491,12 +536,149 @@ class SegmentationStore:
             "n_frames": n_frames,
             "frame_dir": raw.get("frame_dir") or "",
             "annotated_at": raw.get("annotated_at"),
+            "data_kind": "annotation_json",
+            "problem_type": "",
+            "scope_start_sec": raw.get("annotation_start_sec"),
+            "scope_end_sec": raw.get("annotation_end_sec"),
             "levels": levels,
             "sampling": (raw.get("level1") or {}).get("_sampling") or {},
+            "warped_mapping": (raw.get("level1") or {}).get("_warped_mapping") or [],
             "segment_calls": {
                 "level2": (raw.get("level2") or {}).get("_phase_calls") or [],
                 "level3": (raw.get("level3") or {}).get("_segment_calls") or [],
             },
+            "diagnostics": diagnostics,
+            "frame_hits": build_frame_hits(n_frames, levels),
+            "raw": raw,
+        }
+
+        return {
+            "file_path": file_path,
+            "summary": summary,
+            "payload": payload,
+        }
+
+    def _build_dataset_clip(self, raw: dict[str, Any], file_path: Path, line_no: int) -> dict[str, Any]:
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        answer_data = parse_json_field(raw.get("answer"))
+        problem_type = str(raw.get("problem_type") or "")
+        base_clip_key = str(metadata.get("clip_key") or file_path.stem)
+        video_path = (raw.get("videos") or [None])[0]
+
+        clip_duration_sec = int(safe_float(metadata.get("clip_duration_sec") or 0))
+        n_frames = int(safe_float(metadata.get("n_frames") or clip_duration_sec or 0))
+        level1: list[dict[str, Any]] = []
+        level2: list[dict[str, Any]] = []
+        level3: list[dict[str, Any]] = []
+        segment_calls = {"level2": [], "level3": []}
+        scope_start_sec = metadata.get("window_start_sec")
+        scope_end_sec = metadata.get("window_end_sec")
+        record_scope_label = ""
+
+        if problem_type == "temporal_seg_hier_L1":
+            level1 = build_l1_segments(answer_data, n_frames)
+            record_key = base_clip_key
+            record_scope_label = "L1 clip-level sample"
+        elif problem_type == "temporal_seg_hier_L2":
+            raw_events = answer_data.get("events") or []
+            normalized_events = []
+            for idx, event in enumerate(raw_events, 1):
+                if not isinstance(event, dict):
+                    continue
+                normalized = dict(event)
+                normalized["event_id"] = idx
+                normalized.pop("parent_phase_id", None)
+                normalized_events.append(normalized)
+            level2 = build_l2_segments({"events": normalized_events}, n_frames)
+            win_start = int(safe_float(metadata.get("window_start_sec") or 0))
+            win_end = int(safe_float(metadata.get("window_end_sec") or clip_duration_sec))
+            record_key = f"{base_clip_key}__L2_{win_start}_{win_end}"
+            record_scope_label = f"L2 window {format_mmss(win_start)}-{format_mmss(win_end)}"
+        elif problem_type == "temporal_seg_hier_L3":
+            event_start = int(safe_float(metadata.get("event_start_sec") or 0))
+            event_end = int(safe_float(metadata.get("event_end_sec") or 0))
+            parent_label = str(metadata.get("action_query") or "Event")
+            parent_event = {
+                "event_id": 1,
+                "start_time": event_start,
+                "end_time": event_end,
+                "instruction": parent_label,
+                "visual_keywords": [],
+            }
+            normalized_results = []
+            for idx, result in enumerate(answer_data.get("grounding_results") or [], 1):
+                if not isinstance(result, dict):
+                    continue
+                normalized = dict(result)
+                normalized["action_id"] = idx
+                normalized["parent_event_id"] = 1
+                normalized_results.append(normalized)
+            level2 = build_l2_segments({"events": [parent_event]}, n_frames)
+            level3 = build_l3_segments({"grounding_results": normalized_results}, n_frames)
+            scope_start_sec = event_start
+            scope_end_sec = event_end
+            parent_event_id = int(safe_float(metadata.get("parent_event_id") or 0))
+            record_key = f"{base_clip_key}__L3_E{parent_event_id}_{event_start}_{event_end}"
+            record_scope_label = f"L3 event {format_mmss(event_start)}-{format_mmss(event_end)}"
+        else:
+            record_key = f"{base_clip_key}__record_{line_no}"
+            record_scope_label = problem_type or "dataset record"
+
+        levels = {"level1": level1, "level2": level2, "level3": level3}
+        diagnostics = {
+            "level1": compute_level_diagnostics(level1, clip_duration_sec or max(1, n_frames)),
+            "level2": compute_level_diagnostics(level2, clip_duration_sec or max(1, n_frames)),
+            "level3": compute_level_diagnostics(level3, clip_duration_sec or max(1, n_frames)),
+            "level2_parent_violations": compute_child_violations(level2, level1),
+            "level3_parent_violations": compute_child_violations(level3, level2),
+        }
+
+        summary = {
+            "clip_key": record_key,
+            "base_clip_key": base_clip_key,
+            "duration_sec": clip_duration_sec,
+            "duration_label": format_mmss(clip_duration_sec),
+            "n_frames": n_frames,
+            "annotation_file": f"{file_path}:{line_no}",
+            "frame_dir": metadata.get("frame_dir") or "",
+            "has_level1": bool(level1),
+            "has_level2": bool(level2),
+            "has_level3": bool(level3),
+            "level1_segments": len(level1),
+            "level2_segments": len(level2),
+            "level3_segments": len(level3),
+            "warning_count": (
+                diagnostics["level1"]["overlap_count"]
+                + diagnostics["level2"]["overlap_count"]
+                + diagnostics["level3"]["overlap_count"]
+                + len(diagnostics["level2_parent_violations"])
+                + len(diagnostics["level3_parent_violations"])
+            ),
+        }
+
+        payload = {
+            "clip_key": record_key,
+            "base_clip_key": base_clip_key,
+            "video_path": video_path,
+            "source_video_path": video_path,
+            "source_mode": metadata.get("source_mode") or "dataset_jsonl",
+            "annotation_start_sec": 0,
+            "annotation_end_sec": clip_duration_sec,
+            "window_start_sec": metadata.get("window_start_sec"),
+            "window_end_sec": metadata.get("window_end_sec"),
+            "clip_duration_sec": clip_duration_sec,
+            "n_frames": n_frames,
+            "frame_dir": metadata.get("frame_dir") or "",
+            "annotated_at": metadata.get("annotated_at"),
+            "data_kind": "dataset_jsonl",
+            "problem_type": problem_type,
+            "scope_start_sec": scope_start_sec,
+            "scope_end_sec": scope_end_sec,
+            "record_scope_label": record_scope_label,
+            "levels": levels,
+            "sampling": {"n_sampled_frames": metadata.get("n_warped_frames")},
+            "warped_mapping": metadata.get("warped_mapping") or [],
+            "segment_calls": segment_calls,
             "diagnostics": diagnostics,
             "frame_hits": build_frame_hits(n_frames, levels),
             "raw": raw,
@@ -516,6 +698,12 @@ class SegmentationStore:
         frame_dir_text = str(payload.get("frame_dir") or "")
         n_frames = int(payload.get("n_frames") or 0)
         sampled = set((payload.get("sampling") or {}).get("sampled_frame_indices") or [])
+        if not sampled:
+            sampled = {
+                int(entry.get("real_sec"))
+                for entry in (payload.get("warped_mapping") or [])
+                if isinstance(entry, dict) and safe_float(entry.get("real_sec"), -1) >= 0
+            }
         strip: list[dict[str, Any]] = []
 
         frame_dir: Optional[Path] = None
@@ -613,9 +801,9 @@ class SegmentationHandler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/load-data":
-                annotation_dir = (query.get("annotation_dir") or [""])[0]
+                annotation_dir = (query.get("data_path") or query.get("annotation_dir") or [""])[0]
                 if not annotation_dir:
-                    self._json({"ok": False, "error": "annotation_dir is required"}, HTTPStatus.BAD_REQUEST)
+                    self._json({"ok": False, "error": "data_path is required"}, HTTPStatus.BAD_REQUEST)
                     return
                 summary = self.store.load(annotation_dir)
                 self._json({"ok": True, "summary": summary})
@@ -719,9 +907,14 @@ def main() -> None:
         help="Directory for index.html and assets",
     )
     parser.add_argument(
+        "--data-path",
+        default=None,
+        help="Pre-load annotation directory, annotation json, or built dataset jsonl on startup",
+    )
+    parser.add_argument(
         "--annotation-dir",
         default=None,
-        help="Pre-load annotation directory or a single annotation json on startup",
+        help="Backward-compatible alias for --data-path",
     )
     parser.add_argument(
         "--max-samples",
@@ -742,10 +935,11 @@ def main() -> None:
 
     store = SegmentationStore(static_dir.parents[1])
     preloaded_html: Optional[bytes] = None
-    if args.annotation_dir:
+    preload_path = args.data_path or args.annotation_dir
+    if preload_path:
         try:
-            summary = store.load(args.annotation_dir)
-            print(f"Pre-loaded annotation data from: {args.annotation_dir}")
+            summary = store.load(preload_path)
+            print(f"Pre-loaded data from: {preload_path}")
             selected_clip_keys = store.select_preload_clip_keys(
                 max_samples=args.max_samples,
                 prefer_complete=args.prefer_complete,
@@ -779,7 +973,8 @@ def main() -> None:
             preload = {
                 "summary": preload_summary,
                 "all_details": all_details,
-                "annotation_dir": args.annotation_dir,
+                "annotation_dir": preload_path,
+                "data_path": preload_path,
                 "preloaded_clip_keys": selected_clip_keys,
                 "max_samples": args.max_samples,
                 "prefer_complete": args.prefer_complete,
@@ -791,7 +986,7 @@ def main() -> None:
             )
             print(f"  Ready. Preloaded HTML inject size: {len(preloaded_html) / 1024:.0f} KB")
         except Exception as exc:  # noqa: BLE001
-            print(f"[warn] Failed to pre-load annotation data: {exc}")
+            print(f"[warn] Failed to pre-load data: {exc}")
 
     server = ThreadingHTTPServer((args.host, args.port), SegmentationHandler)
     server.static_dir = static_dir  # type: ignore[attr-defined]
