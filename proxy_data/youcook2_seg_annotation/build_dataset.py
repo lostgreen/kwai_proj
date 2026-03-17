@@ -15,10 +15,11 @@ Usage:
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
-from prompts import get_level1_prompt, get_level2_prompt, get_level3_prompt
+from prompts import get_level1_train_prompt, get_level2_train_prompt, get_level3_query_prompt
 
 
 _LEVEL_TO_PROBLEM_TYPE = {
@@ -37,8 +38,49 @@ def _strip_internal_keys(d: dict) -> dict:
 # Level 1: one record per clip — warped timeline
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_level1_records(ann: dict) -> list[dict]:
-    """Build training record for Level 1 (warped-time macro phase segmentation)."""
+def _subsample_warped_mapping(
+    mapping: list[dict],
+    max_frames: int,
+) -> tuple[list[dict], dict[int, int]]:
+    """
+    Uniformly subsample a warped_mapping to at most max_frames entries.
+
+    Returns:
+        new_mapping  — subsampled entries with warped_idx re-indexed 1..M
+        remap        — dict mapping old warped_idx → new warped_idx
+    """
+    n = len(mapping)
+    if n <= max_frames:
+        return mapping, {e["warped_idx"]: e["warped_idx"] for e in mapping}
+
+    m = max_frames
+    # Pick m indices evenly spread over [0, n-1]
+    selected_positions = [round(i * (n - 1) / (m - 1)) for i in range(m)]
+    new_mapping = []
+    for new_idx_0, orig_pos in enumerate(selected_positions):
+        entry = dict(mapping[orig_pos])
+        entry["warped_idx"] = new_idx_0 + 1
+        new_mapping.append(entry)
+
+    # Build remap: for any original warped_idx, find nearest new warped_idx
+    # (linear interpolation in original space → new space)
+    remap: dict[int, int] = {}
+    for entry in mapping:
+        orig = entry["warped_idx"]  # 1-indexed
+        new_f = round((orig - 1) / (n - 1) * (m - 1)) + 1
+        remap[orig] = max(1, min(m, new_f))
+
+    return new_mapping, remap
+
+
+def build_level1_records(ann: dict, max_frames: int = 256) -> list[dict]:
+    """Build training record for Level 1 (warped-time macro phase segmentation).
+
+    Args:
+        max_frames: Maximum frames the model can see. When the original
+                    warped mapping exceeds this limit, it is uniformly
+                    subsampled and phase boundaries are remapped accordingly.
+    """
     l1 = ann.get("level1")
     if l1 is None or l1.get("_parse_error"):
         return []
@@ -49,20 +91,33 @@ def build_level1_records(ann: dict) -> list[dict]:
 
     video_path = ann.get("source_video_path") or ann.get("video_path", "")
     mapping = l1.get("_warped_mapping", [])
-    n_frames = len(mapping) if mapping else l1.get("_sampling", {}).get("n_sampled_frames", 32)
+    if not mapping:
+        n_frames = l1.get("_sampling", {}).get("n_sampled_frames", 32)
+        remap: dict[int, int] = {}
+    else:
+        mapping, remap = _subsample_warped_mapping(mapping, max_frames)
+        n_frames = len(mapping)
 
-    # Prompt uses warped frame count
-    user_text = get_level1_prompt(n_frames)
-    full_user = f"Watch the following cooking video clip carefully:\n<video>\n\n{user_text}"
-
-    # Answer: macro_phases with start_frame/end_frame (warped space)
-    # Strip real-time fields and internal keys for a clean answer
+    # Remap phase boundaries when subsampling occurred
     answer_data = _strip_internal_keys(l1)
+    if remap:
+        for phase in answer_data.get("macro_phases", []):
+            if "start_frame" in phase:
+                phase["start_frame"] = remap.get(phase["start_frame"], phase["start_frame"])
+            if "end_frame" in phase:
+                phase["end_frame"] = remap.get(phase["end_frame"], phase["end_frame"])
+
+    phases = answer_data.get("macro_phases", [])
+    spans = [[p["start_frame"], p["end_frame"]] for p in phases if "start_frame" in p and "end_frame" in p]
+    answer_str = f"<events>{json.dumps(spans)}</events>"
+
+    user_text = get_level1_train_prompt(n_frames)
+    full_user = f"Watch the following cooking video clip carefully:\n<video>\n\n{user_text}"
 
     return [{
         "messages": [{"role": "user", "content": full_user}],
         "prompt": full_user,
-        "answer": json.dumps(answer_data, ensure_ascii=False),
+        "answer": answer_str,
         "videos": [video_path] if video_path else [],
         "data_type": "video",
         "problem_type": _LEVEL_TO_PROBLEM_TYPE[1],
@@ -162,16 +217,17 @@ def build_level2_records(
         if len(win_events) < min_events:
             continue
 
-        user_text = get_level2_prompt(win_start, win_end)
+        user_text = get_level2_train_prompt(win_end - win_start)
         full_user = f"Watch the following cooking video clip carefully:\n<video>\n\n{user_text}"
 
-        # Answer: events visible in this window
-        answer_data = {"events": [_strip_internal_keys(ev) for ev in win_events]}
+        # Answer: events in this window (absolute timestamps; normalized by prepare_clips.py)
+        spans = [[int(ev["start_time"]), int(ev["end_time"])] for ev in win_events]
+        answer_str = f"<events>{json.dumps(spans)}</events>"
 
         records.append({
             "messages": [{"role": "user", "content": full_user}],
             "prompt": full_user,
-            "answer": json.dumps(answer_data, ensure_ascii=False),
+            "answer": answer_str,
             "videos": [video_path] if video_path else [],
             "data_type": "video",
             "problem_type": _LEVEL_TO_PROBLEM_TYPE[2],
@@ -193,11 +249,31 @@ def build_level2_records(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Level 3: one record per L2 event (temporal grounding)
+# Level 3: query-conditioned atomic grounding
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_level3_records(ann: dict, min_actions: int = 3) -> list[dict]:
-    """Build training records for Level 3 (one per L2 event)."""
+_L3_MAX_CLIP_SEC = 128  # hard cap on clip length fed to the model
+
+
+def build_level3_records(
+    ann: dict,
+    min_actions: int = 3,
+    padding: int = 5,
+    order: str = "sequential",
+) -> list[dict]:
+    """
+    Build training records for Level 3 (query-conditioned atomic grounding).
+
+    One record per L2 event (× 2 if order="both").  The model is given a
+    short video clip (L2 event ± padding, capped at _L3_MAX_CLIP_SEC) and an
+    ordered or shuffled list of action captions. It must output the 0-based
+    timestamp for each action in the given order.
+
+    Args:
+        min_actions: Skip events with fewer than this many grounding results.
+        padding:     Seconds of context to add before/after the event bounds.
+        order:       "sequential" | "shuffled" | "both"
+    """
     l2 = ann.get("level2")
     l3 = ann.get("level3")
     if l2 is None or l3 is None or l3.get("_parse_error"):
@@ -215,49 +291,91 @@ def build_level3_records(ann: dict, min_actions: int = 3) -> list[dict]:
     for event in events:
         if not isinstance(event, dict):
             continue
-        event_id = event.get("event_id")
-        start_time = event.get("start_time")
-        end_time = event.get("end_time")
+        event_id   = event.get("event_id")
+        ev_start   = event.get("start_time")
+        ev_end     = event.get("end_time")
         instruction = event.get("instruction", "")
 
-        if not isinstance(start_time, (int, float)) or not isinstance(end_time, (int, float)):
+        if not isinstance(ev_start, (int, float)) or not isinstance(ev_end, (int, float)):
             continue
 
-        # Gather grounding results for this event
-        event_results = [
-            _strip_internal_keys(r) for r in all_results
-            if isinstance(r, dict) and r.get("parent_event_id") == event_id
-        ]
-        if len(event_results) < min_actions:
+        ev_start, ev_end = int(ev_start), int(ev_end)
+
+        # Collect grounding results for this event, sorted by start_time
+        raw_results = sorted(
+            [r for r in all_results
+             if isinstance(r, dict) and r.get("parent_event_id") == event_id],
+            key=lambda r: r.get("start_time", 0),
+        )
+        if len(raw_results) < min_actions:
             continue
 
-        user_text = get_level3_prompt(int(start_time), int(end_time), instruction)
-        full_user = f"Watch the following cooking video clip carefully:\n<video>\n\n{user_text}"
+        # Compute padded clip window, capped at _L3_MAX_CLIP_SEC
+        clip_start = max(0, ev_start - padding)
+        clip_end   = min(int(clip_duration), ev_end + padding)
+        if clip_end - clip_start > _L3_MAX_CLIP_SEC:
+            # Shrink symmetrically
+            excess = (clip_end - clip_start) - _L3_MAX_CLIP_SEC
+            trim_start = min(excess // 2, ev_start - clip_start)
+            clip_start += trim_start
+            clip_end = clip_start + _L3_MAX_CLIP_SEC
+        duration = clip_end - clip_start
 
-        answer_data = {"grounding_results": event_results}
+        # Build per-action data (0-based timestamps)
+        actions = []
+        for r in raw_results:
+            st = max(0, int(r.get("start_time", 0)) - clip_start)
+            et = min(duration, int(r.get("end_time", duration)) - clip_start)
+            actions.append({
+                "orig_action_id": r.get("action_id"),
+                "sub_action": r.get("sub_action", ""),
+                "start_time": st,
+                "end_time": et,
+            })
 
-        records.append({
-            "messages": [{"role": "user", "content": full_user}],
-            "prompt": full_user,
-            "answer": json.dumps(answer_data, ensure_ascii=False),
-            "videos": [video_path] if video_path else [],
-            "data_type": "video",
-            "problem_type": _LEVEL_TO_PROBLEM_TYPE[3],
-            "metadata": {
-                "clip_key": ann.get("clip_key", ""),
-                "clip_duration_sec": clip_duration,
-                "level": 3,
-                "parent_event_id": event_id,
-                "event_start_sec": int(start_time),
-                "event_end_sec": int(end_time),
-                "action_query": instruction,
-                "n_grounding_results": len(event_results),
-                "n_frames": int(ann.get("n_frames") or 0),
-                "frame_dir": ann.get("frame_dir", ""),
-                "source_mode": ann.get("source_mode", ""),
-                "annotated_at": ann.get("annotated_at"),
-            },
-        })
+        def _make_record(ordered_actions: list[dict], is_shuffled: bool) -> dict:
+            queries = [a["sub_action"] for a in ordered_actions]
+            query_order = [a["orig_action_id"] for a in ordered_actions]
+
+            user_text = (
+                "Watch the following cooking video clip carefully:\n<video>\n\n"
+                + get_level3_query_prompt(queries, duration)
+            )
+            answer_str = f"<events>{json.dumps([[a['start_time'], a['end_time']] for a in ordered_actions])}</events>"
+            return {
+                "messages": [{"role": "user", "content": user_text}],
+                "prompt": user_text,
+                "answer": answer_str,
+                "videos": [video_path] if video_path else [],
+                "data_type": "video",
+                "problem_type": _LEVEL_TO_PROBLEM_TYPE[3],
+                "metadata": {
+                    "clip_key": ann.get("clip_key", ""),
+                    "clip_duration_sec": clip_duration,
+                    "level": 3,
+                    "parent_event_id": event_id,
+                    "event_start_sec": ev_start,
+                    "event_end_sec": ev_end,
+                    "clip_start_sec": clip_start,
+                    "clip_end_sec": clip_end,
+                    "action_query": instruction,
+                    "n_grounding_results": len(ordered_actions),
+                    "query_order": query_order,
+                    "shuffled": is_shuffled,
+                    "n_frames": int(ann.get("n_frames") or 0),
+                    "frame_dir": ann.get("frame_dir", ""),
+                    "source_mode": ann.get("source_mode", ""),
+                    "annotated_at": ann.get("annotated_at"),
+                },
+            }
+
+        if order in ("sequential", "both"):
+            records.append(_make_record(actions, is_shuffled=False))
+
+        if order in ("shuffled", "both"):
+            shuffled = actions[:]
+            random.shuffle(shuffled)
+            records.append(_make_record(shuffled, is_shuffled=True))
 
     return records
 
@@ -281,9 +399,19 @@ def main() -> None:
                         help="[Level 2] Minimum events per window to include in training data")
     parser.add_argument("--l3-min-actions", type=int, default=3,
                         help="[Level 3] Minimum grounding actions required per L2 event")
+    parser.add_argument("--l3-padding", type=int, default=5,
+                        help="[Level 3] Seconds of context to add before/after each L2 event "
+                             "when extracting the clip (capped at 128s total)")
+    parser.add_argument("--l3-order", default="sequential",
+                        choices=["sequential", "shuffled", "both"],
+                        help="[Level 3] Query order: sequential (annotation order), "
+                             "shuffled (random permutation), or both (one record each)")
     parser.add_argument("--complete-only", action="store_true",
                         help="Only process clips that have all 3 levels annotated (L1+L2+L3). "
                              "Useful when L1 has more clips than L2/L3.")
+    parser.add_argument("--max-frames", type=int, default=256,
+                        help="[Level 1] Max frames the model can see. Warped mapping is "
+                             "uniformly subsampled when the original exceeds this limit.")
     args = parser.parse_args()
 
     ann_dir = Path(args.annotation_dir)
@@ -309,10 +437,12 @@ def main() -> None:
                 pass
         print(f"  --complete-only: {len(filtered)} clips have all 3 levels annotated (L1+L2+L3)")
         ann_files = filtered
-    if args.level == 2:
+    if args.level == 1:
+        print(f"L1 warped compression: max_frames={args.max_frames}")
+    elif args.level == 2:
         print(f"L2 training windows: size={args.l2_window_size}s  stride={args.l2_stride}s  min_events={args.l2_min_events}")
     elif args.level == 3:
-        print(f"L3 training filter: min_actions={args.l3_min_actions}")
+        print(f"L3 query grounding: min_actions={args.l3_min_actions}  padding={args.l3_padding}s  order={args.l3_order}")
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -329,7 +459,7 @@ def main() -> None:
                 continue
 
             if args.level == 1:
-                records = build_level1_records(ann)
+                records = build_level1_records(ann, max_frames=args.max_frames)
             elif args.level == 2:
                 records = build_level2_records(
                     ann,
@@ -338,7 +468,12 @@ def main() -> None:
                     min_events=args.l2_min_events,
                 )
             else:
-                records = build_level3_records(ann, min_actions=args.l3_min_actions)
+                records = build_level3_records(
+                    ann,
+                    min_actions=args.l3_min_actions,
+                    padding=args.l3_padding,
+                    order=args.l3_order,
+                )
 
             if not records:
                 skipped += 1

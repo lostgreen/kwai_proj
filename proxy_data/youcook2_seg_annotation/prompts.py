@@ -173,6 +173,46 @@ def get_level2_prompt(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Training Prompts — simplified <events> output format
+# Used by build_dataset.py (NOT annotate.py).  The model outputs segments as:
+#   <events>[[start, end], [start, end], ...]</events>
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LEVEL1_TRAIN_BASE = """\
+You are given {n_frames} frames uniformly sampled from a cooking video, numbered 1 to {n_frames}. \
+Segment the frame sequence into 3–5 high-level macro cooking phases \
+(e.g., ingredient preparation, cooking/heating, assembly, plating). \
+Skip non-cooking spans such as narration, beauty shots, or idle waiting.
+
+Output the start and end frame number for each phase in order:
+<events>[[start_frame, end_frame], ...]</events>
+
+Example: <events>[[3, 80], [95, 150], [160, 220]]</events>"""
+
+
+def get_level1_train_prompt(n_frames: int) -> str:
+    """Training prompt for Level 1 (warped-frame macro phase segmentation)."""
+    return _LEVEL1_TRAIN_BASE.format(n_frames=n_frames)
+
+
+_LEVEL2_TRAIN_BASE = """\
+You are given a {duration}s cooking video clip (timestamps 0 to {duration}). \
+Detect all complete cooking events in this clip. \
+Each event is a multi-second, goal-directed workflow that transforms ingredients or completes a recipe subgoal. \
+Skip idle waiting, narration, tool pickup, or beauty shots.
+
+Output the start and end time (integer seconds, 0-based) for each event in order:
+<events>[[start_time, end_time], ...]</events>
+
+Example: <events>[[5, 42], [55, 90]]</events>"""
+
+
+def get_level2_train_prompt(duration: int) -> str:
+    """Training prompt for Level 2 (event detection, 0-based seconds)."""
+    return _LEVEL2_TRAIN_BASE.format(duration=duration)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Level 3: Atomic Interaction — Local Temporal Grounding (动作级)
 # Input:  frames within an L2 event clip + action query text
 # Output: grounding results with pre/post state descriptions
@@ -247,7 +287,41 @@ def get_level3_prompt(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Level 3 Check: Model-based Quality Judge & Supplement (动作级审查)
+# Level 3 Query: Query-conditioned Atomic Grounding (查询式动作级 grounding)
+# Input:  an event video clip (possibly with padding) + ordered list of action captions
+# Output: start/end times for each action, in the given query order
+# ─────────────────────────────────────────────────────────────────────────────
+_LEVEL3_QUERY_BASE = """\
+You are given a {duration}s cooking video clip and a numbered list of actions to locate. \
+Find the time segment for each action, answering in the given order.
+
+Actions to locate:
+{action_list}
+
+Rules:
+- answer in the same order as the list above (1, 2, 3, ...)
+- start_time / end_time are integer seconds from the start of the clip (0-based)
+- each segment must satisfy: 0 ≤ start_time < end_time ≤ {duration}
+
+Output one [start_time, end_time] pair per action in order:
+<events>[[start_time, end_time], ...]</events>
+
+Example: <events>[[3, 7], [0, 2], [10, 14]]</events>"""
+
+
+def get_level3_query_prompt(queries: list[str], duration: int) -> str:
+    """
+    Build the Level 3 Query (query-conditioned grounding) user-turn prompt.
+
+    Args:
+        queries: Ordered list of action caption strings to locate.
+                 May be in original annotation order or shuffled.
+        duration: Duration of the video clip in seconds (0-based timestamps).
+    """
+    action_list = "\n".join(f'{i + 1}. "{q}"' for i, q in enumerate(queries))
+    return _LEVEL3_QUERY_BASE.format(duration=duration, action_list=action_list)
+
+
 # Input:  frames within an L2 event clip + existing L3 grounding_results
 # Output: reviewed results with verdicts, corrections, and supplemented actions
 # ─────────────────────────────────────────────────────────────────────────────
