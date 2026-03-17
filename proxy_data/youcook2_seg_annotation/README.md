@@ -88,7 +88,7 @@ python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/annotate.py 
   --api-base https://api.novita.ai/v3/openai \
   --model pa/gmn-2.5-pr \
   --workers 4 \
-  --limit 100 \
+  --limit 500 \
   --max-frames-per-call 1024
 ```
 
