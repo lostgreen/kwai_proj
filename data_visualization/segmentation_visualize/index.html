@@ -502,8 +502,18 @@ function toggleLevel(levelKey, visible) {
 
 function renderTimeline() {
   const clip = UI.activeClip;
-  const totalWidth = Math.max(clip.n_frames * STRIDE, 600);
   const frames = Array.isArray(clip.frame_strip) ? clip.frame_strip : [];
+
+  // For scoped records (L2 window / L3 event), the frame strip starts at scope_start_sec.
+  // We offset all positions so frame_idx=scope_start maps to pixel 0.
+  const scopeStart = (clip.data_kind === "dataset_jsonl" && clip.scope_start_sec != null)
+    ? Math.max(0, Math.floor(clip.scope_start_sec))
+    : 0;
+  const scopeEnd = (clip.data_kind === "dataset_jsonl" && clip.scope_end_sec != null)
+    ? Math.ceil(clip.scope_end_sec)
+    : clip.n_frames;
+  const scopeFrames = Math.max(scopeEnd - scopeStart, frames.length, 1);
+  const totalWidth = Math.max(scopeFrames * STRIDE, 600);
 
   document.getElementById("timelineCard").innerHTML = `
     <div class="section-title">Timeline</div>
@@ -533,15 +543,15 @@ function renderTimeline() {
             `;
           }).join("")}
         </div>
-        ${renderLane("level1", "Level 1 Macro Phases", clip.levels.level1 || [], totalWidth)}
-        ${renderLane("level2", "Level 2 Cooking Events", clip.levels.level2 || [], totalWidth)}
-        ${renderLane("level3", "Level 3 Atomic Grounding", clip.levels.level3 || [], totalWidth)}
+        ${renderLane("level1", "Level 1 Macro Phases", clip.levels.level1 || [], totalWidth, scopeStart)}
+        ${renderLane("level2", "Level 2 Cooking Events", clip.levels.level2 || [], totalWidth, scopeStart)}
+        ${renderLane("level3", "Level 3 Atomic Grounding", clip.levels.level3 || [], totalWidth, scopeStart)}
       </div>
     </div>
     <div class="scroll-control">
       <div class="meta">拖动时间轴</div>
       <input id="timelineScrollBar" class="scroll-slider" type="range" min="0" max="1000" value="0" />
-      <div class="meta">frames 1-${clip.n_frames}</div>
+      <div class="meta">${scopeStart > 0 ? mmss(scopeStart) + " - " + mmss(scopeEnd) : "frames 1-" + clip.n_frames}</div>
     </div>
   `;
 
@@ -549,7 +559,8 @@ function renderTimeline() {
   initTimelineScroll();
 }
 
-function renderLane(levelKey, title, segments, totalWidth) {
+function renderLane(levelKey, title, segments, totalWidth, scopeOffset) {
+  const offset = scopeOffset || 0;
   return `
     <div class="lane-block" data-lane="${levelKey}">
       <div class="lane-head">
@@ -558,7 +569,7 @@ function renderLane(levelKey, title, segments, totalWidth) {
       </div>
       <div class="lane-track" style="width:${totalWidth}px">
         ${segments.map((segment) => {
-          const left = Math.max(0, (segment.frame_start - 1) * STRIDE);
+          const left = Math.max(0, (segment.frame_start - 1 - offset) * STRIDE);
           const width = Math.max(STRIDE - 6, (segment.frame_end - segment.frame_start + 1) * STRIDE - 8);
           return `
             <div

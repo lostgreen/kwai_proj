@@ -624,11 +624,24 @@ class SegmentationStore:
             record_key = f"{base_clip_key}__record_{line_no}"
             record_scope_label = problem_type or "dataset record"
 
+        # For scoped records (L2 window / L3 event), use scope duration for diagnostics
+        # and restrict frame_hits to scope frame indices only.
+        if (
+            isinstance(scope_start_sec, (int, float))
+            and isinstance(scope_end_sec, (int, float))
+            and scope_end_sec > scope_start_sec
+        ):
+            diag_duration = int(scope_end_sec) - int(scope_start_sec)
+            scope_n_frames = int(scope_end_sec)  # 1fps: frame_idx == second
+        else:
+            diag_duration = clip_duration_sec or max(1, n_frames)
+            scope_n_frames = n_frames
+
         levels = {"level1": level1, "level2": level2, "level3": level3}
         diagnostics = {
-            "level1": compute_level_diagnostics(level1, clip_duration_sec or max(1, n_frames)),
-            "level2": compute_level_diagnostics(level2, clip_duration_sec or max(1, n_frames)),
-            "level3": compute_level_diagnostics(level3, clip_duration_sec or max(1, n_frames)),
+            "level1": compute_level_diagnostics(level1, diag_duration),
+            "level2": compute_level_diagnostics(level2, diag_duration),
+            "level3": compute_level_diagnostics(level3, diag_duration),
             "level2_parent_violations": compute_child_violations(level2, level1),
             "level3_parent_violations": compute_child_violations(level3, level2),
         }
@@ -680,7 +693,7 @@ class SegmentationStore:
             "warped_mapping": metadata.get("warped_mapping") or [],
             "segment_calls": segment_calls,
             "diagnostics": diagnostics,
-            "frame_hits": build_frame_hits(n_frames, levels),
+            "frame_hits": build_frame_hits(scope_n_frames, levels),
             "raw": raw,
         }
 
@@ -704,6 +717,24 @@ class SegmentationStore:
                 for entry in (payload.get("warped_mapping") or [])
                 if isinstance(entry, dict) and safe_float(entry.get("real_sec"), -1) >= 0
             }
+
+        # For dataset_jsonl records, limit the frame strip to the annotated scope
+        # (e.g. L3 event window or L2 sliding window) instead of the full clip.
+        # 1fps frames: frame_idx == second, so scope maps directly to frame indices.
+        scope_start = payload.get("scope_start_sec")
+        scope_end = payload.get("scope_end_sec")
+        if (
+            payload.get("data_kind") == "dataset_jsonl"
+            and isinstance(scope_start, (int, float))
+            and isinstance(scope_end, (int, float))
+            and scope_end > scope_start
+        ):
+            frame_start = max(1, int(scope_start))
+            frame_end = min(n_frames if n_frames > 0 else int(scope_end), int(scope_end))
+        else:
+            frame_start = 1
+            frame_end = n_frames
+
         strip: list[dict[str, Any]] = []
 
         frame_dir: Optional[Path] = None
@@ -713,7 +744,7 @@ class SegmentationStore:
             except ValueError:
                 frame_dir = None
 
-        for frame_idx in range(1, n_frames + 1):
+        for frame_idx in range(frame_start, frame_end + 1):
             frame_path = self._resolve_frame_path_from_dir(frame_dir, frame_idx) if frame_dir else None
             src = None
             if frame_path is not None and frame_path.exists():
