@@ -24,8 +24,8 @@
 **任务**：给定一段完整烹饪视频，将其分割为 3–5 个高层语义阶段（如备料、烹炒、装盘）。
 
 **输入格式**
-- 视频：完整原始视频，均匀采样至 ≤256 帧（warped 压缩）
-- Prompt：给出帧编号 1..N（warped 帧号），要求输出帧号区间
+- 视频：从 1fps 帧目录中按 warped_mapping 选出 M 帧（M ≤ 256），ffmpeg concat 拼成合成 mp4（1fps，M 秒），模型第 i 帧 = warped index i
+- Prompt：给出帧编号 1..M（warped 帧号），要求输出帧号区间
 
 **输出格式**
 ```
@@ -94,8 +94,8 @@ annotate.py (VLM 自动标注 L1→L2→L3)
 build_dataset.py → youcook2_hier_L{1,2,3}_train.jsonl
     │               (L1: warped 压缩 ≤256 帧; L3: 0-based 时间归一化)
     ▼
-prepare_clips.py → youcook2_hier_L{2,3}_train_clipped.jsonl
-                   (ffmpeg 截取子片段，更新 videos 字段)
+prepare_clips.py → youcook2_hier_L{1,2,3}_train_clipped.jsonl
+                   (L1: 按 warped_mapping 拼 JPEG→mp4; L2/L3: ffmpeg 截取子片段)
 ```
 
 所有产出数据均符合 **EasyR1 JSONL 格式**，可直接用于训练。
@@ -241,6 +241,6 @@ prepare_clips.py → youcook2_hier_L{2,3}_train_clipped.jsonl
 
 | Level | 记录数 | 视频时长范围 | 核心时间窗口 | 帧数约束 |
 |---|---|---|---|---|
-| L1 | 100 | 63–706s | 全视频 | **58% 超 256 帧** |
+| L1 | 100 | 63–706s | 合成 mp4（≤256 帧） | warped 压缩后 ≤256 帧 ✓ |
 | L2 | 378 | 原始 63–706s | 截取窗口 63–128s | 窗口内 ≤128 帧 ✓ |
 | L3 | 376 | 原始 63–706s | 截取事件 6–98s | 事件内 ≤98 帧 ✓ |

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-prepare_clips.py — Extract sub-clips for L2/L3 records and normalize timestamps.
+prepare_clips.py — Build EasyR1-ready video inputs for all three levels.
+
+For each L1 record:
+  - Read warped_mapping (already subsampled to ≤256 frames by build_dataset.py)
+  - Collect the corresponding 1fps JPEG frames from the frame directory
+  - Concatenate them (1s per frame) into a synthetic mp4 via ffmpeg concat demuxer
+  - The resulting video has exactly M frames → warped frame index i = video frame i
 
 For each L2 record:
   - Extract [window_start_sec, window_end_sec] from the source video via ffmpeg
@@ -9,27 +15,91 @@ For each L2 record:
 
 For each L3 record:
   - Extract [event_start_sec, event_end_sec] from the source video via ffmpeg
-  - Subtract event_start from all grounding_results timestamps → 0-based
-  - Rebuild prompt with 0-based time range
+  - Timestamps are already 0-based (normalized in build_dataset.py)
 
 Usage:
     python prepare_clips.py \
-        --input  datasets/youcook2_hier_L2_train.jsonl \
-        --output datasets/youcook2_hier_L2_train_clipped.jsonl \
+        --input  datasets/youcook2_hier_L1_train.jsonl \
+        --output datasets/youcook2_hier_L1_train_clipped.jsonl \
         --clip-dir /path/to/clip_output_dir \
         --workers 8
 """
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from prompts import get_level2_train_prompt
+
+
+def _ffmpeg_concat_frames(frame_paths: list[Path], dst: Path) -> None:
+    """Create a 1fps video from an ordered list of JPEG frames via ffmpeg concat demuxer.
+
+    Each frame is shown for exactly 1 second, so warped frame index i = video frame i.
+    The concat demuxer handles non-consecutive frame selections correctly.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Build concat file: each entry gets `duration 1`; last entry repeated without duration
+    # (ffmpeg concat demuxer requirement for accurate last-frame duration)
+    lines: list[str] = []
+    for p in frame_paths:
+        lines.append(f"file '{p.resolve()}'")
+        lines.append("duration 1")
+    lines.append(f"file '{frame_paths[-1].resolve()}'")
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt", dir=dst.parent)
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", tmp_path,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            str(dst),
+        ]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg concat failed for {dst}:\n"
+                + result.stderr.decode(errors="replace")
+            )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _process_l1(record: dict, clip_dir: Path) -> dict:
+    """Assemble a synthetic video from the warped-selected 1fps frames for L1.
+
+    warped_mapping (already subsampled to ≤256 in build_dataset.py) maps
+    warped_idx 1..M → real_sec.  Each frame is stored as {real_sec:04d}.jpg
+    inside frame_dir.  The output video has exactly M frames at 1fps, so the
+    model's i-th frame exactly corresponds to warped index i.
+    """
+    meta = record["metadata"]
+    clip_key = meta["clip_key"]
+    mapping  = meta["warped_mapping"]
+    frame_dir = Path(meta["frame_dir"])
+
+    out_name = f"{clip_key}_L1_warped{len(mapping)}f.mp4"
+    out_path = clip_dir / out_name
+
+    if not out_path.exists():
+        frame_paths = [frame_dir / f"{e['real_sec']:04d}.jpg" for e in mapping]
+        _ffmpeg_concat_frames(frame_paths, out_path)
+
+    rec = dict(record)
+    rec["videos"]   = [str(out_path)]
+    return rec
 
 
 def _ffmpeg_extract(src: str, start: int, end: int, dst: Path) -> None:
@@ -126,11 +196,17 @@ def main() -> None:
     parser.add_argument("--clip-dir", required=True, help="Directory to write extracted video clips")
     parser.add_argument("--workers",  type=int, default=4, help="Parallel ffmpeg workers")
     parser.add_argument("--dry-run",  action="store_true", help="Skip ffmpeg, only rewrite JSONL (clips must exist)")
+    parser.add_argument("--overwrite", action="store_true", help="Re-run even if output JSONL already exists")
     args = parser.parse_args()
 
     input_path  = Path(args.input)
     output_path = Path(args.output)
     clip_dir    = Path(args.clip_dir)
+
+    if output_path.exists() and not args.overwrite:
+        print(f"SKIP: output already exists ({output_path}). Use --overwrite to re-run.")
+        sys.exit(0)
+
     clip_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -140,8 +216,8 @@ def main() -> None:
         sys.exit(1)
 
     level = records[0]["metadata"].get("level")
-    if level not in (2, 3):
-        print(f"ERROR: prepare_clips only supports L2 and L3 (got level={level})", file=sys.stderr)
+    if level not in (1, 2, 3):
+        print(f"ERROR: prepare_clips supports L1, L2, L3 (got level={level})", file=sys.stderr)
         sys.exit(1)
 
     print(f"Processing {len(records)} L{level} records → {output_path}")
@@ -150,7 +226,7 @@ def main() -> None:
     if args.dry_run:
         print("DRY RUN: skipping ffmpeg")
 
-    process_fn = _process_l2 if level == 2 else _process_l3
+    process_fn = {1: _process_l1, 2: _process_l2, 3: _process_l3}[level]
 
     done = skipped = errors = 0
     results: list[tuple[int, dict | Exception]] = []
@@ -159,9 +235,11 @@ def main() -> None:
         idx, rec = idx_rec
         try:
             if args.dry_run:
-                # Patch the path only, skip ffmpeg
+                # Patch the video path only, skip ffmpeg
                 meta = rec["metadata"]
-                if level == 2:
+                if level == 1:
+                    name = f"{meta['clip_key']}_L1_warped{meta['n_warped_frames']}f.mp4"
+                elif level == 2:
                     name = f"{meta['clip_key']}_L2_w{meta['window_start_sec']}_{meta['window_end_sec']}.mp4"
                 else:
                     cs = meta.get("clip_start_sec", meta["event_start_sec"])
