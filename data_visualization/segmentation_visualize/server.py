@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import mimetypes
+import re
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,6 +82,63 @@ def print_progress(prefix: str, current: int, total: int) -> None:
     percent = 100.0 * current / total
     end = "\n" if current >= total else ""
     print(f"\r{prefix} [{bar}] {current}/{total} ({percent:5.1f}%)", end=end, flush=True)
+
+
+_EVENTS_RE = re.compile(r"<events>(.*?)</events>", re.DOTALL)
+_SEG_PAIR_RE = re.compile(r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*\]")
+
+
+def parse_events_answer(text: str) -> list[list[float]]:
+    """Parse '<events>[[s, e], ...]</events>' answer string → list of [s, e] float pairs."""
+    if not text:
+        return []
+    m = _EVENTS_RE.search(str(text))
+    if not m:
+        return []
+    pairs: list[list[float]] = []
+    for pm in _SEG_PAIR_RE.finditer(m.group(1)):
+        pairs.append([float(pm.group(1)), float(pm.group(2))])
+    return pairs
+
+
+def build_segments_from_events(
+    pairs: list[list[float]],
+    level: int,
+    offset: int = 0,
+    label_prefix: str = "Segment",
+) -> list[dict[str, Any]]:
+    """Convert [[start, end], ...] pairs to segment dicts.
+
+    start/end are clip-local coordinates:
+      - L1: warped frame indices (1..N)
+      - L2/L3: 0-based seconds within the clip window
+    offset converts to display space (0 for L1; clip_offset_sec for L2/L3).
+    """
+    segments: list[dict[str, Any]] = []
+    for idx, pair in enumerate(pairs, 1):
+        if not (isinstance(pair, (list, tuple)) and len(pair) >= 2):
+            continue
+        local_start = int(pair[0])
+        local_end = int(pair[1])
+        abs_start = local_start + offset
+        abs_end = local_end + offset
+        segments.append({
+            "id": f"l{level}-{idx}",
+            "level": level,
+            "numeric_id": idx,
+            "parent_numeric_id": None,
+            "parent_id": None,
+            "start_time": format_mmss(abs_start),
+            "end_time": format_mmss(abs_end),
+            "start_sec": abs_start,
+            "end_sec": abs_end,
+            "frame_start": abs_start,
+            "frame_end": abs_end,
+            "label": f"{label_prefix} {idx}",
+            "subtitle": "",
+            "details": {"clip_local_start": local_start, "clip_local_end": local_end},
+        })
+    return segments
 
 
 def build_subset_summary(
@@ -576,50 +634,123 @@ class SegmentationStore:
         record_scope_label = ""
 
         if problem_type == "temporal_seg_hier_L1":
-            level1 = build_l1_segments(answer_data, n_frames)
-            record_key = base_clip_key
-            record_scope_label = "L1 clip-level sample"
+            level = 1
         elif problem_type == "temporal_seg_hier_L2":
-            raw_events = answer_data.get("events") or []
-            normalized_events = []
-            for idx, event in enumerate(raw_events, 1):
-                if not isinstance(event, dict):
-                    continue
-                normalized = dict(event)
-                normalized["event_id"] = idx
-                normalized.pop("parent_phase_id", None)
-                normalized_events.append(normalized)
-            level2 = build_l2_segments({"events": normalized_events}, n_frames)
+            level = 2
+        elif problem_type == "temporal_seg_hier_L3":
+            level = 3
+        else:
+            level = 0
+
+        events_pairs = parse_events_answer(raw.get("answer", ""))
+        warped_display_frames: list[dict[str, Any]] = []
+        action_query: str = ""
+
+        if problem_type == "temporal_seg_hier_L1":
+            if events_pairs:
+                # NEW clipped format: pairs are warped frame indices (1..n_warped)
+                n_warped = int(safe_float(metadata.get("n_warped_frames") or n_frames or 256))
+                level1 = build_segments_from_events(events_pairs, level=1, offset=0, label_prefix="Phase")
+                warped_display_frames = [
+                    {"warped_idx": int(e["warped_idx"]), "real_sec": int(e["real_sec"])}
+                    for e in (metadata.get("warped_mapping") or [])
+                    if isinstance(e, dict)
+                ]
+                scope_start_sec = 1
+                scope_end_sec = n_warped
+                n_frames = n_warped  # frame strip uses warped indices 1..N
+            else:
+                level1 = build_l1_segments(answer_data, n_frames)
+            record_key = base_clip_key
+            record_scope_label = f"L1 macro phases · warped frames 1-{n_frames}"
+
+        elif problem_type == "temporal_seg_hier_L2":
             win_start = int(safe_float(metadata.get("window_start_sec") or 0))
             win_end = int(safe_float(metadata.get("window_end_sec") or clip_duration_sec))
+            if events_pairs:
+                # NEW clipped format: pairs are 0-based seconds within the 128s window
+                clip_offset = int(safe_float(metadata.get("clip_offset_sec") or win_start))
+                level2 = build_segments_from_events(
+                    events_pairs, level=2, offset=clip_offset, label_prefix="Event"
+                )
+                scope_start_sec = clip_offset
+                scope_end_sec = clip_offset + (win_end - win_start)
+            else:
+                raw_events = answer_data.get("events") or []
+                normalized_events = []
+                for idx, event in enumerate(raw_events, 1):
+                    if not isinstance(event, dict):
+                        continue
+                    normalized = dict(event)
+                    normalized["event_id"] = idx
+                    normalized.pop("parent_phase_id", None)
+                    normalized_events.append(normalized)
+                level2 = build_l2_segments({"events": normalized_events}, n_frames)
+                scope_start_sec = win_start
+                scope_end_sec = win_end
             record_key = f"{base_clip_key}__L2_{win_start}_{win_end}"
             record_scope_label = f"L2 window {format_mmss(win_start)}-{format_mmss(win_end)}"
+
         elif problem_type == "temporal_seg_hier_L3":
             event_start = int(safe_float(metadata.get("event_start_sec") or 0))
             event_end = int(safe_float(metadata.get("event_end_sec") or 0))
-            parent_label = str(metadata.get("action_query") or "Event")
-            parent_event = {
-                "event_id": 1,
-                "start_time": event_start,
-                "end_time": event_end,
-                "instruction": parent_label,
-                "visual_keywords": [],
-            }
-            normalized_results = []
-            for idx, result in enumerate(answer_data.get("grounding_results") or [], 1):
-                if not isinstance(result, dict):
-                    continue
-                normalized = dict(result)
-                normalized["action_id"] = idx
-                normalized["parent_event_id"] = 1
-                normalized_results.append(normalized)
-            level2 = build_l2_segments({"events": [parent_event]}, n_frames)
-            level3 = build_l3_segments({"grounding_results": normalized_results}, n_frames)
-            scope_start_sec = event_start
-            scope_end_sec = event_end
+            action_query = str(metadata.get("action_query") or "")
+            if events_pairs:
+                # NEW clipped format: pairs are 0-based seconds within the clip+padding window
+                clip_start = int(safe_float(
+                    metadata.get("clip_start_sec") or metadata.get("clip_offset_sec") or 0
+                ))
+                clip_end = int(safe_float(metadata.get("clip_end_sec") or event_end))
+                level3 = build_segments_from_events(
+                    events_pairs, level=3, offset=clip_start, label_prefix="Action"
+                )
+                # Show parent event as a level-2 box for context
+                level2 = [{
+                    "id": "l2-1",
+                    "level": 2,
+                    "numeric_id": 1,
+                    "parent_numeric_id": None,
+                    "parent_id": None,
+                    "start_time": format_mmss(event_start),
+                    "end_time": format_mmss(event_end),
+                    "start_sec": event_start,
+                    "end_sec": event_end,
+                    "frame_start": event_start,
+                    "frame_end": event_end,
+                    "label": action_query or f"Event {event_start}-{event_end}s",
+                    "subtitle": "",
+                    "details": {"action_query": action_query},
+                }]
+                scope_start_sec = clip_start
+                scope_end_sec = clip_end
+            else:
+                parent_label = action_query or "Event"
+                parent_event = {
+                    "event_id": 1,
+                    "start_time": event_start,
+                    "end_time": event_end,
+                    "instruction": parent_label,
+                    "visual_keywords": [],
+                }
+                normalized_results = []
+                for idx, result in enumerate(answer_data.get("grounding_results") or [], 1):
+                    if not isinstance(result, dict):
+                        continue
+                    normalized = dict(result)
+                    normalized["action_id"] = idx
+                    normalized["parent_event_id"] = 1
+                    normalized_results.append(normalized)
+                level2 = build_l2_segments({"events": [parent_event]}, n_frames)
+                level3 = build_l3_segments({"grounding_results": normalized_results}, n_frames)
+                scope_start_sec = event_start
+                scope_end_sec = event_end
             parent_event_id = int(safe_float(metadata.get("parent_event_id") or 0))
             record_key = f"{base_clip_key}__L3_E{parent_event_id}_{event_start}_{event_end}"
-            record_scope_label = f"L3 event {format_mmss(event_start)}-{format_mmss(event_end)}"
+            record_scope_label = (
+                f"L3 · {action_query or 'event'} "
+                f"{format_mmss(event_start)}-{format_mmss(event_end)}"
+            )
+
         else:
             record_key = f"{base_clip_key}__record_{line_no}"
             record_scope_label = problem_type or "dataset record"
@@ -691,6 +822,8 @@ class SegmentationStore:
             "levels": levels,
             "sampling": {"n_sampled_frames": metadata.get("n_warped_frames")},
             "warped_mapping": metadata.get("warped_mapping") or [],
+            "warped_display_frames": warped_display_frames,
+            "action_query": action_query,
             "segment_calls": segment_calls,
             "diagnostics": diagnostics,
             "frame_hits": build_frame_hits(scope_n_frames, levels),
@@ -743,6 +876,30 @@ class SegmentationStore:
                 frame_dir = resolve_path(self.root, frame_dir_text)
             except ValueError:
                 frame_dir = None
+
+        # L1 warped display: use warped_display_frames to map warped_idx → real frame file
+        warped_display = payload.get("warped_display_frames")
+        if warped_display:
+            strip: list[dict[str, Any]] = []
+            for entry in warped_display:
+                warped_idx = int(entry.get("warped_idx", 0))
+                real_sec = int(entry.get("real_sec", warped_idx))
+                frame_path = self._resolve_frame_path_from_dir(frame_dir, real_sec) if frame_dir else None
+                src = None
+                if frame_path is not None and frame_path.exists():
+                    try:
+                        with Image.open(frame_path) as image:
+                            src = image_to_data_url(image, max_width=160)
+                    except Exception:
+                        src = None
+                strip.append({
+                    "frame_idx": warped_idx,
+                    "timestamp": format_mmss(real_sec),
+                    "sampled": True,
+                    "src": src,
+                })
+            self.frame_cache[clip_key] = strip
+            return strip
 
         for frame_idx in range(frame_start, frame_end + 1):
             frame_path = self._resolve_frame_path_from_dir(frame_dir, frame_idx) if frame_dir else None

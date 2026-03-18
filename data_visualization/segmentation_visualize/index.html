@@ -451,15 +451,27 @@ function renderHeader() {
       ? `${mmss(clip.scope_start_sec)} - ${mmss(clip.scope_end_sec)}`
       : "-"
   );
-  const samplingLabel = clip.warped_mapping?.length
-    ? `${clip.warped_mapping.length} warped frames`
-    : (clip.sampling?.n_sampled_frames ? `${clip.sampling.n_sampled_frames} sampled` : "-");
+  const samplingLabel = clip.warped_display_frames?.length
+    ? `${clip.warped_display_frames.length} warped frames`
+    : clip.warped_mapping?.length
+      ? `${clip.warped_mapping.length} warped frames`
+      : (clip.sampling?.n_sampled_frames ? `${clip.sampling.n_sampled_frames} sampled` : "-");
   const warningCount =
     (clip.diagnostics.level1.overlap_count || 0) +
     (clip.diagnostics.level2.overlap_count || 0) +
     (clip.diagnostics.level3.overlap_count || 0) +
     (clip.diagnostics.level2_parent_violations || []).length +
     (clip.diagnostics.level3_parent_violations || []).length;
+
+  const coordLabel = clip.problem_type === "temporal_seg_hier_L1"
+    ? "warped frames (1-N)"
+    : clip.problem_type ? "0-based sec in clip" : "-";
+
+  const actionQueryHtml = clip.action_query
+    ? `<div style="margin-top:8px;padding:8px 12px;border-radius:10px;background:rgba(212,87,124,.08);border:1px solid rgba(212,87,124,.2);font-size:13px;color:#5b1e33">
+        <strong>Query:</strong> ${escapeHtml(clip.action_query)}
+       </div>`
+    : "";
 
   document.getElementById("clipHeader").innerHTML = `
     <div class="clip-head-top">
@@ -468,6 +480,7 @@ function renderHeader() {
         <div class="clip-subtitle">
           ${escapeHtml(dataLabel)} · ${escapeHtml(clip.problem_type || clip.source_mode || "unknown source")} · frame_dir: ${escapeHtml(clip.frame_dir || "-")}
         </div>
+        ${actionQueryHtml}
       </div>
       <div class="controls">
         <label class="toggle"><input type="checkbox" checked onchange="toggleLevel('level1', this.checked)"> L1</label>
@@ -480,8 +493,8 @@ function renderHeader() {
       <div class="meta-box"><div class="meta-k">Duration</div><div class="meta-v">${escapeHtml(mmss(clip.clip_duration_sec))}</div></div>
       <div class="meta-box"><div class="meta-k">Frames</div><div class="meta-v">${clip.n_frames}</div></div>
       <div class="meta-box"><div class="meta-k">Scope</div><div class="meta-v">${escapeHtml(scopeLabel)}</div></div>
+      <div class="meta-box"><div class="meta-k">Coord</div><div class="meta-v">${escapeHtml(coordLabel)}</div></div>
       <div class="meta-box"><div class="meta-k">Sampling</div><div class="meta-v">${escapeHtml(samplingLabel)}</div></div>
-      <div class="meta-box"><div class="meta-k">Annotated At</div><div class="meta-v">${escapeHtml(clip.annotated_at || "-")}</div></div>
       <div class="meta-box"><div class="meta-k">Warnings</div><div class="meta-v">${warningCount}</div></div>
     </div>
   `;
