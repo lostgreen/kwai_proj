@@ -399,6 +399,15 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=3, help="API retry count")
     parser.add_argument("--max-samples", type=int, default=0, help="Max number of manifest records to annotate")
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=True,
+        help=(
+            "Skip clips already present in existing output files and append new results. "
+            "Useful when increasing --max-samples or resuming after a crash."
+        ),
+    )
+    parser.add_argument(
         "--shuffle-only",
         action="store_true",
         default=False,
@@ -432,10 +441,12 @@ def main() -> None:
                 "Run the full annotation first."
             )
 
-        shuffle_records = [r for r in records if r.get("shuffle_video_path")]
-        missing = sum(1 for r in shuffle_records if r["clip_key"] not in fwd_index)
+        all_shuffle_records = [r for r in records if r.get("shuffle_video_path")]
+        missing = sum(1 for r in all_shuffle_records if r["clip_key"] not in fwd_index)
         if missing:
-            print(f"Warning: {missing}/{len(shuffle_records)} clips missing from existing forward captions.")
+            print(f"Skipping {missing}/{len(all_shuffle_records)} clips missing from existing forward captions.")
+        shuffle_records = [r for r in all_shuffle_records if r["clip_key"] in fwd_index]
+        print(f"Re-annotating shuffle for {len(shuffle_records)} clips with existing forward/reverse captions.")
 
         new_shuffle_items: dict[str, dict] = {}  # clip_key -> shuffle_item
 
@@ -502,13 +513,24 @@ def main() -> None:
     # ------------------------------------------------------------------
     has_shuffle = any(r.get("shuffle_video_path") for r in records)
 
+    # --resume: load already-done clip_keys and skip them
+    done_keys: set[str] = set()
+    if args.resume:
+        done_keys = set(load_captions_index(forward_out_path).keys())
+        skipped = sum(1 for r in records if r["clip_key"] in done_keys)
+        if skipped:
+            print(f"Resuming: skipping {skipped}/{len(records)} already-annotated clips.")
+        records = [r for r in records if r["clip_key"] not in done_keys]
+
+    # Append when resuming (files already exist), otherwise overwrite
+    file_mode = "a" if args.resume and done_keys else "w"
     open_files: dict[str, Any] = {
-        "forward": open(forward_out_path, "w", encoding="utf-8", buffering=1),
-        "reverse": open(reverse_out_path, "w", encoding="utf-8", buffering=1),
-        "pair": open(pair_out_path, "w", encoding="utf-8", buffering=1),
+        "forward": open(forward_out_path, file_mode, encoding="utf-8", buffering=1),
+        "reverse": open(reverse_out_path, file_mode, encoding="utf-8", buffering=1),
+        "pair": open(pair_out_path, file_mode, encoding="utf-8", buffering=1),
     }
     if has_shuffle:
-        open_files["shuffle"] = open(shuffle_out_path, "w", encoding="utf-8", buffering=1)
+        open_files["shuffle"] = open(shuffle_out_path, file_mode, encoding="utf-8", buffering=1)
 
     try:
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
