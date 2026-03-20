@@ -317,24 +317,22 @@ def _build_vllm_request(example: dict[str, Any], processor, args: argparse.Names
     return request
 
 
-def generate_batch_with_vllm(
+def iter_vllm_batches(
     items: list[dict[str, Any]],
     processor,
     llm,
     sampling_params,
     args: argparse.Namespace,
     batch_size: int = 32,
-) -> list[list[str] | Exception]:
-    """Batch generate with vLLM in mini-batches to bound CPU memory.
+):
+    """Yield (global_idx, item, responses_or_exception) one mini-batch at a time.
 
-    Video frame preprocessing is CPU/RAM intensive. Processing all items at
-    once can OOM when running multiple workers in parallel. Mini-batches
-    keep peak RAM usage bounded while still benefiting from vLLM's
-    continuous batching within each batch.
+    Scoring and file I/O happen immediately after each batch so output files
+    are written progressively rather than only after all inference completes.
+    CPU RAM is also bounded to ~batch_size video frame buffers at a time.
     """
     import time as _time
 
-    results: list[list[str] | Exception] = [[] for _ in range(len(items))]
     total_batches = (len(items) + batch_size - 1) // batch_size
 
     for batch_idx in range(total_batches):
@@ -343,33 +341,36 @@ def generate_batch_with_vllm(
         batch_items = items[start:end]
 
         requests = []
-        req_to_item = []   # maps request index -> item index within this batch
+        req_positions = []   # global indices of items that built successfully
+        errors = {}          # local_idx -> Exception
 
         for local_idx, item in enumerate(batch_items):
-            global_idx = start + local_idx
             try:
                 req = _build_vllm_request(item, processor, args)
                 if req is None:
-                    results[global_idx] = RuntimeError("Failed to build vLLM request")
+                    errors[local_idx] = RuntimeError("Failed to build vLLM request")
                     continue
                 requests.append(req)
-                req_to_item.append(global_idx)
+                req_positions.append(local_idx)
             except Exception as exc:
-                results[global_idx] = exc
+                errors[local_idx] = exc
+
+        # Yield errors for items that failed request building
+        for local_idx, exc in errors.items():
+            yield start + local_idx, batch_items[local_idx], exc
 
         if requests:
             _t0 = _time.time()
             batch_outputs = llm.generate(requests, sampling_params=sampling_params, use_tqdm=False)
             _elapsed = _time.time() - _t0
-            for req_idx, output in enumerate(batch_outputs):
-                results[req_to_item[req_idx]] = [o.text for o in output.outputs]
             print(
                 f"[offline_filter] batch {batch_idx+1}/{total_batches}: "
                 f"{len(requests)} requests in {_elapsed:.1f}s",
                 flush=True,
             )
-
-    return results
+            for req_idx, output in enumerate(batch_outputs):
+                local_idx = req_positions[req_idx]
+                yield start + local_idx, batch_items[local_idx], [o.text for o in output.outputs]
 
 
 def main() -> None:
@@ -489,13 +490,9 @@ def main() -> None:
 
     with output_path.open("w", encoding="utf-8") as fout, report_path.open("w", encoding="utf-8") as freport:
         if args.backend == "vllm":
-            # ---- Batched vLLM inference ----
-            print(f"[offline_filter] Preprocessing {len(items)} requests for batch vLLM inference ...", flush=True)
-            _t0 = _time.time()
-            batch_results = generate_batch_with_vllm(items, processor, llm, sampling_params, args)
-            print(f"[offline_filter] Batch inference done in {_time.time()-_t0:.1f}s", flush=True)
-
-            for idx, (item, result) in enumerate(zip(items, batch_results)):
+            # ---- Mini-batch vLLM inference: score & write after each batch ----
+            processed = 0
+            for idx, item, result in iter_vllm_batches(items, processor, llm, sampling_params, args):
                 if isinstance(result, Exception):
                     _process_error(item, idx, result, freport)
                 else:
@@ -503,9 +500,12 @@ def main() -> None:
                         _process_result(item, idx, result, fout, freport)
                     except Exception as exc:
                         _process_error(item, idx, exc, freport)
-                if (idx + 1) % args.log_every == 0 or (idx + 1) == len(items):
+                processed += 1
+                fout.flush()
+                freport.flush()
+                if processed % args.log_every == 0 or processed == len(items):
                     print(
-                        f"[offline_filter] scored={idx + 1}/{len(items)} "
+                        f"[offline_filter] processed={processed}/{len(items)} "
                         f"kept={kept} dropped={dropped}",
                         flush=True,
                     )

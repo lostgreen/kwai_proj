@@ -175,15 +175,49 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
     fi
   done
 
-  # 等待所有 worker 完成
+  # 等待所有 worker 完成，同时轮询 report 文件行数显示汇总进度
+  _total_samples=$(wc -l < "${MIXED_TRAIN}")
+  _expected_per_shard=$(( (_total_samples + _num_workers - 1) / _num_workers ))
+  _expected_total=$(( _expected_per_shard * _num_workers ))
+  (( _expected_total > _total_samples )) && _expected_total=${_total_samples}
+
+  # 后台进度监控（每 10 秒刷新一次）
+  (
+    while true; do
+      _done=0
+      for (( _i=0; _i < _num_workers; _i++ )); do
+        _f="${_shard_dir}/shard_${_i}_report.jsonl"
+        [[ -f "${_f}" ]] && _done=$(( _done + $(wc -l < "${_f}") ))
+      done
+      _pct=$(( _done * 100 / (_expected_total > 0 ? _expected_total : 1) ))
+      # 简单 ASCII 进度条（40 格）
+      _filled=$(( _pct * 40 / 100 ))
+      _bar="$(printf '%0.s#' $(seq 1 $_filled 2>/dev/null))$(printf '%0.s-' $(seq 1 $(( 40 - _filled )) 2>/dev/null))"
+      printf "\r[offline_filter] [%s] %d/%d (%d%%)  " "${_bar}" "${_done}" "${_expected_total}" "${_pct}" >&2
+      sleep 10
+    done
+  ) &
+  _monitor_pid=$!
+
   _any_failed=false
   for (( _w=0; _w < _num_workers; _w++ )); do
     if ! wait "${_pids[${_w}]}"; then
+      echo "" >&2
       echo "[aot] ERROR: worker ${_w} (pid=${_pids[${_w}]}) failed. Log:" >&2
       tail -20 "${_shard_dir}/shard_${_w}.log" >&2
       _any_failed=true
     fi
   done
+
+  # 停止监控，打印最终完成行
+  kill "${_monitor_pid}" 2>/dev/null
+  wait "${_monitor_pid}" 2>/dev/null
+  _done_final=0
+  for (( _i=0; _i < _num_workers; _i++ )); do
+    _f="${_shard_dir}/shard_${_i}_report.jsonl"
+    [[ -f "${_f}" ]] && _done_final=$(( _done_final + $(wc -l < "${_f}") ))
+  done
+  printf "\r[offline_filter] [%s] %d/%d (100%%) done\n" "$(printf '%0.s#' $(seq 1 40))" "${_done_final}" "${_expected_total}" >&2
   if [[ "${_any_failed}" == "true" ]]; then
     echo "[aot] Some filter workers failed. Aborting." >&2
     exit 1
