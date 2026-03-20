@@ -1,117 +1,80 @@
 # Data Visualization
 
-统一可视化工具，支持三类数据的交互式查看：
+统一可视化工具，支持三类数据的交互式查看。所有数据路径均通过**启动参数或环境变量**传入，服务端预加载后页面打开即可浏览，无需在浏览器中输入路径。
 
-| 标签页 | 数据类型 | 核心功能 |
-|--------|---------|---------|
+| 标签页 | 数据 | 核心功能 |
+|--------|------|---------|
 | **Segmentation** | annotation JSON / seg JSONL | 三层时序标注段条 + 1fps 帧条 + diagnostics |
-| **AoT Caption** | `caption_pairs.jsonl` + manifest | forward / reverse / shuffle 帧条 + VLM caption 并排对比 |
-| **AoT MCQ** | `v2t_train.jsonl` / `t2v_train.jsonl` | 视频帧 + A/B(/C/D) 选项卡 + 正确答案高亮 |
+| **AoT Caption** | `caption_pairs.jsonl` + `aot_event_manifest.jsonl` | forward / reverse / shuffle 帧条 + VLM caption 并排对比 |
+| **AoT MCQ** | `v2t / t2v / 4way` JSONL | 视频帧 + A/B(/C/D) 选项卡 + 正确答案高亮 |
 
----
-
-## 快速启动
-
-```bash
-cd data_visualization
-./run.sh              # 空界面，在浏览器中手动填写路径
-```
-
-启动后访问 **http://127.0.0.1:8787/**
+启动后访问 **http://127.0.0.1:8890/**
 
 ---
 
 ## Segmentation 标注可视化
 
-### 方式 1 — 浏览器手动加载
 ```bash
-./run.sh
-# 在「Segmentation」标签页输入路径后点击「加载数据」
-```
+# 加载 annotation JSON 目录
+./data_visualization/run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/
 
-### 方式 2 — 命令行预加载（annotation JSON 目录）
-```bash
-./run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/
-```
+# 加载单个 dataset JSONL（任一层级）
+./data_visualization/run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl
 
-### 方式 3 — 预加载单个 dataset JSONL（任一层级）
-```bash
-# L1 macro phase 标注
-./run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_L1_train_clipped.jsonl
+# 限制预加载数量（大数据集提速）
+./data_visualization/run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
+  --max-samples 200 --prefer-complete
 
-# L2 cooking event 标注
-./run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_L2_train_clipped.jsonl
-
-# L3 atomic grounding 标注
-./run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_L3_train_clipped.jsonl
-
-# 混合三层训练集
-./run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl
-```
-
-### 方式 4 — 限制预加载数量（大数据集提速）
-```bash
-./run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
-         --max-samples 200 --prefer-complete
+# 远端服务器（env-var 方式，路径较长时更方便）
+DATA_PATH=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg/annotations \
+  ./data_visualization/run.sh
 ```
 
 ---
 
 ## AoT Caption 可视化
 
-查看 forward / reverse / shuffle 三方向视频帧和 VLM 生成的 caption 并排对比。
+**必须同时提供 `--manifest`，否则视频帧无法抽取。**
 
-### 仅加载 caption pairs（无视频帧预览）
 ```bash
-./run.sh --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl
-```
+# 标准启动（有视频帧预览）
+./data_visualization/run.sh \
+  --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
+  --manifest      proxy_data/temporal_aot/data/aot_event_manifest.jsonl
 
-### 同时加载 manifest（显示视频帧条）
-```bash
-./run.sh --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
-         --manifest     proxy_data/temporal_aot/data/aot_event_manifest.jsonl
-```
-
-### 加载完整 manifest（包含所有 clips）
-```bash
-./run.sh --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
-         --manifest     proxy_data/temporal_aot/data/aot_event_manifest_all.jsonl
+# 远端服务器（env-var 方式）
+CAPTION_PAIRS=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/caption_pairs.jsonl \
+MANIFEST=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/aot_event_manifest.jsonl \
+  ./data_visualization/run.sh
 ```
 
 ---
 
 ## AoT MCQ 可视化
 
-查看 Video-to-Text (V2T) 和 Text-to-Video (T2V) 单选题，包括视频帧条、选项卡片和正确答案高亮。
-
-### V2T（视频 → 选择 caption）
 ```bash
-./run.sh --mcq-data proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl
-```
+# V2T（视频 → 选 caption）
+./data_visualization/run.sh --mcq-data proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl
 
-### T2V（caption → 选择视频）
-```bash
-./run.sh --mcq-data proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl
-```
+# T2V（caption → 选视频）
+./data_visualization/run.sh --mcq-data proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl
 
-### 混合训练集（包含多种题型）
-```bash
-./run.sh --mcq-data proxy_data/temporal_aot/data/mixed_aot_train.jsonl
-```
+# 混合训练集
+./data_visualization/run.sh --mcq-data proxy_data/temporal_aot/data/mixed_aot_train.jsonl
 
-### 过滤后的混合集
-```bash
-./run.sh --mcq-data proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.jsonl
+# 远端服务器（env-var 方式）
+MCQ_DATA=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/v2t_train.jsonl \
+  ./data_visualization/run.sh
 ```
 
 ---
 
 ## 同时预加载多类数据
 
-所有预加载参数可以组合使用，三个标签页各自独立显示：
+所有参数可以自由组合，三个标签页各自独立显示：
 
 ```bash
-./run.sh \
+./data_visualization/run.sh \
   --data-path     proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
   --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
   --manifest      proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
@@ -120,24 +83,18 @@ cd data_visualization
 
 ---
 
-## 其他选项
+## 参数说明
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--port` | 监听端口 | `8787` |
+| 参数 / 环境变量 | 说明 | 默认值 |
+|----------------|------|--------|
+| `--data-path` / `DATA_PATH` | seg annotation 目录或 JSONL | — |
+| `--caption-pairs` / `CAPTION_PAIRS` | caption_pairs.jsonl 路径 | — |
+| `--manifest` / `MANIFEST` | aot_event_manifest.jsonl（配合 caption 使视频帧可见） | — |
+| `--mcq-data` / `MCQ_DATA` | MCQ JSONL 路径 | — |
+| `--port` / `PORT` | 监听端口 | `8890` |
 | `--host` | 监听地址 | `127.0.0.1` |
-| `--max-samples N` | seg 预加载最多 N 条（大数据集限速） | 不限 |
-| `--prefer-complete` | 优先预加载有完整三层标注的 clip | 关闭 |
-
-### 示例：自定义端口
-```bash
-./run.sh --port 9090 --data-path proxy_data/youcook2_seg_annotation/datasets/
-```
-
-### 直接用 Python 启动
-```bash
-python data_visualization/server.py --port 8787 --mcq-data /absolute/path/to/mcq.jsonl
-```
+| `--max-samples N` / `MAX_SAMPLES` | seg 预加载最多 N 条 | 不限 |
+| `--prefer-complete` | 优先加载有完整三层标注的 clip | 关闭 |
 
 ---
 
@@ -146,8 +103,9 @@ python data_visualization/server.py --port 8787 --mcq-data /absolute/path/to/mcq
 ```
 data_visualization/
 ├── server.py   — 统一后端：SegmentationStore + AoTCaptionStore + AoTMCQStore
-├── index.html  — 统一前端：三标签页，帧条 / 段条 / 选项卡 复用同一套 CSS 组件
-├── run.sh      — 快捷启动脚本（透传所有参数给 server.py）
+├── index.html  — 统一前端：三标签页，帧条 / 段条 / 选项卡复用同一套 CSS 组件
+├── run.sh      — 启动脚本，支持 CLI 参数和环境变量两种方式
 ├── DESIGN.md   — 完整架构设计文档
 └── segmentation_visualize/  ← 旧版独立工具，保留向后兼容
 ```
+

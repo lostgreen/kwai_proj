@@ -996,7 +996,7 @@ class AoTCaptionStore:
             "duration_sec": meta.get("duration_sec"),
             "sentence": meta.get("sentence", ""),
             "recipe_type": meta.get("recipe_type", ""),
-            "shuffle_segment_sec": meta.get("shuffle_segment_sec", 2.0),
+            "shuffle_n_segments": meta.get("shuffle_n_segments") or meta.get("shuffle_segment_sec"),
             # Frames: populated lazily
             "forward_frames": [],
             "reverse_frames": [],
