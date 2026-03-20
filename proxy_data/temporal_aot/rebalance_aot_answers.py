@@ -29,28 +29,10 @@ import random
 from collections import Counter, defaultdict
 from typing import Any
 
-from prompts import get_v2t_prompt
+from prompts import get_v2t_prompt, get_t2v_prompt
 
 
 SUPPORTED_PROBLEM_TYPES = ("aot_t2v", "aot_v2t")
-
-
-def get_t2v_prompt(
-    caption: str,
-    option_a_text: str = "The first segment",
-    option_b_text: str = "The second segment",
-) -> str:
-    return (
-        "The input video contains two segments separated by a black screen.\n"
-        "<video>\n\n"
-        f'Which segment best matches the caption "{caption}"?\n'
-        f"Options:\nA. {option_a_text}\nB. {option_b_text}\n\n"
-        "First, carefully observe both segments and use the black screen as the boundary between them. "
-        "Reason about the visible action order in the first segment and in the second segment, "
-        "then compare them with the caption to decide which segment matches better.\n\n"
-        "Think step by step inside <think> </think> tags, then provide your final answer "
-        "(a single letter A or B) inside <answer> </answer> tags."
-    )
 
 
 def load_jsonl(path: str) -> list[dict[str, Any]]:

@@ -33,10 +33,14 @@ def get_forward_reverse_caption_prompt() -> str:
         "4. If the clip appears temporally reversed or visually unnatural, describe that observed reversed order instead of rewriting it as a normal forward action.\n"
         "5. Avoid generic descriptions like 'someone is cooking'.\n"
         "6. Keep it to one sentence.\n"
-        "7. Output valid JSON with keys: caption, confidence.\n"
+        "7. Also judge whether this clip has a visually clear temporal direction: set direction_clear to true only if "
+        "the action involves an observable state change (e.g. empty→filled, uncut→sliced, raw→cooked) such that "
+        "reversing the video would look noticeably different. Set it to false for cyclic or oscillatory actions "
+        "where the reversed video looks nearly identical (e.g. stirring, mixing, kneading, shaking, whisking).\n"
+        "8. Output valid JSON with keys: caption, confidence, direction_clear.\n"
         "Example:\n"
-        "{\"caption\": \"First a person sprinkles seasoning into a bowl, then they stir the mixture, and finally they taste it with a finger.\", "
-        "\"confidence\": 0.82}"
+        "{\"caption\": \"First a person pours milk into an empty glass, then fills it to the brim.\", "
+        "\"confidence\": 0.88, \"direction_clear\": true}"
     )
 
 
@@ -54,15 +58,68 @@ def get_v2t_prompt(option_a: str, option_b: str) -> str:
     )
 
 
-def get_t2v_prompt(caption: str) -> str:
+def get_t2v_prompt(
+    caption: str,
+    option_a_text: str = "The first segment",
+    option_b_text: str = "The second segment",
+) -> str:
     return (
         "The input video contains two segments separated by a black screen.\n"
         "<video>\n\n"
         f'Which segment best matches the caption "{caption}"?\n'
-        "Options:\nA. The first segment\nB. The second segment\n\n"
+        f"Options:\nA. {option_a_text}\nB. {option_b_text}\n\n"
         "First, carefully observe both segments and use the black screen as the boundary between them. "
         "Reason about the visible action order in the first segment and in the second segment, "
         "then compare them with the caption to decide which segment matches better.\n\n"
         "Think step by step inside <think> </think> tags, then provide your final answer "
         "(a single letter A or B) inside <answer> </answer> tags."
+    )
+
+
+def get_shuffle_caption_prompt() -> str:
+    """
+    Prompt for captioning a temporally-shuffled clip.
+    The video has been cut into fixed-length segments and randomly reordered,
+    so the VLM should describe the *observed* (incoherent) action sequence as-is,
+    not try to reconstruct the plausible original order.
+    """
+    return (
+        "Watch the video carefully.\n"
+        "<video>\n\n"
+        "This video was created by cutting the original clip into short segments and "
+        "randomly reordering them, so the events may appear in an incoherent or jumbled sequence.\n\n"
+        "Describe the observed action sequence exactly as it appears, in the order you see it.\n"
+        "Requirements:\n"
+        "1. Describe what happens in each visible phase using explicit temporal markers "
+        "('first', 'then', 'finally').\n"
+        "2. If the sequence appears logically inconsistent (e.g. the food is plated before it is "
+        "cooked), describe it that way—do not reorder to make it plausible.\n"
+        "3. Mention the visible start and end states.\n"
+        "4. Keep it to one or two sentences.\n"
+        "5. Set direction_clear to false, since the temporal order has been deliberately disrupted.\n"
+        "6. Output valid JSON with keys: caption, confidence, direction_clear.\n"
+        "Example:\n"
+        "{\"caption\": \"First the pan appears already empty and clean, then food is seen being tossed "
+        "in oil, and finally raw ingredients are placed on the cutting board.\", "
+        "\"confidence\": 0.75, \"direction_clear\": false}"
+    )
+
+
+def get_4way_v2t_prompt(
+    option_a: str,
+    option_b: str,
+    option_c: str,
+    option_d: str,
+) -> str:
+    """4-option V2T prompt: forward / reverse / shuffled / hard-negative caption."""
+    return (
+        "Watch the video carefully.\n"
+        "<video>\n\n"
+        "Which caption best matches the temporal order observed in this video?\n"
+        f"Options:\nA. {option_a}\nB. {option_b}\nC. {option_c}\nD. {option_d}\n\n"
+        "Carefully observe the full video from beginning to end. "
+        "Pay attention to what happens first, what changes in the middle, and what state appears at the end. "
+        "Compare all four captions against the visible temporal order and reason about which one matches best.\n\n"
+        "Think step by step inside <think> </think> tags, then provide your final answer "
+        "(a single letter A, B, C, or D) inside <answer> </answer> tags."
     )

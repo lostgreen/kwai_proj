@@ -30,16 +30,99 @@
 
 ## 整体流程
 
+按顺序依次运行以下脚本：
+
+**Step 1 — 生成 manifest + reverse/shuffle/composite 视频素材**
+
+```bash
+python proxy_data/temporal_aot/build_event_aot_data.py \
+  --clip-db-json /path/to/extracted_clips_database.json \
+  --output-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
+  --reverse-dir /path/to/reverse_clips \
+  --shuffle-dir /path/to/shuffle_clips \
+  --make-reverse \
+  --make-shuffle \
+  --shuffle-segment-sec 2.0 \
+  --min-shuffle-segments 3 \
+  --build-workers 8 \
+  --invalid-report-jsonl proxy_data/temporal_aot/data/aot_invalid_clips.jsonl \
+  --subset training
+```
+
+说明：
+- `--build-workers 8`：并行 ffmpeg，可大幅缩短生成时间（原串行约 6s/clip，并行后预计 ≤1s/clip）
+- `--make-shuffle`：对 duration ≥ `min-shuffle-segments × shuffle-segment-sec`（默认 6s）的 clip 生成对应的时间乱序视频，保存为 `{clip_key}_shuf.mp4`
+- 不满足最小分段数的 clip 会跳过 shuffle 生成，仍正常写入 manifest（`shuffle_video_path` 为空字符串）
+
+**Step 2 — VLM 标注 caption + direction_clear**
+
+```bash
+python proxy_data/temporal_aot/annotate_event_captions.py \
+  --manifest-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
+  --output-dir proxy_data/temporal_aot/data/aot_annotations \
+  --api-base http://localhost:8000/v1 \
+  --model Qwen3-VL-7B \
+  --workers 8
+```
+
+VLM 会对每个 clip 输出 `caption`、`confidence`、`direction_clear` 三个字段。
+`direction_clear=false` 表示该动作（如搅拌、揉面）在倒放后外观几乎相同，VLM 自动标记为方向不明显，后续会被过滤。
+
+**Step 3 — 构造 V2T / T2V / 4-way MCQ 训练数据**
+
+```bash
+python proxy_data/temporal_aot/build_aot_mcq.py \
+  --manifest-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
+  --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
+  --v2t-output proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
+  --t2v-output proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
+  --fourway-output proxy_data/temporal_aot/data/aot_annotations/4way_train.jsonl
+```
+
+过滤逻辑（按序）：
+1. `forward_confidence` 或 `reverse_confidence` 低于 `--min-confidence`（默认 0.6）→ 丢弃
+2. `forward_caption == reverse_caption`（正反描述无差异）→ 丢弃
+3. `forward_direction_clear=False` 或 `reverse_direction_clear=False`（VLM 判断方向不明显）→ 丢弃（可用 `--no-require-direction-clear` 关闭）
+
+4-way MCQ (`aot_4way_v2t`) 结构：
+- 展示一个视频（forward 或 shuffle），提供 4 个 caption 选项
+- A/B/C/D 分别对应 forward / reverse / shuffle / hard-negative-caption（随机顺序）
+- hard-negative 来自同一 `recipe_type` 的其他 clip 的 forward caption
+- 只有当 caption_pairs 中包含 `shuffle_caption` 且 `--fourway-output` 已指定时才生成
+
+**Step 4 — 混合 YouCook2 时序分割数据**
+
+```bash
+python proxy_data/temporal_aot/mix_aot_with_youcook2.py \
+  --seg-jsonl proxy_data/youcook2_train_easyr1.jsonl \
+  --v2t-jsonl proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
+  --t2v-jsonl proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
+  --train-output proxy_data/temporal_aot/data/mixed_aot_train.jsonl \
+  --val-output proxy_data/temporal_aot/data/mixed_aot_val.jsonl
+```
+
+**Step 5 — （可选）离线过滤后做 A/B 答案重平衡**
+
+```bash
+python proxy_data/temporal_aot/rebalance_aot_answers.py \
+  --input-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.jsonl \
+  --output-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.balanced.jsonl
+```
+
+---
+
 1. `build_event_aot_data.py`
    读取 `extracted_clips_database.json`，按 `clip_path` 去重，生成 manifest；按需生成 `reverse`；按需生成 `composite`。
 2. `annotate_event_captions.py`
-   读取 manifest，对 `forward` / `reverse` 视频分别抽帧并调用 VLM，得到 caption 和 confidence。
+   读取 manifest，对 `forward` / `reverse` 视频分别抽帧并调用 VLM，得到 `caption`、`confidence`、`direction_clear`。
 3. `build_aot_mcq.py`
-   读取 manifest 和 caption pairs，筛掉低置信度或正反描述没有差异的样本，构造 `aot_v2t` / `aot_t2v` 训练数据。
-4. `prompts.py`
-   统一维护标注和 MCQ 用的 prompt 模板。
-5. `rebalance_aot_answers.py`
-   在 filter 之后对保留下来的 AOT 样本做 A/B 选项重排，把最终答案分布尽量打平，同时不丢样本。
+   读取 manifest 和 caption pairs，过滤低置信度、正反无差异、以及 VLM 判断方向不明显的样本，构造 `aot_v2t` / `aot_t2v` 训练数据。
+4. `mix_aot_with_youcook2.py`
+   把 V2T / T2V 与 YouCook2 时序分割数据合并为统一 train/val split。
+5. `prompts.py`
+   统一维护标注和 MCQ 用的 prompt 模板（含 `direction_clear` 判断指令）。
+6. `rebalance_aot_answers.py`
+   在 offline filter 之后对保留的 AOT 样本做 A/B 选项重排，把最终答案分布尽量打平，不丢样本。
 
 ## 脚本逻辑
 

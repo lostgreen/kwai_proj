@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Annotate forward/reverse captions for event clips listed in a manifest JSONL.
+Annotate forward/reverse/shuffle captions for event clips listed in a manifest JSONL.
 
 Output files under --output-dir:
 - forward_captions.jsonl
 - reverse_captions.jsonl
-- caption_pairs.jsonl
+- caption_pairs.jsonl          (always written)
+- shuffle_captions.jsonl       (only when manifest contains shuffle_video_path)
 
 Example:
 python proxy_data/temporal_aot/annotate_event_captions.py \
@@ -33,7 +34,7 @@ from typing import Any
 from PIL import Image
 from tqdm.auto import tqdm
 
-from prompts import SYSTEM_PROMPT, get_forward_reverse_caption_prompt
+from prompts import SYSTEM_PROMPT, get_forward_reverse_caption_prompt, get_shuffle_caption_prompt
 
 
 def sample_video_frames(video_path: str, max_frames: int) -> list[Image.Image]:
@@ -127,27 +128,37 @@ def annotate_one(
     resize_max_width: int,
     jpeg_quality: int,
     retries: int,
-) -> tuple[dict, dict, dict]:
+) -> tuple[dict, dict, dict, dict | None]:
+    """Annotate one manifest record.
+
+    Returns (forward_item, reverse_item, pair_item, shuffle_item).
+    shuffle_item is None when the manifest record has no shuffle_video_path.
+    """
     forward_path = record["forward_video_path"]
     reverse_path = record.get("reverse_video_path") or forward_path
+    shuffle_path = record.get("shuffle_video_path") or ""
 
-    prompt = get_forward_reverse_caption_prompt()
+    fwd_rev_prompt = get_forward_reverse_caption_prompt()
     forward_frames = sample_video_frames(forward_path, max_frames=max_frames)
     reverse_frames = sample_video_frames(reverse_path, max_frames=max_frames)
-    forward_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, prompt, forward_frames, resize_max_width, jpeg_quality, retries)
-    reverse_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, prompt, reverse_frames, resize_max_width, jpeg_quality, retries)
+    forward_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, fwd_rev_prompt, forward_frames, resize_max_width, jpeg_quality, retries)
+    reverse_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, fwd_rev_prompt, reverse_frames, resize_max_width, jpeg_quality, retries)
 
     base = {
         "clip_key": record["clip_key"],
         "event_id": record.get("event_id"),
         "duration_sec": record.get("duration_sec"),
     }
+    forward_direction_clear = bool(forward_resp.get("direction_clear", True))
+    reverse_direction_clear = bool(reverse_resp.get("direction_clear", True))
+
     forward_item = {
         **base,
         "direction": "forward",
         "video_path": forward_path,
         "caption": forward_resp.get("caption", "").strip(),
         "confidence": float(forward_resp.get("confidence", 0.0) or 0.0),
+        "direction_clear": forward_direction_clear,
     }
     reverse_item = {
         **base,
@@ -155,18 +166,40 @@ def annotate_one(
         "video_path": reverse_path,
         "caption": reverse_resp.get("caption", "").strip(),
         "confidence": float(reverse_resp.get("confidence", 0.0) or 0.0),
+        "direction_clear": reverse_direction_clear,
     }
+
+    shuffle_item: dict | None = None
+    if shuffle_path:
+        shuf_prompt = get_shuffle_caption_prompt()
+        shuffle_frames = sample_video_frames(shuffle_path, max_frames=max_frames)
+        shuffle_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, shuf_prompt, shuffle_frames, resize_max_width, jpeg_quality, retries)
+        shuffle_item = {
+            **base,
+            "direction": "shuffle",
+            "video_path": shuffle_path,
+            "caption": shuffle_resp.get("caption", "").strip(),
+            "confidence": float(shuffle_resp.get("confidence", 0.0) or 0.0),
+            # direction_clear is always False for shuffle clips by construction
+            "direction_clear": False,
+        }
+
     pair = {
         **base,
         "forward_video_path": forward_path,
         "reverse_video_path": reverse_path,
+        "shuffle_video_path": shuffle_path,
         "forward_caption": forward_item["caption"],
         "reverse_caption": reverse_item["caption"],
+        "shuffle_caption": shuffle_item["caption"] if shuffle_item else "",
         "forward_confidence": forward_item["confidence"],
         "reverse_confidence": reverse_item["confidence"],
+        "shuffle_confidence": shuffle_item["confidence"] if shuffle_item else 0.0,
+        "forward_direction_clear": forward_direction_clear,
+        "reverse_direction_clear": reverse_direction_clear,
         "is_different": forward_item["caption"] != reverse_item["caption"],
     }
-    return forward_item, reverse_item, pair
+    return forward_item, reverse_item, pair, shuffle_item
 
 
 def load_manifest(path: str, max_samples: int) -> list[dict]:
@@ -183,7 +216,7 @@ def load_manifest(path: str, max_samples: int) -> list[dict]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Annotate forward/reverse captions for event-level AoT data.")
+    parser = argparse.ArgumentParser(description="Annotate forward/reverse/shuffle captions for event-level AoT data.")
     parser.add_argument("--manifest-jsonl", required=True, help="Input manifest JSONL")
     parser.add_argument("--output-dir", required=True, help="Directory to save JSONL outputs")
     parser.add_argument("--api-base", required=True, help="OpenAI-compatible API base")
@@ -198,44 +231,54 @@ def main() -> None:
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    forward_path = os.path.join(args.output_dir, "forward_captions.jsonl")
-    reverse_path = os.path.join(args.output_dir, "reverse_captions.jsonl")
-    pair_path = os.path.join(args.output_dir, "caption_pairs.jsonl")
+    forward_out_path = os.path.join(args.output_dir, "forward_captions.jsonl")
+    reverse_out_path = os.path.join(args.output_dir, "reverse_captions.jsonl")
+    shuffle_out_path = os.path.join(args.output_dir, "shuffle_captions.jsonl")
+    pair_out_path = os.path.join(args.output_dir, "caption_pairs.jsonl")
 
     records = load_manifest(args.manifest_jsonl, max_samples=args.max_samples)
+    has_shuffle = any(r.get("shuffle_video_path") for r in records)
     pair_count = 0
 
-    with (
-        open(forward_path, "w", encoding="utf-8", buffering=1) as forward_file,
-        open(reverse_path, "w", encoding="utf-8", buffering=1) as reverse_file,
-        open(pair_path, "w", encoding="utf-8", buffering=1) as pair_file,
-        ThreadPoolExecutor(max_workers=args.workers) as executor,
-    ):
-        futures = [
-            executor.submit(
-                annotate_one,
-                record,
-                args.api_base,
-                args.api_key,
-                args.model,
-                args.max_frames,
-                args.resize_max_width,
-                args.jpeg_quality,
-                args.retries,
-            )
-            for record in records
-        ]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Annotating captions", unit="clip"):
-            f_item, r_item, p_item = future.result()
-            forward_file.write(json.dumps(f_item, ensure_ascii=False) + "\n")
-            reverse_file.write(json.dumps(r_item, ensure_ascii=False) + "\n")
-            pair_file.write(json.dumps(p_item, ensure_ascii=False) + "\n")
-            forward_file.flush()
-            reverse_file.flush()
-            pair_file.flush()
-            pair_count += 1
+    open_files: dict[str, Any] = {
+        "forward": open(forward_out_path, "w", encoding="utf-8", buffering=1),
+        "reverse": open(reverse_out_path, "w", encoding="utf-8", buffering=1),
+        "pair": open(pair_out_path, "w", encoding="utf-8", buffering=1),
+    }
+    if has_shuffle:
+        open_files["shuffle"] = open(shuffle_out_path, "w", encoding="utf-8", buffering=1)
 
-    print(f"Wrote {pair_count} caption pairs to {pair_path}")
+    try:
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = [
+                executor.submit(
+                    annotate_one,
+                    record,
+                    args.api_base,
+                    args.api_key,
+                    args.model,
+                    args.max_frames,
+                    args.resize_max_width,
+                    args.jpeg_quality,
+                    args.retries,
+                )
+                for record in records
+            ]
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Annotating captions", unit="clip"):
+                f_item, r_item, p_item, s_item = future.result()
+                open_files["forward"].write(json.dumps(f_item, ensure_ascii=False) + "\n")
+                open_files["reverse"].write(json.dumps(r_item, ensure_ascii=False) + "\n")
+                open_files["pair"].write(json.dumps(p_item, ensure_ascii=False) + "\n")
+                if s_item is not None and "shuffle" in open_files:
+                    open_files["shuffle"].write(json.dumps(s_item, ensure_ascii=False) + "\n")
+                pair_count += 1
+    finally:
+        for fh in open_files.values():
+            fh.close()
+
+    print(f"Wrote {pair_count} caption pairs to {pair_out_path}")
+    if has_shuffle:
+        print(f"Wrote shuffle captions to {shuffle_out_path}")
 
 
 if __name__ == "__main__":

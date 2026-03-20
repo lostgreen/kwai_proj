@@ -34,6 +34,8 @@ import os
 import random
 import re
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -455,8 +457,59 @@ def build_composite_clip(
     run_ffmpeg(cmd, dry_run=dry_run)
 
 
+def build_shuffle_clip(
+    src_path: str,
+    dst_path: str,
+    actual_duration: float,
+    segment_sec: float,
+    seed: int,
+    dry_run: bool,
+) -> int:
+    """Shuffle the temporal order of fixed-length segments using a single ffmpeg filter_complex.
+
+    Returns the number of segments used, or raises ValueError if the clip is too short.
+    A different random seed produces a different shuffle permutation, so callers can
+    generate multiple distinct shuffled variants from the same source clip.
+    """
+    n_full = int(actual_duration // segment_sec)
+    if n_full < 2:
+        raise ValueError(
+            f"Clip too short for shuffle: duration={actual_duration:.2f}s requires at least "
+            f"2×{segment_sec}s segments"
+        )
+
+    rng = random.Random(seed)
+    order = list(range(n_full))
+    # Guarantee the shuffled order differs from the original
+    while order == list(range(n_full)):
+        rng.shuffle(order)
+
+    # Build a single-pass filter_complex: trim each segment in shuffled order, then concat
+    trim_filters = []
+    for out_idx, seg_idx in enumerate(order):
+        start = seg_idx * segment_sec
+        end = start + segment_sec
+        trim_filters.append(
+            f"[0:v]trim=start={start:.6f}:end={end:.6f},setpts=PTS-STARTPTS,format=yuv420p[s{out_idx}]"
+        )
+    concat_inputs = "".join(f"[s{i}]" for i in range(len(order)))
+    trim_filters.append(f"{concat_inputs}concat=n={len(order)}:v=1:a=0[outv]")
+    filter_complex = ";".join(trim_filters)
+
+    os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-i", src_path,
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        "-an",
+        dst_path,
+    ]
+    run_ffmpeg(cmd, dry_run=dry_run)
+    return len(order)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build event-level AoT manifest and optional reverse/composite videos.")
+    parser = argparse.ArgumentParser(description="Build event-level AoT manifest and optional reverse/composite/shuffle videos.")
     parser.add_argument("--clip-db-json", default="", help="Extracted clip database JSON, recommended input")
     parser.add_argument("--input-jsonl", default="", help="Fallback source JSONL, e.g. proxy_train_easyr1.jsonl")
     parser.add_argument("--output-jsonl", required=True, help="Output manifest JSONL")
@@ -472,6 +525,7 @@ def main() -> None:
     parser.add_argument("--subset", default="", help="Optional subset filter for clip DB input, e.g. training or validation")
     parser.add_argument("--reverse-dir", default="", help="Directory to save reversed clips")
     parser.add_argument("--composite-dir", default="", help="Directory to save T2V composite clips")
+    parser.add_argument("--shuffle-dir", default="", help="Directory to save temporally-shuffled clips")
     parser.add_argument("--invalid-report-jsonl", default="", help="Optional JSONL path to save skipped invalid clips")
     parser.add_argument(
         "--bad-samples-jsonl",
@@ -482,6 +536,25 @@ def main() -> None:
     parser.add_argument("--black-gap-sec", type=float, default=2.0, help="Black gap duration for T2V composite")
     parser.add_argument("--make-reverse", action="store_true", help="Export reversed clips with ffmpeg")
     parser.add_argument("--make-composite", action="store_true", help="Export T2V composite clips")
+    parser.add_argument("--make-shuffle", action="store_true", help="Export temporally-shuffled clips with ffmpeg")
+    parser.add_argument(
+        "--shuffle-segment-sec",
+        type=float,
+        default=2.0,
+        help="Segment length in seconds for temporal shuffling (default: 2.0)",
+    )
+    parser.add_argument(
+        "--min-shuffle-segments",
+        type=int,
+        default=3,
+        help="Minimum number of full segments required to generate a shuffle clip (default: 3)",
+    )
+    parser.add_argument(
+        "--build-workers",
+        type=int,
+        default=4,
+        help="Parallel workers for ffmpeg generation (default: 4). Each worker runs one ffmpeg subprocess.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print ffmpeg commands without executing them")
     args = parser.parse_args()
 
@@ -521,44 +594,69 @@ def main() -> None:
         if args.dry_run or not os.path.exists(black_video_path):
             build_black_clip(black_video_path, duration_sec=args.black_gap_sec, dry_run=args.dry_run)
 
-    written_count = 0
-    os.makedirs(os.path.dirname(args.output_jsonl) or ".", exist_ok=True)
-    with open(args.output_jsonl, "w", encoding="utf-8") as out:
-        for record in tqdm(records, desc="Building AoT data", unit="clip"):
-            clip_key = record["clip_key"]
-            forward_path = record["video_path"]
-            reverse_path = ""
-            composite_path = ""
+    # -----------------------------------------------------------------------
+    # Per-record generation worker (runs in thread pool)
+    # -----------------------------------------------------------------------
+    skipped_lock = threading.Lock()
 
-            try:
-                if args.make_reverse:
-                    if not args.reverse_dir:
-                        raise ValueError("--reverse-dir is required when --make-reverse is set")
-                    reverse_path = os.path.join(args.reverse_dir, f"{clip_key}_rev.mp4")
-                    if args.dry_run or not os.path.exists(reverse_path):
-                        build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
+    def generate_one(record: dict) -> dict | None:
+        """Generate reverse/composite/shuffle clips for one record.
 
-                if args.make_composite:
-                    if not reverse_path:
-                        if not args.reverse_dir:
-                            raise ValueError("--reverse-dir is required to build composite clips")
-                        reverse_path = os.path.join(args.reverse_dir, f"{clip_key}_rev.mp4")
-                        if args.dry_run or not os.path.exists(reverse_path):
-                            build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
-                    composite_stats = ensure_composite_stats(record)
-                    composite_path = os.path.join(args.composite_dir, f"{clip_key}_t2v.mp4")
-                    if args.dry_run or not os.path.exists(composite_path):
-                        build_composite_clip(
-                            forward_path,
-                            black_video_path,
-                            reverse_path,
-                            composite_path,
-                            width=composite_stats.get("width"),
-                            height=composite_stats.get("height"),
-                            fps=composite_stats.get("avg_frame_rate"),
-                            dry_run=args.dry_run,
-                        )
-            except (subprocess.CalledProcessError, json.JSONDecodeError, ValueError) as exc:
+        Returns the completed output record on success, or None on failure
+        (failure details are appended to skipped_records via the lock).
+        """
+        clip_key = record["clip_key"]
+        forward_path = record["video_path"]
+        reverse_path = ""
+        composite_path = ""
+        shuffle_path = ""
+        actual_duration = record.get("actual_duration_sec") or record.get("duration_sec") or 0.0
+
+        try:
+            if args.make_reverse or args.make_composite:
+                if not args.reverse_dir:
+                    raise ValueError("--reverse-dir is required when --make-reverse or --make-composite is set")
+                reverse_path = os.path.join(args.reverse_dir, f"{clip_key}_rev.mp4")
+                if args.dry_run or not os.path.exists(reverse_path):
+                    build_reverse_clip(forward_path, reverse_path, dry_run=args.dry_run)
+
+            if args.make_composite:
+                composite_stats = ensure_composite_stats(record)
+                composite_path = os.path.join(args.composite_dir, f"{clip_key}_t2v.mp4")
+                if args.dry_run or not os.path.exists(composite_path):
+                    build_composite_clip(
+                        forward_path,
+                        black_video_path,
+                        reverse_path,
+                        composite_path,
+                        width=composite_stats.get("width"),
+                        height=composite_stats.get("height"),
+                        fps=composite_stats.get("avg_frame_rate"),
+                        dry_run=args.dry_run,
+                    )
+
+            if args.make_shuffle:
+                if not args.shuffle_dir:
+                    raise ValueError("--shuffle-dir is required when --make-shuffle is set")
+                n_full = int(actual_duration // args.shuffle_segment_sec)
+                if n_full < args.min_shuffle_segments:
+                    raise ValueError(
+                        f"Skipping shuffle: only {n_full} full {args.shuffle_segment_sec}s segments "
+                        f"(need {args.min_shuffle_segments})"
+                    )
+                shuffle_path = os.path.join(args.shuffle_dir, f"{clip_key}_shuf.mp4")
+                if args.dry_run or not os.path.exists(shuffle_path):
+                    build_shuffle_clip(
+                        forward_path,
+                        shuffle_path,
+                        actual_duration=actual_duration,
+                        segment_sec=args.shuffle_segment_sec,
+                        seed=args.seed + hash(clip_key) % (2 ** 31),
+                        dry_run=args.dry_run,
+                    )
+
+        except (subprocess.CalledProcessError, json.JSONDecodeError, ValueError) as exc:
+            with skipped_lock:
                 skipped_records.append(
                     {
                         "clip_key": clip_key,
@@ -567,17 +665,35 @@ def main() -> None:
                         "detail": str(exc),
                     }
                 )
-                continue
+            return None
 
-            out_record = {
-                **record,
-                "forward_video_path": forward_path,
-                "reverse_video_path": reverse_path,
-                "composite_video_path": composite_path,
-                "black_gap_sec": args.black_gap_sec if args.make_composite else 0.0,
-            }
-            out.write(json.dumps(out_record, ensure_ascii=False) + "\n")
-            written_count += 1
+        return {
+            **record,
+            "forward_video_path": forward_path,
+            "reverse_video_path": reverse_path,
+            "composite_video_path": composite_path,
+            "shuffle_video_path": shuffle_path,
+            "shuffle_segment_sec": args.shuffle_segment_sec if args.make_shuffle else 0.0,
+            "black_gap_sec": args.black_gap_sec if args.make_composite else 0.0,
+        }
+
+    # -----------------------------------------------------------------------
+    # Run generation in parallel, write results in deterministic order
+    # -----------------------------------------------------------------------
+    written_count = 0
+    os.makedirs(os.path.dirname(args.output_jsonl) or ".", exist_ok=True)
+
+    workers = max(1, args.build_workers)
+    with (
+        open(args.output_jsonl, "w", encoding="utf-8") as out,
+        ThreadPoolExecutor(max_workers=workers) as executor,
+    ):
+        futures = {executor.submit(generate_one, record): record for record in records}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Building AoT data", unit="clip"):
+            out_record = future.result()
+            if out_record is not None:
+                out.write(json.dumps(out_record, ensure_ascii=False) + "\n")
+                written_count += 1
 
     if args.invalid_report_jsonl:
         os.makedirs(os.path.dirname(args.invalid_report_jsonl) or ".", exist_ok=True)
