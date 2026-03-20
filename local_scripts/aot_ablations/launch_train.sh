@@ -22,6 +22,14 @@ MIXED_VAL="${DATA_DIR}/mixed_val.jsonl"
 FILTERED_TRAIN="${DATA_DIR}/mixed_train.offline_filtered.jsonl"
 FILTER_REPORT="${DATA_DIR}/offline_filter_report.jsonl"
 
+# 若外部未指定 TEST_FILE，使用本实验切分的 val 集
+TEST_FILE="${TEST_FILE:-${MIXED_VAL}}"
+
+# FORCE_BUILD 级联到下游：重建数据必然需要重新过滤
+if [[ "${FORCE_BUILD:-false}" == "true" ]]; then
+  FORCE_FILTER=true
+fi
+
 # =========================================================
 # Step A: MCQ 构造（build_aot_mcq.py）
 # 只当全局 mixed_train.jsonl 不存在时执行
@@ -106,6 +114,11 @@ with open('${THREEWAY_V2T_OUTPUT}') as _f, open('${_fwonly}', 'w') as _o:
   echo "[aot] Mixed train: ${MIXED_TRAIN} (${TRAIN_TOTAL} samples)"
 else
   echo "[aot] Reusing existing ${MIXED_TRAIN} (delete to rebuild)"
+  # 确保 val 文件也存在（防止只删 val 不删 train 的情况）
+  if [[ ! -f "${MIXED_VAL}" ]]; then
+    echo "[aot] ERROR: ${MIXED_TRAIN} exists but ${MIXED_VAL} is missing. Delete ${MIXED_TRAIN} and rerun, or set FORCE_BUILD=true." >&2
+    exit 1
+  fi
 fi
 
 # =========================================================
@@ -129,7 +142,8 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
     --max_pixels    "${MAX_PIXELS}" \
     --min_pixels    "${MIN_PIXELS}" \
     --tensor_parallel_size "${FILTER_TP_SIZE:-1}" \
-    --gpu_memory_utilization "${FILTER_GPU_MEM_UTIL:-0.7}"
+    --gpu_memory_utilization "${FILTER_GPU_MEM_UTIL:-0.7}" \
+    --max_model_len "${FILTER_MAX_MODEL_LEN:-16384}"
 else
   echo "[aot] Reusing filtered file: ${FILTERED_TRAIN} (set FORCE_FILTER=true to redo)"
 fi

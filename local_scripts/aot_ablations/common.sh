@@ -20,7 +20,7 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-aot-ablation}"
 # EXP_NAME 由各实验脚本赋值
 
 # ---- 模型 ----
-MODEL_PATH="${MODEL_PATH:-//home/xuboshen/models/Qwen3-VL-4B-Instruct}"
+MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- 上游标注数据（Step 1-2 产出，所有实验共享）----
 AOT_DATA_ROOT="${AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot}"
@@ -29,9 +29,10 @@ CAPTION_PAIRS="${CAPTION_PAIRS:-${AOT_DATA_ROOT}/caption_pairs.jsonl}"
 # 消融实验默认不混合 temporal_seg，纯 AoT MCQ 训练；如需混合可覆盖
 SEG_JSONL="${SEG_JSONL:-}"
 
-# ---- 验证集（所有实验共用）----
-# 所有实验共用验证集（训练 Step E 的 val_files），需事先构建
-TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/aot_ablation_val.jsonl}"
+# ---- 验证集 ----
+# 默认使用各实验自己在 DATA_DIR 下切分的 mixed_val.jsonl
+# 若需公共验证集，可在实验脚本里显式赋值: TEST_FILE=...
+TEST_FILE="${TEST_FILE:-}"  # 留空，launch_train.sh 会用 MIXED_VAL 填充
 
 # ---- MCQ 构造参数（各实验可覆盖）----
 MCQ_MAX_SAMPLES="${MCQ_MAX_SAMPLES:-2000}"   # aot proxy 样本总量（实验间对齐）
@@ -60,6 +61,9 @@ NNODES="${NNODES:-1}"
 # ---- 离线过滤（推理专用，4B 模型单卡即可）----
 FILTER_TP_SIZE="${FILTER_TP_SIZE:-1}"
 FILTER_GPU_MEM_UTIL="${FILTER_GPU_MEM_UTIL:-0.7}"
+# 256帧×48tokens≈12288视频token + 14000 prompt + 1024 response ≈ 15312 → 16384 足够
+# 避免 vLLM 按模型默认 max_seq_len(262144) 分配巨大 KV cache 导致 OOM
+FILTER_MAX_MODEL_LEN="${FILTER_MAX_MODEL_LEN:-16384}"
 
 # ---- 学习率（cosine 衰减） ----
 LR="${LR:-2e-6}"
