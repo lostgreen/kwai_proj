@@ -88,8 +88,9 @@ VLM 会对每个 clip 输出 `caption`、`confidence`、`direction_clear` 三个
 - `--max-frames` 作为硬上限（默认 32），防止超长视频产生过多帧
 
 Shuffle 标注 prompt 设计：
-- 告知 VLM **段数**和**每段时长**（如 "5 segments of approximately 2 seconds each"），引导按段逐段描述
-- 要求对没有明显变化的段显式标注（如 "the mixture remains the same"），增强与 forward caption 的区分度
+- 所有方向的 caption 均限制为 **单句**，避免 shuffle caption 比 forward/reverse 长导致长度偏差 (reward hacking)
+- 告知 VLM **段数**和**每段时长**，引导在一句话内用 temporal markers 覆盖关键转折
+- 如果序列逻辑不一致，要求如实描述而非修正
 - 关注具体状态变化（颜色、形状、位置、数量），而非泛泛的活动标签
 
 **Step 3 — 构造 V2T / T2V / 4-way MCQ 训练数据**
@@ -100,8 +101,14 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
   --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
   --v2t-output proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
   --t2v-output proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
-  --fourway-output proxy_data/temporal_aot/data/aot_annotations/4way_train.jsonl
+  --fourway-output proxy_data/temporal_aot/data/aot_annotations/4way_train.jsonl \
+  --max-caption-words 35 \
+  --max-length-ratio 2.5
 ```
+
+Caption 长度均衡参数：
+- `--max-caption-words 35`：4-way MCQ 中所有 caption 截断到不超过 35 词，防止 shuffle caption 因逐段描述而显著更长，避免模型通过长度 shortcut reward hacking
+- `--max-length-ratio 2.5`：如果 4 个选项中最长/最短 caption 的词数比超过 2.5 倍，则跳过该样本
 
 过滤逻辑（按序）：
 1. `forward_confidence` 或 `reverse_confidence` 低于 `--min-confidence`（默认 0.6）→ 丢弃
@@ -525,9 +532,32 @@ python proxy_data/temporal_aot/annotate_event_captions.py \
   --max-samples 500
 ```
 
+**仅重标 shuffle（保留现有 forward/reverse 结果）**：
+
+如果已有 `forward_captions.jsonl` 和 `reverse_captions.jsonl`，只想用新 prompt 重新生成 shuffle caption（例如 prompt 改动后），加 `--shuffle-only`：
+
+```bash
+python proxy_data/temporal_aot/annotate_event_captions.py \
+  --manifest-jsonl /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/aot_event_manifest.jsonl \
+  --output-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot \
+  --api-base https://api.novita.ai/v3/openai \
+  --model pa/gmn-2.5-pr \
+  --workers 8 \
+  --shuffle-fps 2.0 \
+  --max-frames 32 \
+  --shuffle-only
+```
+
+`--shuffle-only` 模式：
+- 从 `--output-dir` 读取已有的 `forward_captions.jsonl` 和 `reverse_captions.jsonl`（不重新调用 VLM）
+- 仅对有 `shuffle_video_path` 的 clip 调用 VLM，写新的 `shuffle_captions.jsonl`
+- 用新 shuffle caption 合并旧 forward/reverse 数据，重建 `caption_pairs.jsonl`
+- VLM 调用量仅为原来的 1/3（只标 shuffle 方向）
+
 输出文件：
-- `forward_captions.jsonl` / `reverse_captions.jsonl` / `shuffle_captions.jsonl`
-- `caption_pairs.jsonl`
+- `forward_captions.jsonl` / `reverse_captions.jsonl`（不变）
+- `shuffle_captions.jsonl`（完全覆盖）
+- `caption_pairs.jsonl`（完全覆盖）
 
 ### 3. 构造 V2T / T2V / 4-way 数据集
 

@@ -313,6 +313,76 @@ def load_manifest(path: str, max_samples: int) -> list[dict]:
     return records
 
 
+def load_captions_index(path: str) -> dict[str, dict]:
+    """Load a *_captions.jsonl file and index entries by clip_key."""
+    index: dict[str, dict] = {}
+    if not os.path.exists(path):
+        return index
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            index[item["clip_key"]] = item
+    return index
+
+
+def annotate_shuffle_only(
+    record: dict,
+    api_base: str,
+    api_key: str,
+    model: str,
+    max_frames: int,
+    shuffle_fps: float,
+    resize_max_width: int,
+    jpeg_quality: int,
+    retries: int,
+) -> dict | None:
+    """Annotate only the shuffle clip for one manifest record.
+
+    Returns a shuffle_item dict, or None when the record has no shuffle_video_path.
+    """
+    shuffle_path = record.get("shuffle_video_path") or ""
+    if not shuffle_path:
+        return None
+
+    actual_dur = record.get("actual_duration_sec") or record.get("duration_sec") or 0.0
+    n_segments = int(record.get("shuffle_n_segments") or 0)
+    if n_segments <= 0 and actual_dur > 0:
+        _old_seg_sec = record.get("shuffle_segment_sec", 2.0) or 2.0
+        n_segments = int(actual_dur // _old_seg_sec)
+    segment_dur = (actual_dur / n_segments) if n_segments > 0 else 2.0
+
+    shuf_prompt = get_shuffle_caption_prompt(n_segments=n_segments, segment_sec=segment_dur)
+    if n_segments >= 2:
+        shuffle_frames = sample_video_frames_segment_aware(
+            shuffle_path,
+            target_fps=shuffle_fps,
+            max_frames=max_frames,
+            n_segments=n_segments,
+            segment_sec=segment_dur,
+        )
+    else:
+        shuffle_frames = sample_video_frames_by_fps(shuffle_path, target_fps=shuffle_fps, max_frames=max_frames)
+
+    shuffle_resp = call_vlm(
+        api_base, api_key, model, SYSTEM_PROMPT, shuf_prompt,
+        shuffle_frames, resize_max_width, jpeg_quality, retries,
+    )
+    return {
+        "clip_key": record["clip_key"],
+        "event_id": record.get("event_id"),
+        "duration_sec": record.get("duration_sec"),
+        "direction": "shuffle",
+        "video_path": shuffle_path,
+        "caption": shuffle_resp.get("caption", "").strip(),
+        "confidence": float(shuffle_resp.get("confidence", 0.0) or 0.0),
+        "direction_clear": False,
+        "n_segments": n_segments,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Annotate forward/reverse/shuffle captions for event-level AoT data.")
     parser.add_argument("--manifest-jsonl", required=True, help="Input manifest JSONL")
@@ -328,6 +398,17 @@ def main() -> None:
     parser.add_argument("--jpeg-quality", type=int, default=60, help="JPEG quality for upload")
     parser.add_argument("--retries", type=int, default=3, help="API retry count")
     parser.add_argument("--max-samples", type=int, default=0, help="Max number of manifest records to annotate")
+    parser.add_argument(
+        "--shuffle-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-annotate only the shuffle captions; reuse existing forward/reverse captions from "
+            "--output-dir. Writes new shuffle_captions.jsonl and rebuilds caption_pairs.jsonl. "
+            "Useful for updating shuffle captions after prompt changes without re-calling the VLM "
+            "on all forward/reverse clips."
+        ),
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -337,8 +418,89 @@ def main() -> None:
     pair_out_path = os.path.join(args.output_dir, "caption_pairs.jsonl")
 
     records = load_manifest(args.manifest_jsonl, max_samples=args.max_samples)
-    has_shuffle = any(r.get("shuffle_video_path") for r in records)
     pair_count = 0
+
+    # ------------------------------------------------------------------
+    # --shuffle-only mode: reuse forward/reverse, re-annotate shuffle only
+    # ------------------------------------------------------------------
+    if args.shuffle_only:
+        fwd_index = load_captions_index(forward_out_path)
+        rev_index = load_captions_index(reverse_out_path)
+        if not fwd_index or not rev_index:
+            raise FileNotFoundError(
+                f"--shuffle-only requires existing {forward_out_path} and {reverse_out_path}. "
+                "Run the full annotation first."
+            )
+
+        shuffle_records = [r for r in records if r.get("shuffle_video_path")]
+        missing = sum(1 for r in shuffle_records if r["clip_key"] not in fwd_index)
+        if missing:
+            print(f"Warning: {missing}/{len(shuffle_records)} clips missing from existing forward captions.")
+
+        new_shuffle_items: dict[str, dict] = {}  # clip_key -> shuffle_item
+
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(
+                    annotate_shuffle_only,
+                    record,
+                    args.api_base,
+                    args.api_key,
+                    args.model,
+                    args.max_frames,
+                    args.shuffle_fps,
+                    args.resize_max_width,
+                    args.jpeg_quality,
+                    args.retries,
+                ): record["clip_key"]
+                for record in shuffle_records
+            }
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Re-annotating shuffle", unit="clip"):
+                s_item = future.result()
+                if s_item is not None:
+                    new_shuffle_items[s_item["clip_key"]] = s_item
+
+        # Write new shuffle_captions.jsonl
+        with open(shuffle_out_path, "w", encoding="utf-8", buffering=1) as sf:
+            for item in new_shuffle_items.values():
+                sf.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(f"Wrote {len(new_shuffle_items)} shuffle captions to {shuffle_out_path}")
+
+        # Rebuild caption_pairs.jsonl by merging existing forward/reverse with new shuffle
+        with open(pair_out_path, "w", encoding="utf-8", buffering=1) as pf:
+            for record in records:
+                clip_key = record["clip_key"]
+                f_item = fwd_index.get(clip_key)
+                r_item = rev_index.get(clip_key)
+                if f_item is None or r_item is None:
+                    continue  # skip clips without existing forward/reverse annotations
+                s_item = new_shuffle_items.get(clip_key)
+                pair = {
+                    "clip_key": clip_key,
+                    "event_id": record.get("event_id"),
+                    "duration_sec": record.get("duration_sec"),
+                    "forward_video_path": record["forward_video_path"],
+                    "reverse_video_path": record.get("reverse_video_path") or "",
+                    "shuffle_video_path": record.get("shuffle_video_path") or "",
+                    "forward_caption": f_item["caption"],
+                    "reverse_caption": r_item["caption"],
+                    "shuffle_caption": s_item["caption"] if s_item else "",
+                    "forward_confidence": f_item["confidence"],
+                    "reverse_confidence": r_item["confidence"],
+                    "shuffle_confidence": s_item["confidence"] if s_item else 0.0,
+                    "forward_direction_clear": f_item["direction_clear"],
+                    "reverse_direction_clear": r_item["direction_clear"],
+                    "is_different": f_item["caption"] != r_item["caption"],
+                }
+                pf.write(json.dumps(pair, ensure_ascii=False) + "\n")
+                pair_count += 1
+        print(f"Rebuilt {pair_count} caption pairs in {pair_out_path}")
+        return
+
+    # ------------------------------------------------------------------
+    # Normal full-annotation mode
+    # ------------------------------------------------------------------
+    has_shuffle = any(r.get("shuffle_video_path") for r in records)
 
     open_files: dict[str, Any] = {
         "forward": open(forward_out_path, "w", encoding="utf-8", buffering=1),

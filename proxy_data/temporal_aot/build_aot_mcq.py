@@ -33,6 +33,31 @@ from collections import defaultdict
 from prompts import get_4way_t2v_prompt, get_4way_v2t_prompt, get_t2v_prompt, get_v2t_prompt
 
 
+def _truncate_caption(caption: str, max_words: int) -> str:
+    """Truncate a caption to at most *max_words* words, cutting at the last
+    complete clause boundary (comma / semicolon) when possible."""
+    words = caption.split()
+    if len(words) <= max_words:
+        return caption
+    truncated = words[:max_words]
+    text = " ".join(truncated)
+    # Try to cut at the last comma/semicolon for a cleaner boundary
+    for sep in (",", ";"):
+        idx = text.rfind(sep)
+        if idx > len(text) // 2:  # only if the cut point is in the latter half
+            text = text[: idx + 1]
+            break
+    return text.rstrip(",;: ") + "."
+
+
+def _length_ratio_ok(captions: list[str], max_ratio: float) -> bool:
+    """Return True if the longest / shortest caption word-count ratio <= max_ratio."""
+    lengths = [len(c.split()) for c in captions if c]
+    if not lengths or min(lengths) == 0:
+        return False
+    return max(lengths) / min(lengths) <= max_ratio
+
+
 def load_jsonl(path: str) -> list[dict]:
     items: list[dict] = []
     with open(path, encoding="utf-8") as f:
@@ -95,6 +120,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--max-samples", type=int, default=0, help="Max number of paired samples to keep")
     parser.add_argument("--min-confidence", type=float, default=0.6, help="Minimum confidence for both captions")
+    parser.add_argument("--max-caption-words", type=int, default=0,
+                        help="Truncate all captions to this many words in 4-way MCQ (0 = no truncation)")
+    parser.add_argument("--max-length-ratio", type=float, default=0.0,
+                        help="Skip 4-way MCQ samples where longest/shortest caption word ratio exceeds this (0 = disabled)")
     parser.add_argument(
         "--require-direction-clear",
         action="store_true",
@@ -235,13 +264,25 @@ def main() -> None:
             if not hard_neg:
                 pass  # skip 4-way for this sample if no hard negative is available
             else:
+                # --- caption length normalization ---
+                fwd_c, rev_c, shuf_c, hn_c = forward_caption, reverse_caption, shuffle_caption, hard_neg
+                if args.max_caption_words > 0:
+                    fwd_c = _truncate_caption(fwd_c, args.max_caption_words)
+                    rev_c = _truncate_caption(rev_c, args.max_caption_words)
+                    shuf_c = _truncate_caption(shuf_c, args.max_caption_words)
+                    hn_c = _truncate_caption(hn_c, args.max_caption_words)
+                if args.max_length_ratio > 0 and not _length_ratio_ok(
+                    [fwd_c, rev_c, shuf_c, hn_c], args.max_length_ratio
+                ):
+                    continue  # skip this sample — caption lengths too unbalanced
+
                 # Randomize which position (A/B/C/D) each caption occupies.
                 # The correct caption class is always forward (for the forward video).
                 slots = [
-                    ("forward", forward_caption),
-                    ("reverse", reverse_caption),
-                    ("shuffle", shuffle_caption),
-                    ("hard_neg", hard_neg),
+                    ("forward", fwd_c),
+                    ("reverse", rev_c),
+                    ("shuffle", shuf_c),
+                    ("hard_neg", hn_c),
                 ]
                 rng.shuffle(slots)
                 correct_letter = "ABCD"[[s[0] for s in slots].index("forward")]
