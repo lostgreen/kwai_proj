@@ -629,7 +629,7 @@ function segRenderClipList(){
     return;
   }
   list.innerHTML=SEG.filteredClips.map(c=>`
-    <div class="clip-row ${c.clip_key===SEG.activeClipKey?'active':''}" onclick="segSelectClip(${JSON.stringify(c.clip_key)})">
+    <div class="clip-row ${c.clip_key===SEG.activeClipKey?'active':''}" onclick="segSelectClip('${esc(c.clip_key)}')">
       <div class="clip-top">
         <div class="clip-key">${esc(c.clip_key)}</div>
         <div class="badge ${c.warning_count?'warning':'ok'}">${c.warning_count?c.warning_count+' warnings':'clean'}</div>
@@ -955,7 +955,7 @@ function capRenderList(){
     return;
   }
   list.innerHTML=CAP.filteredRecords.map(r=>`
-    <div class="clip-row ${r.clip_key===CAP.activeKey?'active':''}" onclick="capSelectRecord(${JSON.stringify(r.clip_key)})">
+    <div class="clip-row ${r.clip_key===CAP.activeKey?'active':''}" onclick="capSelectRecord('${esc(r.clip_key)}')">
       <div class="clip-top">
         <div class="clip-key">${esc(r.clip_key)}</div>
         <div class="badge ${r.forward_direction_clear?'ok':'warning'}">${r.forward_direction_clear?'clear':'unclear'}</div>
@@ -1114,7 +1114,7 @@ function mcqRenderList(){
     return;
   }
   list.innerHTML=MCQ.filteredRecords.map(r=>`
-    <div class="clip-row ${r.record_id===MCQ.activeId?'active':''}" onclick="mcqSelectRecord(${JSON.stringify(r.record_id)})">
+    <div class="clip-row ${r.record_id===MCQ.activeId?'active':''}" onclick="mcqSelectRecord('${esc(r.record_id)}')">
       <div class="clip-top">
         <div class="clip-key">${esc(r.clip_key)}</div>
         <span class="badge ok">${esc(r.answer)}</span>
