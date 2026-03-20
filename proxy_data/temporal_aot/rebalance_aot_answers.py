@@ -29,10 +29,13 @@ import random
 from collections import Counter, defaultdict
 from typing import Any
 
-from prompts import get_v2t_prompt, get_t2v_prompt
+from prompts import get_v2t_prompt, get_t2v_prompt, get_4way_v2t_prompt
 
 
-SUPPORTED_PROBLEM_TYPES = ("aot_t2v", "aot_v2t")
+SUPPORTED_PROBLEM_TYPES = ("aot_t2v", "aot_v2t", "aot_4way_v2t", "aot_4way_t2v")
+BINARY_PROBLEM_TYPES = {"aot_t2v", "aot_v2t"}
+FOURWAY_PROBLEM_TYPES = {"aot_4way_v2t", "aot_4way_t2v"}
+_FOURWAY_LETTERS = ("A", "B", "C", "D")
 
 
 def load_jsonl(path: str) -> list[dict[str, Any]]:
@@ -107,27 +110,93 @@ def flip_record(record: dict[str, Any]) -> dict[str, Any]:
     return flipped
 
 
+def permute_4way_v2t_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
+    """Move the correct answer of a 4-way V2T record to `new_letter` by swapping two slots."""
+    old_letter = record["answer"]
+    if old_letter == new_letter:
+        return copy.deepcopy(record)
+
+    result = copy.deepcopy(record)
+    metadata = result.setdefault("metadata", {})
+
+    # Swap option caption texts
+    old_cap = metadata.get(f"option_{old_letter}", "")
+    new_cap = metadata.get(f"option_{new_letter}", "")
+    metadata[f"option_{old_letter}"] = new_cap
+    metadata[f"option_{new_letter}"] = old_cap
+
+    # Swap semantic type tags
+    ot = dict(metadata.get("option_types") or {})
+    ot[old_letter], ot[new_letter] = ot.get(new_letter, ""), ot.get(old_letter, "")
+    metadata["option_types"] = ot
+
+    # Rebuild prompt from updated option texts
+    new_prompt = get_4way_v2t_prompt(
+        metadata.get("option_A", ""),
+        metadata.get("option_B", ""),
+        metadata.get("option_C", ""),
+        metadata.get("option_D", ""),
+    )
+    sync_prompt(result, new_prompt)
+
+    result["answer"] = new_letter
+    metadata["answer_rebalanced"] = True
+    metadata["original_answer_before_rebalance"] = old_letter
+    return result
+
+
+def permute_4way_t2v_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
+    """Move the correct answer of a 4-way T2V record to `new_letter` by swapping two video slots."""
+    old_letter = record["answer"]
+    if old_letter == new_letter:
+        return copy.deepcopy(record)
+
+    result = copy.deepcopy(record)
+    metadata = result.setdefault("metadata", {})
+
+    # Swap video paths in the videos list (order = [A, B, C, D])
+    _idx = {"A": 0, "B": 1, "C": 2, "D": 3}
+    old_i, new_i = _idx[old_letter], _idx[new_letter]
+    videos = list(result.get("videos") or [])
+    if len(videos) == 4:
+        videos[old_i], videos[new_i] = videos[new_i], videos[old_i]
+        result["videos"] = videos
+
+    # Swap semantic type tags
+    vt = dict(metadata.get("video_types") or {})
+    vt[old_letter], vt[new_letter] = vt.get(new_letter, ""), vt.get(old_letter, "")
+    metadata["video_types"] = vt
+
+    # Prompt text is generic ("Video A / Video B / Video C / Video D") — no rebuild needed
+    result["answer"] = new_letter
+    metadata["answer_rebalanced"] = True
+    metadata["original_answer_before_rebalance"] = old_letter
+    return result
+
+
 def count_answers(records: list[dict[str, Any]], target_problem_types: set[str]) -> Counter[tuple[str, str]]:
     counts: Counter[tuple[str, str]] = Counter()
     for record in records:
         problem_type = record.get("problem_type")
         answer = record.get("answer")
-        if problem_type in target_problem_types and answer in ("A", "B"):
-            counts[(problem_type, answer)] += 1
+        if problem_type in target_problem_types and isinstance(answer, str) and answer.upper() in "ABCD":
+            counts[(problem_type, answer.upper())] += 1
     return counts
 
 
 def print_stats(title: str, records: list[dict[str, Any]], target_problem_types: set[str]) -> None:
     counts = count_answers(records, target_problem_types)
-    total_a = sum(counts[(pt, "A")] for pt in target_problem_types)
-    total_b = sum(counts[(pt, "B")] for pt in target_problem_types)
     print(title)
-    print(f"  overall: A={total_a} B={total_b} total={total_a + total_b}")
     for problem_type in sorted(target_problem_types):
-        a_count = counts[(problem_type, "A")]
-        b_count = counts[(problem_type, "B")]
-        total = a_count + b_count
-        print(f"  {problem_type}: A={a_count} B={b_count} total={total}")
+        if problem_type in FOURWAY_PROBLEM_TYPES:
+            parts = "  ".join(f"{l}={counts[(problem_type, l)]}" for l in _FOURWAY_LETTERS)
+            total = sum(counts[(problem_type, l)] for l in _FOURWAY_LETTERS)
+            print(f"  {problem_type}: {parts}  total={total}")
+        else:
+            a_count = counts[(problem_type, "A")]
+            b_count = counts[(problem_type, "B")]
+            total = a_count + b_count
+            print(f"  {problem_type}: A={a_count} B={b_count} total={total}")
 
 
 def build_group_key(
@@ -138,11 +207,71 @@ def build_group_key(
     problem_type = record.get("problem_type")
     if problem_type not in target_problem_types:
         return None
-    if record.get("answer") not in ("A", "B"):
+    answer = record.get("answer")
+    if not isinstance(answer, str):
         return None
-    if balance_scope == "all":
-        return "all"
-    return str(problem_type)
+    if problem_type in BINARY_PROBLEM_TYPES:
+        if answer not in ("A", "B"):
+            return None
+        return "all" if balance_scope == "all" else str(problem_type)
+    elif problem_type in FOURWAY_PROBLEM_TYPES:
+        if answer.upper() not in _FOURWAY_LETTERS:
+            return None
+        return str(problem_type)  # 4-way always groups by type
+    return None
+
+
+def _rebalance_binary_group(
+    output: list[dict[str, Any]],
+    indices: list[int],
+    rng: random.Random,
+) -> int:
+    answers = Counter(output[idx]["answer"] for idx in indices)
+    diff = abs(answers["A"] - answers["B"])
+    if diff <= 1:
+        return 0
+    majority_answer = "A" if answers["A"] > answers["B"] else "B"
+    flips_needed = diff // 2
+    candidate_indices = [idx for idx in indices if output[idx]["answer"] == majority_answer]
+    rng.shuffle(candidate_indices)
+    for idx in candidate_indices[:flips_needed]:
+        output[idx] = flip_record(output[idx])
+    return flips_needed
+
+
+def _rebalance_4way_group(
+    output: list[dict[str, Any]],
+    indices: list[int],
+    rng: random.Random,
+) -> int:
+    """Balance A/B/C/D distribution for 4-way MCQ samples by swapping slot assignments."""
+    total = len(indices)
+    if total < 4:
+        return 0
+    target = total // 4
+    counts = Counter(output[idx]["answer"] for idx in indices)
+
+    surplus: list[tuple[int, str]] = []  # (sample_idx, old_letter) — samples to reassign
+    deficit: list[str] = []             # target letters to assign to
+
+    for letter in _FOURWAY_LETTERS:
+        cnt = counts.get(letter, 0)
+        if cnt > target:
+            over = [idx for idx in indices if output[idx]["answer"] == letter]
+            rng.shuffle(over)
+            surplus.extend((idx, letter) for idx in over[: cnt - target])
+        elif cnt < target:
+            deficit.extend([letter] * (target - cnt))
+
+    flipped = 0
+    for (sample_idx, _old), new_letter in zip(surplus, deficit):
+        pt = output[sample_idx]["problem_type"]
+        if pt == "aot_4way_v2t":
+            output[sample_idx] = permute_4way_v2t_record(output[sample_idx], new_letter)
+        else:
+            output[sample_idx] = permute_4way_t2v_record(output[sample_idx], new_letter)
+        flipped += 1
+    return flipped
 
 
 def rebalance_records(
@@ -163,19 +292,11 @@ def rebalance_records(
 
     for group_key in sorted(grouped_indices):
         indices = grouped_indices[group_key]
-        answers = Counter(output[idx]["answer"] for idx in indices)
-        diff = abs(answers["A"] - answers["B"])
-        if diff <= 1:
-            continue
-
-        majority_answer = "A" if answers["A"] > answers["B"] else "B"
-        flips_needed = diff // 2
-        candidate_indices = [idx for idx in indices if output[idx]["answer"] == majority_answer]
-        rng.shuffle(candidate_indices)
-
-        for idx in candidate_indices[:flips_needed]:
-            output[idx] = flip_record(output[idx])
-            flipped_count += 1
+        sample_pt = output[indices[0]]["problem_type"] if indices else ""
+        if sample_pt in FOURWAY_PROBLEM_TYPES:
+            flipped_count += _rebalance_4way_group(output, indices, rng)
+        else:
+            flipped_count += _rebalance_binary_group(output, indices, rng)
 
     return output, flipped_count
 
@@ -196,7 +317,7 @@ def main() -> None:
     parser.add_argument("--output-jsonl", required=True, help="Balanced JSONL output")
     parser.add_argument(
         "--problem-types",
-        default="aot_t2v,aot_v2t",
+        default="aot_t2v,aot_v2t,aot_4way_v2t,aot_4way_t2v",
         help="Comma-separated AoT problem types to rebalance",
     )
     parser.add_argument(

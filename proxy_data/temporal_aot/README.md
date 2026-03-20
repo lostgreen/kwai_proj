@@ -95,13 +95,20 @@ Shuffle 标注 prompt 设计：
 
 **Step 3 — 构造 V2T / T2V / 4-way MCQ 训练数据**
 
+定义数据根目录（与消融实验脚本一致）：
+
+```bash
+export AOT_DATA_ROOT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot
+```
+
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
-  --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
-  --v2t-output proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
-  --t2v-output proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
-  --fourway-output proxy_data/temporal_aot/data/aot_annotations/4way_train.jsonl \
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --v2t-output ${AOT_DATA_ROOT}/v2t_train.jsonl \
+  --t2v-output ${AOT_DATA_ROOT}/t2v_train.jsonl \
+  --fourway-output ${AOT_DATA_ROOT}/4way_v2t_train.jsonl \
+  --max-samples 2000 \
   --max-caption-words 35 \
   --max-length-ratio 2.5
 ```
@@ -121,28 +128,26 @@ Caption 长度均衡参数：
 - hard-negative 来自同一 `recipe_type` 的其他 clip 的 forward caption
 - 只有当 caption_pairs 中包含 `shuffle_caption` 且 `--fourway-output` 已指定时才生成
 
-**Step 4 — 混合 YouCook2 时序分割数据**
+**Step 4 — 混合 YouCook2 时序分割数据（可选）**
+
+消融实验默认不混合 temporal_seg，纯 AoT MCQ 训练。如需混合：
 
 ```bash
 python proxy_data/temporal_aot/mix_aot_with_youcook2.py \
   --seg-jsonl proxy_data/youcook2_train_easyr1.jsonl \
-  --v2t-jsonl proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
-  --t2v-jsonl proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
-  --train-output proxy_data/temporal_aot/data/mixed_aot_train.jsonl \
-  --val-output proxy_data/temporal_aot/data/mixed_aot_val.jsonl
+  --v2t-jsonl ${AOT_DATA_ROOT}/v2t_train.jsonl \
+  --t2v-jsonl ${AOT_DATA_ROOT}/t2v_train.jsonl \
+  --train-output ${AOT_DATA_ROOT}/mixed_aot_train.jsonl \
+  --val-output ${AOT_DATA_ROOT}/mixed_aot_val.jsonl
 ```
 
 **Step 5 — （可选）离线过滤后做 A/B 答案重平衡**
 
 ```bash
 python proxy_data/temporal_aot/rebalance_aot_answers.py \
-  --input-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.jsonl \
-  --output-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.balanced.jsonl
+  --input-jsonl ${AOT_DATA_ROOT}/ablations/exp1/mixed_train.offline_filtered.jsonl \
+  --output-jsonl ${AOT_DATA_ROOT}/ablations/exp1/mixed_train.offline_filtered.balanced.jsonl
 ```
-
----
-
-## 脚本说明
 
 | 脚本 | 职责 |
 |------|------|
@@ -260,7 +265,7 @@ python proxy_data/temporal_aot/rebalance_aot_answers.py \
 | 5 | **Mixed-Binary** | `aot_v2t` + `aot_t2v`（均为 A/B） | A/B | V2T 和 T2V 双向训练，互为增强 |
 | 6 | **Mixed-4way** | `aot_v2t` + `aot_t2v` + `aot_4way_v2t` + `aot_4way_t2v`（均含 A/B/C/D） | A/B/C/D | 全量组合，是否存在边际收益递减 |
 
-所有实验均与 temporal_seg（YouCook2 时序分割）混合训练，seg 部分保持不变，仅改变 AoT proxy 部分。
+所有实验默认纯 AoT MCQ 训练（不混合 temporal_seg），仅改变送入训练的 problem_type 组合。
 
 ### 实验 1：V2T-Binary
 
@@ -274,10 +279,10 @@ python proxy_data/temporal_aot/rebalance_aot_answers.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl data/aot_event_manifest.jsonl \
-  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
-  --v2t-output data/exp1_v2t_binary.jsonl \
-  --max-samples 1000
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --v2t-output ${AOT_DATA_ROOT}/ablations/exp1/v2t_binary.jsonl \
+  --max-samples 2000
 # 不传 --t2v-output 和 --fourway-output
 ```
 
@@ -293,12 +298,11 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl data/aot_event_manifest.jsonl \
-  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
-  --v2t-output data/exp2_v2t_binary.jsonl \
-  --fourway-output data/exp2_v2t_4way.jsonl \
-  --max-samples 1000
-# 合并：cat data/exp2_v2t_binary.jsonl data/exp2_v2t_4way.jsonl > data/exp2_v2t_all.jsonl
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --v2t-output ${AOT_DATA_ROOT}/ablations/exp2/v2t_binary.jsonl \
+  --fourway-output ${AOT_DATA_ROOT}/ablations/exp2/v2t_4way.jsonl \
+  --max-samples 2000
 ```
 
 ### 实验 3：T2V-Binary
@@ -313,10 +317,10 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl data/aot_event_manifest.jsonl \
-  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
-  --t2v-output data/exp3_t2v_binary.jsonl \
-  --max-samples 1000
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --t2v-output ${AOT_DATA_ROOT}/ablations/exp3/t2v_binary.jsonl \
+  --max-samples 2000
 # 不传 --v2t-output 和 --fourway-output
 ```
 
@@ -332,12 +336,11 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl data/aot_event_manifest.jsonl \
-  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
-  --t2v-output data/exp4_t2v_binary.jsonl \
-  --fourway-t2v-output data/exp4_t2v_4way.jsonl \
-  --max-samples 1000
-# 合并：cat data/exp4_t2v_binary.jsonl data/exp4_t2v_4way.jsonl > data/exp4_t2v_all.jsonl
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --t2v-output ${AOT_DATA_ROOT}/ablations/exp4/t2v_binary.jsonl \
+  --fourway-t2v-output ${AOT_DATA_ROOT}/ablations/exp4/t2v_4way.jsonl \
+  --max-samples 2000
 ```
 
 > 注：`--fourway-t2v-output` 为需要新增的参数，生成 T2V 方向的 4-way MCQ（给 caption 从 4 个视频中选）
@@ -353,12 +356,11 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl data/aot_event_manifest.jsonl \
-  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
-  --v2t-output data/exp5_v2t_binary.jsonl \
-  --t2v-output data/exp5_t2v_binary.jsonl \
-  --max-samples 1000
-# 合并：cat data/exp5_v2t_binary.jsonl data/exp5_t2v_binary.jsonl > data/exp5_mixed_binary.jsonl
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --v2t-output ${AOT_DATA_ROOT}/ablations/exp5/v2t_binary.jsonl \
+  --t2v-output ${AOT_DATA_ROOT}/ablations/exp5/t2v_binary.jsonl \
+  --max-samples 2000
 ```
 
 ### 实验 6：Mixed-4way
@@ -373,14 +375,13 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl data/aot_event_manifest.jsonl \
-  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
-  --v2t-output data/exp6_v2t_binary.jsonl \
-  --t2v-output data/exp6_t2v_binary.jsonl \
-  --fourway-output data/exp6_v2t_4way.jsonl \
-  --fourway-t2v-output data/exp6_t2v_4way.jsonl \
-  --max-samples 1000
-# 合并所有
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --v2t-output ${AOT_DATA_ROOT}/ablations/exp6/v2t_binary.jsonl \
+  --t2v-output ${AOT_DATA_ROOT}/ablations/exp6/t2v_binary.jsonl \
+  --fourway-output ${AOT_DATA_ROOT}/ablations/exp6/v2t_4way.jsonl \
+  --fourway-t2v-output ${AOT_DATA_ROOT}/ablations/exp6/t2v_4way.jsonl \
+  --max-samples 2000
 ```
 
 ### 评估体系
@@ -426,10 +427,12 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
 Step 1：build_event_aot_data.py（生成 manifest + reverse/shuffle/composite 素材）  ← 跑一次
 Step 2：annotate_event_captions.py（标注所有方向的 caption）                        ← 跑一次
 Step 3：build_aot_mcq.py × 6 次（不同 --output 参数组合）                          ← 并行
-Step 4：mix_aot_with_youcook2.py × 6 次（各自混合 temporal_seg）                   ← 并行
+Step 4：离线 rollout 过滤 × 6 次                                                   ← 各自过滤
 Step 5：训练 × 6 组 × 3 seeds = 18 次                                             ← GPU 并行
 Step 6：统一评估                                                                    ← 并行
 ```
+
+> 消融实验默认不混合 temporal_seg，纯 AoT MCQ 训练。启动脚本见 `local_scripts/aot_ablations/`。
 
 ---
 
@@ -563,24 +566,26 @@ python proxy_data/temporal_aot/annotate_event_captions.py \
 
 ```bash
 python proxy_data/temporal_aot/build_aot_mcq.py \
-  --manifest-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
-  --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
-  --v2t-output proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
-  --t2v-output proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
-  --fourway-output proxy_data/temporal_aot/data/aot_annotations/4way_train.jsonl \
-  --max-samples 500 \
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --v2t-output ${AOT_DATA_ROOT}/v2t_train.jsonl \
+  --t2v-output ${AOT_DATA_ROOT}/t2v_train.jsonl \
+  --fourway-output ${AOT_DATA_ROOT}/4way_v2t_train.jsonl \
+  --max-samples 2000 \
   --min-confidence 0.6
 ```
 
-### 4. 混合 YouCook2 + AoT 训练/验证集
+### 4. 混合 YouCook2 + AoT 训练/验证集（可选）
+
+消融实验默认不混合 temporal_seg。如需混合：
 
 ```bash
 python proxy_data/temporal_aot/mix_aot_with_youcook2.py \
   --seg-jsonl proxy_data/youcook2_train_easyr1.jsonl \
-  --v2t-jsonl proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl \
-  --t2v-jsonl proxy_data/temporal_aot/data/aot_annotations/t2v_train.jsonl \
-  --train-output proxy_data/temporal_aot/data/mixed_aot_train.jsonl \
-  --val-output proxy_data/temporal_aot/data/mixed_aot_val.jsonl \
+  --v2t-jsonl ${AOT_DATA_ROOT}/v2t_train.jsonl \
+  --t2v-jsonl ${AOT_DATA_ROOT}/t2v_train.jsonl \
+  --train-output ${AOT_DATA_ROOT}/mixed_aot_train.jsonl \
+  --val-output ${AOT_DATA_ROOT}/mixed_aot_val.jsonl \
   --train-per-source 400 \
   --val-per-source 30 \
   --seed 42

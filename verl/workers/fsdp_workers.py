@@ -313,9 +313,19 @@ class FSDPWorker(Worker):
             else:
                 num_warmup_steps = int(optim_config.lr_warmup_ratio * optim_config.training_steps)
 
-            self.lr_scheduler = get_constant_schedule_with_warmup(
-                optimizer=self.optimizer, num_warmup_steps=num_warmup_steps
-            )
+            warmup_style = (optim_config.warmup_style or "constant").lower()
+            if warmup_style == "cosine":
+                from verl.utils.torch_functional import get_cosine_schedule_with_warmup
+                self.lr_scheduler = get_cosine_schedule_with_warmup(
+                    optimizer=self.optimizer,
+                    num_warmup_steps=num_warmup_steps,
+                    num_training_steps=optim_config.training_steps,
+                    min_lr_ratio=optim_config.min_lr_ratio if optim_config.min_lr_ratio is not None else 0.1,
+                )
+            else:
+                self.lr_scheduler = get_constant_schedule_with_warmup(
+                    optimizer=self.optimizer, num_warmup_steps=num_warmup_steps
+                )
             print_gpu_memory_usage("After optimizer init")
             if self._use_param_offload:
                 offload_fsdp_model(self.fsdp_module)

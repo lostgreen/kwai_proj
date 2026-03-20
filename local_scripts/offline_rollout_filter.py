@@ -316,6 +316,8 @@ def main() -> None:
 
     kept = 0
     dropped = 0
+    kept_by_type: dict[str, int] = {}
+    dropped_by_type: dict[str, int] = {}
     with output_path.open("w", encoding="utf-8") as fout, report_path.open("w", encoding="utf-8") as freport:
         progress = tqdm(items, desc="offline_filter", total=len(items), dynamic_ncols=True)
         for idx, item in enumerate(progress):
@@ -342,11 +344,14 @@ def main() -> None:
                 rewards = [round(float(score["overall"]), args.reward_round_digits) for score in scores]
                 unique_rewards = sorted(set(rewards))
                 keep = len(unique_rewards) > 1
+                ptype = item.get("problem_type", "unknown") or "unknown"
                 if keep:
                     fout.write(json.dumps(item, ensure_ascii=False) + "\n")
                     kept += 1
+                    kept_by_type[ptype] = kept_by_type.get(ptype, 0) + 1
                 else:
                     dropped += 1
+                    dropped_by_type[ptype] = dropped_by_type.get(ptype, 0) + 1
 
                 report = {
                     "index": idx,
@@ -362,7 +367,9 @@ def main() -> None:
                 progress.set_postfix(kept=kept, dropped=dropped, refresh=False)
 
             except Exception as exc:
+                ptype = item.get("problem_type", "unknown") or "unknown"
                 dropped += 1
+                dropped_by_type[ptype] = dropped_by_type.get(ptype, 0) + 1
                 report = {
                     "index": idx,
                     "problem_type": item.get("problem_type", ""),
@@ -384,6 +391,21 @@ def main() -> None:
         f"[offline_filter] done. input={len(items)} kept={kept} dropped={dropped} "
         f"output={output_path} report={report_path}"
     )
+
+    # Per-task breakdown
+    all_types = sorted(set(list(kept_by_type) + list(dropped_by_type)))
+    if all_types:
+        print("\n[offline_filter] Per-task summary:")
+        print(f"  {'task':<30}  {'kept':>6}  {'dropped':>7}  {'total':>6}  {'keep%':>7}")
+        print("  " + "-" * 60)
+        for t in all_types:
+            k = kept_by_type.get(t, 0)
+            d = dropped_by_type.get(t, 0)
+            total_t = k + d
+            pct = f"{100.0 * k / total_t:.1f}%" if total_t else "  n/a"
+            print(f"  {t:<30}  {k:>6}  {d:>7}  {total_t:>6}  {pct:>7}")
+        print("  " + "-" * 60)
+        print(f"  {'TOTAL':<30}  {kept:>6}  {dropped:>7}  {len(items):>6}  {100.0*kept/len(items) if items else 0:.1f}%")
 
 
 if __name__ == "__main__":

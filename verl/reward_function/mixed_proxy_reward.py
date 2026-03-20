@@ -264,6 +264,8 @@ _TASK_REWARD_DISPATCH = {
     "replace":      _choice_reward,
     "aot_v2t":      _choice_reward,
     "aot_t2v":      _choice_reward,
+    "aot_4way_v2t": _choice_reward,
+    "aot_4way_t2v": _choice_reward,
     "sort":         _sort_reward,
     "temporal_seg": _temporal_seg_reward,
 }

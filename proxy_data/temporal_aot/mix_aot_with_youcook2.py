@@ -100,8 +100,8 @@ def print_problem_type_stats(name: str, records: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mix YouCook2 temporal_seg with AoT V2T/T2V JSONL data.")
     parser.add_argument("--seg-jsonl", required=True, help="Input YouCook2 temporal segmentation JSONL")
-    parser.add_argument("--v2t-jsonl", required=True, help="Input AoT V2T JSONL")
-    parser.add_argument("--t2v-jsonl", required=True, help="Input AoT T2V JSONL")
+    parser.add_argument("--v2t-jsonl", default="", help="Input AoT V2T JSONL (optional)")
+    parser.add_argument("--t2v-jsonl", default="", help="Input AoT T2V JSONL (optional)")
     parser.add_argument("--train-output", required=True, help="Output mixed train JSONL")
     parser.add_argument("--val-output", required=True, help="Output mixed val JSONL")
     parser.add_argument("--train-per-source", type=int, default=400, help="Train samples to keep from each source")
@@ -110,8 +110,8 @@ def main() -> None:
     args = parser.parse_args()
 
     seg_records = normalize_problem_type(load_jsonl(args.seg_jsonl), default_problem_type="temporal_seg")
-    v2t_records = normalize_problem_type(load_jsonl(args.v2t_jsonl), default_problem_type="aot_v2t")
-    t2v_records = normalize_problem_type(load_jsonl(args.t2v_jsonl), default_problem_type="aot_t2v")
+    v2t_records = normalize_problem_type(load_jsonl(args.v2t_jsonl) if args.v2t_jsonl else [], default_problem_type="aot_v2t")
+    t2v_records = normalize_problem_type(load_jsonl(args.t2v_jsonl) if args.t2v_jsonl else [], default_problem_type="aot_t2v")
 
     seg_train, seg_val = sample_train_val(seg_records, args.train_per_source, args.val_per_source, args.seed + 11)
     v2t_train, v2t_val = sample_train_val(v2t_records, args.train_per_source, args.val_per_source, args.seed + 22)

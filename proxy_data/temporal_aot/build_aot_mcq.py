@@ -113,8 +113,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build event-level AoT V2T/T2V/4way datasets.")
     parser.add_argument("--manifest-jsonl", required=True, help="Manifest from build_event_aot_data.py")
     parser.add_argument("--caption-pairs", required=True, help="caption_pairs.jsonl from annotate_event_captions.py")
-    parser.add_argument("--v2t-output", required=True, help="Output JSONL for binary V2T")
-    parser.add_argument("--t2v-output", required=True, help="Output JSONL for binary T2V")
+    parser.add_argument("--v2t-output", default="", help="Output JSONL for binary V2T (empty = skip)")
+    parser.add_argument("--t2v-output", default="", help="Output JSONL for binary T2V (empty = skip)")
     parser.add_argument("--fourway-output", default="", help="Output JSONL for 4-option V2T (only when shuffle captions exist)")
     parser.add_argument("--fourway-t2v-output", default="", help="Output JSONL for 4-option T2V (given caption, pick from 4 videos)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -326,6 +326,27 @@ def main() -> None:
                     }
                 )
 
+                # Also build the reverse-video variant: correct answer is the reverse caption
+                if reverse_video:
+                    correct_letter_rev = "ABCD"[[s[0] for s in slots].index("reverse")]
+                    fourway_records.append(
+                        {
+                            "messages": [{"role": "user", "content": prompt_text}],
+                            "prompt": prompt_text,
+                            "answer": correct_letter_rev,
+                            "videos": [reverse_video],
+                            "data_type": "video",
+                            "problem_type": "aot_4way_v2t",
+                            "metadata": {
+                                "clip_key": clip_key,
+                                "video_direction": "reverse",
+                                "recipe_type": recipe_type,
+                                **opts,
+                                "option_types": {chr(65+i): s[0] for i, s in enumerate(slots)},
+                            },
+                        }
+                    )
+
         # ------------------------------------------------------------------
         # 4-option T2V  (given caption, pick from 4 videos)
         # ------------------------------------------------------------------
@@ -353,10 +374,7 @@ def main() -> None:
                 rng.shuffle(video_slots)
                 correct_letter_fwd = "ABCD"[[s[0] for s in video_slots].index("forward")]
                 video_list = [s[1] for s in video_slots]
-                labels = [f"Video {chr(65+i)}" for i in range(4)]
-                prompt_text_t2v = get_4way_t2v_prompt(
-                    forward_caption, labels[0], labels[1], labels[2], labels[3]
-                )
+                prompt_text_t2v = get_4way_t2v_prompt(forward_caption)
                 fourway_t2v_records.append(
                     {
                         "messages": [{"role": "user", "content": prompt_text_t2v}],
@@ -377,9 +395,7 @@ def main() -> None:
 
                 # Also build the reverse-caption variant
                 correct_letter_rev = "ABCD"[[s[0] for s in video_slots].index("reverse")]
-                prompt_text_t2v_rev = get_4way_t2v_prompt(
-                    reverse_caption, labels[0], labels[1], labels[2], labels[3]
-                )
+                prompt_text_t2v_rev = get_4way_t2v_prompt(reverse_caption)
                 fourway_t2v_records.append(
                     {
                         "messages": [{"role": "user", "content": prompt_text_t2v_rev}],
@@ -400,10 +416,16 @@ def main() -> None:
 
         kept += 1
 
-    _write_jsonl(args.v2t_output, v2t_records)
-    _write_jsonl(args.t2v_output, t2v_records)
-    print(f"Wrote {len(v2t_records)} V2T records to {args.v2t_output}")
-    print(f"Wrote {len(t2v_records)} T2V records to {args.t2v_output}")
+    if args.v2t_output:
+        _write_jsonl(args.v2t_output, v2t_records)
+        print(f"Wrote {len(v2t_records)} V2T records to {args.v2t_output}")
+    else:
+        print(f"Skipped V2T output ({len(v2t_records)} records generated but no --v2t-output specified)")
+    if args.t2v_output:
+        _write_jsonl(args.t2v_output, t2v_records)
+        print(f"Wrote {len(t2v_records)} T2V records to {args.t2v_output}")
+    else:
+        print(f"Skipped T2V output ({len(t2v_records)} records generated but no --t2v-output specified)")
 
     if args.fourway_output and fourway_records:
         _write_jsonl(args.fourway_output, fourway_records)
