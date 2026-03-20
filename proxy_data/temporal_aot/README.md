@@ -68,13 +68,14 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
 
 ```bash
 python proxy_data/temporal_aot/annotate_event_captions.py \
-  --manifest-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
-  --output-dir proxy_data/temporal_aot/data/aot_annotations \
-  --api-base http://localhost:8000/v1 \
-  --model Qwen3-VL-7B \
+  --manifest-jsonl /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/aot_event_manifest.jsonl \
+  --output-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot \
+  --api-base https://api.novita.ai/v3/openai \
+  --model pa/gmn-2.5-pr \
   --workers 8 \
   --fwd-rev-fps 1.0 \
-  --shuffle-fps 2.0
+  --shuffle-fps 2.0 \
+  --max-samples 100
 ```
 
 VLM 会对每个 clip 输出 `caption`、`confidence`、`direction_clear` 三个字段。

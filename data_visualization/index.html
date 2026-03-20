@@ -372,8 +372,7 @@ button,input,textarea{font:inherit}
           <div class="subtitle">支持 annotations JSON 和 build_dataset JSONL 的时间轴联动查看器</div>
         </div>
         <div class="toolbar">
-          <input id="seg-annotationDir" class="input" placeholder="输入 annotations 目录 / annotation json / dataset jsonl 路径" />
-          <button id="seg-loadBtn" class="btn" onclick="segLoadAnnotations()">加载数据</button>
+          <span id="seg-dataSourceLabel" class="status" style="font-size:0.8rem;color:var(--muted)">通过 <code>--data-path &lt;path&gt;</code> 启动参数指定数据路径</span>
         </div>
       </div>
       <div id="seg-statusMsg" class="status"></div>
@@ -395,7 +394,7 @@ button,input,textarea{font:inherit}
         </div>
         <input id="seg-searchInput" class="search" placeholder="搜索 clip_key" oninput="segFilterClips()" />
         <div id="seg-clipList" class="clip-list">
-          <div class="clip-row"><div class="clip-key">加载数据路径后显示</div></div>
+          <div class="clip-row"><div class="clip-key">通过 --data-path 启动后自动显示</div></div>
         </div>
       </aside>
 
@@ -610,23 +609,7 @@ function segSetStatus(msg,err=false){
   el.textContent=msg||'';
   el.style.color=err?'var(--danger)':'var(--blue)';
 }
-function segSetLoading(v){
-  const b=document.getElementById('seg-loadBtn');
-  b.disabled=v; b.textContent=v?'加载中...':'加载数据';
-}
-async function segLoadAnnotations(){
-  const path=document.getElementById('seg-annotationDir').value.trim();
-  if(!path){segSetStatus('请先输入数据路径。',true);return;}
-  segSetLoading(true);
-  try{
-    const res=await fetchJson('/api/load-data?data_path='+encodeURIComponent(path));
-    segApplySummary(res.summary);
-    const kind=res.summary.data_kind==='dataset_jsonl'?'dataset jsonl':'annotation data';
-    segSetStatus(`已加载 ${res.summary.clip_count} 个 clips · ${kind}`);
-    if(SEG.filteredClips.length>0) await segSelectClip(SEG.filteredClips[0].clip_key);
-  }catch(e){segSetStatus(e.message,true);}
-  finally{segSetLoading(false);}
-}
+
 function segApplySummary(s){
   SEG.clips=s.clips||[];
   SEG.filteredClips=[...SEG.clips];
@@ -917,10 +900,15 @@ function segInitScroll(){
 }
 function segBootPreloaded(){
   const p=window.__PRELOADED__;
-  if(!p||!p.seg) return;
+  if(!p||!p.seg){
+    segSetStatus('未检测到预加载数据。请通过 --data-path <path> 启动参数指定数据路径。',true);
+    return;
+  }
   const seg=p.seg;
   SEG.allDetails=seg.all_details||{};
-  document.getElementById('seg-annotationDir').value=seg.data_path||seg.annotation_dir||'';
+  const srcPath=seg.data_path||seg.annotation_dir||'';
+  const label=document.getElementById('seg-dataSourceLabel');
+  if(label) label.textContent=srcPath?`数据源：${srcPath}`:'（预加载）';
   segApplySummary(seg.summary);
   const total=seg.summary.total_available_clip_count||seg.summary.clip_count||0;
   const kind=seg.summary.data_kind==='dataset_jsonl'?'dataset jsonl':'annotation data';
