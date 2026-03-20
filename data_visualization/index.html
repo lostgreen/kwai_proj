@@ -434,9 +434,7 @@ button,input,textarea{font:inherit}
           <div class="subtitle">查看 forward / reverse / shuffle 三方向视频帧 + VLM 生成 caption</div>
         </div>
         <div class="toolbar">
-          <input id="cap-pairsPath" class="input" placeholder="caption_pairs.jsonl 路径" style="min-width:260px" />
-          <input id="cap-manifestPath" class="input" placeholder="aot_event_manifest.jsonl（可选）" style="min-width:260px" />
-          <button id="cap-loadBtn" class="btn" onclick="capLoadData()">加载数据</button>
+          <span id="cap-dataSourceLabel" class="status" style="font-size:0.8rem;color:var(--muted)">通过 <code>CAPTION_PAIRS=... MANIFEST=... ./run.sh</code> 启动参数指定数据路径</span>
         </div>
       </div>
       <div id="cap-statusMsg" class="status"></div>
@@ -457,7 +455,7 @@ button,input,textarea{font:inherit}
         </div>
         <input id="cap-searchInput" class="search" placeholder="搜索 clip_key" oninput="capFilterClips()" />
         <div id="cap-clipList" class="clip-list">
-          <div class="clip-row"><div class="clip-key">加载数据路径后显示</div></div>
+          <div class="clip-row"><div class="clip-key">通过 CAPTION_PAIRS 启动后自动显示</div></div>
         </div>
       </aside>
 
@@ -488,8 +486,7 @@ button,input,textarea{font:inherit}
           <div class="subtitle">查看 V2T / T2V 单选题 · 视频帧 + 选项 + 答案</div>
         </div>
         <div class="toolbar">
-          <input id="mcq-dataPath" class="input" placeholder="MCQ JSONL 路径（aot_v2t / t2v / 4way）" />
-          <button id="mcq-loadBtn" class="btn" onclick="mcqLoadData()">加载数据</button>
+          <span id="mcq-dataSourceLabel" class="status" style="font-size:0.8rem;color:var(--muted)">通过 <code>MCQ_DATA=... ./run.sh</code> 启动参数指定数据路径</span>
         </div>
       </div>
       <div id="mcq-statusMsg" class="status"></div>
@@ -511,7 +508,7 @@ button,input,textarea{font:inherit}
         <input id="mcq-searchInput" class="search" placeholder="搜索 clip_key" oninput="mcqFilterRecords()" />
         <div id="mcq-filterChips" class="filter-chips"></div>
         <div id="mcq-recordList" class="clip-list" style="margin-top:4px">
-          <div class="clip-row"><div class="clip-key">加载数据路径后显示</div></div>
+          <div class="clip-row"><div class="clip-key">通过 MCQ_DATA 启动后自动显示</div></div>
         </div>
       </aside>
 
@@ -935,21 +932,6 @@ function capSetStatus(msg,err=false){
   const el=document.getElementById('cap-statusMsg');
   el.textContent=msg||'';el.style.color=err?'var(--danger)':'var(--blue)';
 }
-async function capLoadData(){
-  const pairs=document.getElementById('cap-pairsPath').value.trim();
-  const manifest=document.getElementById('cap-manifestPath').value.trim();
-  if(!pairs){capSetStatus('请先输入 caption_pairs.jsonl 路径。',true);return;}
-  document.getElementById('cap-loadBtn').disabled=true;
-  document.getElementById('cap-loadBtn').textContent='加载中...';
-  try{
-    const url='/api/aot-caption/load-data?caption_pairs='+encodeURIComponent(pairs)+(manifest?'&manifest='+encodeURIComponent(manifest):'');
-    const res=await fetchJson(url);
-    capApplySummary(res.summary);
-    capSetStatus(`已加载 ${res.summary.total} 个记录`);
-    if(CAP.filteredRecords.length>0) await capSelectRecord(CAP.filteredRecords[0].clip_key);
-  }catch(e){capSetStatus(e.message,true);}
-  finally{document.getElementById('cap-loadBtn').disabled=false;document.getElementById('cap-loadBtn').textContent='加载数据';}
-}
 function capApplySummary(s){
   CAP.records=s.records||[];
   CAP.filteredRecords=[...CAP.records];
@@ -1054,10 +1036,13 @@ function capColHtml(col){
 }
 function capBootPreloaded(){
   const p=window.__PRELOADED__;
-  if(!p||!p.caption) return;
+  if(!p||!p.caption){
+    capSetStatus('未检测到预加载数据。请通过 CAPTION_PAIRS=... MANIFEST=... ./run.sh 启动。',true);
+    return;
+  }
   const cap=p.caption;
-  document.getElementById('cap-pairsPath').value=cap.caption_pairs||'';
-  document.getElementById('cap-manifestPath').value=cap.manifest||'';
+  const srcLabel=document.getElementById('cap-dataSourceLabel');
+  if(srcLabel) srcLabel.textContent=cap.caption_pairs||'（预加载）';
   capApplySummary(cap.summary);
   capSetStatus(`已预加载 ${cap.summary.total} 个记录`);
   if(CAP.filteredRecords.length>0) capSelectRecord(CAP.filteredRecords[0].clip_key);
@@ -1077,19 +1062,6 @@ const MCQ={
 function mcqSetStatus(msg,err=false){
   const el=document.getElementById('mcq-statusMsg');
   el.textContent=msg||'';el.style.color=err?'var(--danger)':'var(--blue)';
-}
-async function mcqLoadData(){
-  const path=document.getElementById('mcq-dataPath').value.trim();
-  if(!path){mcqSetStatus('请先输入 MCQ JSONL 路径。',true);return;}
-  document.getElementById('mcq-loadBtn').disabled=true;
-  document.getElementById('mcq-loadBtn').textContent='加载中...';
-  try{
-    const res=await fetchJson('/api/aot-mcq/load-data?data_path='+encodeURIComponent(path));
-    mcqApplySummary(res.summary);
-    mcqSetStatus(`已加载 ${res.summary.total} 个记录`);
-    if(MCQ.filteredRecords.length>0) await mcqSelectRecord(MCQ.filteredRecords[0].record_id);
-  }catch(e){mcqSetStatus(e.message,true);}
-  finally{document.getElementById('mcq-loadBtn').disabled=false;document.getElementById('mcq-loadBtn').textContent='加载数据';}
 }
 function mcqApplySummary(s){
   MCQ.records=s.records||[];
@@ -1222,9 +1194,13 @@ function mcqRenderRecord(){
 }
 function mcqBootPreloaded(){
   const p=window.__PRELOADED__;
-  if(!p||!p.mcq) return;
+  if(!p||!p.mcq){
+    mcqSetStatus('未检测到预加载数据。请通过 MCQ_DATA=... ./run.sh 启动。',true);
+    return;
+  }
   const mcq=p.mcq;
-  document.getElementById('mcq-dataPath').value=mcq.data_path||'';
+  const srcLabel=document.getElementById('mcq-dataSourceLabel');
+  if(srcLabel) srcLabel.textContent=mcq.data_path||'（预加载）';
   mcqApplySummary(mcq.summary);
   mcqSetStatus(`已预加载 ${mcq.summary.total} 个记录`);
   if(MCQ.filteredRecords.length>0) mcqSelectRecord(MCQ.filteredRecords[0].record_id);
@@ -1236,6 +1212,16 @@ function mcqBootPreloaded(){
 segBootPreloaded();
 capBootPreloaded();
 mcqBootPreloaded();
+// Auto-switch to the first tab that has preloaded data
+(function(){
+  const p=window.__PRELOADED__;
+  if(!p) return;
+  // Only auto-switch if URL has no explicit hash
+  if(location.hash && location.hash!=='#') return;
+  if(p.caption) switchTab('caption');
+  else if(p.mcq) switchTab('mcq');
+  // seg: stay on default tab
+})();
 </script>
 </body>
 </html>
