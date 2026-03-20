@@ -76,31 +76,53 @@ def get_t2v_prompt(
     )
 
 
-def get_shuffle_caption_prompt() -> str:
+def get_shuffle_caption_prompt(n_segments: int = 0, segment_sec: float = 2.0) -> str:
     """
     Prompt for captioning a temporally-shuffled clip.
     The video has been cut into fixed-length segments and randomly reordered,
     so the VLM should describe the *observed* (incoherent) action sequence as-is,
     not try to reconstruct the plausible original order.
+
+    Parameters
+    ----------
+    n_segments : int
+        Number of segments the video was cut into (0 = unknown).
+    segment_sec : float
+        Duration of each segment in seconds.
     """
+    if n_segments > 0:
+        seg_info = (
+            f"This video was created by cutting the original clip into {n_segments} segments "
+            f"of approximately {segment_sec:.0f} seconds each and randomly reordering them, "
+            "so the events may appear in an incoherent or jumbled sequence.\n\n"
+        )
+    else:
+        seg_info = (
+            f"This video was created by cutting the original clip into segments of approximately "
+            f"{segment_sec:.0f} seconds each and randomly reordering them, "
+            "so the events may appear in an incoherent or jumbled sequence.\n\n"
+        )
     return (
         "Watch the video carefully.\n"
         "<video>\n\n"
-        "This video was created by cutting the original clip into short segments and "
-        "randomly reordering them, so the events may appear in an incoherent or jumbled sequence.\n\n"
-        "Describe the observed action sequence exactly as it appears, in the order you see it.\n"
+        + seg_info
+        + "Describe the observed action sequence exactly as it appears, in the order you see it.\n"
         "Requirements:\n"
-        "1. Describe what happens in each visible phase using explicit temporal markers "
-        "('first', 'then', 'finally').\n"
+        f"1. Describe what happens in each ~{segment_sec:.0f}-second phase using explicit temporal markers "
+        "('first', 'then', 'next', 'finally'). Try to cover each segment.\n"
         "2. If the sequence appears logically inconsistent (e.g. the food is plated before it is "
         "cooked), describe it that way—do not reorder to make it plausible.\n"
         "3. Mention the visible start and end states.\n"
-        "4. Keep it to one or two sentences.\n"
-        "5. Set direction_clear to false, since the temporal order has been deliberately disrupted.\n"
-        "6. Output valid JSON with keys: caption, confidence, direction_clear.\n"
+        "4. Focus on concrete state changes (shape, color, position, quantity) rather than "
+        "generic activity labels. If a segment shows no visible change, note that explicitly "
+        "(e.g. 'the mixture remains the same').\n"
+        "5. Keep it to one to three sentences.\n"
+        "6. Set direction_clear to false, since the temporal order has been deliberately disrupted.\n"
+        "7. Output valid JSON with keys: caption, confidence, direction_clear.\n"
         "Example:\n"
         "{\"caption\": \"First the pan appears already empty and clean, then food is seen being tossed "
-        "in oil, and finally raw ingredients are placed on the cutting board.\", "
+        "in oil, next a pile of diced onions sits on the board, and finally raw ingredients are "
+        "placed on the cutting board.\", "
         "\"confidence\": 0.75, \"direction_clear\": false}"
     )
 

@@ -37,7 +37,16 @@ from tqdm.auto import tqdm
 from prompts import SYSTEM_PROMPT, get_forward_reverse_caption_prompt, get_shuffle_caption_prompt
 
 
-def sample_video_frames(video_path: str, max_frames: int) -> list[Image.Image]:
+def sample_video_frames_by_fps(
+    video_path: str,
+    target_fps: float,
+    max_frames: int,
+) -> list[Image.Image]:
+    """Sample frames at a fixed target FPS (e.g. 1fps for caption, 2fps for training).
+
+    The number of sampled frames = min(ceil(duration * target_fps), max_frames).
+    Frames are uniformly distributed across the video.
+    """
     try:
         import decord
     except ImportError as exc:
@@ -47,12 +56,76 @@ def sample_video_frames(video_path: str, max_frames: int) -> list[Image.Image]:
     total = len(vr)
     if total == 0:
         return []
-    if max_frames <= 0 or total <= max_frames:
+
+    video_fps = vr.get_avg_fps() or 25.0
+    duration = total / video_fps
+    n_frames = min(max(1, round(duration * target_fps)), max_frames)
+    if n_frames >= total:
         indices = list(range(total))
+    elif n_frames == 1:
+        indices = [total // 2]
     else:
-        stride = (total - 1) / (max_frames - 1)
-        indices = [round(i * stride) for i in range(max_frames)]
+        stride = (total - 1) / (n_frames - 1)
+        indices = [round(i * stride) for i in range(n_frames)]
     frames = vr.get_batch(indices).asnumpy()
+    return [Image.fromarray(frame).convert("RGB") for frame in frames]
+
+
+def sample_video_frames_segment_aware(
+    video_path: str,
+    target_fps: float,
+    max_frames: int,
+    n_segments: int,
+    segment_sec: float,
+) -> list[Image.Image]:
+    """Sample frames at ``target_fps`` while ensuring each segment gets at least one frame.
+
+    For shuffled videos cut into ``n_segments`` segments of ``segment_sec``
+    seconds each, this guarantees visual coverage of every segment so the VLM
+    can describe the per-segment content.
+    """
+    try:
+        import decord
+    except ImportError as exc:
+        raise ImportError("decord is required for annotation: pip install decord") from exc
+
+    vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
+    total = len(vr)
+    if total == 0:
+        return []
+
+    video_fps = vr.get_avg_fps() or 25.0
+    # Frames per segment = max(1, round(segment_sec * target_fps))
+    frames_per_seg = max(1, round(segment_sec * target_fps))
+    total_duration = total / video_fps
+
+    indices: list[int] = []
+    for seg_idx in range(n_segments):
+        seg_start = seg_idx * segment_sec
+        seg_end = min((seg_idx + 1) * segment_sec, total_duration)
+        frame_start = int(seg_start * video_fps)
+        frame_end = min(int(seg_end * video_fps), total - 1)
+        if frame_end <= frame_start:
+            indices.append(min(frame_start, total - 1))
+            continue
+        if frames_per_seg == 1:
+            indices.append((frame_start + frame_end) // 2)
+        else:
+            stride = (frame_end - frame_start) / (frames_per_seg - 1)
+            for j in range(frames_per_seg):
+                idx = min(round(frame_start + j * stride), total - 1)
+                indices.append(idx)
+
+    # Deduplicate while preserving order, then cap at max_frames
+    seen: set[int] = set()
+    unique_indices: list[int] = []
+    for idx in indices:
+        if idx not in seen:
+            seen.add(idx)
+            unique_indices.append(idx)
+    unique_indices = unique_indices[:max_frames]
+
+    frames = vr.get_batch(unique_indices).asnumpy()
     return [Image.fromarray(frame).convert("RGB") for frame in frames]
 
 
@@ -125,6 +198,8 @@ def annotate_one(
     api_key: str,
     model: str,
     max_frames: int,
+    fwd_rev_fps: float,
+    shuffle_fps: float,
     resize_max_width: int,
     jpeg_quality: int,
     retries: int,
@@ -139,8 +214,8 @@ def annotate_one(
     shuffle_path = record.get("shuffle_video_path") or ""
 
     fwd_rev_prompt = get_forward_reverse_caption_prompt()
-    forward_frames = sample_video_frames(forward_path, max_frames=max_frames)
-    reverse_frames = sample_video_frames(reverse_path, max_frames=max_frames)
+    forward_frames = sample_video_frames_by_fps(forward_path, target_fps=fwd_rev_fps, max_frames=max_frames)
+    reverse_frames = sample_video_frames_by_fps(reverse_path, target_fps=fwd_rev_fps, max_frames=max_frames)
     forward_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, fwd_rev_prompt, forward_frames, resize_max_width, jpeg_quality, retries)
     reverse_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, fwd_rev_prompt, reverse_frames, resize_max_width, jpeg_quality, retries)
 
@@ -171,8 +246,25 @@ def annotate_one(
 
     shuffle_item: dict | None = None
     if shuffle_path:
-        shuf_prompt = get_shuffle_caption_prompt()
-        shuffle_frames = sample_video_frames(shuffle_path, max_frames=max_frames)
+        # Compute segment count for segment-aware sampling & prompt
+        shuffle_seg_sec = record.get("shuffle_segment_sec", 2.0) or 2.0
+        actual_dur = record.get("actual_duration_sec") or record.get("duration_sec") or 0.0
+        n_segments = int(actual_dur // shuffle_seg_sec) if actual_dur > 0 else 0
+
+        shuf_prompt = get_shuffle_caption_prompt(
+            n_segments=n_segments,
+            segment_sec=shuffle_seg_sec,
+        )
+        if n_segments >= 2:
+            shuffle_frames = sample_video_frames_segment_aware(
+                shuffle_path,
+                target_fps=shuffle_fps,
+                max_frames=max_frames,
+                n_segments=n_segments,
+                segment_sec=shuffle_seg_sec,
+            )
+        else:
+            shuffle_frames = sample_video_frames_by_fps(shuffle_path, target_fps=shuffle_fps, max_frames=max_frames)
         shuffle_resp = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, shuf_prompt, shuffle_frames, resize_max_width, jpeg_quality, retries)
         shuffle_item = {
             **base,
@@ -182,6 +274,7 @@ def annotate_one(
             "confidence": float(shuffle_resp.get("confidence", 0.0) or 0.0),
             # direction_clear is always False for shuffle clips by construction
             "direction_clear": False,
+            "n_segments": n_segments,
         }
 
     pair = {
@@ -223,7 +316,9 @@ def main() -> None:
     parser.add_argument("--model", required=True, help="Model name")
     parser.add_argument("--api-key", default="", help="API key, defaults to OPENAI_API_KEY/NOVITA_API_KEY")
     parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
-    parser.add_argument("--max-frames", type=int, default=16, help="Max frames sampled from each clip")
+    parser.add_argument("--max-frames", type=int, default=32, help="Hard cap on frames per clip")
+    parser.add_argument("--fwd-rev-fps", type=float, default=1.0, help="Frame sampling rate for forward/reverse caption (default: 1fps)")
+    parser.add_argument("--shuffle-fps", type=float, default=2.0, help="Frame sampling rate for shuffle caption (default: 2fps, matches training input)")
     parser.add_argument("--resize-max-width", type=int, default=768, help="Resize frames before upload")
     parser.add_argument("--jpeg-quality", type=int, default=60, help="JPEG quality for upload")
     parser.add_argument("--retries", type=int, default=3, help="API retry count")
@@ -258,6 +353,8 @@ def main() -> None:
                     args.api_key,
                     args.model,
                     args.max_frames,
+                    args.fwd_rev_fps,
+                    args.shuffle_fps,
                     args.resize_max_width,
                     args.jpeg_quality,
                     args.retries,

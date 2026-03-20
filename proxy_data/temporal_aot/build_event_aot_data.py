@@ -380,6 +380,41 @@ def run_ffmpeg(cmd: list[str], dry_run: bool) -> None:
     subprocess.run(quiet_cmd, check=True)
 
 
+def verify_video_readable(video_path: str) -> bool:
+    """Quick check that ffprobe can open the output and find a video stream."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0 and "video" in (result.stdout or "")
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def run_ffmpeg_with_fallback(cmd: list[str], dst_path: str, dry_run: bool) -> None:
+    """Run ffmpeg with fast encoding; on verification failure, retry with default preset."""
+    run_ffmpeg(cmd, dry_run=dry_run)
+    if dry_run:
+        return
+    if verify_video_readable(dst_path):
+        return
+    # Fallback: replace ultrafast with medium and retry
+    fallback_cmd = []
+    for token in cmd:
+        if token == "ultrafast":
+            fallback_cmd.append("medium")
+        else:
+            fallback_cmd.append(token)
+    os.remove(dst_path)
+    run_ffmpeg(fallback_cmd, dry_run=False)
+
+
+# Shared fast-encoding flags: ultrafast preset cuts encode time 5-8x vs default medium.
+FAST_ENCODE_FLAGS = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "1"]
+
+
 def build_reverse_clip(src_path: str, dst_path: str, dry_run: bool) -> None:
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     cmd = [
@@ -390,9 +425,10 @@ def build_reverse_clip(src_path: str, dst_path: str, dry_run: bool) -> None:
         "-vf",
         "reverse",
         "-an",
+        *FAST_ENCODE_FLAGS,
         dst_path,
     ]
-    run_ffmpeg(cmd, dry_run=dry_run)
+    run_ffmpeg_with_fallback(cmd, dst_path, dry_run=dry_run)
 
 
 def build_black_clip(dst_path: str, duration_sec: float, dry_run: bool) -> None:
@@ -405,9 +441,10 @@ def build_black_clip(dst_path: str, duration_sec: float, dry_run: bool) -> None:
         "-i",
         f"color=c=black:s=768x432:d={duration_sec}:r=25",
         "-an",
+        *FAST_ENCODE_FLAGS,
         dst_path,
     ]
-    run_ffmpeg(cmd, dry_run=dry_run)
+    run_ffmpeg_with_fallback(cmd, dst_path, dry_run=dry_run)
 
 
 def format_fps_value(fps: float | None) -> str:
@@ -452,9 +489,10 @@ def build_composite_clip(
         filter_complex,
         "-map",
         "[outv]",
+        *FAST_ENCODE_FLAGS,
         dst_path,
     ]
-    run_ffmpeg(cmd, dry_run=dry_run)
+    run_ffmpeg_with_fallback(cmd, dst_path, dry_run=dry_run)
 
 
 def build_shuffle_clip(
@@ -502,9 +540,10 @@ def build_shuffle_clip(
         "-filter_complex", filter_complex,
         "-map", "[outv]",
         "-an",
+        *FAST_ENCODE_FLAGS,
         dst_path,
     ]
-    run_ffmpeg(cmd, dry_run=dry_run)
+    run_ffmpeg_with_fallback(cmd, dst_path, dry_run=dry_run)
     return len(order)
 
 
