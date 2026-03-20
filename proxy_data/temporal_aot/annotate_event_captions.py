@@ -247,13 +247,18 @@ def annotate_one(
     shuffle_item: dict | None = None
     if shuffle_path:
         # Compute segment count for segment-aware sampling & prompt
-        shuffle_seg_sec = record.get("shuffle_segment_sec", 2.0) or 2.0
+        # New manifests store shuffle_n_segments directly; fall back to deriving
+        # from the legacy shuffle_segment_sec field for backward compatibility.
         actual_dur = record.get("actual_duration_sec") or record.get("duration_sec") or 0.0
-        n_segments = int(actual_dur // shuffle_seg_sec) if actual_dur > 0 else 0
+        n_segments = int(record.get("shuffle_n_segments") or 0)
+        if n_segments <= 0 and actual_dur > 0:
+            _old_seg_sec = record.get("shuffle_segment_sec", 2.0) or 2.0
+            n_segments = int(actual_dur // _old_seg_sec)
+        segment_dur = (actual_dur / n_segments) if n_segments > 0 else 2.0
 
         shuf_prompt = get_shuffle_caption_prompt(
             n_segments=n_segments,
-            segment_sec=shuffle_seg_sec,
+            segment_sec=segment_dur,
         )
         if n_segments >= 2:
             shuffle_frames = sample_video_frames_segment_aware(
@@ -261,7 +266,7 @@ def annotate_one(
                 target_fps=shuffle_fps,
                 max_frames=max_frames,
                 n_segments=n_segments,
-                segment_sec=shuffle_seg_sec,
+                segment_sec=segment_dur,
             )
         else:
             shuffle_frames = sample_video_frames_by_fps(shuffle_path, target_fps=shuffle_fps, max_frames=max_frames)

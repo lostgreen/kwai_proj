@@ -499,34 +499,28 @@ def build_shuffle_clip(
     src_path: str,
     dst_path: str,
     actual_duration: float,
-    segment_sec: float,
+    n_segments: int,
     seed: int,
     dry_run: bool,
-) -> int:
-    """Shuffle the temporal order of fixed-length segments using a single ffmpeg filter_complex.
-
-    Returns the number of segments used, or raises ValueError if the clip is too short.
-    A different random seed produces a different shuffle permutation, so callers can
-    generate multiple distinct shuffled variants from the same source clip.
+) -> None:
+    """Divide the clip into ``n_segments`` equal-length parts and concatenate them
+    in a randomly permuted (guaranteed-non-original) order.
     """
-    n_full = int(actual_duration // segment_sec)
-    if n_full < 2:
-        raise ValueError(
-            f"Clip too short for shuffle: duration={actual_duration:.2f}s requires at least "
-            f"2×{segment_sec}s segments"
-        )
+    if n_segments < 2:
+        raise ValueError(f"n_segments must be >= 2, got {n_segments}")
 
+    segment_dur = actual_duration / n_segments
     rng = random.Random(seed)
-    order = list(range(n_full))
+    order = list(range(n_segments))
     # Guarantee the shuffled order differs from the original
-    while order == list(range(n_full)):
+    while order == list(range(n_segments)):
         rng.shuffle(order)
 
     # Build a single-pass filter_complex: trim each segment in shuffled order, then concat
     trim_filters = []
     for out_idx, seg_idx in enumerate(order):
-        start = seg_idx * segment_sec
-        end = start + segment_sec
+        start = seg_idx * segment_dur
+        end = start + segment_dur
         trim_filters.append(
             f"[0:v]trim=start={start:.6f}:end={end:.6f},setpts=PTS-STARTPTS,format=yuv420p[s{out_idx}]"
         )
@@ -544,7 +538,6 @@ def build_shuffle_clip(
         dst_path,
     ]
     run_ffmpeg_with_fallback(cmd, dst_path, dry_run=dry_run)
-    return len(order)
 
 
 def main() -> None:
@@ -577,16 +570,26 @@ def main() -> None:
     parser.add_argument("--make-composite", action="store_true", help="Export T2V composite clips")
     parser.add_argument("--make-shuffle", action="store_true", help="Export temporally-shuffled clips with ffmpeg")
     parser.add_argument(
-        "--shuffle-segment-sec",
-        type=float,
-        default=2.0,
-        help="Segment length in seconds for temporal shuffling (default: 2.0)",
-    )
-    parser.add_argument(
-        "--min-shuffle-segments",
+        "--min-shuffle-n",
         type=int,
         default=3,
-        help="Minimum number of full segments required to generate a shuffle clip (default: 3)",
+        help="Minimum number of equal-length segments to split video into for shuffle (default: 3)",
+    )
+    parser.add_argument(
+        "--max-shuffle-n",
+        type=int,
+        default=5,
+        help="Maximum number of equal-length segments to split video into for shuffle (default: 5)",
+    )
+    parser.add_argument(
+        "--rebuild-shuffle-from-manifest",
+        action="store_true",
+        help="Read an existing manifest JSONL (--input-manifest) and only regenerate shuffle clips, updating shuffle_video_path / shuffle_n_segments in the output manifest.",
+    )
+    parser.add_argument(
+        "--input-manifest",
+        default="",
+        help="Existing manifest JSONL to read when --rebuild-shuffle-from-manifest is set",
     )
     parser.add_argument(
         "--build-workers",
@@ -598,6 +601,71 @@ def main() -> None:
     args = parser.parse_args()
 
     random.seed(args.seed)
+
+    # ------------------------------------------------------------------
+    # Mode: rebuild only shuffle clips from an existing manifest
+    # ------------------------------------------------------------------
+    if args.rebuild_shuffle_from_manifest:
+        if not args.input_manifest:
+            raise ValueError("--input-manifest is required with --rebuild-shuffle-from-manifest")
+        if not args.shuffle_dir:
+            raise ValueError("--shuffle-dir is required with --rebuild-shuffle-from-manifest")
+
+        manifest_records: list[dict] = []
+        with open(args.input_manifest, encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line:
+                    try:
+                        manifest_records.append(json.loads(_line))
+                    except json.JSONDecodeError:
+                        pass
+
+        def rebuild_shuffle_one(rec: dict) -> dict:
+            ck = rec.get("clip_key", "")
+            fwd = rec.get("forward_video_path") or rec.get("video_path") or ""
+            if not fwd or not os.path.exists(fwd):
+                return rec
+            actual_dur = rec.get("actual_duration_sec") or rec.get("duration_sec") or 0.0
+            if actual_dur < args.min_duration:
+                return rec
+            c_seed = args.seed + hash(ck) % (2 ** 31)
+            n_seg = random.Random(c_seed).randint(args.min_shuffle_n, args.max_shuffle_n)
+            s_path = os.path.join(args.shuffle_dir, f"{ck}_shuf.mp4")
+            try:
+                if args.dry_run or not os.path.exists(s_path):
+                    build_shuffle_clip(
+                        fwd, s_path,
+                        actual_duration=actual_dur,
+                        n_segments=n_seg,
+                        seed=c_seed,
+                        dry_run=args.dry_run,
+                    )
+                updated = dict(rec)
+                updated["shuffle_video_path"] = s_path
+                updated["shuffle_n_segments"] = n_seg
+                updated.pop("shuffle_segment_sec", None)
+                return updated
+            except Exception as exc:
+                print(f"\n[warn] shuffle rebuild failed for {ck}: {exc}")
+                return rec
+
+        written_count = 0
+        os.makedirs(os.path.dirname(args.output_jsonl) or ".", exist_ok=True)
+        workers = max(1, args.build_workers)
+        with (
+            open(args.output_jsonl, "w", encoding="utf-8") as _out,
+            ThreadPoolExecutor(max_workers=workers) as _executor,
+        ):
+            _futures = {_executor.submit(rebuild_shuffle_one, rec): rec for rec in manifest_records}
+            for _fut in tqdm(as_completed(_futures), total=len(_futures), desc="Rebuilding shuffle", unit="clip"):
+                result = _fut.result()
+                _out.write(json.dumps(result, ensure_ascii=False) + "\n")
+                written_count += 1
+
+        print(f"Wrote {written_count}/{len(manifest_records)} records to {args.output_jsonl}")
+        return
+
     if bool(args.clip_db_json) == bool(args.input_jsonl):
         raise ValueError("Specify exactly one of --clip-db-json or --input-jsonl")
 
@@ -649,6 +717,7 @@ def main() -> None:
         reverse_path = ""
         composite_path = ""
         shuffle_path = ""
+        n_seg = 0
         actual_duration = record.get("actual_duration_sec") or record.get("duration_sec") or 0.0
 
         try:
@@ -677,20 +746,16 @@ def main() -> None:
             if args.make_shuffle:
                 if not args.shuffle_dir:
                     raise ValueError("--shuffle-dir is required when --make-shuffle is set")
-                n_full = int(actual_duration // args.shuffle_segment_sec)
-                if n_full < args.min_shuffle_segments:
-                    raise ValueError(
-                        f"Skipping shuffle: only {n_full} full {args.shuffle_segment_sec}s segments "
-                        f"(need {args.min_shuffle_segments})"
-                    )
+                clip_seed = args.seed + hash(clip_key) % (2 ** 31)
+                n_seg = random.Random(clip_seed).randint(args.min_shuffle_n, args.max_shuffle_n)
                 shuffle_path = os.path.join(args.shuffle_dir, f"{clip_key}_shuf.mp4")
                 if args.dry_run or not os.path.exists(shuffle_path):
                     build_shuffle_clip(
                         forward_path,
                         shuffle_path,
                         actual_duration=actual_duration,
-                        segment_sec=args.shuffle_segment_sec,
-                        seed=args.seed + hash(clip_key) % (2 ** 31),
+                        n_segments=n_seg,
+                        seed=clip_seed,
                         dry_run=args.dry_run,
                     )
 
@@ -712,7 +777,7 @@ def main() -> None:
             "reverse_video_path": reverse_path,
             "composite_video_path": composite_path,
             "shuffle_video_path": shuffle_path,
-            "shuffle_segment_sec": args.shuffle_segment_sec if args.make_shuffle else 0.0,
+            "shuffle_n_segments": n_seg if args.make_shuffle else 0,
             "black_gap_sec": args.black_gap_sec if args.make_composite else 0.0,
         }
 

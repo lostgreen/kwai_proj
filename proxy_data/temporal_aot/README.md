@@ -26,7 +26,7 @@
 1. 以单个 event clip 为基本单位
 2. forward clip 直接复用现成切好的 `clip_path`
 3. `reverse` 指该 event clip 的帧级倒放
-4. `shuffle` 指该 event clip 按固定时长（默认 2s）切段后随机重排
+  `shuffle` 指该 event clip 等分为 N 段（N ∈ [3, 5]，按 clip_key 确定性随机）后随机重排
 5. 如需 `T2V`，输入视频仍然是 `forward + black gap + reverse`
 
 ---
@@ -47,8 +47,8 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
   --make-reverse \
   --make-composite \
   --make-shuffle \
-  --shuffle-segment-sec 2.0 \
-  --min-shuffle-segments 3 \
+  --min-shuffle-n 3 \
+  --max-shuffle-n 5 \
   --max-samples 100 \
   --build-workers 8 \
   --invalid-report-jsonl proxy_data/temporal_aot/data/aot_invalid_clips.jsonl \
@@ -60,8 +60,9 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
 - `--build-workers 8`：并行 ffmpeg，可大幅缩短生成时间
 - 所有 ffmpeg 输出统一使用 `-preset ultrafast -crf 23 -threads 1`，单 clip 编码速度约为默认 medium 的 5-8 倍
 - 每个 ffmpeg 输出完成后自动做 `ffprobe` 可读性验证；如果 ultrafast 产出不可读，自动回退到 `-preset medium` 重编码
-- `--make-shuffle`：对 duration ≥ `min-shuffle-segments × shuffle-segment-sec`（默认 6s）的 clip 生成对应的时间乱序视频，保存为 `{clip_key}_shuf.mp4`
-- 不满足最小分段数的 clip 会跳过 shuffle 生成，仍正常写入 manifest（`shuffle_video_path` 为空字符串）
+  --make-shuffle`：将 clip 等分为 N 段（N 由 `--min-shuffle-n`～`--max-shuffle-n` 范围随机确定，默认 3-5），随机重排后保存为 `{clip_key}_shuf.mp4`
+- 每个 clip 的 N 由 `seed + clip_key` 确定性生成，可复现
+- 不满足 `n_segments >= 2` 的 clip 会跳过 shuffle 生成，仍正常写入 manifest（`shuffle_video_path` 为空字符串）
 
 **Step 2 — VLM 标注 caption + direction_clear**
 
@@ -173,12 +174,12 @@ python proxy_data/temporal_aot/rebalance_aot_answers.py \
 4. 打乱顺序后按 `--max-samples` 截断
 5. 按需生成素材：
    - `--make-reverse`：`ffmpeg -vf reverse -an`，保存到 `--reverse-dir/{clip_key}_rev.mp4`
-   - `--make-shuffle`：按 `--shuffle-segment-sec`（默认 2s）切段后随机重排，保存到 `--shuffle-dir/{clip_key}_shuf.mp4`
+   - `--make-shuffle`：将 clip 等分为 N 段（N ∈ [`--min-shuffle-n`, `--max-shuffle-n`]，按 `clip_key+seed` 确定性随机），随机重排后保存到 `--shuffle-dir/{clip_key}_shuf.mp4`
    - `--make-composite`：拼接 `forward + black + reverse`，保存到 `--composite-dir/{clip_key}_t2v.mp4`
 6. **编码加速**：所有 ffmpeg 输出使用 `libx264 -preset ultrafast -crf 23 -threads 1`
 7. **可读性兜底**：每个输出文件自动做 `ffprobe` 验证，不可读时自动回退 `-preset medium` 重编码
 
-输出 manifest 字段：`forward_video_path`, `reverse_video_path`, `composite_video_path`, `shuffle_video_path`, `clip_key`, `event_id`, `start_sec`, `end_sec`, `duration_sec`, `source_video_id`, `recipe_type`, `subset`, `sentence`, `sequence_index`, `shuffle_segment_sec`, `black_gap_sec`
+输出 manifest 字段：`forward_video_path`, `reverse_video_path`, `composite_video_path`, `shuffle_video_path`, `clip_key`, `event_id`, `start_sec`, `end_sec`, `duration_sec`, `source_video_id`, `recipe_type`, `subset`, `sentence`, `sequence_index`, `shuffle_n_segments`, `black_gap_sec`
 
 ### 2. `annotate_event_captions.py`
 
@@ -485,8 +486,8 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
   --make-reverse \
   --make-shuffle \
   --make-composite \
-  --shuffle-segment-sec 2.0 \
-  --min-shuffle-segments 3 \
+  --min-shuffle-n 3 \
+  --max-shuffle-n 5 \
   --max-samples 4000 \
   --min-duration 3 \
   --build-workers 8

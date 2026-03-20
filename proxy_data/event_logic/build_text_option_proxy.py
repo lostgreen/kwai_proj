@@ -1,35 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-从 YouCookII 原始标注重新生成 proxy 训练数据（add / replace 文本选项），
-并将“选项”从视频改为 trainval 标注文本（sentence）。
+从 YouCookII 原始标注构造 Event Logic proxy 训练数据（add / replace / sort）。
 
-输出为 EasyR1 JSONL 格式：
-{
-  "messages": [{"role": "user", "content": "..."}],
-  "prompt": "...",
-  "answer": "A|B|C|D",
-  "videos": ["...mp4", ...],
-  "data_type": "video",
-    "problem_type": "add|replace",
-  "metadata": {...}
-}
+所有任务输出均为 EasyR1 JSONL 格式，可直接用于 GRPO 训练。
+Prompt 从 prompts.py 统一维护，内置 CoT (<think>/<answer>) 指令。
+
+数据生成流程:
+    build_text_option_proxy.py → proxy_train_text_options.jsonl
+                                  (add + replace + sort，已内置 CoT)
+    filter_bad_videos.py       → proxy_train_text_options_clean.jsonl
+                                  (用 decord 过滤不可读 / 帧数不足的视频)
 
 示例:
-python proxy_data/build_text_option_proxy.py \
-  -a proxy_data/youcookii_annotations_trainval.json \
-  -o proxy_data/proxy_train_text_options.jsonl \
-  --event-clips-root /m2v_intern/xuboshen/zgw/data/youcook2_event_clips \
-  --add-per-video 1 \
-    --replace-per-video 1 \
-  --seed 42 \
-  --max-samples 1000 \
-  --shuffle \
-  --min-context 3 \
-  --max-context 4 \
-  --replace-context-len 5 \
-  --validate-clips \
-  --duration-tol 1.5
+    python proxy_data/event_logic/build_text_option_proxy.py \\
+        -a proxy_data/youcookii_annotations_trainval.json \\
+        -o proxy_data/event_logic/data/proxy_train_text_options.jsonl \\
+        --event-clips-root /m2v_intern/xuboshen/zgw/data/youcook2_event_clips \\
+        --add-per-video 1 \\
+        --replace-per-video 1 \\
+        --sort-per-video 1 \\
+        --seed 42 \\
+        --shuffle
 """
 
 import argparse
@@ -37,26 +29,25 @@ import json
 import os
 import random
 import re
-import subprocess
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from prompts import get_add_prompt, get_replace_prompt, get_sort_prompt
 
 
-LETTERS = [chr(ord("A") + i) for i in range(26)]
-EVENT_FILE_RE = re.compile(r"_event\d+_(\d+)_(\d+)\.mp4$")
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants / helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LETTERS = [chr(ord("A") + i) for i in range(26)]
+_EVENT_FILE_RE = re.compile(r"_event\d+_(\d+)_(\d+)\.mp4$")
 
 
-def get_option_labels(n):
-    """返回 n 个选项标签（A, B, C...），最多支持 26 个。"""
-    if n < 2:
-        raise ValueError(f"选项数必须 >=2，当前: {n}")
-    if n > len(LETTERS):
-        raise ValueError(f"选项数超过上限 {len(LETTERS)}，当前: {n}")
-    return LETTERS[:n]
+def _option_labels(n: int) -> list[str]:
+    return _LETTERS[:n]
 
 
-def normalize_segment(seg):
-    """segment [start, end] -> (int_start, int_end)"""
+def _normalize_segment(seg):
+    """segment [start, end] → (int_start, int_end), or None if invalid."""
     if not isinstance(seg, (list, tuple)) or len(seg) != 2:
         return None
     try:
@@ -64,173 +55,28 @@ def normalize_segment(seg):
         e = int(round(float(seg[1])))
     except (TypeError, ValueError):
         return None
-    if s >= e:
-        return None
-    return s, e
+    return (s, e) if s < e else None
 
 
-def build_event_path(root, subset, recipe_type, video_id, event_id, start, end):
+def _build_event_path(root: str, subset: str, recipe_type: str, video_id: str,
+                      event_id: int, start: int, end: int) -> str:
     fname = f"{video_id}_event{event_id:02d}_{start}_{end}.mp4"
-    return os.path.join(root, subset, str(recipe_type), video_id, fname)
+    return os.path.join(root, subset, recipe_type, video_id, fname)
 
 
-def parse_expected_duration_from_filename(path):
-    """从 ..._eventXX_start_end.mp4 解析期望时长 (end-start)"""
-    m = EVENT_FILE_RE.search(path)
-    if not m:
-        return None
-    try:
-        start = int(m.group(1))
-        end = int(m.group(2))
-    except ValueError:
-        return None
-    if end <= start:
-        return None
-    return float(end - start)
+# ─────────────────────────────────────────────────────────────────────────────
+# Data loading
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def probe_video(video_path, timeout=10):
-    """ffprobe 检查可读性并读取时长。"""
-    result = {"path": video_path, "ok": False, "duration": None, "error": ""}
-
-    if not os.path.exists(video_path):
-        result["error"] = "文件不存在"
-        return result
-
-    try:
-        proc = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=duration",
-                "-of", "json",
-                video_path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if proc.returncode != 0:
-            result["error"] = (proc.stderr or "ffprobe failed").strip()[:200]
-            return result
-
-        info = json.loads(proc.stdout or "{}")
-        streams = info.get("streams", [])
-        if not streams:
-            result["error"] = "无视频流"
-            return result
-
-        duration = streams[0].get("duration", None)
-        if duration is None:
-            result["error"] = "无duration"
-            return result
-
-        duration = float(duration)
-        result["duration"] = duration
-        result["ok"] = True
-        return result
-
-    except subprocess.TimeoutExpired:
-        result["error"] = f"ffprobe 超时({timeout}s)"
-        return result
-    except FileNotFoundError:
-        result["error"] = "ffprobe 未安装"
-        return result
-    except Exception as e:  # noqa: BLE001
-        result["error"] = str(e)[:200]
-        return result
-
-
-def validate_event_clips(videos, timeout=10, workers=16, duration_tol=1.5, check_duration=True):
+def load_videos(anno_path: str, event_clips_root: str, min_events: int = 4) -> tuple:
     """
-    校验事件 clip：
-    1) 可读性
-    2) 时长与文件名中的 (end-start) 是否接近
+    Parse youcookii_annotations_trainval.json into a list of video dicts.
 
-    返回:
-      - path_status: {path: {ok, duration, expected, reason}}
-      - summary: Counter
+    Returns:
+        (videos, sentence_pool_by_recipe)
+        - videos: list of dicts with keys: video_id, subset, recipe_type, events
+        - sentence_pool_by_recipe: {recipe_type: [(video_id, event_id, sentence), ...]}
     """
-    all_paths = set()
-    for v in videos:
-        for ev in v["events"]:
-            all_paths.add(ev["path"])
-
-    path_status = {}
-    summary = Counter()
-    if not all_paths:
-        return path_status, summary
-
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(probe_video, p, timeout): p for p in all_paths}
-        for fut in as_completed(futs):
-            p = futs[fut]
-            r = fut.result()
-            if not r["ok"]:
-                path_status[p] = {
-                    "ok": False,
-                    "duration": None,
-                    "expected": parse_expected_duration_from_filename(p),
-                    "reason": r["error"] or "不可读",
-                }
-                summary["unreadable"] += 1
-                continue
-
-            expected = parse_expected_duration_from_filename(p)
-            duration = r["duration"]
-            if check_duration and expected is not None and abs(duration - expected) > duration_tol:
-                path_status[p] = {
-                    "ok": False,
-                    "duration": duration,
-                    "expected": expected,
-                    "reason": f"duration_mismatch(|{duration:.2f}-{expected:.2f}|>{duration_tol:.2f})",
-                }
-                summary["duration_mismatch"] += 1
-                continue
-
-            path_status[p] = {
-                "ok": True,
-                "duration": duration,
-                "expected": expected,
-                "reason": "",
-            }
-            summary["valid"] += 1
-
-    summary["total_checked"] = len(all_paths)
-    return path_status, summary
-
-
-def filter_videos_by_path_status(videos, path_status, min_events):
-    """基于 path_status 过滤事件，保留事件数 >= min_events 的视频。"""
-    filtered = []
-    removed_events = 0
-    removed_videos = 0
-    for v in videos:
-        new_events = []
-        for ev in v["events"]:
-            st = path_status.get(ev["path"])
-            if st is not None and not st["ok"]:
-                removed_events += 1
-                continue
-            new_events.append(ev)
-        if len(new_events) < min_events:
-            removed_videos += 1
-            continue
-        vv = dict(v)
-        vv["events"] = new_events
-        filtered.append(vv)
-    return filtered, removed_events, removed_videos
-
-
-def rebuild_sentence_pool_by_recipe(videos):
-    pool = defaultdict(list)
-    for v in videos:
-        for ev in v["events"]:
-            pool[v["recipe_type"]].append((v["video_id"], ev["id"], ev["sentence"]))
-    return pool
-
-
-def load_videos(anno_path, event_clips_root, min_events=4):
     with open(anno_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
@@ -247,7 +93,7 @@ def load_videos(anno_path, event_clips_root, min_events=4):
 
         events = []
         for ev in ann:
-            seg = normalize_segment(ev.get("segment"))
+            seg = _normalize_segment(ev.get("segment"))
             if seg is None:
                 continue
             sentence = (ev.get("sentence") or "").strip()
@@ -255,14 +101,8 @@ def load_videos(anno_path, event_clips_root, min_events=4):
                 continue
             event_id = int(ev.get("id", len(events)))
             s, e = seg
-            path = build_event_path(event_clips_root, subset, recipe_type, video_id, event_id, s, e)
-            events.append({
-                "id": event_id,
-                "start": s,
-                "end": e,
-                "sentence": sentence,
-                "path": path,
-            })
+            path = _build_event_path(event_clips_root, subset, recipe_type, video_id, event_id, s, e)
+            events.append({"id": event_id, "start": s, "end": e, "sentence": sentence, "path": path})
             sentence_pool_by_recipe[recipe_type].append((video_id, event_id, sentence))
 
         events.sort(key=lambda x: x["id"])
@@ -279,165 +119,98 @@ def load_videos(anno_path, event_clips_root, min_events=4):
     return videos, sentence_pool_by_recipe
 
 
-def sample_negative_sentences(sentence_pool_by_recipe, anchor_video_id,
-                              anchor_recipe_type, gt_sentence,
-                              same_video_other_sentences, k=3):
+def rebuild_sentence_pool(videos: list) -> dict:
+    """Rebuild sentence_pool_by_recipe from a filtered video list."""
+    pool = defaultdict(list)
+    for v in videos:
+        for ev in v["events"]:
+            pool[v["recipe_type"]].append((v["video_id"], ev["id"], ev["sentence"]))
+    return pool
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Negative sampling
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sample_negatives(sentence_pool_by_recipe: dict, anchor_recipe_type: str,
+                      gt_sentence: str, same_video_other: list[str], k: int = 3):
     """
-    采样 k 个负例文本，混合两类干扰项以保证可区分性：
-      1. 从别的菜谱（不同 recipe_type）采样 1-2 个句子（容易区分的干扰项）
-      2. 从相同视频的其他事件采样剩余句子（较难但可区分的干扰项）
-    如果同视频其他事件不够，从同菜谱不同视频补齐。
+    Sample k negative text descriptions mixing two difficulty levels:
+      1. Cross-recipe (1–2 items): easy distractors from unrelated dishes.
+      2. Same-video other events (remaining): harder distractors from the same cooking sequence.
+
+    Returns a list of k negatives, or None if there aren't enough candidates.
     """
     n_cross = random.randint(1, min(2, k))
     n_same = k - n_cross
-
     used = {gt_sentence}
     result = []
 
-    # ---- 1. 从不同菜谱采样 n_cross 个 ----
-    cross_cands = set()
-    for rt, pool in sentence_pool_by_recipe.items():
-        if rt == anchor_recipe_type:
-            continue
-        for _, _, sent in pool:
-            if sent not in used:
-                cross_cands.add(sent)
-
+    # --- cross-recipe ---
+    cross_cands = sorted({
+        sent
+        for rt, pool in sentence_pool_by_recipe.items()
+        if rt != anchor_recipe_type
+        for _, _, sent in pool
+        if sent not in used
+    })
     if len(cross_cands) < n_cross:
         return None
-
-    sampled_cross = random.sample(sorted(cross_cands), n_cross)
+    sampled_cross = random.sample(cross_cands, n_cross)
     result.extend(sampled_cross)
     used.update(sampled_cross)
 
-    # ---- 2. 从同视频其他事件采样 n_same 个（严格，不再回退到同菜谱其他视频） ----
-    same_vid_cands = []
-    seen_same_vid = set()
-    for s in same_video_other_sentences:
-        if s in used or s in seen_same_vid:
-            continue
-        seen_same_vid.add(s)
-        same_vid_cands.append(s)
-
+    # --- same-video other events ---
+    same_vid_cands = list(dict.fromkeys(s for s in same_video_other if s not in used))
     if len(same_vid_cands) < n_same:
         return None
-
-    sampled_same = random.sample(same_vid_cands, n_same)
-    result.extend(sampled_same)
-
+    result.extend(random.sample(same_vid_cands, n_same))
     return result
 
 
-def format_add_prompt(num_ctx, options, cot=True):
-    labels = get_option_labels(len(options))
-    lines = ["Context Video Sequence:"]
-    for i in range(num_ctx):
-        lines.append(f"{i + 1}. <video>")
+# ─────────────────────────────────────────────────────────────────────────────
+# Sample builders
+# ─────────────────────────────────────────────────────────────────────────────
 
-    lines.extend([
-        "",
-        "Based on the continuous actions shown in the Context Video Sequence above, which of the following textual options shows the most logical continuous next cooking step?",
-        "Options:",
-    ])
+def build_add_sample(v: dict, sentence_pool_by_recipe: dict,
+                     min_ctx: int = 2, max_ctx: int = 4) -> dict | None:
+    """
+    Build one 'add' sample: predict the next step from N context clips.
 
-    for i, opt in enumerate(options):
-        lines.append(f"{labels[i]}. {opt}")
-
-    if cot:
-        lines.extend([
-            "",
-            "First, carefully observe the actions and visual content in each Context Video to understand the cooking progression. Then, reason about which text option best continues the sequence.",
-            "",
-            f"Think step by step inside <think> </think> tags, then provide your final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
-        ])
-    else:
-        lines.extend([
-            "",
-            f"Output your answer as a single letter (e.g., {', '.join(labels)}).",
-        ])
-
-    return "\n".join(lines)
-
-
-def format_replace_prompt(total_steps, missing_pos, options, cot=True):
-    labels = get_option_labels(len(options))
-    lines = ["Watch the following cooking process carefully. The sequence has a [MISSING] step in the middle."]
-    lines.append("Context Sequence:")
-    for i in range(total_steps):
-        if i == missing_pos:
-            lines.append(f"Step {i + 1}: [MISSING]")
-        else:
-            lines.append(f"Step {i + 1}: <video>")
-
-    lines.extend([
-        "",
-        "Based on the chronological visual content of the sequence, pick the correct textual option to fill in the [MISSING] step.",
-        "Options:",
-    ])
-
-    for i, opt in enumerate(options):
-        lines.append(f"{labels[i]}. {opt}")
-
-    if cot:
-        lines.extend([
-            "",
-            "First, carefully observe the Context Sequence to understand the cooking flow before and after the [MISSING] step. Then, reason about which text option best fills the gap.",
-            "",
-            f"Think step by step inside <think> </think> tags, then provide your final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
-        ])
-    else:
-        lines.extend([
-            "",
-            f"Output your answer as a single letter (e.g., {', '.join(labels)}).",
-        ])
-
-    return "\n".join(lines)
-
-
-def build_add_sample(v, sentence_pool_by_recipe, min_ctx=2, max_ctx=4, cot=True):
+    Context: [event_start … event_start+ctx_len-1]
+    Target:  event_start+ctx_len  (shown only as text option)
+    """
     events = v["events"]
     if len(events) < min_ctx + 1:
         return None
 
     ctx_len = random.randint(min_ctx, min(max_ctx, len(events) - 1))
-    max_start = len(events) - (ctx_len + 1)
-    start = random.randint(0, max_start)
-
+    start = random.randint(0, len(events) - (ctx_len + 1))
     ctx_events = events[start:start + ctx_len]
     gt_event = events[start + ctx_len]
 
-    # 同视频其他事件的句子（排除上下文和 gt）
     used_ids = {ev["id"] for ev in ctx_events} | {gt_event["id"]}
     same_video_other = [ev["sentence"] for ev in events if ev["id"] not in used_ids]
 
-    negs = sample_negative_sentences(
-        sentence_pool_by_recipe=sentence_pool_by_recipe,
-        anchor_video_id=v["video_id"],
-        anchor_recipe_type=v["recipe_type"],
-        gt_sentence=gt_event["sentence"],
-        same_video_other_sentences=same_video_other,
-        k=3,
-    )
+    negs = _sample_negatives(sentence_pool_by_recipe, v["recipe_type"],
+                              gt_event["sentence"], same_video_other, k=3)
     if negs is None:
         return None
 
     options = negs + [gt_event["sentence"]]
     random.shuffle(options)
-    labels = get_option_labels(len(options))
+    labels = _option_labels(len(options))
     answer = labels[options.index(gt_event["sentence"])]
 
-    prompt = format_add_prompt(len(ctx_events), options, cot=cot)
-    videos = [x["path"] for x in ctx_events]
-
+    prompt = get_add_prompt(len(ctx_events), options)
     return {
         "messages": [{"role": "user", "content": prompt}],
         "prompt": prompt,
         "answer": answer,
-        "videos": videos,
+        "videos": [ev["path"] for ev in ctx_events],
         "data_type": "video",
         "problem_type": "add",
         "metadata": {
-            "task_type": "add",
             "video_id": v["video_id"],
             "recipe_type": v["recipe_type"],
             "context_start_event": ctx_events[0]["id"],
@@ -449,58 +222,46 @@ def build_add_sample(v, sentence_pool_by_recipe, min_ctx=2, max_ctx=4, cot=True)
     }
 
 
-def build_replace_sample(v, sentence_pool_by_recipe, seq_len=5, cot=True):
+def build_replace_sample(v: dict, sentence_pool_by_recipe: dict,
+                         seq_len: int = 5) -> dict | None:
+    """
+    Build one 'replace' sample: fill in the missing middle step.
+
+    Sequence length: seq_len (including the missing slot).
+    Missing position: random interior slot (pos 1 … seq_len-2, zero-indexed).
+    """
     events = v["events"]
-    if len(events) < seq_len:
+    if len(events) < seq_len or seq_len < 3:
         return None
 
     start = random.randint(0, len(events) - seq_len)
     seq_events = events[start:start + seq_len]
-    if seq_len < 3:
-        return None
-
-    # 缺失位置放在中间，避免退化为开头/结尾猜测
     missing_pos = random.randint(1, seq_len - 2)
     gt_event = seq_events[missing_pos]
 
-    # 同视频其他事件的句子（排除序列中的所有事件）
-    seq_event_ids = {ev["id"] for ev in seq_events}
-    same_video_other = [ev["sentence"] for ev in events if ev["id"] not in seq_event_ids]
+    seq_ids = {ev["id"] for ev in seq_events}
+    same_video_other = [ev["sentence"] for ev in events if ev["id"] not in seq_ids]
 
-    negs = sample_negative_sentences(
-        sentence_pool_by_recipe=sentence_pool_by_recipe,
-        anchor_video_id=v["video_id"],
-        anchor_recipe_type=v["recipe_type"],
-        gt_sentence=gt_event["sentence"],
-        same_video_other_sentences=same_video_other,
-        k=3,
-    )
-    if not negs:
+    negs = _sample_negatives(sentence_pool_by_recipe, v["recipe_type"],
+                              gt_event["sentence"], same_video_other, k=3)
+    if negs is None:
         return None
+
     options = negs + [gt_event["sentence"]]
     random.shuffle(options)
-    labels = get_option_labels(len(options))
-    gt_letter = labels[options.index(gt_event["sentence"])]
+    labels = _option_labels(len(options))
+    answer = labels[options.index(gt_event["sentence"])]
 
     context_events = [ev for i, ev in enumerate(seq_events) if i != missing_pos]
-
-    prompt = format_replace_prompt(
-        total_steps=len(seq_events),
-        missing_pos=missing_pos,
-        options=options,
-        cot=cot,
-    )
-    videos = [x["path"] for x in context_events]
-
+    prompt = get_replace_prompt(seq_len, missing_pos, options)
     return {
         "messages": [{"role": "user", "content": prompt}],
         "prompt": prompt,
-        "answer": gt_letter,
-        "videos": videos,
+        "answer": answer,
+        "videos": [ev["path"] for ev in context_events],
         "data_type": "video",
         "problem_type": "replace",
         "metadata": {
-            "task_type": "replace",
             "video_id": v["video_id"],
             "recipe_type": v["recipe_type"],
             "context_start_event": seq_events[0]["id"],
@@ -513,115 +274,150 @@ def build_replace_sample(v, sentence_pool_by_recipe, seq_len=5, cot=True):
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="从原始标注生成文本选项版 proxy(add/replace) 训练数据")
-    parser.add_argument("--annotations", "-a", required=True, help="youcookii_annotations_trainval.json 路径")
-    parser.add_argument("--output", "-o", required=True, help="输出 JSONL 文件")
-    parser.add_argument("--event-clips-root", required=True, help="事件切片根目录，例如 /.../youcook2_event_clips")
+def build_sort_sample(v: dict, seq_len: int = 5) -> dict | None:
+    """
+    Build one 'sort' sample: reorder N shuffled clips into chronological order.
 
-    parser.add_argument("--add-per-video", type=int, default=1, help="每个视频生成 add 样本数")
-    parser.add_argument("--replace-per-video", type=int, default=1, help="每个视频生成 replace 样本数")
-    parser.add_argument("--min-events", type=int, default=4, help="最少事件数")
-    parser.add_argument("--min-context", type=int, default=2, help="add 任务最小上下文长度")
-    parser.add_argument("--max-context", type=int, default=4, help="add 任务最大上下文长度")
-    parser.add_argument("--replace-context-len", type=int, default=5, help="replace 任务总步骤数（输入视频数=总步骤数-1）")
-    parser.add_argument("--seed", type=int, default=42, help="随机种子")
-    parser.add_argument("--shuffle", action="store_true", help="写出前打乱样本")
-    parser.add_argument("--max-samples", type=int, default=None, help="最多写出样本数")
-    parser.add_argument("--no-cot", action="store_true", help="不使用 <think>/<answer> 指令")
-    parser.add_argument("--validate-clips", action="store_true", help="生成前校验 clip 可读性与时长")
-    parser.add_argument("--validate-workers", type=int, default=16, help="校验 clip 并行线程数")
-    parser.add_argument("--validate-timeout", type=int, default=10, help="单个 ffprobe 超时时间(秒)")
-    parser.add_argument("--duration-tol", type=float, default=1.5, help="时长容差(秒)，用于比对文件名中的 end-start")
-    parser.add_argument("--no-duration-check", action="store_true", help="只检查可读性，不检查时长一致性")
-    parser.add_argument("--validation-report", default=None, help="输出校验失败明细 JSONL")
+    Ground-truth answer encoding:
+        answer[i] = 1-based clip number occupying position i in the correct sequence.
+    Example: 3 clips shuffled as [ev2, ev0, ev1] → answer = "312"
+        (position 0 = Clip3, position 1 = Clip1, position 2 = Clip2)
+
+    Refusal condition: shuffled order must differ from original.
+    """
+    events = v["events"]
+    if len(events) < seq_len:
+        return None
+
+    start = random.randint(0, len(events) - seq_len)
+    original = events[start:start + seq_len]
+
+    # Resample until the shuffle is not a no-op
+    shuffled_indices = list(range(seq_len))
+    for _ in range(10):
+        random.shuffle(shuffled_indices)
+        if shuffled_indices != list(range(seq_len)):
+            break
+    else:
+        return None  # Could not get a non-trivial shuffle (very unlikely)
+
+    # shuffled_indices[i] = which original event appears as Clip (i+1)
+    # Compute inverse permutation: position j in original order → which clip number
+    inverse = [0] * seq_len
+    for clip_idx, orig_idx in enumerate(shuffled_indices):
+        inverse[orig_idx] = clip_idx + 1
+    answer = "".join(str(x) for x in inverse)
+
+    shuffled_events = [original[i] for i in shuffled_indices]
+    prompt = get_sort_prompt(seq_len)
+    return {
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": answer,
+        "videos": [ev["path"] for ev in shuffled_events],
+        "data_type": "video",
+        "problem_type": "sort",
+        "metadata": {
+            "video_id": v["video_id"],
+            "recipe_type": v["recipe_type"],
+            "context_start_event": original[0]["id"],
+            "context_end_event": original[-1]["id"],
+            "shuffled_indices": shuffled_indices,
+            "clip_sentences": [ev["sentence"] for ev in shuffled_events],
+        },
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="构造 Event Logic proxy 训练数据（add / replace / sort）"
+    )
+    parser.add_argument("--annotations", "-a", required=True,
+                        help="youcookii_annotations_trainval.json 路径")
+    parser.add_argument("--output", "-o", required=True,
+                        help="输出 JSONL 文件")
+    parser.add_argument("--event-clips-root", required=True,
+                        help="事件切片根目录，例如 /.../youcook2_event_clips")
+
+    # Per-video generation counts
+    parser.add_argument("--add-per-video", type=int, default=1,
+                        help="每个视频生成 add 样本数（默认 1）")
+    parser.add_argument("--replace-per-video", type=int, default=1,
+                        help="每个视频生成 replace 样本数（默认 1）")
+    parser.add_argument("--sort-per-video", type=int, default=1,
+                        help="每个视频生成 sort 样本数（默认 1）")
+
+    # Task hyper-parameters
+    parser.add_argument("--min-events", type=int, default=4,
+                        help="一个视频最少需要的事件数（默认 4）")
+    parser.add_argument("--min-context", type=int, default=2,
+                        help="add 任务最小上下文 clip 数（默认 2）")
+    parser.add_argument("--max-context", type=int, default=4,
+                        help="add 任务最大上下文 clip 数（默认 4）")
+    parser.add_argument("--replace-seq-len", type=int, default=5,
+                        help="replace 任务序列总步数，含缺失位（默认 5，输入视频数=4）")
+    parser.add_argument("--sort-seq-len", type=int, default=5,
+                        help="sort 任务 clip 数（默认 5）")
+
+    # Output control
+    parser.add_argument("--seed", type=int, default=42,
+                        help="随机种子（默认 42）")
+    parser.add_argument("--shuffle", action="store_true",
+                        help="写出前打乱所有样本")
+    parser.add_argument("--max-samples", type=int, default=None,
+                        help="最多写出样本数（用于快速测试）")
 
     args = parser.parse_args()
     random.seed(args.seed)
 
-    if args.replace_context_len < 3:
-        raise ValueError("--replace-context-len 必须 >= 3")
+    if args.replace_seq_len < 3:
+        raise ValueError("--replace-seq-len 必须 >= 3")
 
-    videos, sentence_pool_by_recipe = load_videos(
+    # Load annotations
+    print(f"📂 加载标注: {args.annotations}")
+    videos, sentence_pool = load_videos(
         anno_path=args.annotations,
         event_clips_root=args.event_clips_root,
         min_events=args.min_events,
     )
     if not videos:
         raise RuntimeError("没有可用视频，请检查标注文件或 --min-events 参数")
+    print(f"   可用视频数: {len(videos)}")
 
-    if args.validate_clips:
-        print("🔍 开始校验事件 clips（可读性/时长）...")
-        path_status, val_summary = validate_event_clips(
-            videos,
-            timeout=args.validate_timeout,
-            workers=args.validate_workers,
-            duration_tol=args.duration_tol,
-            check_duration=not args.no_duration_check,
-        )
-        videos, removed_events, removed_videos = filter_videos_by_path_status(
-            videos,
-            path_status=path_status,
-            min_events=args.min_events,
-        )
-        sentence_pool_by_recipe = rebuild_sentence_pool_by_recipe(videos)
-        print(
-            f"  校验完成: total={val_summary['total_checked']}, "
-            f"valid={val_summary['valid']}, unreadable={val_summary['unreadable']}, "
-            f"duration_mismatch={val_summary['duration_mismatch']}"
-        )
-        print(f"  过滤事件数: {removed_events}, 过滤视频数: {removed_videos}, 剩余视频数: {len(videos)}")
-
-        if args.validation_report:
-            out_dir = os.path.dirname(args.validation_report)
-            if out_dir:
-                os.makedirs(out_dir, exist_ok=True)
-            with open(args.validation_report, "w", encoding="utf-8") as rf:
-                for p, st in path_status.items():
-                    if st["ok"]:
-                        continue
-                    rf.write(json.dumps({"path": p, **st}, ensure_ascii=False) + "\n")
-            print(f"  校验失败报告: {args.validation_report}")
-
-    if not videos:
-        raise RuntimeError("校验后无可用视频，请放宽过滤条件或检查 clip 根目录")
-
+    # Build samples
     samples = []
     stats = Counter()
-    ctx_stats = Counter()
 
     for v in videos:
         for _ in range(args.add_per_video):
-            s = build_add_sample(
-                v,
-                sentence_pool_by_recipe=sentence_pool_by_recipe,
-                min_ctx=args.min_context,
-                max_ctx=args.max_context,
-                cot=not args.no_cot,
-            )
+            s = build_add_sample(v, sentence_pool, args.min_context, args.max_context)
             if s is not None:
                 samples.append(s)
                 stats["add"] += 1
-                ctx_stats[f"add_ctx_{len(s['videos'])}"] += 1
 
         for _ in range(args.replace_per_video):
-            s = build_replace_sample(
-                v,
-                sentence_pool_by_recipe=sentence_pool_by_recipe,
-                seq_len=args.replace_context_len,
-                cot=not args.no_cot,
-            )
+            s = build_replace_sample(v, sentence_pool, args.replace_seq_len)
             if s is not None:
                 samples.append(s)
                 stats["replace"] += 1
-                ctx_stats[f"replace_ctx_{len(s['videos'])}"] += 1
+
+        for _ in range(args.sort_per_video):
+            s = build_sort_sample(v, args.sort_seq_len)
+            if s is not None:
+                samples.append(s)
+                stats["sort"] += 1
 
     if args.shuffle:
         random.shuffle(samples)
 
-    if args.max_samples is not None and args.max_samples > 0:
+    if args.max_samples and args.max_samples > 0:
         samples = samples[:args.max_samples]
 
+    # Write output
     out_dir = os.path.dirname(args.output)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -630,14 +426,10 @@ def main():
         for s in samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
 
-    print(f"✅ 写出完成: {len(samples)} samples -> {args.output}")
+    print(f"\n✅ 写出完成: {len(samples)} 条样本 → {args.output}")
     print("📊 统计:")
-    print(f"  可用视频数: {len(videos)}")
-    print(f"  add: {stats['add']}")
-    print(f"  replace: {stats['replace']}")
-    print("  上下文视频数分布:")
-    for k in sorted(ctx_stats.keys()):
-        print(f"    {k}: {ctx_stats[k]}")
+    for task in ["add", "replace", "sort"]:
+        print(f"  {task}: {stats[task]}")
 
 
 if __name__ == "__main__":

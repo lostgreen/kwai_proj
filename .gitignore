@@ -183,3 +183,5 @@ tensorboard_log/
 images/
 images*
 memory/
+
+docs/
