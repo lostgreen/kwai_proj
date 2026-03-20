@@ -8,7 +8,8 @@ Problem types produced:
   aot_t2v       — binary: given a composite video, pick which segment matches a caption (A/B)
   aot_4way_v2t  — 4-option: given one video, pick the correct caption from
                   {forward, reverse, shuffle, hard-negative from same recipe_type} (A/B/C/D)
-                  Only built when caption_pairs contains shuffle_caption entries.
+  aot_4way_t2v  — 4-option: given a caption, pick the matching video from
+                  {forward, reverse, shuffle, hard-negative video from same recipe_type} (A/B/C/D)
 
 Example:
 python proxy_data/temporal_aot/build_aot_mcq.py \
@@ -16,7 +17,8 @@ python proxy_data/temporal_aot/build_aot_mcq.py \
   --caption-pairs /tmp/aot_annotations/caption_pairs.jsonl \
   --v2t-output /tmp/v2t_train.jsonl \
   --t2v-output /tmp/t2v_train.jsonl \
-  --fourway-output /tmp/4way_train.jsonl \
+  --fourway-output /tmp/4way_v2t_train.jsonl \
+  --fourway-t2v-output /tmp/4way_t2v_train.jsonl \
   --max-samples 500
 """
 
@@ -28,7 +30,7 @@ import os
 import random
 from collections import defaultdict
 
-from prompts import get_4way_v2t_prompt, get_t2v_prompt, get_v2t_prompt
+from prompts import get_4way_t2v_prompt, get_4way_v2t_prompt, get_t2v_prompt, get_v2t_prompt
 
 
 def load_jsonl(path: str) -> list[dict]:
@@ -89,6 +91,7 @@ def main() -> None:
     parser.add_argument("--v2t-output", required=True, help="Output JSONL for binary V2T")
     parser.add_argument("--t2v-output", required=True, help="Output JSONL for binary T2V")
     parser.add_argument("--fourway-output", default="", help="Output JSONL for 4-option V2T (only when shuffle captions exist)")
+    parser.add_argument("--fourway-t2v-output", default="", help="Output JSONL for 4-option T2V (given caption, pick from 4 videos)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--max-samples", type=int, default=0, help="Max number of paired samples to keep")
     parser.add_argument("--min-confidence", type=float, default=0.6, help="Minimum confidence for both captions")
@@ -113,6 +116,7 @@ def main() -> None:
     v2t_records: list[dict] = []
     t2v_records: list[dict] = []
     fourway_records: list[dict] = []
+    fourway_t2v_records: list[dict] = []
     kept = 0
 
     for pair in pairs:
@@ -220,8 +224,8 @@ def main() -> None:
         # ------------------------------------------------------------------
         # 4-option V2T  (requires shuffle caption + shuffle video)
         # ------------------------------------------------------------------
+        recipe_type = item.get("recipe_type") or "unknown"
         if shuffle_caption and shuffle_video and args.fourway_output:
-            recipe_type = item.get("recipe_type") or "unknown"
             hard_neg = _sample_hard_negative(
                 rng,
                 hard_neg_index,
@@ -281,6 +285,78 @@ def main() -> None:
                     }
                 )
 
+        # ------------------------------------------------------------------
+        # 4-option T2V  (given caption, pick from 4 videos)
+        # ------------------------------------------------------------------
+        if shuffle_video and reverse_video and args.fourway_t2v_output:
+            # Find a hard-negative video from the same recipe_type
+            hard_neg_video = ""
+            same_recipe_keys = [
+                k for k, v in manifest.items()
+                if v.get("recipe_type") == recipe_type
+                and k != clip_key
+                and v.get("forward_video_path")
+            ]
+            if same_recipe_keys:
+                hn_key = rng.choice(same_recipe_keys)
+                hard_neg_video = manifest[hn_key]["forward_video_path"]
+
+            if hard_neg_video:
+                # Randomize which position (A/B/C/D) each video occupies.
+                video_slots = [
+                    ("forward", forward_video),
+                    ("reverse", reverse_video),
+                    ("shuffle", shuffle_video),
+                    ("hard_neg", hard_neg_video),
+                ]
+                rng.shuffle(video_slots)
+                correct_letter_fwd = "ABCD"[[s[0] for s in video_slots].index("forward")]
+                video_list = [s[1] for s in video_slots]
+                labels = [f"Video {chr(65+i)}" for i in range(4)]
+                prompt_text_t2v = get_4way_t2v_prompt(
+                    forward_caption, labels[0], labels[1], labels[2], labels[3]
+                )
+                fourway_t2v_records.append(
+                    {
+                        "messages": [{"role": "user", "content": prompt_text_t2v}],
+                        "prompt": prompt_text_t2v,
+                        "answer": correct_letter_fwd,
+                        "videos": video_list,
+                        "data_type": "video",
+                        "problem_type": "aot_4way_t2v",
+                        "metadata": {
+                            "clip_key": clip_key,
+                            "caption": forward_caption,
+                            "caption_direction": "forward",
+                            "recipe_type": recipe_type,
+                            "video_types": {chr(65+i): s[0] for i, s in enumerate(video_slots)},
+                        },
+                    }
+                )
+
+                # Also build the reverse-caption variant
+                correct_letter_rev = "ABCD"[[s[0] for s in video_slots].index("reverse")]
+                prompt_text_t2v_rev = get_4way_t2v_prompt(
+                    reverse_caption, labels[0], labels[1], labels[2], labels[3]
+                )
+                fourway_t2v_records.append(
+                    {
+                        "messages": [{"role": "user", "content": prompt_text_t2v_rev}],
+                        "prompt": prompt_text_t2v_rev,
+                        "answer": correct_letter_rev,
+                        "videos": video_list,
+                        "data_type": "video",
+                        "problem_type": "aot_4way_t2v",
+                        "metadata": {
+                            "clip_key": clip_key,
+                            "caption": reverse_caption,
+                            "caption_direction": "reverse",
+                            "recipe_type": recipe_type,
+                            "video_types": {chr(65+i): s[0] for i, s in enumerate(video_slots)},
+                        },
+                    }
+                )
+
         kept += 1
 
     _write_jsonl(args.v2t_output, v2t_records)
@@ -292,8 +368,13 @@ def main() -> None:
         _write_jsonl(args.fourway_output, fourway_records)
         print(f"Wrote {len(fourway_records)} 4-way V2T records to {args.fourway_output}")
     elif args.fourway_output:
-        print("No 4-way records produced (shuffle captions or hard negatives missing)")
+        print("No 4-way V2T records produced (shuffle captions or hard negatives missing)")
 
+    if args.fourway_t2v_output and fourway_t2v_records:
+        _write_jsonl(args.fourway_t2v_output, fourway_t2v_records)
+        print(f"Wrote {len(fourway_t2v_records)} 4-way T2V records to {args.fourway_t2v_output}")
+    elif args.fourway_t2v_output:
+        print("No 4-way T2V records produced (shuffle/reverse videos or hard negatives missing)")
 
 
 if __name__ == "__main__":

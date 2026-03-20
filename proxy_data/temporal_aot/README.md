@@ -231,111 +231,195 @@ python proxy_data/temporal_aot/rebalance_aot_answers.py \
 
 ## 消融实验设计
 
-针对 AoT 标注流程中的关键设计选择，设计以下六组消融实验，逐一验证各组件对最终训练效果的贡献：
+核心问题：AoT proxy 数据以什么任务形式、什么选项粒度训练，才能最好地激发模型在下游时序理解任务上的潜力？
+
+设计维度：
+
+- **任务形式**（3 种）：V2T（给视频选描述）、T2V（给描述选视频）、Mixed（V2T + T2V 混合）
+- **选项粒度**（2 种）：Binary（仅 forward vs reverse，A/B 两选一）、4-way（forward / reverse / shuffle / hard-negative，A/B/C/D 四选一）
+
+3 × 2 = **6 组实验**，共用同一批标注数据，只改变送入训练的 problem_type 组合。
 
 ### 实验一览
 
-| # | 实验名称 | 变量 | 对照组 (baseline) | 实验组 | 评估指标 |
-|---|---------|------|-------------------|--------|----------|
-| 1 | **Shuffle 标注帧率** | `--shuffle-fps` | 1 fps（与 fwd/rev 一致） | 2 fps（与训练输入对齐） | shuffle caption 质量、4-way MCQ 准确率 |
-| 2 | **Shuffle Prompt 段感知** | prompt 中是否告知段数和段长 | 旧 prompt（只说 "short segments"） | 新 prompt（告知 N segments × 2s） | shuffle caption 的段覆盖率、与 forward caption 的 ROUGE-L 差异 |
-| 3 | **Direction-clear 过滤** | `--require-direction-clear` | 不过滤（`--no-require-direction-clear`） | 过滤 direction_clear=False 的样本 | V2T 训练收敛速度、最终准确率 |
-| 4 | **4-way vs Binary V2T** | `problem_type` | 仅 `aot_v2t` (A/B) | `aot_v2t` + `aot_4way_v2t` (A/B/C/D) | 时序理解准确率、泛化性 |
-| 5 | **Hard-negative 来源** | 4-way 的 D 选项来自哪里 | 随机 caption（任意 recipe） | 同 recipe_type 的 caption（语义相近干扰） | 4-way MCQ 难度、模型细粒度区分能力 |
-| 6 | **答案重平衡** | 是否做 rebalance | 不做（自然分布） | 做 rebalance（A/B ≈ 1:1） | 答案偏置程度、训练稳定性 |
+| # | 实验名称 | 训练数据组成 | 选项数 | 核心假设 |
+|---|---------|-------------|--------|---------|
+| 1 | **V2T-Binary** | `aot_v2t` (forward vs reverse) | A/B | 最基础的正反方向区分，是否已足够 |
+| 2 | **V2T-4way** | `aot_v2t` + `aot_4way_v2t` (forward / reverse / shuffle / hard-neg) | A/B/C/D | 增加 shuffle 和语义干扰项后，模型是否学到更精细的时序表征 |
+| 3 | **T2V-Binary** | `aot_t2v` (给 caption 选 composite video 中正/反段) | A/B | 以文本为锚点、视频为候选，训练反向匹配能力 |
+| 4 | **T2V-4way** | `aot_t2v` + `aot_4way_t2v` (正/反/shuffle/hard-neg video) | A/B/C/D | T2V 维度同样引入 shuffle 和干扰视频后的增益 |
+| 5 | **Mixed-Binary** | `aot_v2t` + `aot_t2v`（均为 A/B） | A/B | V2T 和 T2V 双向训练，互为增强 |
+| 6 | **Mixed-4way** | `aot_v2t` + `aot_t2v` + `aot_4way_v2t` + `aot_4way_t2v`（均含 A/B/C/D） | A/B/C/D | 全量组合，是否存在边际收益递减 |
 
-### 实验 1：Shuffle 标注帧率
+所有实验均与 temporal_seg（YouCook2 时序分割）混合训练，seg 部分保持不变，仅改变 AoT proxy 部分。
 
-**动机**：训练阶段视频以 2fps 输入模型，如果 VLM 标注时只用 1fps，则每个 2s 段只有 2 帧，可能丢失关键帧间变化。
+### 实验 1：V2T-Binary
 
-| 配置 | 命令差异 |
-|------|---------|
-| baseline | `--shuffle-fps 1.0 --fwd-rev-fps 1.0` |
-| experiment | `--shuffle-fps 2.0 --fwd-rev-fps 1.0` |
+**训练数据**：仅 `aot_v2t`
 
-**评估方式**：
-1. 对相同 100 个 shuffle clip，分别用 1fps 和 2fps 标注 caption
-2. 人工评估 caption 中是否正确描述了每个 2s 段的内容
-3. 以两组 caption 分别构造 4-way MCQ，用同一个 VLM 做 zero-shot 测试比较准确率
+- 给模型展示一个视频（forward 或 reverse）
+- 提供 2 个 caption 选项（A: forward caption, B: reverse caption），选择与视频匹配的
+- 这是最简单的 proxy 任务，考察模型能否区分正放和倒放的文本描述
 
-### 实验 2：Shuffle Prompt 段感知
+**构造命令**：
 
-**动机**：VLM 不知道视频被切成了几段、每段多长，可能输出泛泛描述（"food is being prepared"）而非逐段描述。
+```bash
+python proxy_data/temporal_aot/build_aot_mcq.py \
+  --manifest-jsonl data/aot_event_manifest.jsonl \
+  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
+  --v2t-output data/exp1_v2t_binary.jsonl \
+  --max-samples 1000
+# 不传 --t2v-output 和 --fourway-output
+```
 
-| 配置 | Prompt 差异 |
-|------|------------|
-| baseline | "cut into short segments and randomly reordered" |
-| experiment | "cut into 5 segments of approximately 2 seconds each and randomly reordered" |
+### 实验 2：V2T-4way
 
-**评估方式**：
-1. 统计 caption 中显式时序标记词（first/then/next/finally）的出现次数
-2. 计算 shuffle caption 与 forward caption 的 ROUGE-L，越低越好（说明描述了不同的东西）
-3. 对「无明显变化」的段，检查是否出现了类似 "remains the same" 的标注
+**训练数据**：`aot_v2t` + `aot_4way_v2t`
 
-### 实验 3：Direction-clear 过滤
+- Binary V2T（A/B）和 4-way V2T（A/B/C/D）混合
+- 4-way 的 4 个选项：forward caption / reverse caption / shuffle caption / 同 recipe 的 hard-negative caption
+- shuffle caption 作为干扰项迫使模型区分「正确时序」vs「打乱时序」vs「完全不同」
 
-**动机**：搅拌、揉面等循环动作正反播放视觉几乎一样，保留这些样本会引入噪声标签。
+**构造命令**：
 
-| 配置 | 过滤策略 |
-|------|---------|
-| baseline | `--no-require-direction-clear`（保留所有样本） |
-| experiment | 默认（过滤 `direction_clear=False`） |
+```bash
+python proxy_data/temporal_aot/build_aot_mcq.py \
+  --manifest-jsonl data/aot_event_manifest.jsonl \
+  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
+  --v2t-output data/exp2_v2t_binary.jsonl \
+  --fourway-output data/exp2_v2t_4way.jsonl \
+  --max-samples 1000
+# 合并：cat data/exp2_v2t_binary.jsonl data/exp2_v2t_4way.jsonl > data/exp2_v2t_all.jsonl
+```
 
-**评估方式**：
-1. 比较两组的 V2T 训练 loss 曲线
-2. 在验证集上比较最终 V2T/T2V 准确率
-3. 统计过滤掉的样本中有多少确实是循环动作（人工抽检 50 个）
+### 实验 3：T2V-Binary
 
-### 实验 4：4-way vs Binary V2T
+**训练数据**：仅 `aot_t2v`
 
-**动机**：4-way MCQ 包含 shuffle 和 hard-negative 干扰项，理论上能迫使模型学到更精细的时序表征。
+- 给模型展示一段 caption，提供 2 个视频片段（composite video 中的前段 forward 和后段 reverse）
+- 模型需要判断哪个视频与 caption 匹配
+- 反向任务：从文本出发匹配视频，训练模型的 text→video 对齐能力
 
-| 配置 | 训练数据 |
-|------|---------|
-| baseline | 仅 `aot_v2t` (binary A/B) + `temporal_seg` |
-| experiment | `aot_v2t` + `aot_4way_v2t` + `temporal_seg`，总量对齐 |
+**构造命令**：
 
-**评估方式**：
-1. 在 held-out 的 binary V2T 验证集上比较准确率
-2. 在 held-out 的 4-way V2T 验证集上比较准确率
-3. 比较模型对 shuffle video 的区分能力（shuffle vs forward 配错率）
+```bash
+python proxy_data/temporal_aot/build_aot_mcq.py \
+  --manifest-jsonl data/aot_event_manifest.jsonl \
+  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
+  --t2v-output data/exp3_t2v_binary.jsonl \
+  --max-samples 1000
+# 不传 --v2t-output 和 --fourway-output
+```
 
-### 实验 5：Hard-negative 来源
+### 实验 4：T2V-4way
 
-**动机**：来自同 recipe_type 的 hard-negative 语义更接近正确选项，能测试模型是否真正理解了时序而非仅靠语义匹配。
+**训练数据**：`aot_t2v` + `aot_4way_t2v`
 
-| 配置 | D 选项来源 |
-|------|-----------|
-| baseline | 随机 recipe 的 caption |
-| experiment | 同 recipe_type 的其他 clip 的 forward caption |
+- Binary T2V（A/B）+ 4-way T2V（A/B/C/D）混合
+- 4-way T2V 的 4 个视频选项：forward video / reverse video / shuffle video / 同 recipe 其他 clip 的 video
+- 模型需从 4 个时序不同的视频中选出与 caption 精确匹配的
 
-**评估方式**：
-1. 比较两组 4-way MCQ 的平均正确率
-2. 分析错误分布：实验组是否更多地把 D（hard-negative）误选为答案
-3. 在下游时序推理 benchmark 上比较泛化效果
+**构造命令**：
 
-### 实验 6：答案重平衡
+```bash
+python proxy_data/temporal_aot/build_aot_mcq.py \
+  --manifest-jsonl data/aot_event_manifest.jsonl \
+  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
+  --t2v-output data/exp4_t2v_binary.jsonl \
+  --fourway-t2v-output data/exp4_t2v_4way.jsonl \
+  --max-samples 1000
+# 合并：cat data/exp4_t2v_binary.jsonl data/exp4_t2v_4way.jsonl > data/exp4_t2v_all.jsonl
+```
 
-**动机**：过滤后可能出现 A/B 分布偏斜（如 A:70% / B:30%），模型可能学到答案偏置。
+> 注：`--fourway-t2v-output` 为需要新增的参数，生成 T2V 方向的 4-way MCQ（给 caption 从 4 个视频中选）
 
-| 配置 | 策略 |
-|------|------|
-| baseline | 直接用过滤后的数据训练 |
-| experiment | 先做 `rebalance_aot_answers.py` 再训练 |
+### 实验 5：Mixed-Binary
 
-**评估方式**：
-1. 统计模型在验证集上的 A 选择率和 B 选择率
-2. 比较两组的 V2T accuracy（特别关注原始少数类的 recall）
-3. 分析训练 loss 方差
+**训练数据**：`aot_v2t` + `aot_t2v`（均为 A/B）
 
-### 消融实验运行顺序
+- V2T 和 T2V 双向 binary proxy 同时训练
+- 假设：双向对齐比单向更有效，模型同时从 video→text 和 text→video 两个角度学习时序
 
-推荐按依赖关系分批运行：
+**构造命令**：
+
+```bash
+python proxy_data/temporal_aot/build_aot_mcq.py \
+  --manifest-jsonl data/aot_event_manifest.jsonl \
+  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
+  --v2t-output data/exp5_v2t_binary.jsonl \
+  --t2v-output data/exp5_t2v_binary.jsonl \
+  --max-samples 1000
+# 合并：cat data/exp5_v2t_binary.jsonl data/exp5_t2v_binary.jsonl > data/exp5_mixed_binary.jsonl
+```
+
+### 实验 6：Mixed-4way
+
+**训练数据**：`aot_v2t` + `aot_t2v` + `aot_4way_v2t` + `aot_4way_t2v`（全量组合）
+
+- 双向 × 两种粒度的四合一训练
+- 假设：完整覆盖所有 proxy 变体能最大化时序理解能力
+- 但也可能存在边际收益递减或训练信号冲突
+
+**构造命令**：
+
+```bash
+python proxy_data/temporal_aot/build_aot_mcq.py \
+  --manifest-jsonl data/aot_event_manifest.jsonl \
+  --caption-pairs data/aot_annotations/caption_pairs.jsonl \
+  --v2t-output data/exp6_v2t_binary.jsonl \
+  --t2v-output data/exp6_t2v_binary.jsonl \
+  --fourway-output data/exp6_v2t_4way.jsonl \
+  --fourway-t2v-output data/exp6_t2v_4way.jsonl \
+  --max-samples 1000
+# 合并所有
+```
+
+### 评估体系
+
+所有 6 组实验共用同一个评估框架：
+
+| 评估维度 | 指标 | 说明 |
+|----------|------|------|
+| **AoT proxy 内部** | V2T accuracy, T2V accuracy | held-out 验证集上的 MCQ 准确率 |
+| **下游时序理解** | temporal ordering accuracy | 在独立的时序排序 benchmark 上评估泛化能力 |
+| **训练效率** | reward 收敛速度 | 达到相同 accuracy 所需的训练步数 |
+| **答案偏置** | A/B/C/D 选择率分布 | 是否存在位置偏好（尤其 binary 的 A/B 偏置） |
+| **代价** | 数据构造时间 | 4-way 需要额外的 shuffle 标注 + hard-negative 匹配 |
+
+### 关键对比
+
+预期最有价值的对比方向：
 
 ```
-第一批（并行）：实验 1 + 实验 2    ← 只影响标注阶段
-第二批（并行）：实验 3 + 实验 6    ← 只影响过滤/重平衡阶段
-第三批（并行）：实验 4 + 实验 5    ← 只影响数据构造/训练阶段
+实验 1 vs 实验 2   → shuffle 干扰项对 V2T 的增益（binary → 4-way 的边际价值）
+实验 3 vs 实验 4   → 同上，在 T2V 方向的增益
+实验 1 vs 实验 3   → V2T vs T2V 哪个方向更有效
+实验 5 vs 实验 1   → 混合双向 vs 单向 V2T 的增益
+实验 5 vs 实验 6   → binary 混合 vs 4-way 混合的增益（是否 4-way 对混合训练也有帮助）
+实验 2 vs 实验 6   → 单向 4-way V2T vs 全量组合（边际收益递减点在哪里）
+```
+
+### 控制变量
+
+为保证实验可比性：
+
+1. **数据量对齐**：所有实验的 AoT proxy 样本总数保持一致（如均 1000 条）；4-way 实验中 binary + 4-way 样本按 1:1 混合，总量不变
+2. **temporal_seg 固定**：YouCook2 时序分割数据在所有实验中完全相同
+3. **训练超参一致**：学习率、batch size、epoch 数、模型初始化均一致
+4. **答案重平衡**：所有实验均做 rebalance，消除答案分布差异的混淆因素
+5. **随机种子**：固定 3 组种子，每组实验跑 3 次取均值
+
+### 运行顺序
+
+6 组实验共享同一批标注数据（Step 1-2 只需跑一次），仅 Step 3 的 `build_aot_mcq.py` 参数不同：
+
+```
+Step 1：build_event_aot_data.py（生成 manifest + reverse/shuffle/composite 素材）  ← 跑一次
+Step 2：annotate_event_captions.py（标注所有方向的 caption）                        ← 跑一次
+Step 3：build_aot_mcq.py × 6 次（不同 --output 参数组合）                          ← 并行
+Step 4：mix_aot_with_youcook2.py × 6 次（各自混合 temporal_seg）                   ← 并行
+Step 5：训练 × 6 组 × 3 seeds = 18 次                                             ← GPU 并行
+Step 6：统一评估                                                                    ← 并行
 ```
 
 ---

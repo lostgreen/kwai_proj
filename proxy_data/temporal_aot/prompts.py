@@ -145,3 +145,26 @@ def get_4way_v2t_prompt(
         "Think step by step inside <think> </think> tags, then provide your final answer "
         "(a single letter A, B, C, or D) inside <answer> </answer> tags."
     )
+
+
+def get_4way_t2v_prompt(
+    caption: str,
+    option_a_label: str = "Video A",
+    option_b_label: str = "Video B",
+    option_c_label: str = "Video C",
+    option_d_label: str = "Video D",
+) -> str:
+    """4-option T2V prompt: given a caption, pick the matching video from
+    {forward, reverse, shuffle, hard-negative video} (A/B/C/D)."""
+    return (
+        "You will see four video clips labeled A, B, C, and D.\n"
+        "<video>\n\n"
+        f'Which video best matches the caption "{caption}"?\n'
+        f"Options:\nA. {option_a_label}\nB. {option_b_label}\nC. {option_c_label}\nD. {option_d_label}\n\n"
+        "Carefully observe all four clips from beginning to end. "
+        "Pay attention to the temporal order of actions in each clip: what happens first, "
+        "what changes in the middle, and what state appears at the end. "
+        "Compare each clip against the caption and reason about which one matches the described temporal order best.\n\n"
+        "Think step by step inside <think> </think> tags, then provide your final answer "
+        "(a single letter A, B, C, or D) inside <answer> </answer> tags."
+    )
