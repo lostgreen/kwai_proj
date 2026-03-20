@@ -323,30 +323,51 @@ def generate_batch_with_vllm(
     llm,
     sampling_params,
     args: argparse.Namespace,
+    batch_size: int = 32,
 ) -> list[list[str] | Exception]:
-    """Batch generate with vLLM. Returns a list parallel to items: list[str] on success, Exception on failure."""
-    requests = []
-    indices = []       # indices into `items` that have valid requests
-    errors = {}        # idx -> Exception for items that failed request building
+    """Batch generate with vLLM in mini-batches to bound CPU memory.
 
-    for idx, item in enumerate(items):
-        try:
-            req = _build_vllm_request(item, processor, args)
-            if req is None:
-                errors[idx] = RuntimeError("Failed to build vLLM request (None returned)")
-                continue
-            requests.append(req)
-            indices.append(idx)
-        except Exception as exc:
-            errors[idx] = exc
+    Video frame preprocessing is CPU/RAM intensive. Processing all items at
+    once can OOM when running multiple workers in parallel. Mini-batches
+    keep peak RAM usage bounded while still benefiting from vLLM's
+    continuous batching within each batch.
+    """
+    import time as _time
 
-    # Batch generate all valid requests at once
-    results: list[list[str] | Exception] = [errors.get(i, []) for i in range(len(items))]
-    if requests:
-        batch_outputs = llm.generate(requests, sampling_params=sampling_params, use_tqdm=False)
-        for req_idx, output in enumerate(batch_outputs):
-            item_idx = indices[req_idx]
-            results[item_idx] = [o.text for o in output.outputs]
+    results: list[list[str] | Exception] = [[] for _ in range(len(items))]
+    total_batches = (len(items) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, len(items))
+        batch_items = items[start:end]
+
+        requests = []
+        req_to_item = []   # maps request index -> item index within this batch
+
+        for local_idx, item in enumerate(batch_items):
+            global_idx = start + local_idx
+            try:
+                req = _build_vllm_request(item, processor, args)
+                if req is None:
+                    results[global_idx] = RuntimeError("Failed to build vLLM request")
+                    continue
+                requests.append(req)
+                req_to_item.append(global_idx)
+            except Exception as exc:
+                results[global_idx] = exc
+
+        if requests:
+            _t0 = _time.time()
+            batch_outputs = llm.generate(requests, sampling_params=sampling_params, use_tqdm=False)
+            _elapsed = _time.time() - _t0
+            for req_idx, output in enumerate(batch_outputs):
+                results[req_to_item[req_idx]] = [o.text for o in output.outputs]
+            print(
+                f"[offline_filter] batch {batch_idx+1}/{total_batches}: "
+                f"{len(requests)} requests in {_elapsed:.1f}s",
+                flush=True,
+            )
 
     return results
 

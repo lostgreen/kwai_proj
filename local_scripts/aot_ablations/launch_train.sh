@@ -169,6 +169,10 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
       > "${_shard_dir}/shard_${_w}.log" 2>&1 &
     _pids+=($!)
     echo "[aot]   worker ${_w}: GPU=${_gpu_ids}, pid=${_pids[-1]}"
+    # 错开启动，避免所有 worker 同时加载模型到 CPU 内存导致 OOM
+    if (( _w < _num_workers - 1 )); then
+      sleep 15
+    fi
   done
 
   # 等待所有 worker 完成
