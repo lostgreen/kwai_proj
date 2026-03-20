@@ -128,8 +128,8 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
     --max_frames    "${MAX_FRAMES}" \
     --max_pixels    "${MAX_PIXELS}" \
     --min_pixels    "${MIN_PIXELS}" \
-    --tensor_parallel_size "${TP_SIZE}" \
-    --gpu_memory_utilization 0.8
+    --tensor_parallel_size "${FILTER_TP_SIZE:-1}" \
+    --gpu_memory_utilization "${FILTER_GPU_MEM_UTIL:-0.7}"
 else
   echo "[aot] Reusing filtered file: ${FILTERED_TRAIN} (set FORCE_FILTER=true to redo)"
 fi

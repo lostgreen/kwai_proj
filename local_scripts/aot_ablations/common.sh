@@ -57,6 +57,10 @@ TP_SIZE="${TP_SIZE:-2}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 NNODES="${NNODES:-1}"
 
+# ---- 离线过滤（推理专用，4B 模型单卡即可）----
+FILTER_TP_SIZE="${FILTER_TP_SIZE:-1}"
+FILTER_GPU_MEM_UTIL="${FILTER_GPU_MEM_UTIL:-0.7}"
+
 # ---- 学习率（cosine 衰减） ----
 LR="${LR:-2e-6}"
 LR_WARMUP_RATIO="${LR_WARMUP_RATIO:-0.05}"   # 前 5% steps warmup
