@@ -5,8 +5,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 VIZHOST="${VIZHOST:-0.0.0.0}"
 PORT="${PORT:-8890}"
-ROLLOUT_DIR="${ROLLOUT_DIR:-/m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_mixed_proxy_dapo_2gpu/rollouts}"
-LOG_FILE="${LOG_FILE:-/m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_mixed_proxy_dapo_2gpu/experiment_log.jsonl}"
+ROLLOUT_DIR="${ROLLOUT_DIR:-/m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_temporal_aot_dapo_2gpu_offline_filtered/rollouts}"
+LOG_FILE="${LOG_FILE:-/m2v_intern/xuboshen/zgw/RL-Models/qwen3_vl_temporal_aot_dapo_2gpu_offline_filtered/experiment_log.jsonl}"
 PRELOAD_TRAIN_STEP_INTERVAL="${PRELOAD_TRAIN_STEP_INTERVAL:-20}"
 
 echo "[rollout-viz] host=${VIZHOST} port=${PORT}"

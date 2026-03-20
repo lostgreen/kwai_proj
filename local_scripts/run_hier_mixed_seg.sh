@@ -18,18 +18,18 @@ exp_name='qwen3_vl_youcook2_hier_mixed_L123_grpo'
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"
-TRAIN_FILE="/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl"
-TEST_FILE="/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_val.jsonl"
+TRAIN_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl"
+TEST_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_val.jsonl"
 IMAGE_DIR=""
 
 # ---- 训练超参数 ----
-ROLLOUT_BS=16
-GLOBAL_BS=16
-MB_PER_UPDATE=2
-MB_PER_EXP=2
+ROLLOUT_BS=8
+GLOBAL_BS=8
+MB_PER_UPDATE=1
+MB_PER_EXP=1
 ROLLOUT_N=8
 TP_SIZE=2
-N_GPUS_PER_NODE=8
+N_GPUS_PER_NODE=2
 NNODES=1
 
 # ---- 序列长度 & 视频 ----
@@ -94,9 +94,9 @@ python3 -m verl.trainer.main \
     trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \
     trainer.nnodes="${NNODES}" \
     trainer.total_epochs=1 \
-    trainer.val_freq=100 \
+    trainer.val_freq=20 \
     trainer.val_generations_to_log=4 \
-    trainer.save_freq=50 \
+    trainer.save_freq=20 \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="/m2v_intern/xuboshen/zgw/RL-Models/${exp_name}" \
     data.val_batch_size=8

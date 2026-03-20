@@ -36,16 +36,20 @@
 
 ```bash
 python proxy_data/temporal_aot/build_event_aot_data.py \
-  --clip-db-json /path/to/extracted_clips_database.json \
-  --output-jsonl proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
-  --reverse-dir /path/to/reverse_clips \
-  --shuffle-dir /path/to/shuffle_clips \
+  --clip-db-json /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/extracted_clips_database.json \
+  --output-jsonl /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/aot_event_manifest.jsonl \
+  --reverse-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/reverse_clips \
+  --shuffle-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/shuffle_clips \
+  --composite-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/composite_clips \
   --make-reverse \
+  --make-composite \
   --make-shuffle \
   --shuffle-segment-sec 2.0 \
   --min-shuffle-segments 3 \
+  --max-samples 100 \
   --build-workers 8 \
   --invalid-report-jsonl proxy_data/temporal_aot/data/aot_invalid_clips.jsonl \
+  --bad-samples-jsonl /home/xuboshen/zgw/EasyR1/proxy_data/temporal_aot/data/aot_invalid_clips.jsonl \
   --subset training
 ```
 
@@ -384,12 +388,12 @@ python proxy_data/temporal_aot/build_event_aot_data.py \
 python proxy_data/temporal_aot/build_event_aot_data.py \
   --clip-db-json /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/extracted_clips_database.json \
   --subset training \
-  --output-jsonl proxy_data/temporal_aot/data/aot_event_manifest_all.jsonl \
-  --reverse-dir /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/reverse_clips \
-  --composite-dir /m2v_intern/xuboshen/zgw/data/youcook2_event_clips/composite_clips \
+  --output-jsonl /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/data/aot_event_manifest.jsonl \
+  --reverse-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/reverse_clips \
+  --composite-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/composite_clips \
   --make-reverse \
   --make-composite \
-  --max-samples 1000 \
+  --max-samples 4000 \
   --min-duration 3
 
 ```

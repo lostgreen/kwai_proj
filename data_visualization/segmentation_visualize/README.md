@@ -42,6 +42,8 @@ bash data_visualization/segmentation_visualize/run.sh
 DATA_PATH=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_L1_train.jsonl \
 PORT=8891 \
 bash data_visualization/segmentation_visualize/run.sh
+
+ DATA_PATH=/home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_L3_train_clipped.jsonl   PORT=8890   MAX_SAMPLES=100   bash data_visualization/segmentation_visualize/run.sh
 ```
 
 或手动启动：
