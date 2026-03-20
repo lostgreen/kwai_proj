@@ -211,10 +211,20 @@ def init_transformers_backend(args: argparse.Namespace):
 
 
 def init_vllm_backend(args: argparse.Namespace):
+    import time as _time
+
+    print("[offline_filter/vllm] importing vllm ...", flush=True)
+    _t0 = _time.time()
     from vllm import LLM, SamplingParams
+    print(f"[offline_filter/vllm] vllm imported in {_time.time()-_t0:.1f}s", flush=True)
+
     from verl.workers.rollout.vllm_rollout_spmd import _get_logit_bias
 
+    print("[offline_filter/vllm] loading processor ...", flush=True)
+    _t0 = _time.time()
     processor = AutoProcessor.from_pretrained(args.model_path, trust_remote_code=True)
+    print(f"[offline_filter/vllm] processor loaded in {_time.time()-_t0:.1f}s", flush=True)
+
     llm_kwargs = {
         "model": args.model_path,
         "trust_remote_code": True,
@@ -228,7 +238,11 @@ def init_vllm_backend(args: argparse.Namespace):
     }
     if args.max_model_len > 0:
         llm_kwargs["max_model_len"] = args.max_model_len
+    print(f"[offline_filter/vllm] constructing LLM engine (kwargs: { {k:v for k,v in llm_kwargs.items() if k != 'model'} }) ...", flush=True)
+    _t0 = _time.time()
     engine = LLM(**llm_kwargs)
+    print(f"[offline_filter/vllm] LLM engine ready in {_time.time()-_t0:.1f}s", flush=True)
+
     sampling_params = SamplingParams(
         n=args.num_rollouts,
         temperature=args.temperature,
@@ -296,16 +310,33 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
+    import time as _time
+
+    print(f"[offline_filter] Loading JSONL: {args.input_jsonl}", flush=True)
+    _t0 = _time.time()
     items = load_jsonl(args.input_jsonl)
+    print(f"[offline_filter] Loaded {len(items)} samples in {_time.time()-_t0:.1f}s", flush=True)
     if args.max_samples > 0:
         items = items[: args.max_samples]
 
+    print(f"[offline_filter] Loading reward function: {args.reward_function}", flush=True)
+    _t0 = _time.time()
     reward_fn = load_reward_function(args.reward_function)
+    print(f"[offline_filter] Reward function loaded in {_time.time()-_t0:.1f}s", flush=True)
+
     if args.backend == "vllm":
+        print(f"[offline_filter] Initializing vLLM backend (model={args.model_path}, "
+              f"tp={args.tensor_parallel_size}, gpu_mem={args.gpu_memory_utilization}, "
+              f"max_model_len={args.max_model_len}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'NOT SET')})",
+              flush=True)
+        _t0 = _time.time()
         processor, llm, sampling_params = init_vllm_backend(args)
+        print(f"[offline_filter] vLLM backend ready in {_time.time()-_t0:.1f}s", flush=True)
         model = None
     else:
+        print("[offline_filter] Initializing transformers backend ...", flush=True)
         processor, model = init_transformers_backend(args)
+        print("[offline_filter] Transformers backend ready", flush=True)
         llm = None
         sampling_params = None
 
