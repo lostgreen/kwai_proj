@@ -7,8 +7,8 @@
 #   DATA_DIR         本次实验的数据根目录（所有产出都展开到这里）
 #   V2T_OUTPUT       二选一 V2T 输出路径（空 = 不生成）
 #   T2V_OUTPUT       二选一 T2V 输出路径（空 = 不生成）
-#   FOURWAY_V2T_OUTPUT  4-way V2T 输出路径（空 = 不生成）
-#   FOURWAY_T2V_OUTPUT  4-way T2V 输出路径（空 = 不生成）
+#   THREEWAY_V2T_OUTPUT  3-way V2T 输出路径（空 = 不生成）
+#   THREEWAY_T2V_OUTPUT  3-way T2V 输出路径（空 = 不生成）
 # =============================================================
 set -euo pipefail
 
@@ -33,37 +33,35 @@ if [[ ! -f "${MIXED_TRAIN}" || "${FORCE_BUILD:-false}" == "true" ]]; then
   MCQ_ARGS=()
   [[ -n "${V2T_OUTPUT:-}"          ]] && MCQ_ARGS+=(--v2t-output          "${V2T_OUTPUT}")
   [[ -n "${T2V_OUTPUT:-}"          ]] && MCQ_ARGS+=(--t2v-output          "${T2V_OUTPUT}")
-  [[ -n "${FOURWAY_V2T_OUTPUT:-}"  ]] && MCQ_ARGS+=(--fourway-output       "${FOURWAY_V2T_OUTPUT}")
-  [[ -n "${FOURWAY_T2V_OUTPUT:-}"  ]] && MCQ_ARGS+=(--fourway-t2v-output  "${FOURWAY_T2V_OUTPUT}")
+  [[ -n "${THREEWAY_V2T_OUTPUT:-}"  ]] && MCQ_ARGS+=(--threeway-output     "${THREEWAY_V2T_OUTPUT}")
+  [[ -n "${THREEWAY_T2V_OUTPUT:-}"  ]] && MCQ_ARGS+=(--threeway-t2v-output "${THREEWAY_T2V_OUTPUT}")
 
   python3 "${REPO_ROOT}/proxy_data/temporal_aot/build_aot_mcq.py" \
     --manifest-jsonl    "${MANIFEST_JSONL}" \
     --caption-pairs     "${CAPTION_PAIRS}" \
     --max-samples       "${MCQ_MAX_SAMPLES}" \
     --min-confidence    "${MCQ_MIN_CONFIDENCE}" \
-    --max-caption-words "${MCQ_MAX_CAPTION_WORDS}" \
-    --max-length-ratio  "${MCQ_MAX_LENGTH_RATIO}" \
     "${MCQ_ARGS[@]}"
 
-  # 若 FOURWAY_V2T_FWD_ONLY=true，则只保留 video_direction=="forward" 的 4-way 样本
+  # 若 THREEWAY_V2T_FWD_ONLY=true，则只保留 video_direction=="forward" 的 3-way 样本
   # 这样可以单独测试"增加 distractor 难度"而不混入 shuffle-video 信号（exp7 使用）
-  if [[ "${FOURWAY_V2T_FWD_ONLY:-false}" == "true" && -n "${FOURWAY_V2T_OUTPUT:-}" && -f "${FOURWAY_V2T_OUTPUT}" ]]; then
-    _fwonly="${FOURWAY_V2T_OUTPUT%.jsonl}_fwd_only.jsonl"
+  if [[ "${THREEWAY_V2T_FWD_ONLY:-false}" == "true" && -n "${THREEWAY_V2T_OUTPUT:-}" && -f "${THREEWAY_V2T_OUTPUT}" ]]; then
+    _fwonly="${THREEWAY_V2T_OUTPUT%.jsonl}_fwd_only.jsonl"
     python3 -c "
 import json, sys
-with open('${FOURWAY_V2T_OUTPUT}') as _f, open('${_fwonly}', 'w') as _o:
+with open('${THREEWAY_V2T_OUTPUT}') as _f, open('${_fwonly}', 'w') as _o:
     for _line in _f:
         _r = json.loads(_line)
         if _r.get('metadata', {}).get('video_direction') == 'forward':
             _o.write(_line)
 "
     _kept=$(wc -l < "${_fwonly}")
-    echo "[aot] 4-way V2T fwd-only filter: kept ${_kept} / $(wc -l < "${FOURWAY_V2T_OUTPUT}") samples"
-    FOURWAY_V2T_OUTPUT="${_fwonly}"
+    echo "[aot] 3-way V2T fwd-only filter: kept ${_kept} / $(wc -l < "${THREEWAY_V2T_OUTPUT}") samples"
+    THREEWAY_V2T_OUTPUT="${_fwonly}"
   fi
 
   # Step B: 构建训练/验证集
-  # 注意: binary 和 4-way 各自独立通道，不再相互合并
+  # 注意: binary 和 3-way 各自独立通道，不再相互合并
   # 各实验脚本通过设置哪些 *_OUTPUT 变量非空来控制使用哪些任务类型
   if [[ -n "${SEG_JSONL:-}" && -f "${SEG_JSONL}" ]]; then
     echo "[aot] Mixing with temporal_seg ..."
@@ -71,19 +69,18 @@ with open('${FOURWAY_V2T_OUTPUT}') as _f, open('${_fwonly}', 'w') as _o:
       --seg-jsonl        "${SEG_JSONL}"
       --train-output     "${MIXED_TRAIN}"
       --val-output       "${MIXED_VAL}"
-      --train-per-source "${MIX_TRAIN_PER_SOURCE}"
-      --val-per-source   "${MIX_VAL_PER_SOURCE}"
+      --train-per-source "${MIX_TRAIN_PER_SOURCE:-400}"
+      --val-per-source   "${MIX_VAL_PER_SOURCE:-30}"
       --seed             42
     )
     [[ -n "${V2T_OUTPUT:-}" && -f "${V2T_OUTPUT}" ]] && MIX_ARGS+=(--v2t-jsonl "${V2T_OUTPUT}")
     [[ -n "${T2V_OUTPUT:-}" && -f "${T2V_OUTPUT}" ]] && MIX_ARGS+=(--t2v-jsonl "${T2V_OUTPUT}")
-    # 4-way 数据通过追加到临时文件后再传入 mix 脚本（或直接 cat 到 train 集）
-    # 注: mix_aot_with_youcook2.py 不直接支持 fourway 参数，此处先合入 v2t/t2v 通道
-    if [[ -n "${FOURWAY_V2T_OUTPUT:-}" && -f "${FOURWAY_V2T_OUTPUT}" && -n "${V2T_OUTPUT:-}" ]]; then
-      cat "${FOURWAY_V2T_OUTPUT}" >> "${V2T_OUTPUT}"
+    # 3-way 数据通过追加到临时文件后再传入 mix 脚本（或直接 cat 到 train 集）
+    if [[ -n "${THREEWAY_V2T_OUTPUT:-}" && -f "${THREEWAY_V2T_OUTPUT}" && -n "${V2T_OUTPUT:-}" ]]; then
+      cat "${THREEWAY_V2T_OUTPUT}" >> "${V2T_OUTPUT}"
     fi
-    if [[ -n "${FOURWAY_T2V_OUTPUT:-}" && -f "${FOURWAY_T2V_OUTPUT}" && -n "${T2V_OUTPUT:-}" ]]; then
-      cat "${FOURWAY_T2V_OUTPUT}" >> "${T2V_OUTPUT}"
+    if [[ -n "${THREEWAY_T2V_OUTPUT:-}" && -f "${THREEWAY_T2V_OUTPUT}" && -n "${T2V_OUTPUT:-}" ]]; then
+      cat "${THREEWAY_T2V_OUTPUT}" >> "${T2V_OUTPUT}"
     fi
 
     python3 "${REPO_ROOT}/proxy_data/temporal_aot/mix_aot_with_youcook2.py" "${MIX_ARGS[@]}"
@@ -91,10 +88,10 @@ with open('${FOURWAY_V2T_OUTPUT}') as _f, open('${_fwonly}', 'w') as _o:
     # 纯 AoT MCQ 模式：不混合 temporal_seg，直接合并 MCQ 输出
     echo "[aot] Pure AoT mode (no temporal_seg) — concatenating MCQ outputs ..."
     : > "${MIXED_TRAIN}.all"
-    [[ -n "${V2T_OUTPUT:-}"         && -f "${V2T_OUTPUT}"         ]] && cat "${V2T_OUTPUT}"         >> "${MIXED_TRAIN}.all"
-    [[ -n "${T2V_OUTPUT:-}"         && -f "${T2V_OUTPUT}"         ]] && cat "${T2V_OUTPUT}"         >> "${MIXED_TRAIN}.all"
-    [[ -n "${FOURWAY_V2T_OUTPUT:-}" && -f "${FOURWAY_V2T_OUTPUT}" ]] && cat "${FOURWAY_V2T_OUTPUT}" >> "${MIXED_TRAIN}.all"
-    [[ -n "${FOURWAY_T2V_OUTPUT:-}" && -f "${FOURWAY_T2V_OUTPUT}" ]] && cat "${FOURWAY_T2V_OUTPUT}" >> "${MIXED_TRAIN}.all"
+    [[ -n "${V2T_OUTPUT:-}"           && -f "${V2T_OUTPUT}"           ]] && cat "${V2T_OUTPUT}"           >> "${MIXED_TRAIN}.all"
+    [[ -n "${T2V_OUTPUT:-}"           && -f "${T2V_OUTPUT}"           ]] && cat "${T2V_OUTPUT}"           >> "${MIXED_TRAIN}.all"
+    [[ -n "${THREEWAY_V2T_OUTPUT:-}" && -f "${THREEWAY_V2T_OUTPUT}" ]] && cat "${THREEWAY_V2T_OUTPUT}" >> "${MIXED_TRAIN}.all"
+    [[ -n "${THREEWAY_T2V_OUTPUT:-}" && -f "${THREEWAY_T2V_OUTPUT}" ]] && cat "${THREEWAY_T2V_OUTPUT}" >> "${MIXED_TRAIN}.all"
     # 随机打乱后切出 5% 做验证集
     _total=$(wc -l < "${MIXED_TRAIN}.all")
     _val_n=$(python3 -c "print(max(10, int(${_total} * 0.05)))")
@@ -142,7 +139,7 @@ RAW_TOTAL=$(wc -l < "${MIXED_TRAIN}")
 echo "[aot] Filtered: ${FILTERED_TOTAL}/${RAW_TOTAL} samples kept -> ${FILTERED_TRAIN}"
 
 # =========================================================
-# Step C+: 答案选项重平衡（binary A/B + 4-way A/B/C/D）
+# Step C+: 答案选项重平衡（binary A/B + 3-way A/B/C）
 # 消除离线过滤后因位置偏差导致的答案分布不均
 # =========================================================
 BALANCED_TRAIN="${DATA_DIR}/mixed_train.offline_filtered.balanced.jsonl"
@@ -151,7 +148,7 @@ if [[ ! -f "${BALANCED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
   python3 "${REPO_ROOT}/proxy_data/temporal_aot/rebalance_aot_answers.py" \
     --input-jsonl  "${FILTERED_TRAIN}" \
     --output-jsonl "${BALANCED_TRAIN}" \
-    --problem-types "aot_v2t,aot_t2v,aot_4way_v2t,aot_4way_t2v" \
+    --problem-types "aot_v2t,aot_t2v,aot_3way_v2t,aot_3way_t2v" \
     --balance-scope problem_type \
     --seed 42
 else

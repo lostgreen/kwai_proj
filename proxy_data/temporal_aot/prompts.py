@@ -125,41 +125,39 @@ def get_shuffle_caption_prompt(n_segments: int = 0, segment_sec: float = 2.0) ->
     )
 
 
-def get_4way_v2t_prompt(
+def get_3way_v2t_prompt(
     option_a: str,
     option_b: str,
     option_c: str,
-    option_d: str,
 ) -> str:
-    """4-option V2T prompt: forward / reverse / shuffled / hard-negative caption."""
+    """3-option V2T prompt: forward / reverse / shuffled caption."""
     return (
         "Watch the video carefully.\n"
         "<video>\n\n"
         "Which caption best matches the temporal order observed in this video?\n"
-        f"Options:\nA. {option_a}\nB. {option_b}\nC. {option_c}\nD. {option_d}\n\n"
+        f"Options:\nA. {option_a}\nB. {option_b}\nC. {option_c}\n\n"
         "Carefully observe the full video from beginning to end. "
         "Pay attention to what happens first, what changes in the middle, and what state appears at the end. "
-        "Compare all four captions against the visible temporal order and reason about which one matches best.\n\n"
+        "Compare all three captions against the visible temporal order and reason about which one matches best.\n\n"
         "Think step by step inside <think> </think> tags, then provide your final answer "
-        "(a single letter A, B, C, or D) inside <answer> </answer> tags."
+        "(a single letter A, B, or C) inside <answer> </answer> tags."
     )
 
 
-def get_4way_t2v_prompt(caption: str) -> str:
-    """4-option T2V prompt: given a caption, pick the matching video from
-    {forward, reverse, shuffle, hard-negative video} (A/B/C/D).
-    Each clip is shown as a separate <video> token so the model sees all 4."""
+def get_3way_t2v_prompt(caption: str) -> str:
+    """3-option T2V prompt: given a caption, pick the matching video from
+    {forward, reverse, shuffle video} (A/B/C).
+    Each clip is shown as a separate <video> token so the model sees all 3."""
     return (
-        "Four video clips are shown below.\n"
+        "Three video clips are shown below.\n"
         "Clip A:\n<video>\n"
         "Clip B:\n<video>\n"
-        "Clip C:\n<video>\n"
-        "Clip D:\n<video>\n\n"
+        "Clip C:\n<video>\n\n"
         f'Which clip best matches the caption "{caption}"?\n\n'
-        "Carefully observe all four clips from beginning to end. "
+        "Carefully observe all three clips from beginning to end. "
         "Pay attention to the temporal order of actions in each clip: what happens first, "
         "what changes in the middle, and what state appears at the end. "
         "Compare each clip against the caption and reason about which one matches the described temporal order best.\n\n"
         "Think step by step inside <think> </think> tags, then provide your final answer "
-        "(a single letter A, B, C, or D) inside <answer> </answer> tags."
+        "(a single letter A, B, or C) inside <answer> </answer> tags."
     )

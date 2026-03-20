@@ -20,7 +20,7 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-aot-ablation}"
 # EXP_NAME 由各实验脚本赋值
 
 # ---- 模型 ----
-MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/zgw/models/Qwen3-VL-4B-Instruct}"
+MODEL_PATH="${MODEL_PATH:-//home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- 上游标注数据（Step 1-2 产出，所有实验共享）----
 AOT_DATA_ROOT="${AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot}"
@@ -30,15 +30,12 @@ CAPTION_PAIRS="${CAPTION_PAIRS:-${AOT_DATA_ROOT}/caption_pairs.jsonl}"
 SEG_JSONL="${SEG_JSONL:-}"
 
 # ---- 验证集（所有实验共用）----
-TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_val.jsonl}"
+# 所有实验共用验证集（训练 Step E 的 val_files），需事先构建
+TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/aot_ablation_val.jsonl}"
 
 # ---- MCQ 构造参数（各实验可覆盖）----
 MCQ_MAX_SAMPLES="${MCQ_MAX_SAMPLES:-2000}"   # aot proxy 样本总量（实验间对齐）
 MCQ_MIN_CONFIDENCE="${MCQ_MIN_CONFIDENCE:-0.6}"
-MCQ_MAX_CAPTION_WORDS="${MCQ_MAX_CAPTION_WORDS:-35}"
-MCQ_MAX_LENGTH_RATIO="${MCQ_MAX_LENGTH_RATIO:-2.5}"
-MIX_TRAIN_PER_SOURCE="${MIX_TRAIN_PER_SOURCE:-400}"
-MIX_VAL_PER_SOURCE="${MIX_VAL_PER_SOURCE:-30}"
 
 # ---- 视频 & 分辨率 ----
 VIDEO_FPS=2.0
@@ -54,7 +51,7 @@ MAX_RESPONSE_LEN=1024
 ROLLOUT_BS="${ROLLOUT_BS:-32}"
 GLOBAL_BS="${GLOBAL_BS:-32}"
 MB_PER_UPDATE="${MB_PER_UPDATE:-1}"
-MB_PER_EXP="${MB_PER_EXP:-2}"
+MB_PER_EXP="${MB_PER_EXP:-1}"
 ROLLOUT_N="${ROLLOUT_N:-8}"
 TP_SIZE="${TP_SIZE:-2}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
@@ -81,7 +78,7 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 SAVE_FREQ="${SAVE_FREQ:-20}"
 VAL_FREQ="${VAL_FREQ:-10}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot/ablations}"
 
 # ---- 任务权重模式 ----
 TASK_WEIGHT_MODE="${TASK_WEIGHT_MODE:-count}"

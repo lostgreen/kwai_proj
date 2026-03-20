@@ -29,13 +29,13 @@ import random
 from collections import Counter, defaultdict
 from typing import Any
 
-from prompts import get_v2t_prompt, get_t2v_prompt, get_4way_v2t_prompt
+from prompts import get_v2t_prompt, get_t2v_prompt, get_3way_v2t_prompt
 
 
-SUPPORTED_PROBLEM_TYPES = ("aot_t2v", "aot_v2t", "aot_4way_v2t", "aot_4way_t2v")
+SUPPORTED_PROBLEM_TYPES = ("aot_t2v", "aot_v2t", "aot_3way_v2t", "aot_3way_t2v")
 BINARY_PROBLEM_TYPES = {"aot_t2v", "aot_v2t"}
-FOURWAY_PROBLEM_TYPES = {"aot_4way_v2t", "aot_4way_t2v"}
-_FOURWAY_LETTERS = ("A", "B", "C", "D")
+THREEWAY_PROBLEM_TYPES = {"aot_3way_v2t", "aot_3way_t2v"}
+_THREEWAY_LETTERS = ("A", "B", "C")
 
 
 def load_jsonl(path: str) -> list[dict[str, Any]]:
@@ -80,27 +80,32 @@ def flip_record(record: dict[str, Any]) -> dict[str, Any]:
     metadata = flipped.setdefault("metadata", {})
 
     if problem_type == "aot_v2t":
-        forward_caption = metadata.get("forward_caption")
-        reverse_caption = metadata.get("reverse_caption")
-        if not isinstance(forward_caption, str) or not isinstance(reverse_caption, str):
-            raise ValueError("aot_v2t record is missing forward_caption/reverse_caption")
-        sync_prompt(flipped, get_v2t_prompt(reverse_caption, forward_caption))
-        metadata["option_a_caption"] = reverse_caption
-        metadata["option_b_caption"] = forward_caption
+        # Use option_a/b_caption if present (randomized builds); fall back to
+        # forward/reverse for backwards compatibility with old data.
+        opt_a = metadata.get("option_a_caption") or metadata.get("forward_caption")
+        opt_b = metadata.get("option_b_caption") or metadata.get("reverse_caption")
+        if not isinstance(opt_a, str) or not isinstance(opt_b, str):
+            raise ValueError("aot_v2t record is missing caption metadata")
+        sync_prompt(flipped, get_v2t_prompt(opt_b, opt_a))
+        metadata["option_a_caption"] = opt_b
+        metadata["option_b_caption"] = opt_a
     elif problem_type == "aot_t2v":
         caption = metadata.get("caption")
         if not isinstance(caption, str):
             raise ValueError("aot_t2v record is missing caption")
+        # Use stored segment labels (randomized builds); fall back to old defaults.
+        cur_a_seg = metadata.get("option_a_segment", "first")
+        cur_b_seg = metadata.get("option_b_segment", "second")
         sync_prompt(
             flipped,
             get_t2v_prompt(
                 caption=caption,
-                option_a_text="The second segment",
-                option_b_text="The first segment",
+                option_a_text=f"The {cur_b_seg} segment",
+                option_b_text=f"The {cur_a_seg} segment",
             ),
         )
-        metadata["option_a_segment"] = "second"
-        metadata["option_b_segment"] = "first"
+        metadata["option_a_segment"] = cur_b_seg
+        metadata["option_b_segment"] = cur_a_seg
     else:
         raise ValueError(f"Unsupported problem_type for flipping: {problem_type!r}")
 
@@ -110,8 +115,8 @@ def flip_record(record: dict[str, Any]) -> dict[str, Any]:
     return flipped
 
 
-def permute_4way_v2t_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
-    """Move the correct answer of a 4-way V2T record to `new_letter` by swapping two slots."""
+def permute_3way_v2t_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
+    """Move the correct answer of a 3-way V2T record to `new_letter` by swapping two slots."""
     old_letter = record["answer"]
     if old_letter == new_letter:
         return copy.deepcopy(record)
@@ -131,11 +136,10 @@ def permute_4way_v2t_record(record: dict[str, Any], new_letter: str) -> dict[str
     metadata["option_types"] = ot
 
     # Rebuild prompt from updated option texts
-    new_prompt = get_4way_v2t_prompt(
+    new_prompt = get_3way_v2t_prompt(
         metadata.get("option_A", ""),
         metadata.get("option_B", ""),
         metadata.get("option_C", ""),
-        metadata.get("option_D", ""),
     )
     sync_prompt(result, new_prompt)
 
@@ -145,8 +149,8 @@ def permute_4way_v2t_record(record: dict[str, Any], new_letter: str) -> dict[str
     return result
 
 
-def permute_4way_t2v_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
-    """Move the correct answer of a 4-way T2V record to `new_letter` by swapping two video slots."""
+def permute_3way_t2v_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
+    """Move the correct answer of a 3-way T2V record to `new_letter` by swapping two video slots."""
     old_letter = record["answer"]
     if old_letter == new_letter:
         return copy.deepcopy(record)
@@ -154,11 +158,11 @@ def permute_4way_t2v_record(record: dict[str, Any], new_letter: str) -> dict[str
     result = copy.deepcopy(record)
     metadata = result.setdefault("metadata", {})
 
-    # Swap video paths in the videos list (order = [A, B, C, D])
-    _idx = {"A": 0, "B": 1, "C": 2, "D": 3}
+    # Swap video paths in the videos list (order = [A, B, C])
+    _idx = {"A": 0, "B": 1, "C": 2}
     old_i, new_i = _idx[old_letter], _idx[new_letter]
     videos = list(result.get("videos") or [])
-    if len(videos) == 4:
+    if len(videos) == 3:
         videos[old_i], videos[new_i] = videos[new_i], videos[old_i]
         result["videos"] = videos
 
@@ -179,7 +183,7 @@ def count_answers(records: list[dict[str, Any]], target_problem_types: set[str])
     for record in records:
         problem_type = record.get("problem_type")
         answer = record.get("answer")
-        if problem_type in target_problem_types and isinstance(answer, str) and answer.upper() in "ABCD":
+        if problem_type in target_problem_types and isinstance(answer, str) and answer.upper() in "ABC":
             counts[(problem_type, answer.upper())] += 1
     return counts
 
@@ -188,9 +192,9 @@ def print_stats(title: str, records: list[dict[str, Any]], target_problem_types:
     counts = count_answers(records, target_problem_types)
     print(title)
     for problem_type in sorted(target_problem_types):
-        if problem_type in FOURWAY_PROBLEM_TYPES:
-            parts = "  ".join(f"{l}={counts[(problem_type, l)]}" for l in _FOURWAY_LETTERS)
-            total = sum(counts[(problem_type, l)] for l in _FOURWAY_LETTERS)
+        if problem_type in THREEWAY_PROBLEM_TYPES:
+            parts = "  ".join(f"{l}={counts[(problem_type, l)]}" for l in _THREEWAY_LETTERS)
+            total = sum(counts[(problem_type, l)] for l in _THREEWAY_LETTERS)
             print(f"  {problem_type}: {parts}  total={total}")
         else:
             a_count = counts[(problem_type, "A")]
@@ -214,10 +218,10 @@ def build_group_key(
         if answer not in ("A", "B"):
             return None
         return "all" if balance_scope == "all" else str(problem_type)
-    elif problem_type in FOURWAY_PROBLEM_TYPES:
-        if answer.upper() not in _FOURWAY_LETTERS:
+    elif problem_type in THREEWAY_PROBLEM_TYPES:
+        if answer.upper() not in _THREEWAY_LETTERS:
             return None
-        return str(problem_type)  # 4-way always groups by type
+        return str(problem_type)  # 3-way always groups by type
     return None
 
 
@@ -239,22 +243,22 @@ def _rebalance_binary_group(
     return flips_needed
 
 
-def _rebalance_4way_group(
+def _rebalance_3way_group(
     output: list[dict[str, Any]],
     indices: list[int],
     rng: random.Random,
 ) -> int:
-    """Balance A/B/C/D distribution for 4-way MCQ samples by swapping slot assignments."""
+    """Balance A/B/C distribution for 3-way MCQ samples by swapping slot assignments."""
     total = len(indices)
-    if total < 4:
+    if total < 3:
         return 0
-    target = total // 4
+    target = total // 3
     counts = Counter(output[idx]["answer"] for idx in indices)
 
     surplus: list[tuple[int, str]] = []  # (sample_idx, old_letter) — samples to reassign
     deficit: list[str] = []             # target letters to assign to
 
-    for letter in _FOURWAY_LETTERS:
+    for letter in _THREEWAY_LETTERS:
         cnt = counts.get(letter, 0)
         if cnt > target:
             over = [idx for idx in indices if output[idx]["answer"] == letter]
@@ -266,10 +270,10 @@ def _rebalance_4way_group(
     flipped = 0
     for (sample_idx, _old), new_letter in zip(surplus, deficit):
         pt = output[sample_idx]["problem_type"]
-        if pt == "aot_4way_v2t":
-            output[sample_idx] = permute_4way_v2t_record(output[sample_idx], new_letter)
+        if pt == "aot_3way_v2t":
+            output[sample_idx] = permute_3way_v2t_record(output[sample_idx], new_letter)
         else:
-            output[sample_idx] = permute_4way_t2v_record(output[sample_idx], new_letter)
+            output[sample_idx] = permute_3way_t2v_record(output[sample_idx], new_letter)
         flipped += 1
     return flipped
 
@@ -293,8 +297,8 @@ def rebalance_records(
     for group_key in sorted(grouped_indices):
         indices = grouped_indices[group_key]
         sample_pt = output[indices[0]]["problem_type"] if indices else ""
-        if sample_pt in FOURWAY_PROBLEM_TYPES:
-            flipped_count += _rebalance_4way_group(output, indices, rng)
+        if sample_pt in THREEWAY_PROBLEM_TYPES:
+            flipped_count += _rebalance_3way_group(output, indices, rng)
         else:
             flipped_count += _rebalance_binary_group(output, indices, rng)
 
@@ -317,7 +321,7 @@ def main() -> None:
     parser.add_argument("--output-jsonl", required=True, help="Balanced JSONL output")
     parser.add_argument(
         "--problem-types",
-        default="aot_t2v,aot_v2t,aot_4way_v2t,aot_4way_t2v",
+        default="aot_t2v,aot_v2t,aot_3way_v2t,aot_3way_t2v",
         help="Comma-separated AoT problem types to rebalance",
     )
     parser.add_argument(

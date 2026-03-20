@@ -2,15 +2,17 @@
 """
 混合代理任务 + 时序分割统一 Reward 函数。
 
-支持 7 种任务类型（由 problem_type 字段区分）:
+支持 9 种任务类型（由 problem_type 字段区分）:
 
 1. add      — 选择题：选下一步视频，精确匹配字母
 2. delete   — 选择题：找出不属于序列的视频，精确匹配字母
 3. replace  — 选择题：选填缺失步骤的视频，精确匹配字母
 4. sort     — 排序题：按时间排列视频片段，jigsaw displacement reward
 5. temporal_seg — 时序分割：F1-IoU reward（复用 youcook2_temporal_seg_reward）
-6. aot_v2t  — 选择题：判断单段视频的时间方向，精确匹配字母
-7. aot_t2v  — 选择题：在双段视频中匹配描述，精确匹配字母
+6. aot_v2t      — 选择题：判断单段视频的时间方向 (A/B)
+7. aot_t2v      — 选择题：在双段视频中匹配描述 (A/B)
+8. aot_3way_v2t — 选择题：三选一视频-文本匹配 (A/B/C)
+9. aot_3way_t2v — 选择题：三选一文本-视频匹配 (A/B/C)
 
 格式要求（严格模式）:
 - add/delete/replace: 必须包含 <answer>字母</answer>，
@@ -264,8 +266,8 @@ _TASK_REWARD_DISPATCH = {
     "replace":      _choice_reward,
     "aot_v2t":      _choice_reward,
     "aot_t2v":      _choice_reward,
-    "aot_4way_v2t": _choice_reward,
-    "aot_4way_t2v": _choice_reward,
+    "aot_3way_v2t": _choice_reward,
+    "aot_3way_t2v": _choice_reward,
     "sort":         _sort_reward,
     "temporal_seg": _temporal_seg_reward,
 }

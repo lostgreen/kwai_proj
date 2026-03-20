@@ -19,8 +19,8 @@ mkdir -p "${DATA_DIR}"
 # ---- MCQ 输出路径 ----
 V2T_OUTPUT=""
 T2V_OUTPUT="${DATA_DIR}/t2v_binary.jsonl"
-FOURWAY_V2T_OUTPUT=""
-FOURWAY_T2V_OUTPUT=""
+THREEWAY_V2T_OUTPUT=""
+THREEWAY_T2V_OUTPUT=""
 
 # mix_aot_with_youcook2 需要至少一个非空的 aot 输入，这里传 t2v
 # 对应 --v2t-jsonl 用 /dev/null 即可跳过

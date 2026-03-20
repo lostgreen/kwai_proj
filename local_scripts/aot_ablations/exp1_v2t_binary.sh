@@ -19,7 +19,7 @@ mkdir -p "${DATA_DIR}"
 # ---- MCQ 输出路径 ----
 V2T_OUTPUT="${DATA_DIR}/v2t_binary.jsonl"
 T2V_OUTPUT=""
-FOURWAY_V2T_OUTPUT=""
-FOURWAY_T2V_OUTPUT=""
+THREEWAY_V2T_OUTPUT=""
+THREEWAY_T2V_OUTPUT=""
 
 source "$(dirname "${BASH_SOURCE[0]}")/launch_train.sh"
