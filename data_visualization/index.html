@@ -927,6 +927,7 @@ const CAP={
   filteredRecords:[],
   activeKey:null,
   activeRecord:null,
+  allRecords:{},  // clip_key -> full record (preloaded, frames included)
 };
 function capSetStatus(msg,err=false){
   const el=document.getElementById('cap-statusMsg');
@@ -972,6 +973,12 @@ async function capSelectRecord(key){
   CAP.activeKey=key;
   CAP.activeRecord=null;
   capRenderList();
+  // Use preloaded record if available (frames already embedded)
+  if(CAP.allRecords[key]){
+    CAP.activeRecord=CAP.allRecords[key];
+    capRenderRecord();
+    return;
+  }
   document.getElementById('cap-header').innerHTML=`<div class="clip-title">加载 ${esc(key)}...</div>`;
   try{
     const rec=await fetchJson('/api/aot-caption/record/'+encodeURIComponent(key));
@@ -1043,8 +1050,10 @@ function capBootPreloaded(){
   const cap=p.caption;
   const srcLabel=document.getElementById('cap-dataSourceLabel');
   if(srcLabel) srcLabel.textContent=cap.caption_pairs||'（预加载）';
+  // Populate local record cache so selectRecord needs no API call
+  CAP.allRecords=cap.all_records||{};
   capApplySummary(cap.summary);
-  capSetStatus(`已预加载 ${cap.summary.total} 个记录`);
+  capSetStatus(`已预加载 ${cap.summary.total} 个记录（含视频帧）`);
   if(CAP.filteredRecords.length>0) capSelectRecord(CAP.filteredRecords[0].clip_key);
 }
 
@@ -1058,6 +1067,7 @@ const MCQ={
   activeRecord:null,
   filterType:'',
   typeCounts:{},
+  allRecords:{},  // record_id -> full record (preloaded, frames included)
 };
 function mcqSetStatus(msg,err=false){
   const el=document.getElementById('mcq-statusMsg');
@@ -1120,6 +1130,12 @@ async function mcqSelectRecord(recordId){
   MCQ.activeId=recordId;
   MCQ.activeRecord=null;
   mcqRenderList();
+  // Use preloaded record if available
+  if(MCQ.allRecords[recordId]){
+    MCQ.activeRecord=MCQ.allRecords[recordId];
+    mcqRenderRecord();
+    return;
+  }
   document.getElementById('mcq-header').innerHTML=`<div class="clip-title">加载 ${esc(recordId)}...</div>`;
   try{
     const rec=await fetchJson('/api/aot-mcq/record/'+encodeURIComponent(recordId));
@@ -1201,8 +1217,9 @@ function mcqBootPreloaded(){
   const mcq=p.mcq;
   const srcLabel=document.getElementById('mcq-dataSourceLabel');
   if(srcLabel) srcLabel.textContent=mcq.data_path||'（预加载）';
+  MCQ.allRecords=mcq.all_records||{};
   mcqApplySummary(mcq.summary);
-  mcqSetStatus(`已预加载 ${mcq.summary.total} 个记录`);
+  mcqSetStatus(`已预加载 ${mcq.summary.total} 个记录（含视频帧）`);
   if(MCQ.filteredRecords.length>0) mcqSelectRecord(MCQ.filteredRecords[0].record_id);
 }
 

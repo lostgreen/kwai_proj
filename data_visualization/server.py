@@ -23,6 +23,7 @@ import re
 import subprocess
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1396,6 +1397,7 @@ def main() -> None:
     parser.add_argument("--mcq-data", default=None, help="Pre-load AoT MCQ JSONL")
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--prefer-complete", action="store_true")
+    parser.add_argument("--build-workers", type=int, default=4, help="Parallel threads for frame extraction at startup")
     args = parser.parse_args()
 
     static_dir = Path(args.static_dir).expanduser().resolve()
@@ -1439,12 +1441,28 @@ def main() -> None:
     if args.caption_pairs:
         try:
             summary = caption_store.load(args.caption_pairs, args.manifest or "")
-            print(f"[caption] Pre-loaded {summary['total']} records from: {args.caption_pairs}")
+            total_cap = summary["total"]
+            print(f"[caption] Loaded {total_cap} records from: {args.caption_pairs}")
+            # Eagerly extract all frames at startup using thread pool
+            all_cap_records: dict[str, Any] = {}
+            keys = caption_store.record_order
+            with ThreadPoolExecutor(max_workers=max(1, args.build_workers)) as _pool:
+                def _extract_cap(k: str) -> tuple[str, dict]:
+                    r = caption_store.get_record(k)  # triggers _load_frames internally
+                    return k, {kk: vv for kk, vv in r.items() if kk != "_frames_loaded"}
+
+                _futures = {_pool.submit(_extract_cap, k): k for k in keys}
+                for i, fut in enumerate(as_completed(_futures), 1):
+                    k, rec = fut.result()
+                    all_cap_records[k] = rec
+                    print_progress("  [caption] Extracting frames", i, len(keys))
             preload_data["caption"] = {
                 "summary": summary,
+                "all_records": all_cap_records,
                 "caption_pairs": args.caption_pairs,
                 "manifest": args.manifest or "",
             }
+            print(f"  [caption] Done. {len(all_cap_records)} records with frames embedded.")
         except Exception as exc:
             print(f"[warn] caption pre-load failed: {exc}")
 
@@ -1452,11 +1470,27 @@ def main() -> None:
     if args.mcq_data:
         try:
             summary = mcq_store.load(args.mcq_data)
-            print(f"[mcq] Pre-loaded {summary['total']} records from: {args.mcq_data}")
+            total_mcq = summary["total"]
+            print(f"[mcq] Loaded {total_mcq} records from: {args.mcq_data}")
+            # Eagerly extract all frames at startup
+            all_mcq_records: dict[str, Any] = {}
+            record_ids = [r["record_id"] for r in (summary.get("records") or [])]
+            with ThreadPoolExecutor(max_workers=max(1, args.build_workers)) as _pool:
+                def _extract_mcq(rid: str) -> tuple[str, dict]:
+                    r = mcq_store.get_record(rid)
+                    return rid, {kk: vv for kk, vv in r.items() if kk != "_frames_loaded"}
+
+                _futures = {_pool.submit(_extract_mcq, rid): rid for rid in record_ids}
+                for i, fut in enumerate(as_completed(_futures), 1):
+                    rid, rec = fut.result()
+                    all_mcq_records[rid] = rec
+                    print_progress("  [mcq] Extracting frames", i, len(record_ids))
             preload_data["mcq"] = {
                 "summary": summary,
+                "all_records": all_mcq_records,
                 "data_path": args.mcq_data,
             }
+            print(f"  [mcq] Done. {len(all_mcq_records)} records with frames embedded.")
         except Exception as exc:
             print(f"[warn] mcq pre-load failed: {exc}")
 
