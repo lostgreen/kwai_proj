@@ -122,28 +122,77 @@ else
 fi
 
 # =========================================================
-# Step C: 离线 rollout 筛选
+# Step C: 离线 rollout 筛选（多卡数据并行）
 # =========================================================
 if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
-  echo "[aot] Running offline rollout filter -> ${FILTERED_TRAIN}"
-  python3 "${REPO_ROOT}/local_scripts/offline_rollout_filter.py" \
-    --input_jsonl  "${MIXED_TRAIN}" \
-    --output_jsonl "${FILTERED_TRAIN}" \
-    --report_jsonl "${FILTER_REPORT}" \
-    --model_path   "${MODEL_PATH}" \
-    --reward_function "${REWARD_FUNCTION}" \
-    --backend vllm \
-    --num_rollouts  "${ROLLOUT_N}" \
-    --temperature   0.7 \
-    --top_p         0.9 \
-    --max_new_tokens "${MAX_RESPONSE_LEN}" \
-    --video_fps     "${VIDEO_FPS}" \
-    --max_frames    "${MAX_FRAMES}" \
-    --max_pixels    "${MAX_PIXELS}" \
-    --min_pixels    "${MIN_PIXELS}" \
-    --tensor_parallel_size "${FILTER_TP_SIZE:-1}" \
-    --gpu_memory_utilization "${FILTER_GPU_MEM_UTIL:-0.7}" \
-    --max_model_len "${FILTER_MAX_MODEL_LEN:-16384}"
+  _num_filter_gpus="${FILTER_NUM_GPUS:-${N_GPUS_PER_NODE:-8}}"
+  # 每个 shard 占 FILTER_TP_SIZE 张卡；总并行 worker 数 = _num_filter_gpus / FILTER_TP_SIZE
+  _tp="${FILTER_TP_SIZE:-1}"
+  _num_workers=$(( _num_filter_gpus / _tp ))
+  if (( _num_workers < 1 )); then _num_workers=1; fi
+
+  echo "[aot] Running offline rollout filter -> ${FILTERED_TRAIN} (${_num_workers} workers × TP${_tp})"
+
+  _shard_dir="${DATA_DIR}/.filter_shards"
+  mkdir -p "${_shard_dir}"
+  _pids=()
+
+  for (( _w=0; _w < _num_workers; _w++ )); do
+    # 计算该 worker 使用的 GPU ID 列表
+    _gpu_start=$(( _w * _tp ))
+    _gpu_ids="$(python3 -c "print(','.join(str($_gpu_start + i) for i in range($_tp)))")"
+
+    _shard_output="${_shard_dir}/shard_${_w}.jsonl"
+    _shard_report="${_shard_dir}/shard_${_w}_report.jsonl"
+
+    CUDA_VISIBLE_DEVICES="${_gpu_ids}" \
+    python3 "${REPO_ROOT}/local_scripts/offline_rollout_filter.py" \
+      --input_jsonl  "${MIXED_TRAIN}" \
+      --output_jsonl "${_shard_output}" \
+      --report_jsonl "${_shard_report}" \
+      --model_path   "${MODEL_PATH}" \
+      --reward_function "${REWARD_FUNCTION}" \
+      --backend vllm \
+      --num_rollouts  "${ROLLOUT_N}" \
+      --temperature   0.7 \
+      --top_p         0.9 \
+      --max_new_tokens "${MAX_RESPONSE_LEN}" \
+      --video_fps     "${VIDEO_FPS}" \
+      --max_frames    "${MAX_FRAMES}" \
+      --max_pixels    "${MAX_PIXELS}" \
+      --min_pixels    "${MIN_PIXELS}" \
+      --tensor_parallel_size "${_tp}" \
+      --gpu_memory_utilization "${FILTER_GPU_MEM_UTIL:-0.7}" \
+      --max_model_len "${FILTER_MAX_MODEL_LEN:-16384}" \
+      --shard_id "${_w}" \
+      --num_shards "${_num_workers}" \
+      > "${_shard_dir}/shard_${_w}.log" 2>&1 &
+    _pids+=($!)
+    echo "[aot]   worker ${_w}: GPU=${_gpu_ids}, pid=${_pids[-1]}"
+  done
+
+  # 等待所有 worker 完成
+  _any_failed=false
+  for (( _w=0; _w < _num_workers; _w++ )); do
+    if ! wait "${_pids[${_w}]}"; then
+      echo "[aot] ERROR: worker ${_w} (pid=${_pids[${_w}]}) failed. Log:" >&2
+      tail -20 "${_shard_dir}/shard_${_w}.log" >&2
+      _any_failed=true
+    fi
+  done
+  if [[ "${_any_failed}" == "true" ]]; then
+    echo "[aot] Some filter workers failed. Aborting." >&2
+    exit 1
+  fi
+
+  # 合并所有 shard 输出（仅 shard_N.jsonl，不含 report）
+  : > "${FILTERED_TRAIN}"
+  : > "${FILTER_REPORT}"
+  for (( _w=0; _w < _num_workers; _w++ )); do
+    cat "${_shard_dir}/shard_${_w}.jsonl" >> "${FILTERED_TRAIN}"
+    cat "${_shard_dir}/shard_${_w}_report.jsonl" >> "${FILTER_REPORT}"
+  done
+  echo "[aot] All ${_num_workers} shards merged -> ${FILTERED_TRAIN}"
 else
   echo "[aot] Reusing filtered file: ${FILTERED_TRAIN} (set FORCE_FILTER=true to redo)"
 fi

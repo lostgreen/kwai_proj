@@ -58,8 +58,9 @@ TP_SIZE="${TP_SIZE:-2}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 NNODES="${NNODES:-1}"
 
-# ---- 离线过滤（推理专用，4B 模型单卡即可）----
+# ---- 离线过滤（推理专用，4B 模型单卡即可，多卡数据并行）----
 FILTER_TP_SIZE="${FILTER_TP_SIZE:-1}"
+FILTER_NUM_GPUS="${FILTER_NUM_GPUS:-${N_GPUS_PER_NODE}}"  # 数据并行 GPU 数（默认=所有 GPU）
 FILTER_GPU_MEM_UTIL="${FILTER_GPU_MEM_UTIL:-0.7}"
 # 256帧×48tokens≈12288视频token + 14000 prompt + 1024 response ≈ 15312 → 16384 足够
 # 避免 vLLM 按模型默认 max_seq_len(262144) 分配巨大 KV cache 导致 OOM

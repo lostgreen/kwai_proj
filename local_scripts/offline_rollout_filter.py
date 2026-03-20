@@ -53,6 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_model_len", type=int, default=0)
     parser.add_argument("--max_num_batched_tokens", type=int, default=16384)
     parser.add_argument("--dtype", default="bfloat16")
+    # Data-parallel sharding: split input across multiple GPU workers
+    parser.add_argument("--shard_id", type=int, default=0, help="This worker's shard index (0-based)")
+    parser.add_argument("--num_shards", type=int, default=1, help="Total number of parallel shards")
     return parser.parse_args()
 
 
@@ -283,6 +286,16 @@ def generate_with_transformers(example: dict[str, Any], processor, model, args: 
 
 
 def generate_with_vllm(example: dict[str, Any], processor, llm, sampling_params, args: argparse.Namespace) -> list[str]:
+    """Single-sample fallback (used only for error retry)."""
+    request = _build_vllm_request(example, processor, args)
+    if request is None:
+        return []
+    outputs = llm.generate([request], sampling_params=sampling_params, use_tqdm=False)
+    return [output.text for output in outputs[0].outputs]
+
+
+def _build_vllm_request(example: dict[str, Any], processor, args: argparse.Namespace) -> dict[str, Any] | None:
+    """Build a single vLLM request dict from a data example."""
     from verl.workers.rollout.vllm_rollout_spmd import _process_multi_modal_data
 
     prompt = build_prompt(example, processor)
@@ -301,9 +314,41 @@ def generate_with_vllm(example: dict[str, Any], processor, llm, sampling_params,
             request["multi_modal_data"] = mm_data
         if mm_kwargs is not None:
             request["mm_processor_kwargs"] = mm_kwargs
+    return request
 
-    outputs = llm.generate([request], sampling_params=sampling_params, use_tqdm=False)
-    return [output.text for output in outputs[0].outputs]
+
+def generate_batch_with_vllm(
+    items: list[dict[str, Any]],
+    processor,
+    llm,
+    sampling_params,
+    args: argparse.Namespace,
+) -> list[list[str] | Exception]:
+    """Batch generate with vLLM. Returns a list parallel to items: list[str] on success, Exception on failure."""
+    requests = []
+    indices = []       # indices into `items` that have valid requests
+    errors = {}        # idx -> Exception for items that failed request building
+
+    for idx, item in enumerate(items):
+        try:
+            req = _build_vllm_request(item, processor, args)
+            if req is None:
+                errors[idx] = RuntimeError("Failed to build vLLM request (None returned)")
+                continue
+            requests.append(req)
+            indices.append(idx)
+        except Exception as exc:
+            errors[idx] = exc
+
+    # Batch generate all valid requests at once
+    results: list[list[str] | Exception] = [errors.get(i, []) for i in range(len(items))]
+    if requests:
+        batch_outputs = llm.generate(requests, sampling_params=sampling_params, use_tqdm=False)
+        for req_idx, output in enumerate(batch_outputs):
+            item_idx = indices[req_idx]
+            results[item_idx] = [o.text for o in output.outputs]
+
+    return results
 
 
 def main() -> None:
@@ -318,6 +363,11 @@ def main() -> None:
     print(f"[offline_filter] Loaded {len(items)} samples in {_time.time()-_t0:.1f}s", flush=True)
     if args.max_samples > 0:
         items = items[: args.max_samples]
+
+    # Apply data-parallel sharding
+    if args.num_shards > 1:
+        items = items[args.shard_id :: args.num_shards]
+        print(f"[offline_filter] Shard {args.shard_id}/{args.num_shards}: processing {len(items)} samples", flush=True)
 
     print(f"[offline_filter] Loading reward function: {args.reward_function}", flush=True)
     _t0 = _time.time()
@@ -349,74 +399,110 @@ def main() -> None:
     dropped = 0
     kept_by_type: dict[str, int] = {}
     dropped_by_type: dict[str, int] = {}
+
+    def _process_result(
+        item: dict[str, Any],
+        idx: int,
+        responses: list[str],
+        fout,
+        freport,
+    ) -> None:
+        nonlocal kept, dropped
+        reward_inputs = []
+        for response in responses:
+            reward_inputs.append(
+                {
+                    "response": response,
+                    "response_length": len(response),
+                    "ground_truth": item.get("answer", ""),
+                    "data_type": item.get("data_type", ""),
+                    "problem_type": item.get("problem_type", ""),
+                    "problem": item.get("prompt", ""),
+                    "problem_id": item.get("metadata", {}).get("clip_key"),
+                }
+            )
+        scores = reward_fn(reward_inputs)
+        rewards = [round(float(score["overall"]), args.reward_round_digits) for score in scores]
+        unique_rewards = sorted(set(rewards))
+        keep = len(unique_rewards) > 1
+        ptype = item.get("problem_type", "unknown") or "unknown"
+        if keep:
+            fout.write(json.dumps(item, ensure_ascii=False) + "\n")
+            kept += 1
+            kept_by_type[ptype] = kept_by_type.get(ptype, 0) + 1
+        else:
+            dropped += 1
+            dropped_by_type[ptype] = dropped_by_type.get(ptype, 0) + 1
+
+        report = {
+            "index": idx,
+            "problem_type": item.get("problem_type", ""),
+            "keep": keep,
+            "rewards": rewards,
+            "unique_rewards": unique_rewards,
+            "answer": item.get("answer", ""),
+            "prompt": item.get("prompt", ""),
+            "responses": responses,
+        }
+        freport.write(json.dumps(report, ensure_ascii=False) + "\n")
+
+    def _process_error(
+        item: dict[str, Any],
+        idx: int,
+        exc: Exception,
+        freport,
+    ) -> None:
+        nonlocal dropped
+        ptype = item.get("problem_type", "unknown") or "unknown"
+        dropped += 1
+        dropped_by_type[ptype] = dropped_by_type.get(ptype, 0) + 1
+        report = {
+            "index": idx,
+            "problem_type": item.get("problem_type", ""),
+            "keep": False,
+            "error": str(exc),
+            "answer": item.get("answer", ""),
+            "prompt": item.get("prompt", ""),
+        }
+        freport.write(json.dumps(report, ensure_ascii=False) + "\n")
+
     with output_path.open("w", encoding="utf-8") as fout, report_path.open("w", encoding="utf-8") as freport:
-        progress = tqdm(items, desc="offline_filter", total=len(items), dynamic_ncols=True)
-        for idx, item in enumerate(progress):
-            try:
-                if args.backend == "vllm":
-                    responses = generate_with_vllm(item, processor, llm, sampling_params, args)
-                else:
-                    responses = generate_with_transformers(item, processor, model, args)
+        if args.backend == "vllm":
+            # ---- Batched vLLM inference ----
+            print(f"[offline_filter] Preprocessing {len(items)} requests for batch vLLM inference ...", flush=True)
+            _t0 = _time.time()
+            batch_results = generate_batch_with_vllm(items, processor, llm, sampling_params, args)
+            print(f"[offline_filter] Batch inference done in {_time.time()-_t0:.1f}s", flush=True)
 
-                reward_inputs = []
-                for response in responses:
-                    reward_inputs.append(
-                        {
-                            "response": response,
-                            "response_length": len(response),
-                            "ground_truth": item.get("answer", ""),
-                            "data_type": item.get("data_type", ""),
-                            "problem_type": item.get("problem_type", ""),
-                            "problem": item.get("prompt", ""),
-                            "problem_id": item.get("metadata", {}).get("clip_key"),
-                        }
+            for idx, (item, result) in enumerate(zip(items, batch_results)):
+                if isinstance(result, Exception):
+                    _process_error(item, idx, result, freport)
+                else:
+                    try:
+                        _process_result(item, idx, result, fout, freport)
+                    except Exception as exc:
+                        _process_error(item, idx, exc, freport)
+                if (idx + 1) % args.log_every == 0 or (idx + 1) == len(items):
+                    print(
+                        f"[offline_filter] scored={idx + 1}/{len(items)} "
+                        f"kept={kept} dropped={dropped}",
+                        flush=True,
                     )
-                scores = reward_fn(reward_inputs)
-                rewards = [round(float(score["overall"]), args.reward_round_digits) for score in scores]
-                unique_rewards = sorted(set(rewards))
-                keep = len(unique_rewards) > 1
-                ptype = item.get("problem_type", "unknown") or "unknown"
-                if keep:
-                    fout.write(json.dumps(item, ensure_ascii=False) + "\n")
-                    kept += 1
-                    kept_by_type[ptype] = kept_by_type.get(ptype, 0) + 1
-                else:
-                    dropped += 1
-                    dropped_by_type[ptype] = dropped_by_type.get(ptype, 0) + 1
-
-                report = {
-                    "index": idx,
-                    "problem_type": item.get("problem_type", ""),
-                    "keep": keep,
-                    "rewards": rewards,
-                    "unique_rewards": unique_rewards,
-                    "answer": item.get("answer", ""),
-                    "prompt": item.get("prompt", ""),
-                    "responses": responses,
-                }
-                freport.write(json.dumps(report, ensure_ascii=False) + "\n")
+        else:
+            # ---- Sequential transformers inference ----
+            progress = tqdm(items, desc="offline_filter", total=len(items), dynamic_ncols=True)
+            for idx, item in enumerate(progress):
+                try:
+                    responses = generate_with_transformers(item, processor, model, args)
+                    _process_result(item, idx, responses, fout, freport)
+                except Exception as exc:
+                    _process_error(item, idx, exc, freport)
                 progress.set_postfix(kept=kept, dropped=dropped, refresh=False)
-
-            except Exception as exc:
-                ptype = item.get("problem_type", "unknown") or "unknown"
-                dropped += 1
-                dropped_by_type[ptype] = dropped_by_type.get(ptype, 0) + 1
-                report = {
-                    "index": idx,
-                    "problem_type": item.get("problem_type", ""),
-                    "keep": False,
-                    "error": str(exc),
-                    "answer": item.get("answer", ""),
-                    "prompt": item.get("prompt", ""),
-                }
-                freport.write(json.dumps(report, ensure_ascii=False) + "\n")
-                progress.set_postfix(kept=kept, dropped=dropped, refresh=False)
-
-            if (idx + 1) % args.log_every == 0 or (idx + 1) == len(items):
-                print(
-                    f"[offline_filter] processed={idx + 1}/{len(items)} "
-                    f"kept={kept} dropped={dropped}"
-                )
+                if (idx + 1) % args.log_every == 0 or (idx + 1) == len(items):
+                    print(
+                        f"[offline_filter] processed={idx + 1}/{len(items)} "
+                        f"kept={kept} dropped={dropped}"
+                    )
 
     print(
         f"[offline_filter] done. input={len(items)} kept={kept} dropped={dropped} "
