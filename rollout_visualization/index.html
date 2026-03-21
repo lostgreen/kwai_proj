@@ -69,6 +69,12 @@ h3{font-size:13px;font-weight:600;color:#374151}
 .frame-img:hover{border-color:var(--blue);box-shadow:0 0 8px rgba(96,165,250,.3)}
 .frame-img img{width:100%;height:100%;object-fit:cover;border-radius:5px}
 .frame-img.mod{border-color:rgba(245,158,11,.65);background:rgba(245,158,11,.08)}
+/* ── Lazy-load frame skeleton ── */
+.frame-skeleton-item{width:100px;height:60px;border-radius:7px;flex-shrink:0;
+  background:linear-gradient(90deg,rgba(100,116,139,.1) 25%,rgba(100,116,139,.2) 50%,rgba(100,116,139,.1) 75%);
+  background-size:200% 100%;animation:frame-shimmer 1.4s ease-in-out infinite}
+@keyframes frame-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.frames-lazy-bar{font-size:11px;color:var(--muted);padding:6px 2px;display:flex;align-items:center;gap:6px}
 .frame-mod-badge{position:absolute;top:2px;right:2px;font-size:7px;padding:1px 3px;
   background:rgba(245,158,11,.85);border-radius:3px;color:#08131f;font-weight:700}
 .frame-clip-badge{position:absolute;bottom:2px;left:2px;font-size:7px;padding:1px 4px;
@@ -244,6 +250,8 @@ const rewColor=r=>r>=.7?'#34d399':r>=.5?'#f59e0b':'#fb7185';
 /* ═══════════════ STATE ═══════════════ */
 let curSummary=null, curSteps=[], curStepGroups=[], curStep=null, curStepKey=null, curStepLabel='';
 let chartData={}, hiddenCurves=new Set();
+/* uid -> {frame_strip, clip_boundaries, timeline_frame_strip, timeline_max_t} — populated after lazy load */
+const _framesCache={};
 
 /* ═══════════════ API ═══════════════ */
 async function requestJson(url){
@@ -509,23 +517,23 @@ function selectGroup(uid){
 /* ═══════════════ GROUP DETAIL ═══════════════ */
 async function renderGroup(uid){
   const main=document.getElementById('groupMain');
-  main.innerHTML='<div class="card" style="padding:20px;text-align:center"><span class="spin"></span> 加载中…</div>';
 
   let g;
+  let lazyFrames=false;   // true = preloaded text only, frames loading in background
   const pre=window.__PRELOADED__;
   const preloadedGroup=pre&&pre.all_details&&pre.all_details[uid] ? pre.all_details[uid] : null;
-  if(preloadedGroup && preloadedGroup.problem_type!=='temporal_seg'){
+  const cachedFrames=_framesCache[uid];
+
+  if(preloadedGroup && cachedFrames){
+    // Both text and frames ready — merge and render fully
+    g=Object.assign({},preloadedGroup,cachedFrames);
+  } else if(preloadedGroup && !cachedFrames){
+    // Text available immediately; frames will lazy-load after first paint
     g=preloadedGroup;
-  } else if(preloadedGroup && preloadedGroup.problem_type==='temporal_seg' && preloadedGroup.timeline_frame_strip){
-    g=preloadedGroup;
-  } else if(preloadedGroup && preloadedGroup.problem_type==='temporal_seg'){
-    try{
-      const res=await api.groupTimeline(uid,60,1);
-      g=res.group;
-    }catch(e){
-      g=preloadedGroup;
-    }
+    lazyFrames=true;
   } else {
+    // No preloaded data — single API call (includes frames)
+    main.innerHTML='<div class="card" style="padding:20px;text-align:center"><span class="spin"></span> 加载中…</div>';
     try{
       const res=await api.group(uid,30);
       g=res.group;
@@ -625,6 +633,15 @@ async function renderGroup(uid){
   if(task==='temporal_seg'){
     /* ── Temporal seg: synchronized frame + timeline ── */
     const attempts=g.attempts||[];
+
+    if(lazyFrames){
+      /* Frames not yet loaded: show rollout text immediately with a "loading timeline" panel */
+      html+=`
+        <div class="card" style="padding:14px;display:flex;align-items:center;gap:10px">
+          <span class="spin"></span>
+          <span style="font-size:12px;color:var(--muted)">正在加载 1fps 时间轴帧，请稍候…</span>
+        </div>`;
+    } else {
     const timelineFrames=(g.timeline_frame_strip||[]).length
       ? g.timeline_frame_strip
       : (nF>0 ? frames.map((src,idx)=>{
@@ -727,7 +744,9 @@ async function renderGroup(uid){
         <pre class="mono">${esc(String(g.ground_truth||'').slice(0,600))}</pre>
       </div>`;
 
-    // Rollout responses
+    } // end else (timeline ready)
+
+    // Rollout responses — always shown immediately (text only, no frames needed)
     html+=`<div class="card" style="padding:14px"><h3 style="margin-bottom:8px">🔄 Rollout 详情</h3>`;
     attempts.forEach((r,ri)=>{
       const rc=rewColor(r.reward);
@@ -764,10 +783,18 @@ async function renderGroup(uid){
       clipLegendItems.splice(missingIdx,0,`<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;margin-left:6px;color:#fb7185">❓ Step ${missingIdx+1} MISSING</span>`);
     }
     const clipLegend=nClips>1?clipLegendItems.join(''):'';
+    // When frames are still loading: show animated skeleton placeholders
+    const frameStripContent=lazyFrames
+      ? Array(8).fill('<div class="frame-skeleton-item"></div>').join('')
+      : framesHTML;
+    const lazyBarHTML=lazyFrames
+      ? '<div class="frames-lazy-bar"><span class="spin"></span> 视频帧加载中…</div>'
+      : '';
     html+=`
       <div class="card" style="padding:14px;min-width:0">
-        <h3 style="margin-bottom:10px">📽 输入帧条 <span class="muted">（${nClips} clip${nClips>1?'s':''}, ${nF} 帧 · 点击帧可放大）</span>${clipLegend}</h3>
-        <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:scroll;border-radius:8px;border:1px solid rgba(100,116,139,.15);background:rgba(241,245,249,.6);-webkit-overflow-scrolling:touch">${framesHTML}</div>
+        <h3 style="margin-bottom:10px">📽 输入帧条 <span class="muted">（${nClips} clip${nClips>1?'s':''}, ${lazyFrames?'…':nF} 帧 · 点击帧可放大）</span>${clipLegend}</h3>
+        ${lazyBarHTML}
+        <div id="ft-${uid}" style="display:flex;gap:${FG}px;padding:10px 8px;overflow-x:scroll;border-radius:8px;border:1px solid rgba(100,116,139,.15);background:rgba(241,245,249,.6);-webkit-overflow-scrolling:touch">${frameStripContent}</div>
         ${modBand}
         <div style="padding:6px 0 2px;display:flex;align-items:center;gap:8px">
           <span style="font-size:10px;color:var(--muted)">0s</span>
@@ -782,7 +809,32 @@ async function renderGroup(uid){
   }
 
   main.innerHTML=html;
-  if(task==='temporal_seg') initSegTimelineScroll(uid);
+  if(task==='temporal_seg'&&!lazyFrames) initSegTimelineScroll(uid);
+
+  // Lazy frame loading: fetch frames in background, then re-render this group
+  if(lazyFrames){
+    const timelineFps=(task==='temporal_seg')?1:0;
+    fetch(`/api/group/${encodeURIComponent(uid)}/frames?max_frames=30&timeline_fps=${timelineFps}`)
+      .then(r=>r.json())
+      .then(data=>{
+        if(!data.ok) return;
+        _framesCache[uid]={
+          frame_strip: data.frames||[],
+          clip_boundaries: data.clip_boundaries||[],
+          timeline_frame_strip: data.timeline_frame_strip||[],
+          timeline_max_t: data.timeline_max_t||null,
+        };
+        // Re-render only if user is still viewing this group
+        if(document.getElementById('gr-'+uid)?.classList.contains('active')){
+          renderGroup(uid);
+        }
+      })
+      .catch(()=>{
+        // Non-fatal: skeleton stays, frames just won't show
+        const ft=document.getElementById('ft-'+uid);
+        if(ft) ft.innerHTML='<div style="padding:8px;color:var(--muted);font-size:11px">帧加载失败（视频文件路径不可达？）</div>';
+      });
+  }
 }
 
 /* ═══════════════ SCROLL ═══════════════ */

@@ -122,12 +122,13 @@ def _compact_detail_for_preload(detail: dict[str, Any]) -> dict[str, Any]:
     }
 
     if task == "temporal_seg":
-        compact["timeline_frame_strip"] = detail.get("timeline_frame_strip") or []
+        # frames are loaded lazily via /api/group/<uid>/frames
+        compact["timeline_frame_strip"] = []
         compact["frame_strip"] = []
         compact["clip_boundaries"] = []
     else:
-        compact["frame_strip"] = detail.get("frame_strip") or []
-
+        # frames are loaded lazily via /api/group/<uid>/frames
+        compact["frame_strip"] = []
     for attempt in detail.get("attempts") or []:
         compact_attempt = {
             "reward": attempt.get("reward"),
@@ -312,10 +313,16 @@ class RolloutStore:
                     row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # Skip entries where reward.overall is missing or null —
+                # the last in-progress step often has no reward written yet,
+                # which would otherwise appear as a spurious 0 on the chart.
+                overall = (row.get("reward") or {}).get("overall")
+                if overall is None:
+                    continue
                 points.append(
                     {
                         "step": _safe_float(row.get("step")),
-                        "reward": _safe_float((row.get("reward") or {}).get("overall")),
+                        "reward": _safe_float(overall),
                     }
                 )
         return sorted(points, key=lambda x: x["step"])
@@ -1106,11 +1113,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/group/"):
-            uid = unquote(parsed.path[len("/api/group/") :])
+            remaining = unquote(parsed.path[len("/api/group/"):])
+            q = parse_qs(parsed.query)
+
+            # /api/group/<uid>/frames — frames-only endpoint for lazy loading
+            if remaining.endswith("/frames"):
+                uid = remaining[: -len("/frames")]
+                if not uid:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "uid required"})
+                    return
+                max_frames = int(q.get("max_frames", ["30"])[0])
+                max_frames = max(4, min(max_frames, 200))
+                timeline_fps = int(q.get("timeline_fps", ["0"])[0] or 0)
+                try:
+                    frames = self.store._get_frame_strip(uid, max_frames=max_frames)
+                    clip_boundaries = self.store.groups.get(uid, {}).get("_clip_boundaries", [])
+                    payload: dict[str, Any] = {
+                        "ok": True,
+                        "frames": frames,
+                        "clip_boundaries": clip_boundaries,
+                        "timeline_frame_strip": [],
+                        "timeline_max_t": None,
+                    }
+                    if timeline_fps >= 1:
+                        detail = self.store.get_group_detail(
+                            uid, max_frames=max_frames, timeline_fps=timeline_fps
+                        )
+                        payload["timeline_frame_strip"] = detail.get("timeline_frame_strip") or []
+                        payload["timeline_max_t"] = detail.get("timeline_max_t")
+                except KeyError as e:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": str(e)})
+                    return
+                self._send_json(HTTPStatus.OK, payload)
+                return
+
+            # /api/group/<uid> — full group detail
+            uid = remaining
             if not uid:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "uid required"})
                 return
-            q = parse_qs(parsed.query)
             max_frames = int(q.get("max_frames", ["30"])[0])
             max_frames = max(4, min(max_frames, 200))
             timeline_fps = int(q.get("timeline_fps", ["0"])[0] or 0)
@@ -1193,10 +1234,8 @@ def main() -> None:
         try:
             store.load(rollout_dir_text=args.rollout_dir, log_file_text=args.log_file)
             print(f"Pre-loaded rollout data from: {args.rollout_dir}")
-            print("  Warming frame cache (first run extracts frames, subsequent runs use disk cache)...")
-            store.warm_frame_cache(max_frames=30)
-            print("  Warming 1fps temporal-seg timeline cache for preloaded HTML...")
-            store.warm_timeline_frame_cache(timeline_fps=1)
+            # Frames are now loaded lazily via /api/group/<uid>/frames — skip warm_frame_cache
+            # to avoid extracting thousands of frames on every startup.
             # Pre-build the injected HTML blob
             all_steps = store.get_steps_summary()
             selected_step_keys = _select_preload_step_keys(
