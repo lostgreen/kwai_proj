@@ -499,19 +499,29 @@ class RolloutStore:
                 break
         return rows
 
-    def get_group_detail(self, uid: str, max_frames: int = 30, timeline_fps: int = 0) -> dict[str, Any]:
+    def get_group_detail(
+        self,
+        uid: str,
+        max_frames: int = 30,
+        timeline_fps: int = 0,
+        text_only: bool = False,
+    ) -> dict[str, Any]:
         group = self.groups.get(uid)
         if group is None:
             raise KeyError(f"uid not found: {uid}")
         detail = dict(group)
         detail["attempts"] = sorted(group["attempts"], key=lambda a: a["reward"], reverse=True)
-        detail["frame_strip"] = self._get_frame_strip(uid, max_frames=max_frames)
+        if text_only:
+            # Skip frame extraction entirely (frames are served lazily via /frames endpoint)
+            detail["frame_strip"] = []
+        else:
+            detail["frame_strip"] = self._get_frame_strip(uid, max_frames=max_frames)
         detail["clip_boundaries"] = group.get("_clip_boundaries", [])
         detail["timeline_max_t"] = self._timeline_max_t(detail)
         # Detect [MISSING] position for replace/add/delete tasks
         detail["missing_clip_index"] = self._detect_missing_position(detail)
         task = str(detail.get("problem_type") or "")
-        if task == "temporal_seg" and timeline_fps >= 1:
+        if task == "temporal_seg" and timeline_fps >= 1 and not text_only:
             detail["timeline_frame_strip"] = self._get_timeline_frame_strip(
                 uid,
                 detail["timeline_max_t"],
@@ -1328,8 +1338,8 @@ def main() -> None:
                     group = store.groups.get(uid) or {}
                     if str(group.get("step_key") or "") not in selected_step_keys:
                         continue
-                    timeline_fps = 1 if str(group.get("problem_type")) == "temporal_seg" else 0
-                    detail = store.get_group_detail(uid, max_frames=30, timeline_fps=timeline_fps)
+                    # text_only=True: skip frame extraction — frames are loaded lazily on demand
+                    detail = store.get_group_detail(uid, text_only=True)
                     all_group_details[uid] = _compact_detail_for_preload(detail)
                 except Exception:
                     pass

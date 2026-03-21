@@ -252,6 +252,10 @@ let curSummary=null, curSteps=[], curStepGroups=[], curStep=null, curStepKey=nul
 let chartData={}, hiddenCurves=new Set();
 /* uid -> {frame_strip, clip_boundaries, timeline_frame_strip, timeline_max_t} — populated after lazy load */
 const _framesCache={};
+/* Base path prefix: handles reverse-proxy deployments where page is served at /proxy/PORT/.
+   e.g. http://localhost:8890/  → BASE=''
+        https://proxy.kaimm.com/proxy/8890/  → BASE='/proxy/8890' */
+const BASE = window.location.pathname.replace(/\/[^/]*$/, '');
 
 /* ═══════════════ API ═══════════════ */
 async function requestJson(url){
@@ -274,22 +278,22 @@ const api={
   async load(rolloutDir,logFile){
     const q=new URLSearchParams({rollout_dir:rolloutDir});
     if(logFile) q.set('log_file',logFile);
-    return requestJson('/api/load-data?'+q);
+    return requestJson(BASE+'/api/load-data?'+q);
   },
-  async state(){return requestJson('/api/state')},
-  async steps(){return requestJson('/api/steps')},
+  async state(){return requestJson(BASE+'/api/state')},
+  async steps(){return requestJson(BASE+'/api/steps')},
   async groups(step,stepKey,task){
     const q=new URLSearchParams({limit:500});
     if(step!=null) q.set('step',step);
     if(stepKey) q.set('step_key',stepKey);
     if(task&&task!='all') q.set('task',task);
-    return requestJson('/api/groups?'+q);
+    return requestJson(BASE+'/api/groups?'+q);
   },
   async group(uid,maxFrames=30){
-    return requestJson(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}`);
+    return requestJson(`${BASE}/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}`);
   },
   async groupTimeline(uid,maxFrames=30,timelineFps=1){
-    return requestJson(`/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}&timeline_fps=${timelineFps}`);
+    return requestJson(`${BASE}/api/group/${encodeURIComponent(uid)}?max_frames=${maxFrames}&timeline_fps=${timelineFps}`);
   },
 };
 
@@ -814,7 +818,7 @@ async function renderGroup(uid){
   // Lazy frame loading: fetch frames in background, then re-render this group
   if(lazyFrames){
     const timelineFps=(task==='temporal_seg')?1:0;
-    fetch(`/api/group/${encodeURIComponent(uid)}/frames?max_frames=30&timeline_fps=${timelineFps}`)
+    fetch(`${BASE}/api/group/${encodeURIComponent(uid)}/frames?max_frames=30&timeline_fps=${timelineFps}`)
       .then(r=>r.json())
       .then(data=>{
         if(!data.ok) return;
