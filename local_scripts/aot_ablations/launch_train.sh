@@ -13,9 +13,31 @@
 set -euo pipefail
 
 # ---- 前置检查 ----
-if [[ -z "${EXP_NAME:-}" ]]; then echo "[aot] EXP_NAME not set" >&2; exit 1; fi
-if [[ -z "${DATA_DIR:-}" ]];  then echo "[aot] DATA_DIR not set"  >&2; exit 1; fi
+if [[ -z "${EXP_NAME:-}" ]];        then echo "[aot] EXP_NAME not set"        >&2; exit 1; fi
+if [[ -z "${DATA_DIR:-}" ]];         then echo "[aot] DATA_DIR not set"         >&2; exit 1; fi
+if [[ -z "${CHECKPOINT_ROOT:-}" ]];  then echo "[aot] CHECKPOINT_ROOT not set"  >&2; exit 1; fi
 mkdir -p "${DATA_DIR}"
+
+# =========================================================
+# 运行日志 & Ray 会话目录：每次执行自动写到实验 ckpt 目录下
+# =========================================================
+_ckpt_dir="${CHECKPOINT_ROOT}/${EXP_NAME}"
+mkdir -p "${_ckpt_dir}"
+_run_log="${_ckpt_dir}/run_$(date +%Y%m%d_%H%M%S).log"
+# 将当前 shell（含所有子进程）的 stdout+stderr 同时写入日志文件
+exec > >(tee -a "${_run_log}") 2>&1
+echo "[aot] ============================================================"
+echo "[aot] EXP : ${EXP_NAME}"
+echo "[aot] Date: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "[aot] Log : ${_run_log}"
+echo "[aot] ============================================================"
+
+# Ray 需要本地快速 FS（IPC socket / SHM 不能放 NFS），用实验名命名方便识别
+# 训练结束后 Ray session 日志会被复制到 ckpt 目录
+_ray_tmpdir="/tmp/ray_${EXP_NAME}"
+mkdir -p "${_ray_tmpdir}"
+export RAY_TMPDIR="${_ray_tmpdir}"
+echo "[aot] Ray tmpdir (local): ${_ray_tmpdir}"
 
 MIXED_TRAIN="${DATA_DIR}/mixed_train.jsonl"
 MIXED_VAL="${DATA_DIR}/mixed_val.jsonl"
@@ -144,8 +166,14 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
 
     _shard_output="${_shard_dir}/shard_${_w}.jsonl"
     _shard_report="${_shard_dir}/shard_${_w}_report.jsonl"
+    # 给每个 worker 独立的 TMPDIR，防止 vLLM V1 EngineCore 的 ZMQ IPC socket 互相冲突
+    # 路径必须短于 ~60 字符，因为 Unix socket 路径上限 107 字符，vLLM 还要拼 UUID
+    _worker_tmpdir="/tmp/vllm_filter_${EXP_NAME}_${_w}"
+    mkdir -p "${_worker_tmpdir}"
 
     CUDA_VISIBLE_DEVICES="${_gpu_ids}" \
+    TMPDIR="${_worker_tmpdir}" \
+    NCCL_SHM_DISABLE=1 \
     python3 "${REPO_ROOT}/local_scripts/offline_rollout_filter.py" \
       --input_jsonl  "${MIXED_TRAIN}" \
       --output_jsonl "${_shard_output}" \
@@ -210,8 +238,8 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
   done
 
   # 停止监控，打印最终完成行
-  kill "${_monitor_pid}" 2>/dev/null
-  wait "${_monitor_pid}" 2>/dev/null
+  kill "${_monitor_pid}" 2>/dev/null || true
+  wait "${_monitor_pid}" 2>/dev/null || true
   _done_final=0
   for (( _i=0; _i < _num_workers; _i++ )); do
     _f="${_shard_dir}/shard_${_i}_report.jsonl"
@@ -297,6 +325,7 @@ echo "[aot] TRAIN_FILE : ${TRAIN_FILE}"
 echo "[aot] LR=${LR}  warmup_style=${WARMUP_STYLE}  warmup_ratio=${LR_WARMUP_RATIO}  min_lr_ratio=${LR_MIN_RATIO}"
 
 set -x
+TENSORBOARD_DIR="${CHECKPOINT_ROOT}/tensorboard" \
 python3 -m verl.trainer.main \
   config=examples/config_ema_grpo_64.yaml \
   data.train_files="${TRAIN_FILE}" \
@@ -339,7 +368,7 @@ python3 -m verl.trainer.main \
   worker.rollout.temperature=0.7 \
   worker.rollout.top_p=0.9 \
   worker.rollout.tensor_parallel_size="${TP_SIZE}" \
-  worker.rollout.gpu_memory_utilization=0.5 \
+  worker.rollout.gpu_memory_utilization=0.35 \
   worker.reward.reward_function="${REWARD_FUNCTION}" \
   worker.reward.reward_type=batch \
   trainer.project_name="${PROJECT_NAME}" \
@@ -353,3 +382,17 @@ python3 -m verl.trainer.main \
   trainer.logger="[file,tensorboard]" \
   trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
   data.val_batch_size=8
+
+# =========================================================
+# 训练结束：将 Ray session 日志复制到 ckpt 目录
+# =========================================================
+set +x
+_ray_session_logs="${_ray_tmpdir}/session_latest/logs"
+if [[ -d "${_ray_session_logs}" ]]; then
+  echo "[aot] Copying Ray session logs -> ${_ckpt_dir}/ray_logs"
+  cp -r "${_ray_session_logs}" "${_ckpt_dir}/ray_logs" 2>/dev/null || \
+    echo "[aot] Warning: Ray log copy failed (non-fatal)" >&2
+else
+  echo "[aot] Ray session logs not found at ${_ray_session_logs} (skipping)"
+fi
+echo "[aot] Done. Run log: ${_run_log}"

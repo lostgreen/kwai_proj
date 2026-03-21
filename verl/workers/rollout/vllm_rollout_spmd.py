@@ -151,7 +151,13 @@ class vLLMRollout(BaseRollout):
         )
 
         # Offload vllm model to reduce peak memory usage
-        self.inference_engine.sleep(level=1)
+        # vLLM V1 sleep() has a bug where it asserts freed_bytes >= 0, which
+        # can spuriously fail when NCCL/CUDA context allocates memory concurrently.
+        # Catch AssertionError and fall back gracefully (model stays on GPU).
+        try:
+            self.inference_engine.sleep(level=1)
+        except AssertionError:
+            pass
 
         sampling_kwargs = {
             "max_tokens": config.response_length,
