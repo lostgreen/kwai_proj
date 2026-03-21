@@ -675,6 +675,62 @@ class RolloutStore:
         except Exception:
             pass
 
+    def _diag_paths(self, uid: str) -> dict[str, Any]:
+        """Return diagnostic info: which video paths were tried and whether they exist on disk."""
+        group = self.groups.get(uid)
+        if not group:
+            return {"error": "uid not found"}
+
+        raw_paths: list[str] = []
+        mm = group.get("multi_modal_source")
+        has_base64 = False
+        if isinstance(mm, dict):
+            if "frames_base64" in mm:
+                has_base64 = True
+            for v in mm.get("videos") or []:
+                if isinstance(v, str):
+                    raw_paths.append(v)
+            for v in mm.get("images") or []:
+                if isinstance(v, str):
+                    raw_paths.append(v)
+        for vp in group.get("video_paths") or []:
+            p = str(vp)
+            if p not in raw_paths:
+                raw_paths.append(p)
+        for ip in group.get("image_paths") or []:
+            p = str(ip)
+            if p not in raw_paths:
+                raw_paths.append(p)
+
+        checked = []
+        for p_text in raw_paths:
+            path = Path(p_text)
+            if not path.is_absolute():
+                path = (self.root / path).resolve()
+            resolved = str(path)
+            exists = path.exists()
+            checked.append({
+                "path": p_text,
+                "resolved": resolved,
+                "exists": exists,
+                "is_file": path.is_file() if exists else False,
+                "suffix": path.suffix.lower(),
+            })
+
+        # Check decord availability
+        decord_ok = False
+        try:
+            import decord  # noqa: F401
+            decord_ok = True
+        except ImportError:
+            pass
+
+        return {
+            "has_base64": has_base64,
+            "paths": checked,
+            "decord_available": decord_ok,
+        }
+
     def warm_frame_cache(self, max_frames: int = 30) -> None:
         """Pre-extract and cache frames for all groups. Prints progress."""
         total = len(self.group_order)
@@ -1128,12 +1184,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 try:
                     frames = self.store._get_frame_strip(uid, max_frames=max_frames)
                     clip_boundaries = self.store.groups.get(uid, {}).get("_clip_boundaries", [])
+                    # Always include diagnostic info so the frontend can explain why frames are empty
+                    diag = self.store._diag_paths(uid)
                     payload: dict[str, Any] = {
                         "ok": True,
                         "frames": frames,
                         "clip_boundaries": clip_boundaries,
                         "timeline_frame_strip": [],
                         "timeline_max_t": None,
+                        "diag": diag,
                     }
                     if timeline_fps >= 1:
                         detail = self.store.get_group_detail(

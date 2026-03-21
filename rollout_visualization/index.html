@@ -818,8 +818,39 @@ async function renderGroup(uid){
       .then(r=>r.json())
       .then(data=>{
         if(!data.ok) return;
+        const frames=data.frames||[];
+        // If server returned no frames, show diagnostic info instead of blank skeleton
+        if(frames.length===0){
+          const ft=document.getElementById('ft-'+uid);
+          if(ft){
+            const diag=data.diag||{};
+            const paths=diag.paths||[];
+            const allMissing=paths.length>0 && paths.every(p=>!p.exists);
+            const decordMissing=diag.decord_available===false;
+            const hasB64=diag.has_base64===true;
+            let html='<div style="padding:10px;display:grid;gap:5px">';
+            html+='<div style="font-size:11px;font-weight:600;color:var(--danger)">服务器未能读取视频帧</div>';
+            if(decordMissing)
+              html+='<div style="font-size:11px;color:var(--warn)">⚠ decord 未安装 — 请在服务器端运行 pip install decord</div>';
+            if(hasB64)
+              html+='<div style="font-size:11px;color:var(--ok)">✓ 数据含内嵌 base64 帧（应可正常解码，请检查服务端日志）</div>';
+            if(paths.length===0 && !decordMissing)
+              html+='<div style="font-size:11px;color:var(--muted)">未检测到视频路径字段</div>';
+            for(const p of paths){
+              const color=p.exists?'var(--ok)':'var(--danger)';
+              const icon=p.exists?'✓':'✗';
+              const note=p.exists&&!p.is_file?' （非文件？）':'';
+              html+=`<div style="font-size:10px;color:${color};word-break:break-all">${icon} ${p.path}${note}</div>`;
+              if(!p.exists && p.resolved!==p.path)
+                html+=`<div style="font-size:10px;color:var(--muted);word-break:break-all;padding-left:14px">已解析为: ${p.resolved}</div>`;
+            }
+            html+='</div>';
+            ft.innerHTML=html;
+          }
+          return;
+        }
         _framesCache[uid]={
-          frame_strip: data.frames||[],
+          frame_strip: frames,
           clip_boundaries: data.clip_boundaries||[],
           timeline_frame_strip: data.timeline_frame_strip||[],
           timeline_max_t: data.timeline_max_t||null,
@@ -830,9 +861,9 @@ async function renderGroup(uid){
         }
       })
       .catch(()=>{
-        // Non-fatal: skeleton stays, frames just won't show
+        // fetch itself failed — server unreachable (wrong port, crashed, firewall…)
         const ft=document.getElementById('ft-'+uid);
-        if(ft) ft.innerHTML='<div style="padding:8px;color:var(--muted);font-size:11px">帧加载失败（视频文件路径不可达？）</div>';
+        if(ft) ft.innerHTML='<div style="padding:8px;color:var(--danger);font-size:11px">网络或服务器错误 — 无法连接到可视化服务器，请检查端口是否开放及 server.py 是否仍在运行</div>';
       });
   }
 }
