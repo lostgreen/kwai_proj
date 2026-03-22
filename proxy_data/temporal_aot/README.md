@@ -101,8 +101,8 @@ python proxy_data/temporal_aot/check_and_refine_captions.py \
   --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
   --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
   --output ${AOT_DATA_ROOT}/refined_caption_pairs.jsonl \
-  --api-base --api-base https://api.novita.ai/v3/openai \
-  --model pa/gmn-3-pro-preview \
+  --api-base https://api.novita.ai/v3/openai \
+  --model pa/gemini-3-pro-preview \
   --fps 1.0 \
   --shuffle-fps 2.0 \
   --workers 4 \
