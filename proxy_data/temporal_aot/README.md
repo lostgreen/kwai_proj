@@ -93,6 +93,33 @@ Shuffle 标注 prompt 设计：
 - 如果序列逻辑不一致，要求如实描述而非修正
 - 关注具体状态变化（颜色、形状、位置、数量），而非泛泛的活动标签
 
+**Step 2.5 — Caption 质量检查 & 修正（可选，推荐）**
+
+```bash
+python proxy_data/temporal_aot/check_and_refine_captions.py \
+  --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
+  --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
+  --output ${AOT_DATA_ROOT}/refined_caption_pairs.jsonl \
+  --api-base https://generativelanguage.googleapis.com/v1beta/openai \
+  --model gemini-2.5-flash \
+  --fps 1.0 \
+  --shuffle-fps 2.0 \
+  --workers 4
+```
+
+说明：
+- 同时向 Gemini 发送 forward / reverse / shuffle 三段视频帧（分区标签隔开）+ 已有 caption
+- Gemini 判断 forward 与 reverse caption 是否**仅凭文本就能区分**（check）
+- 如果不能区分，Gemini 基于实际视频内容**重写 caption**（refine），保证：
+  - 描述明确的开始→结束状态变化方向
+  - forward 和 reverse caption 词数相近（差 ≤ 30%）
+  - 单句格式，使用 temporal markers
+- 输出 `refined_caption_pairs.jsonl` 是 `caption_pairs.jsonl` 的 drop-in 替换
+- 保留 `original_forward_caption` / `original_reverse_caption` 字段便于回溯
+- 新增 `was_refined`、`check_distinguishable`、`check_reason` 字段用于统计分析
+- 支持 `--resume` 断点续跑（默认开启）
+- 后续 Step 3 只需把 `--caption-pairs` 指向 refined 版本即可
+
 **Step 3 — 构造 V2T / T2V / 4-way MCQ 训练数据**
 
 定义数据根目录（与消融实验脚本一致）：
@@ -153,9 +180,10 @@ python proxy_data/temporal_aot/rebalance_aot_answers.py \
 |------|------|
 | `build_event_aot_data.py` | 读取 clip DB，按 `clip_path` 去重，生成 manifest；按需生成 reverse / shuffle / composite 视频 |
 | `annotate_event_captions.py` | 读取 manifest，对 forward（1fps）/ reverse（1fps）/ shuffle（2fps segment-aware）视频抽帧并调用 VLM 标注 caption |
+| `check_and_refine_captions.py` | 同时展示 forward/reverse/shuffle 视频帧，让 VLM 检查 caption 区分度并按需重写 |
 | `build_aot_mcq.py` | 读取 manifest + caption pairs，过滤后构造 `aot_v2t` / `aot_t2v` / `aot_4way_v2t` 训练数据 |
 | `mix_aot_with_youcook2.py` | 把 V2T / T2V 与 YouCook2 时序分割数据合并为统一 train/val split |
-| `prompts.py` | 统一维护标注和 MCQ 用的 prompt 模板（含 `direction_clear` 判断 + shuffle 段感知描述） |
+| `prompts.py` | 统一维护标注和 MCQ 用的 prompt 模板（含 `direction_clear` 判断 + shuffle 段感知描述 + check & refine） |
 | `rebalance_aot_answers.py` | 在 offline filter 之后对保留的 AOT 样本做 A/B 选项重排，把最终答案分布尽量打平，不丢样本 |
 
 ---

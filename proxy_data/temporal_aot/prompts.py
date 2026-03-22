@@ -161,3 +161,83 @@ def get_3way_t2v_prompt(caption: str) -> str:
         "Think step by step inside <think> </think> tags, then provide your final answer "
         "(a single letter A, B, or C) inside <answer> </answer> tags."
     )
+
+
+def get_check_and_refine_prompt(
+    forward_caption: str,
+    reverse_caption: str,
+    shuffle_caption: str = "",
+) -> str:
+    """Prompt for checking and refining forward/reverse/shuffle captions.
+
+    The caller is expected to attach video frames in three labeled sections
+    (forward, reverse, shuffle) before this text prompt.
+    """
+    shuffle_block = ""
+    shuffle_rule = ""
+    if shuffle_caption:
+        shuffle_block = (
+            f'\n  Shuffle caption: "{shuffle_caption}"'
+        )
+        shuffle_rule = (
+            "\n- If the shuffle caption is also provided, refine it to describe the "
+            "observed jumbled sequence. It should NOT look like a simple rewrite of "
+            "the forward or reverse caption."
+        )
+
+    return (
+        "You are reviewing temporal captions for a cooking video clip.\n\n"
+        "Three versions of the same clip are shown above:\n"
+        "- **Forward video**: the original clip in natural chronological order.\n"
+        "- **Reverse video**: the same clip played backwards frame-by-frame.\n"
+        + ("- **Shuffle video**: the clip cut into segments and randomly reordered.\n" if shuffle_caption else "")
+        + "\nExisting captions:\n"
+        f'  Forward caption: "{forward_caption}"\n'
+        f'  Reverse caption: "{reverse_caption}"'
+        + shuffle_block
+        + "\n\n"
+        "## Task\n\n"
+        "1. **Check**: Can a reader distinguish the forward caption from the reverse "
+        "caption based on text alone — without seeing the video? A good pair should "
+        "describe opposite state transitions (e.g., 'empty pan → full of food' vs. "
+        "'food disappears from pan → pan is empty'). A bad pair uses vague or "
+        "symmetric descriptions that could fit either direction.\n\n"
+        "2. **Refine** (only if the pair is NOT clearly distinguishable): "
+        "Rewrite the captions so they are clearly distinguishable.\n\n"
+        "## Refinement rules\n"
+        "- Each caption must be ONE concise sentence.\n"
+        "- Forward and reverse captions must have similar word count "
+        "(within 30% of each other).\n"
+        "- Use explicit start→end state transitions: mention the visible starting "
+        "state and the visible ending state.\n"
+        "- Focus on concrete, directional changes: filling/emptying, cutting/assembling, "
+        "heating/cooling, raw→cooked, whole→sliced, etc.\n"
+        "- Use temporal markers (first, then, finally) to anchor the sequence.\n"
+        "- Do NOT use generic descriptions like 'someone is cooking' or "
+        "'a person prepares food'.\n"
+        "- The reverse caption must describe the actual observed reversed sequence, "
+        "not just negate the forward caption."
+        + shuffle_rule
+        + "\n\n"
+        "## Output\n"
+        "Output valid JSON with these keys:\n"
+        "- `distinguishable` (bool): true if existing captions are already clearly "
+        "distinguishable, false otherwise.\n"
+        "- `reason` (string): brief explanation of your judgment.\n"
+        "- `forward_caption` (string): the (possibly refined) forward caption.\n"
+        "- `reverse_caption` (string): the (possibly refined) reverse caption.\n"
+        + ('- `shuffle_caption` (string): the (possibly refined) shuffle caption.\n' if shuffle_caption else "")
+        + "\nIf the captions are already distinguishable, return them unchanged.\n\n"
+        "Example output:\n"
+        '{"distinguishable": false, "reason": "Both captions just say ingredients are '
+        'being mixed without describing direction of change.", '
+        '"forward_caption": "First, raw diced onions are placed into an empty pan, '
+        'then oil is added, and finally the onions turn translucent as they cook.", '
+        '"reverse_caption": "First, translucent cooked onions sit in an oily pan, '
+        'then they gradually appear raw and uncooked, and finally the empty pan is '
+        'shown with no ingredients."'
+        + (', "shuffle_caption": "First, onions appear partially cooked in oil, '
+           'then raw diced onions sit on an empty pan, and finally the onions are '
+           'fully translucent."' if shuffle_caption else "")
+        + "}"
+    )
