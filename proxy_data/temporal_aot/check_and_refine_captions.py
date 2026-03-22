@@ -215,6 +215,13 @@ def call_vlm(
                 response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content
+            if not raw or not raw.strip():
+                # Sometimes Gemini returns empty content (safety filter, thinking-only, etc.)
+                finish = getattr(resp.choices[0], "finish_reason", "unknown")
+                raise ValueError(
+                    f"Empty response from VLM (finish_reason={finish}). "
+                    f"This may indicate a content safety filter or model issue."
+                )
             return _extract_json(raw)
         except Exception as exc:
             last_error = exc
@@ -427,6 +434,10 @@ def main() -> None:
         "--only-check", action="store_true", default=False,
         help="Only run check (no refinement). Useful for statistics.",
     )
+    parser.add_argument(
+        "--verbose", action="store_true", default=False,
+        help="Print raw VLM response on failure for debugging.",
+    )
     args = parser.parse_args()
 
     pairs = load_jsonl(args.caption_pairs)
@@ -492,6 +503,8 @@ def main() -> None:
                 except Exception as exc:
                     error_count += 1
                     print(f"[ERROR] {clip_key}: {exc}")
+                    if args.verbose:
+                        print(f"  [DEBUG] Full error: {repr(exc)}")
 
     total = refined_count + unchanged_count + error_count
     print(
