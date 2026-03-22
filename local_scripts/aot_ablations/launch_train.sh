@@ -181,7 +181,7 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
       --model_path   "${MODEL_PATH}" \
       --reward_function "${REWARD_FUNCTION}" \
       --backend vllm \
-      --num_rollouts  "${ROLLOUT_N}" \
+      --num_rollouts  "${FILTER_ROLLOUT_N:-${ROLLOUT_N}}" \
       --temperature   0.7 \
       --top_p         0.9 \
       --max_new_tokens "${MAX_RESPONSE_LEN}" \

@@ -105,8 +105,9 @@ python proxy_data/temporal_aot/check_and_refine_captions.py \
   --model pa/gemini-3-pro-preview \
   --fps 1.0 \
   --shuffle-fps 2.0 \
-  --workers 4 \
-  --max-samples 10
+  --workers 8 \
+  --max-samples 1200 \
+  --verbose
 ```
 
 说明：

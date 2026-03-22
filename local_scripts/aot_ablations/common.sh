@@ -23,7 +23,7 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-aot-ablation}"
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- 上游标注数据（Step 1-2 产出，所有实验共享）----
-AOT_DATA_ROOT="${AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot}"
+AOT_DATA_ROOT="${AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot_refined}"
 MANIFEST_JSONL="${MANIFEST_JSONL:-${AOT_DATA_ROOT}/aot_event_manifest.jsonl}"
 CAPTION_PAIRS="${CAPTION_PAIRS:-${AOT_DATA_ROOT}/caption_pairs.jsonl}"
 # 消融实验默认不混合 temporal_seg，纯 AoT MCQ 训练；如需混合可覆盖
@@ -35,7 +35,7 @@ SEG_JSONL="${SEG_JSONL:-}"
 TEST_FILE="${TEST_FILE:-}"  # 留空，launch_train.sh 会用 MIXED_VAL 填充
 
 # ---- MCQ 构造参数（各实验可覆盖）----
-MCQ_MAX_SAMPLES="${MCQ_MAX_SAMPLES:-2000}"   # aot proxy 样本总量（实验间对齐）
+MCQ_MAX_SAMPLES="${MCQ_MAX_SAMPLES:-1200}"   # aot proxy 样本总量（对齐 1200 条 refined pairs）
 MCQ_MIN_CONFIDENCE="${MCQ_MIN_CONFIDENCE:-0.6}"
 
 # ---- 视频 & 分辨率 ----
@@ -59,7 +59,7 @@ N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 NNODES="${NNODES:-1}"
 
 # ---- 离线过滤（推理专用，4B 模型单卡即可，多卡数据并行）----
-FILTER_TP_SIZE="${FILTER_TP_SIZE:-1}"
+FILTER_ROLLOUT_N="${FILTER_ROLLOUT_N:-16}"  # 离线过滤每样本采样次数（训练用 ROLLOUT_N）
 FILTER_NUM_GPUS="${FILTER_NUM_GPUS:-${N_GPUS_PER_NODE}}"  # 数据并行 GPU 数（默认=所有 GPU）
 FILTER_GPU_MEM_UTIL="${FILTER_GPU_MEM_UTIL:-0.7}"
 # 256帧×48tokens≈12288视频token + 14000 prompt + 1024 response ≈ 15312 → 16384 足够
@@ -87,7 +87,7 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 SAVE_FREQ="${SAVE_FREQ:-20}"
 VAL_FREQ="${VAL_FREQ:-10}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot/ablations}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot_refined/ablations}"
 
 # ---- 难度优先采样（curate）----
 CURATE_TARGET_COUNT="${CURATE_TARGET_COUNT:-1000}"  # 每个实验统一的训练样本数
