@@ -31,6 +31,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
@@ -41,6 +42,46 @@ from PIL import Image
 from tqdm.auto import tqdm
 
 from prompts import SYSTEM_PROMPT, get_check_and_refine_prompt
+
+
+# ---------------------------------------------------------------------------
+# Robust JSON extraction (handles markdown fences, newlines in strings)
+# ---------------------------------------------------------------------------
+
+
+def _extract_json(raw: str) -> dict:
+    """Parse JSON from VLM output, handling common issues."""
+    # Try direct parse first
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Strip markdown code fences
+    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", raw.strip())
+    cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Extract first { ... } block (greedy)
+    m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if m:
+        block = m.group(0)
+        # Fix unescaped newlines inside string values
+        fixed = re.sub(
+            r'(?<=: ")(.*?)(?=")',
+            lambda x: x.group(0).replace("\n", " "),
+            block,
+            flags=re.DOTALL,
+        )
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+    raise json.JSONDecodeError(f"Could not extract JSON from VLM response", raw, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +215,7 @@ def call_vlm(
                 response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content
-            return json.loads(raw)
+            return _extract_json(raw)
         except Exception as exc:
             last_error = exc
             if attempt < retries - 1:
