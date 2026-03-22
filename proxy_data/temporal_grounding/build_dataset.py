@@ -1,0 +1,319 @@
+"""
+将 Time-R1 的 TimeRFT 训练数据 / TVGBench 评估数据转换为 EasyR1 JSONL 格式。
+
+用法:
+    # 生成 ≤256s 无 CoT 版本
+    python build_dataset.py \
+        --timerft_json /path/to/train_2k5.json \
+        --tvgbench_json /path/to/tvgbench.json \
+        --video_base /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset \
+        --output_dir ./data --max_duration 256 --mode no_cot
+
+    # 生成 ≤256s CoT 版本
+    python build_dataset.py \
+        --timerft_json /path/to/train_2k5.json \
+        --video_base /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset \
+        --output_dir ./data --max_duration 256 --mode cot
+"""
+
+import argparse
+import json
+import os
+from collections import Counter
+
+# ── 服务器数据根目录 ──────────────────────────────────────────────
+DEFAULT_VIDEO_BASE = "/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset"
+
+# ── Prompt 模板（无 CoT）──────────────────────────────────────────
+PROMPT_TEMPLATE_NO_COT = (
+    'Watch the following video carefully:\n'
+    '<video>\n\n'
+    'This video is {duration:.1f} seconds long.\n\n'
+    'Your task: Locate the time period of the event "{sentence}" in this video.\n\n'
+    'Output format (strictly follow this):\n'
+    '<events>\n'
+    '[start_time, end_time]\n'
+    '</events>\n\n'
+    'Where start_time and end_time are in seconds '
+    '(precise to one decimal place, e.g., [12.5, 17.8]).'
+)
+
+# ── Prompt 模板（CoT：鼓励模型在 <think> 中分析时间线）──────────
+PROMPT_TEMPLATE_COT = (
+    'Watch the following video carefully:\n'
+    '<video>\n\n'
+    'This video is {duration:.1f} seconds long.\n\n'
+    'Your task: Locate the time period of the event "{sentence}" in this video.\n\n'
+    'First, think step by step inside <think></think> tags. '
+    'Describe what happens at different time periods in the video '
+    'and determine when the target event occurs.\n\n'
+    'Then, provide the precise time period in the following format:\n'
+    '<events>\n'
+    '[start_time, end_time]\n'
+    '</events>\n\n'
+    'Where start_time and end_time are in seconds '
+    '(precise to one decimal place, e.g., [12.5, 17.8]).'
+)
+
+
+def parse_source_from_qid(qid: str) -> str:
+    """从 qid 中提取数据来源，如 'cosmo', 'yt-temporal' 等。"""
+    parts = qid.split("|")
+    return parts[1] if len(parts) >= 2 else "unknown"
+
+
+def round1(val):
+    """保留一位小数。"""
+    return round(val, 1)
+
+
+def convert_timerft(items: list, video_base: str, max_duration: float = None, mode: str = "no_cot") -> list:
+    """将 TimeRFT train_2k5.json 转换为 EasyR1 格式。"""
+    results = []
+    stats = {"total": 0, "skipped_no_ts": 0, "skipped_duration": 0, "durations": [], "event_lens": []}
+    prompt_tpl = PROMPT_TEMPLATE_COT if mode == "cot" else PROMPT_TEMPLATE_NO_COT
+
+    for item in items:
+        stats["total"] += 1
+
+        ts = item.get("timestamp")
+        if ts is None or len(ts) != 2:
+            stats["skipped_no_ts"] += 1
+            continue
+
+        gt_start, gt_end = float(ts[0]), float(ts[1])
+        duration = float(item["duration"])
+        sentence = item["sentence"]
+
+        # 时长过滤
+        if max_duration is not None and duration > max_duration:
+            stats["skipped_duration"] += 1
+            continue
+
+        video_filename = os.path.basename(item["video"])
+        video_path = os.path.join(video_base, "timerft_data", video_filename)
+
+        # 处理 video_start / video_end（部分样本需要裁切）
+        video_start = item.get("video_start")
+        video_end = item.get("video_end")
+
+        # 构建 prompt
+        prompt = prompt_tpl.format(duration=duration, sentence=sentence)
+
+        # 构建 answer
+        answer = f"<events>\n[{round1(gt_start)}, {round1(gt_end)}]\n</events>"
+
+        # 构建 metadata
+        qid = item.get("qid", "")
+        source = parse_source_from_qid(qid)
+        metadata = {
+            "video_id": video_filename.replace(".mp4", ""),
+            "duration": duration,
+            "timestamp": [round1(gt_start), round1(gt_end)],
+            "sentence": sentence,
+            "source": source,
+            "difficulty": item.get("difficulty"),
+            "qid": qid,
+        }
+        if video_start is not None:
+            metadata["clip_start"] = video_start
+        if video_end is not None:
+            metadata["clip_end"] = video_end
+
+        record = {
+            "messages": [{"role": "user", "content": prompt}],
+            "prompt": prompt,
+            "answer": answer,
+            "videos": [video_path],
+            "data_type": "video",
+            "problem_type": "temporal_grounding",
+            "metadata": metadata,
+        }
+        results.append(record)
+        stats["durations"].append(duration)
+        stats["event_lens"].append(gt_end - gt_start)
+
+    return results, stats
+
+
+def convert_tvgbench(items: list, video_base: str, max_duration: float = None, mode: str = "no_cot") -> list:
+    """将 TVGBench tvgbench.json 转换为 EasyR1 格式。"""
+    results = []
+    stats = {"total": 0, "skipped_bad_answer": 0, "skipped_duration": 0, "durations": [], "datasets": []}
+    prompt_tpl = PROMPT_TEMPLATE_COT if mode == "cot" else PROMPT_TEMPLATE_NO_COT
+
+    for item in items:
+        stats["total"] += 1
+
+        # 解析 answer "13.4-28.1" → [13.4, 28.1]
+        answer_str = item.get("answer", "")
+        parts = answer_str.split("-")
+        if len(parts) != 2:
+            stats["skipped_bad_answer"] += 1
+            continue
+        try:
+            gt_start, gt_end = float(parts[0]), float(parts[1])
+        except ValueError:
+            stats["skipped_bad_answer"] += 1
+            continue
+
+        duration = float(item["duration"])
+        sentence = item["question"]
+
+        # 时长过滤
+        if max_duration is not None and duration > max_duration:
+            stats["skipped_duration"] += 1
+            continue
+
+        video_filename = os.path.basename(item["path"])
+        video_path = os.path.join(video_base, "tvgbench_data", video_filename)
+
+        prompt = prompt_tpl.format(duration=duration, sentence=sentence)
+        answer = f"<events>\n[{round1(gt_start)}, {round1(gt_end)}]\n</events>"
+
+        metadata = {
+            "video_id": video_filename.replace(".mp4", ""),
+            "duration": duration,
+            "timestamp": [round1(gt_start), round1(gt_end)],
+            "sentence": sentence,
+            "dataset_name": item.get("dataset_name", ""),
+            "qsemtype": item.get("qsemtype", ""),
+        }
+
+        record = {
+            "messages": [{"role": "user", "content": prompt}],
+            "prompt": prompt,
+            "answer": answer,
+            "videos": [video_path],
+            "data_type": "video",
+            "problem_type": "temporal_grounding",
+            "metadata": metadata,
+        }
+        results.append(record)
+        stats["durations"].append(duration)
+        stats["datasets"].append(item.get("dataset_name", "unknown"))
+
+    return results, stats
+
+
+def print_stats(name: str, stats: dict):
+    """打印数据统计信息。"""
+    print(f"\n{'='*60}")
+    print(f"  {name} 统计")
+    print(f"{'='*60}")
+    print(f"  总条数:       {stats['total']}")
+
+    if "skipped_no_ts" in stats:
+        print(f"  跳过(无时间戳): {stats['skipped_no_ts']}")
+    if "skipped_bad_answer" in stats:
+        print(f"  跳过(格式错误): {stats['skipped_bad_answer']}")
+    if "skipped_duration" in stats:
+        print(f"  跳过(超时长):   {stats['skipped_duration']}")
+
+    durs = stats["durations"]
+    if durs:
+        print(f"  有效条数:     {len(durs)}")
+        print(f"  时长分布:")
+        print(f"    min:  {min(durs):.1f}s")
+        print(f"    max:  {max(durs):.1f}s")
+        print(f"    mean: {sum(durs)/len(durs):.1f}s")
+        # 分段统计
+        bins = [0, 30, 60, 128, 256, 600, float("inf")]
+        labels = ["≤30s", "30-60s", "60-128s", "128-256s", "256-600s", ">600s"]
+        for i in range(len(labels)):
+            count = sum(1 for d in durs if bins[i] <= d < bins[i + 1])
+            pct = 100 * count / len(durs)
+            marker = " ⚠️ 超过128s" if bins[i] >= 128 and count > 0 else ""
+            print(f"    {labels[i]:>10}: {count:4d} ({pct:5.1f}%){marker}")
+
+    if "event_lens" in stats and stats["event_lens"]:
+        elens = stats["event_lens"]
+        print(f"  事件长度分布:")
+        print(f"    min:  {min(elens):.1f}s")
+        print(f"    max:  {max(elens):.1f}s")
+        print(f"    mean: {sum(elens)/len(elens):.1f}s")
+
+    if "datasets" in stats and stats["datasets"]:
+        print(f"  数据集分布:")
+        for ds, cnt in Counter(stats["datasets"]).most_common():
+            print(f"    {ds}: {cnt}")
+
+
+def write_jsonl(records: list, output_path: str):
+    """写入 JSONL 文件。"""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    print(f"  已写入 {len(records)} 条 → {output_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Time-R1 data → EasyR1 JSONL 转换")
+    parser.add_argument(
+        "--timerft_json",
+        type=str,
+        default=None,
+        help="TimeRFT train_2k5.json 路径",
+    )
+    parser.add_argument(
+        "--tvgbench_json",
+        type=str,
+        default=None,
+        help="TVGBench tvgbench.json 路径",
+    )
+    parser.add_argument(
+        "--video_base",
+        type=str,
+        default=DEFAULT_VIDEO_BASE,
+        help="服务器上视频根目录",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./data",
+        help="输出 JSONL 存放目录",
+    )
+    parser.add_argument(
+        "--max_duration",
+        type=float,
+        default=None,
+        help="最大视频时长(秒)，超过的样本将被过滤。如 256 表示只保留 ≤256s 的视频",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["cot", "no_cot"],
+        default="no_cot",
+        help="Prompt 模式: cot (带 CoT 思考) 或 no_cot (直接输出)",
+    )
+    args = parser.parse_args()
+
+    suffix = f"_{args.mode}" if args.mode != "no_cot" else ""
+    dur_tag = f"_max{int(args.max_duration)}s" if args.max_duration else ""
+
+    if args.timerft_json:
+        print(f"读取 TimeRFT: {args.timerft_json}")
+        print(f"模式: {args.mode}, 最大时长: {args.max_duration or '不限'}s")
+        with open(args.timerft_json, "r", encoding="utf-8") as f:
+            timerft_items = json.load(f)
+        records, stats = convert_timerft(timerft_items, args.video_base, args.max_duration, args.mode)
+        print_stats("TimeRFT (train_2k5)", stats)
+        fname = f"timerft_train{dur_tag}{suffix}_easyr1.jsonl"
+        write_jsonl(records, os.path.join(args.output_dir, fname))
+
+    if args.tvgbench_json:
+        print(f"\n读取 TVGBench: {args.tvgbench_json}")
+        with open(args.tvgbench_json, "r", encoding="utf-8") as f:
+            tvgbench_items = json.load(f)
+        records, stats = convert_tvgbench(tvgbench_items, args.video_base, args.max_duration, args.mode)
+        print_stats("TVGBench (eval)", stats)
+        fname = f"tvgbench_val{dur_tag}{suffix}_easyr1.jsonl"
+        write_jsonl(records, os.path.join(args.output_dir, fname))
+
+    if not args.timerft_json and not args.tvgbench_json:
+        print("请指定 --timerft_json 或 --tvgbench_json（至少一个）")
+
+
+if __name__ == "__main__":
+    main()

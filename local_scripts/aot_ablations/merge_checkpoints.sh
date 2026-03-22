@@ -50,7 +50,7 @@ for EXP_NAME in "${EXPS[@]}"; do
     # 找最后一个 global_step_XXX 目录（按数字排序取最大）
     LAST_STEP_DIR="$(
         find "${EXP_CKPT_DIR}" -maxdepth 1 -type d -name 'global_step_*' \
-        | sort -t_ -k3 -n \
+        | sort -V \
         | tail -n 1
     )"
 

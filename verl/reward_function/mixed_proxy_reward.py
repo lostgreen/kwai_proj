@@ -219,6 +219,9 @@ from verl.reward_function.youcook2_temporal_seg_reward import (
     has_events_tag,
     compute_f1_iou,
 )
+from verl.reward_function.temporal_grounding_reward import (
+    temporal_grounding_reward,
+)
 
 
 def _temporal_seg_reward(response: str, ground_truth: str) -> Dict[str, float]:
@@ -270,6 +273,7 @@ _TASK_REWARD_DISPATCH = {
     "aot_3way_t2v": _choice_reward,
     "sort":         _sort_reward,
     "temporal_seg": _temporal_seg_reward,
+    "temporal_grounding": None,  # 特殊处理：需要 metadata
 }
 
 
@@ -308,6 +312,13 @@ def compute_score(
 
             # 查找对应的 reward 函数
             reward_fn = _TASK_REWARD_DISPATCH.get(problem_type)
+
+            # temporal_grounding: 需要 metadata（含 duration）
+            if problem_type == "temporal_grounding":
+                metadata = item.get("metadata") or {}
+                score = temporal_grounding_reward(response, ground_truth, metadata)
+                results.append(score)
+                continue
 
             if reward_fn is None:
                 # 未知任务类型：尝试猜测

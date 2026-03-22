@@ -89,5 +89,16 @@ SAVE_FREQ="${SAVE_FREQ:-20}"
 VAL_FREQ="${VAL_FREQ:-10}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot/ablations}"
 
+# ---- 难度优先采样（curate）----
+CURATE_TARGET_COUNT="${CURATE_TARGET_COUNT:-1000}"  # 每个实验统一的训练样本数
+CURATE_MID_RATIO="${CURATE_MID_RATIO:-0.6}"         # 中等难度占比
+CURATE_HARD_RATIO="${CURATE_HARD_RATIO:-0.3}"       # 困难占比
+CURATE_EASY_RATIO="${CURATE_EASY_RATIO:-0.1}"       # 简单占比
+CURATE_MID_LO="${CURATE_MID_LO:-0.3}"               # 中等难度下界（含）
+CURATE_MID_HI="${CURATE_MID_HI:-0.7}"               # 中等难度上界（含）
+# CURATE_PER_TYPE_QUOTA — 各实验脚本可覆盖（JSON dict，混合实验用）
+# CURATE_REPORT_JSONLS  — 逗号分隔，混合实验用（可跨实验引用 report）
+# CURATE_TRAIN_JSONLS   — 逗号分隔，混合实验用（可跨实验引用 train）
+
 # ---- 任务权重模式 ----
 TASK_WEIGHT_MODE="${TASK_WEIGHT_MODE:-count}"
