@@ -230,7 +230,8 @@ def get_check_and_refine_prompt(
         "- `reverse_caption` (string): the (possibly refined) reverse caption.\n"
         + ('- `shuffle_caption` (string): the (possibly refined) shuffle caption.\n' if shuffle_caption else "")
         + "\nIf the captions are already distinguishable, return them unchanged.\n"
-        "Ensure every string value is on a single line (no embedded newlines).\n\n"
+        "Ensure every string value is on a single line (no embedded newlines).\n"
+        "Output ONLY the JSON object — no thinking, no explanations, no markdown fences.\n\n"
         "Example output:\n"
         '{"distinguishable": false, "reason": "Both captions just say ingredients are '
         'being mixed without describing direction of change.", '

@@ -342,7 +342,8 @@ def check_one(
         "You are an expert video caption reviewer. "
         "Your job is to ensure temporal captions accurately and distinctly describe "
         "the observed action sequences in forward, reverse, and shuffled video clips. "
-        "Be precise about state changes and their direction."
+        "Be precise about state changes and their direction. "
+        "Output ONLY the requested JSON object — no explanations, no markdown, no extra text."
     )
     resp = call_vlm(api_base, api_key, model, system_prompt, content, retries, max_tokens)
 
