@@ -188,6 +188,7 @@ class RolloutStore:
         self.group_order: list[str] = []
         self.task_counts: dict[str, int] = {}
         self.step_curve: list[dict[str, float]] = []
+        self.training_metrics: list[dict[str, Any]] = []
         self.frame_cache: dict[str, list[str]] = {}
         self.timeline_frame_cache: dict[str, list[dict[str, Any]]] = {}
         self.total_samples = 0
@@ -304,6 +305,7 @@ class RolloutStore:
 
     def _load_step_curve(self, log_file: Path) -> list[dict[str, float]]:
         points = []
+        self.training_metrics: list[dict[str, Any]] = []
         with open(log_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -325,6 +327,29 @@ class RolloutStore:
                         "reward": _safe_float(overall),
                     }
                 )
+                # Extract training metrics for visualization
+                actor = row.get("actor") or {}
+                critic = row.get("critic") or {}
+                perf = row.get("perf") or {}
+                resp_len = row.get("response_length") or {}
+                advantages = critic.get("advantages") or {}
+                self.training_metrics.append({
+                    "step": _safe_float(row.get("step")),
+                    "kl_loss": _safe_float(actor.get("kl_loss")),
+                    "ppo_kl": _safe_float(actor.get("ppo_kl")),
+                    "pg_loss": _safe_float(actor.get("pg_loss")),
+                    "entropy_loss": _safe_float(actor.get("entropy_loss")),
+                    "pg_clipfrac_higher": _safe_float(actor.get("pg_clipfrac_higher")),
+                    "pg_clipfrac_lower": _safe_float(actor.get("pg_clipfrac_lower")),
+                    "grad_norm": _safe_float(actor.get("grad_norm")),
+                    "lr": _safe_float(actor.get("lr")),
+                    "advantage_mean": _safe_float(advantages.get("mean")),
+                    "advantage_max": _safe_float(advantages.get("max")),
+                    "advantage_min": _safe_float(advantages.get("min")),
+                    "response_length_mean": _safe_float(resp_len.get("mean")),
+                    "throughput": _safe_float(perf.get("throughput")),
+                })
+        self.training_metrics.sort(key=lambda x: x["step"])
         return sorted(points, key=lambda x: x["step"])
 
     def _build_curve_from_groups(self) -> list[dict[str, float]]:
@@ -456,6 +481,7 @@ class RolloutStore:
             "task_counts": self.task_counts,
             "step_curve": self.step_curve,
             "task_curves": self._build_task_curves(),
+            "training_metrics": self.training_metrics,
             "rollout_dir": str(self.rollout_dir) if self.rollout_dir else None,
             "log_file": str(self.log_file) if self.log_file else None,
         }

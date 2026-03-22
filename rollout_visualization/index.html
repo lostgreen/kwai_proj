@@ -43,6 +43,10 @@ h3{font-size:13px;font-weight:600;color:#374151}
 .legend-item{display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;user-select:none;transition:opacity .2s}
 .legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
 .chart-svg{display:block;background:rgba(241,245,249,.8);border:1px solid rgba(100,116,139,.15);border-radius:10px}
+.metric-tab{font-size:11px;padding:4px 10px;border-radius:8px;cursor:pointer;border:1px solid rgba(100,116,139,.2);
+  background:rgba(255,255,255,.6);color:#475569;transition:all .15s;white-space:nowrap}
+.metric-tab:hover{border-color:var(--blue);color:var(--blue)}
+.metric-tab.active{background:var(--blue);color:#fff;border-color:var(--blue)}
 .smooth-control{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
 .smooth-control input[type=range]{accent-color:#34d399;width:130px;cursor:pointer}
 .step-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-bottom:20px}
@@ -196,6 +200,16 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
     <svg id="rewardChart" class="chart-svg" viewBox="0 0 820 180" style="width:100%;height:180px"></svg>
   </div>
 
+  <!-- ═══════ TRAINING METRICS CHARTS ═══════ -->
+  <div class="card chart-section" id="trainingMetricsSection" style="margin-bottom:12px;display:none">
+    <div class="chart-header">
+      <span style="font-size:13px;font-weight:600;color:#374151">📊 训练指标</span>
+      <div style="display:flex;gap:4px;flex-wrap:wrap" id="metricTabs"></div>
+    </div>
+    <div id="metricTooltip" style="font-size:12px;color:var(--muted);padding:4px 0 8px;line-height:1.5;min-height:18px"></div>
+    <svg id="metricsChart" class="chart-svg" viewBox="0 0 820 200" style="width:100%;height:200px"></svg>
+  </div>
+
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
     <h2 style="color:#374151;font-size:14px;font-weight:600">按 Batch 浏览 <span class="muted">— 点击进入详情</span></h2>
     <span id="stepCountLabel" class="muted"></span>
@@ -334,6 +348,7 @@ function applyState(summary){
 
   buildLegend();
   drawChart(+document.getElementById('smoothSlider').value/100);
+  initTrainingMetrics(summary);
   setStatus(`✓ 已加载: ${summary.group_count} groups / ${summary.sample_count} samples / ${summary.step_count} batches`);
   loadSteps();
 }
@@ -441,6 +456,200 @@ function toggleCurve(n){
 function onSmooth(v){
   document.getElementById('smoothVal').textContent=(v/100).toFixed(2);
   drawChart(v/100);
+}
+
+/* ═══════════════ TRAINING METRICS ═══════════════ */
+let trainingMetrics=[], activeMetricTab='kl';
+
+const METRIC_GROUPS={
+  kl:{
+    label:'KL 散度',
+    keys:['kl_loss','ppo_kl'],
+    colors:{'kl_loss':'#e11d48','ppo_kl':'#7c3aed'},
+    labels:{'kl_loss':'KL Loss','ppo_kl':'PPO KL'},
+    desc:{
+      kl_loss:'KL Loss — 当前策略与参考策略之间的 KL 散度惩罚项。衡量策略偏离初始模型的程度。持续增长说明策略在快速漂移，可能导致训练不稳定或 reward hacking；若一直为 0，可能 KL 惩罚系数过大，策略难以更新。理想情况是随训练缓慢增长。',
+      ppo_kl:'PPO KL — 通过 importance sampling ratio 近似估算的 KL 散度。与 KL Loss 互为参照：二者都很小说明策略更新保守；大幅跳升预示可能的训练崩溃。'
+    }
+  },
+  pg:{
+    label:'策略损失',
+    keys:['pg_loss','entropy_loss'],
+    colors:{'pg_loss':'#2563eb','entropy_loss':'#059669'},
+    labels:{'pg_loss':'PG Loss','entropy_loss':'Entropy Loss'},
+    desc:{
+      pg_loss:'PG Loss — 策略梯度损失，PPO 的核心优化目标。值越小说明策略在正向更新。注意观察趋势：应当整体下降或波动中下降。若持续上升，可能需要降低学习率或检查 reward 信号。',
+      entropy_loss:'Entropy Loss — 策略输出分布的熵。反映模型输出的多样性/探索程度。下降说明模型越来越确定（exploiting）；过快下降可能导致策略坍缩到局部最优。可通过 entropy coefficient 来调节。'
+    }
+  },
+  clip:{
+    label:'裁剪比例',
+    keys:['pg_clipfrac_higher','pg_clipfrac_lower'],
+    colors:{'pg_clipfrac_higher':'#d97706','pg_clipfrac_lower':'#0891b2'},
+    labels:{'pg_clipfrac_higher':'Clip Higher','pg_clipfrac_lower':'Clip Lower'},
+    desc:{
+      pg_clipfrac_higher:'Clip Higher — ratio 被上界裁剪的比例。比例过高（>0.3）说明策略更新步幅过大，PPO 的裁剪机制在频繁生效，应考虑降低学习率。',
+      pg_clipfrac_lower:'Clip Lower — ratio 被下界裁剪的比例。配合 Clip Higher 观察：若两者都很低，可以尝试增大学习率以加速训练。'
+    }
+  },
+  grad:{
+    label:'梯度 & LR',
+    keys:['grad_norm','lr'],
+    colors:{'grad_norm':'#e11d48','lr':'#2563eb'},
+    labels:{'grad_norm':'Grad Norm','lr':'Learning Rate'},
+    dual_axis:true,
+    desc:{
+      grad_norm:'Grad Norm — 梯度 L2 范数。反映参数更新幅度。突然飙升（spike）通常预示训练不稳定，可能需要更激进的 gradient clipping。正常训练中应保持相对平稳或缓慢变化。',
+      lr:'Learning Rate — 当前学习率。对照 grad_norm 和 loss 曲线观察：warmup 阶段 LR 上升时 loss 应稳步下降；decay 阶段 LR 下降时 loss 可能趋于平稳。'
+    }
+  },
+  adv:{
+    label:'Advantage',
+    keys:['advantage_mean','advantage_max','advantage_min'],
+    colors:{'advantage_mean':'#475569','advantage_max':'#059669','advantage_min':'#e11d48'},
+    labels:{'advantage_mean':'Mean','advantage_max':'Max','advantage_min':'Min'},
+    desc:{
+      advantage_mean:'Advantage Mean — 优势函数均值。理论上应趋近于 0（因为 advantage 是 return 减去 baseline）。若均值长期偏离 0，说明 baseline（value function）估计有偏。',
+      advantage_max:'Advantage Max — 优势函数最大值。过大说明存在高方差的 reward 信号，可能使训练不稳定。',
+      advantage_min:'Advantage Min — 优势函数最小值。配合 max 观察分布范围：range 越大说明 reward 信号方差越大，训练越不稳定。'
+    }
+  },
+  len:{
+    label:'生成长度',
+    keys:['response_length_mean'],
+    colors:{'response_length_mean':'#7c3aed'},
+    labels:{'response_length_mean':'Mean Length'},
+    desc:{
+      response_length_mean:'Response Length — 模型平均生成长度。RLHF 训练中常见生成长度逐渐增长的现象（length gaming）。如果长度急剧增长而 reward 未明显提升，说明模型可能在通过增加长度获取虚假奖励，需要加入长度惩罚。'
+    }
+  }
+};
+
+function buildMetricTabs(){
+  const el=document.getElementById('metricTabs');
+  el.innerHTML=Object.entries(METRIC_GROUPS).map(([id,g])=>{
+    const tipText=Object.values(g.desc).join('\n');
+    return `<div class="metric-tab${id===activeMetricTab?' active':''}" onclick="switchMetricTab('${id}')" title="${tipText.replace(/"/g,'&quot;')}">${g.label}</div>`;
+  }).join('');
+}
+function switchMetricTab(id){
+  activeMetricTab=id;
+  document.querySelectorAll('.metric-tab').forEach(t=>t.classList.remove('active'));
+  const tabs=document.getElementById('metricTabs').children;
+  for(const t of tabs){ if(t.textContent===METRIC_GROUPS[id].label) t.classList.add('active'); }
+  drawMetricsChart();
+}
+function drawMetricsChart(){
+  const svg=document.getElementById('metricsChart');
+  const tooltip=document.getElementById('metricTooltip');
+  if(!trainingMetrics.length){svg.innerHTML='';tooltip.textContent='';return;}
+  const grp=METRIC_GROUPS[activeMetricTab];
+  if(!grp){svg.innerHTML='';return;}
+
+  // Show combined description
+  tooltip.textContent=Object.values(grp.desc).join(' ');
+
+  const W=820,H=200,PL=50,PR=grp.dual_axis?50:10,PT=14,PB=28;
+  const pw=W-PL-PR, ph=H-PT-PB;
+  const steps=trainingMetrics.map(m=>m.step);
+  const minS=Math.min(...steps), maxS=Math.max(...steps);
+  const xs=s=>PL+((s-minS)/Math.max(1,maxS-minS))*pw;
+
+  let d='';
+  // grid lines
+  const firstKey=grp.keys[0];
+  const allVals=grp.dual_axis
+    ? trainingMetrics.map(m=>m[firstKey]).filter(v=>v!=null)
+    : grp.keys.flatMap(k=>trainingMetrics.map(m=>m[k]).filter(v=>v!=null));
+  let vMin=Math.min(...allVals), vMax=Math.max(...allVals);
+  if(vMin===vMax){vMin-=0.01;vMax+=0.01;}
+  const ys=v=>PT+(1-(v-vMin)/Math.max(1e-12,vMax-vMin))*ph;
+
+  // right axis for dual_axis
+  let vMin2=0,vMax2=1,ys2=v=>PT+(1-v)*ph;
+  if(grp.dual_axis && grp.keys.length>1){
+    const k2=grp.keys[1];
+    const vals2=trainingMetrics.map(m=>m[k2]).filter(v=>v!=null);
+    vMin2=Math.min(...vals2);vMax2=Math.max(...vals2);
+    if(vMin2===vMax2){vMin2-=1e-7;vMax2+=1e-7;}
+    ys2=v=>PT+(1-(v-vMin2)/Math.max(1e-12,vMax2-vMin2))*ph;
+  }
+
+  // Y axis ticks
+  for(let i=0;i<=4;i++){
+    const frac=i/4;
+    const y=PT+(1-frac)*ph;
+    const val=vMin+frac*(vMax-vMin);
+    d+=`<line x1="${PL}" y1="${y}" x2="${PL+pw}" y2="${y}" stroke="rgba(100,116,139,.08)" stroke-width="1"/>`;
+    d+=`<text x="${PL-4}" y="${y+4}" text-anchor="end" font-size="9" fill="#6b7280">${val<0.001&&val>-0.001?val.toExponential(1):val.toFixed(3)}</text>`;
+  }
+  if(grp.dual_axis && grp.keys.length>1){
+    for(let i=0;i<=4;i++){
+      const frac=i/4;
+      const y=PT+(1-frac)*ph;
+      const val=vMin2+frac*(vMax2-vMin2);
+      d+=`<text x="${PL+pw+4}" y="${y+4}" text-anchor="start" font-size="9" fill="${grp.colors[grp.keys[1]]}">${val<0.001&&val>-0.001?val.toExponential(1):val.toFixed(4)}</text>`;
+    }
+  }
+  // X axis
+  const xTicks=[minS,...steps.filter((_,i,arr)=>i===0||i===arr.length-1||(i%Math.max(1,Math.floor(arr.length/6))===0))].filter((v,i,a)=>a.indexOf(v)===i);
+  xTicks.forEach(s=>{
+    const x=xs(s);
+    d+=`<text x="${x}" y="${H-8}" text-anchor="middle" font-size="9" fill="#6b7280">${s}</text>`;
+    d+=`<line x1="${x}" y1="${PT}" x2="${x}" y2="${H-PB}" stroke="rgba(100,116,139,.05)" stroke-width="1"/>`;
+  });
+  d+=`<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${H-PB}" stroke="rgba(100,116,139,.2)" stroke-width="1"/>`;
+  d+=`<line x1="${PL}" y1="${H-PB}" x2="${PL+pw}" y2="${H-PB}" stroke="rgba(100,116,139,.2)" stroke-width="1"/>`;
+
+  // Draw curves
+  grp.keys.forEach((k,ki)=>{
+    const color=grp.colors[k]||'#475569';
+    const useRight=grp.dual_axis&&ki>0;
+    const yFn=useRight?ys2:ys;
+    const pts=trainingMetrics.filter(m=>m[k]!=null);
+    if(!pts.length)return;
+    const path=pts.map(m=>`${xs(m.step)},${yFn(m[k])}`).join(' ');
+    d+=`<polyline points="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-opacity=".85"/>`;
+  });
+
+  // Legend
+  d+=grp.keys.map((k,i)=>{
+    const color=grp.colors[k]||'#475569';
+    const lx=PL+8+i*120;
+    return `<rect x="${lx}" y="2" width="10" height="10" rx="2" fill="${color}" opacity=".85"/>
+      <text x="${lx+14}" y="10" font-size="10" fill="${color}" font-weight="600">${grp.labels[k]||k}</text>`;
+  }).join('');
+
+  svg.innerHTML=d;
+
+  // Hover interaction: show individual metric description
+  svg.onmousemove=function(e){
+    const rect=svg.getBoundingClientRect();
+    const svgX=(e.clientX-rect.left)/rect.width*W;
+    // Find closest step
+    let closestIdx=0,closestDist=Infinity;
+    trainingMetrics.forEach((m,i)=>{
+      const dist=Math.abs(xs(m.step)-svgX);
+      if(dist<closestDist){closestDist=dist;closestIdx=i;}
+    });
+    const m=trainingMetrics[closestIdx];
+    const vals=grp.keys.map(k=>`${grp.labels[k]||k}: ${m[k]!=null?(m[k]<0.001&&m[k]>-0.001?m[k].toExponential(3):m[k].toFixed(4)):'N/A'}`);
+    tooltip.textContent=`Step ${m.step} — ${vals.join(' | ')}`;
+  };
+  svg.onmouseleave=function(){
+    tooltip.textContent=Object.values(grp.desc)[0];
+  };
+}
+function initTrainingMetrics(summary){
+  trainingMetrics=summary.training_metrics||[];
+  const sec=document.getElementById('trainingMetricsSection');
+  if(trainingMetrics.length>0){
+    sec.style.display='';
+    buildMetricTabs();
+    drawMetricsChart();
+  }else{
+    sec.style.display='none';
+  }
 }
 
 /* ═══════════════ STEP DETAIL ═══════════════ */
@@ -1130,6 +1339,7 @@ function applyStateWithSteps(summary, steps){
   Object.entries(tc).forEach(([t,pts])=>{chartData[t]=pts.map(p=>({step:p.step,v:p.reward}));});
   buildLegend();
   drawChart(+document.getElementById('smoothSlider').value/100);
+  initTrainingMetrics(summary);
   setStatus(`✓ 已加载: ${summary.group_count} groups / ${summary.sample_count} samples / ${summary.step_count} steps`);
   curSteps=steps;
   document.getElementById('stepCountLabel').textContent=curSteps.length+' steps';
