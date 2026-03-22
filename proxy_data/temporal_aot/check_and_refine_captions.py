@@ -194,6 +194,7 @@ def call_vlm(
     system_prompt: str,
     content: list[dict[str, Any]],
     retries: int,
+    max_tokens: int = 8192,
 ) -> dict[str, Any]:
     try:
         from openai import OpenAI
@@ -215,12 +216,11 @@ def call_vlm(
                     {"role": "user", "content": content},
                 ],
                 temperature=0.0,
-                max_tokens=1024,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content
             if not raw or not raw.strip():
-                # Sometimes Gemini returns empty content (safety filter, thinking-only, etc.)
                 finish = getattr(resp.choices[0], "finish_reason", "unknown")
                 raise ValueError(
                     f"Empty response from VLM (finish_reason={finish}). "
@@ -280,6 +280,7 @@ def check_one(
     resize_max_width: int,
     jpeg_quality: int,
     retries: int,
+    max_tokens: int = 8192,
 ) -> dict[str, Any]:
     """Check and optionally refine one caption pair."""
     forward_path = pair["forward_video_path"]
@@ -343,7 +344,7 @@ def check_one(
         "the observed action sequences in forward, reverse, and shuffled video clips. "
         "Be precise about state changes and their direction."
     )
-    resp = call_vlm(api_base, api_key, model, system_prompt, content, retries)
+    resp = call_vlm(api_base, api_key, model, system_prompt, content, retries, max_tokens)
 
     # --- Build output record ---
     was_refined = not resp.get("distinguishable", True)
@@ -429,6 +430,8 @@ def main() -> None:
     parser.add_argument("--resize-max-width", type=int, default=768, help="Resize frame max width before upload")
     parser.add_argument("--jpeg-quality", type=int, default=60, help="JPEG quality for upload")
     parser.add_argument("--retries", type=int, default=3, help="API retry count per sample")
+    parser.add_argument("--max-tokens", type=int, default=8192,
+                        help="Max output tokens for VLM response (increase if responses are truncated)")
     parser.add_argument("--max-samples", type=int, default=0, help="Max pairs to process (0 = all)")
     parser.add_argument(
         "--resume", action="store_true", default=True,
@@ -487,6 +490,7 @@ def main() -> None:
                     args.resize_max_width,
                     args.jpeg_quality,
                     args.retries,
+                    args.max_tokens,
                 ): pair["clip_key"]
                 for pair in pairs
             }
