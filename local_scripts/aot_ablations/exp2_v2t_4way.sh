@@ -14,7 +14,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 EXP_NAME="${EXP_NAME:-aot_ablation_exp2_v2t_3way}"
 
 # ---- 数据目录（放在 AOT_DATA_ROOT 下统一管理）----
-DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations/exp2}"
+DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations_refined/exp2}"
 mkdir -p "${DATA_DIR}"
 
 # ---- MCQ 输出路径（不设 V2T_OUTPUT，只生成 3-way V2T）----

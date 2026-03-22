@@ -24,14 +24,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 EXP_NAME="${EXP_NAME:-aot_ablation_exp8_all_mixed}"
 
 # ---- 数据目录 ----
-DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations/exp8}"
+DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations_refined/exp8}"
 mkdir -p "${DATA_DIR}"
 
 # ---- 依赖实验路径 ----
-EXP1_DIR="${AOT_DATA_ROOT}/ablations/exp1"
-EXP2_DIR="${AOT_DATA_ROOT}/ablations/exp2"
-EXP3_DIR="${AOT_DATA_ROOT}/ablations/exp3"
-EXP4_DIR="${AOT_DATA_ROOT}/ablations/exp4"
+EXP1_DIR="${AOT_DATA_ROOT}/ablations_refined/exp1"
+EXP2_DIR="${AOT_DATA_ROOT}/ablations_refined/exp2"
+EXP3_DIR="${AOT_DATA_ROOT}/ablations_refined/exp3"
+EXP4_DIR="${AOT_DATA_ROOT}/ablations_refined/exp4"
 
 # ---- 跨实验采样配置 ----
 CURATE_REPORT_JSONLS="${EXP1_DIR}/offline_filter_report.jsonl,${EXP2_DIR}/offline_filter_report.jsonl,${EXP3_DIR}/offline_filter_report.jsonl,${EXP4_DIR}/offline_filter_report.jsonl"

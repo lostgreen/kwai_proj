@@ -23,9 +23,9 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-aot-ablation}"
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- 上游标注数据（Step 1-2 产出，所有实验共享）----
-AOT_DATA_ROOT="${AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot_refined}"
+AOT_DATA_ROOT="${AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot}"
 MANIFEST_JSONL="${MANIFEST_JSONL:-${AOT_DATA_ROOT}/aot_event_manifest.jsonl}"
-CAPTION_PAIRS="${CAPTION_PAIRS:-${AOT_DATA_ROOT}/caption_pairs.jsonl}"
+CAPTION_PAIRS="${CAPTION_PAIRS:-${AOT_DATA_ROOT}/refined_caption_pairs.jsonl}"
 # 消融实验默认不混合 temporal_seg，纯 AoT MCQ 训练；如需混合可覆盖
 SEG_JSONL="${SEG_JSONL:-}"
 
@@ -87,7 +87,7 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 SAVE_FREQ="${SAVE_FREQ:-20}"
 VAL_FREQ="${VAL_FREQ:-10}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot_refined/ablations}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot/ablations_refined}"
 
 # ---- 难度优先采样（curate）----
 CURATE_TARGET_COUNT="${CURATE_TARGET_COUNT:-1000}"  # 每个实验统一的训练样本数

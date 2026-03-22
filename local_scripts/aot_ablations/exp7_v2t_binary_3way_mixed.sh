@@ -20,12 +20,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 EXP_NAME="${EXP_NAME:-aot_ablation_exp7_v2t_binary_3way_mixed}"
 
 # ---- 数据目录 ----
-DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations/exp7}"
+DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations_refined/exp7}"
 mkdir -p "${DATA_DIR}"
 
 # ---- 依赖实验路径 ----
-EXP1_DIR="${AOT_DATA_ROOT}/ablations/exp1"
-EXP2_DIR="${AOT_DATA_ROOT}/ablations/exp2"
+EXP1_DIR="${AOT_DATA_ROOT}/ablations_refined/exp1"
+EXP2_DIR="${AOT_DATA_ROOT}/ablations_refined/exp2"
 
 # ---- 跨实验采样配置 ----
 CURATE_REPORT_JSONLS="${EXP1_DIR}/offline_filter_report.jsonl,${EXP2_DIR}/offline_filter_report.jsonl"

@@ -13,7 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 EXP_NAME="${EXP_NAME:-aot_ablation_exp5_mixed_binary}"
 
 # ---- 数据目录（放在 AOT_DATA_ROOT 下统一管理）----
-DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations/exp5}"
+DATA_DIR="${DATA_DIR:-${AOT_DATA_ROOT}/ablations_refined/exp5}"
 mkdir -p "${DATA_DIR}"
 
 # ---- MCQ 输出路径 ----
