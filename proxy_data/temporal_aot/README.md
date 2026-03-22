@@ -96,15 +96,17 @@ Shuffle 标注 prompt 设计：
 **Step 2.5 — Caption 质量检查 & 修正（可选，推荐）**
 
 ```bash
+AOT_DATA_ROOT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot
 python proxy_data/temporal_aot/check_and_refine_captions.py \
   --caption-pairs ${AOT_DATA_ROOT}/caption_pairs.jsonl \
   --manifest-jsonl ${AOT_DATA_ROOT}/aot_event_manifest.jsonl \
   --output ${AOT_DATA_ROOT}/refined_caption_pairs.jsonl \
-  --api-base https://generativelanguage.googleapis.com/v1beta/openai \
-  --model gemini-2.5-flash \
+  --api-base --api-base https://api.novita.ai/v3/openai \
+  --model pa/gmn-3-pro-preview \
   --fps 1.0 \
   --shuffle-fps 2.0 \
-  --workers 4
+  --workers 4 \
+  --max-samples 10
 ```
 
 说明：
