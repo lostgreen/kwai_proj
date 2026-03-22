@@ -53,6 +53,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_model_len", type=int, default=0)
     parser.add_argument("--max_num_batched_tokens", type=int, default=16384)
     parser.add_argument("--dtype", default="bfloat16")
+    # Mean-reward filtering: drop samples outside [min, max] even if diverse
+    parser.add_argument("--min_mean_reward", type=float, default=0.0,
+                        help="Drop sample if mean rollout reward <= this value (default: 0.0 = disabled)")
+    parser.add_argument("--max_mean_reward", type=float, default=1.0,
+                        help="Drop sample if mean rollout reward >= this value (default: 1.0 = disabled)")
+    parser.add_argument("--min_frames", type=int, default=0,
+                        help="Minimum number of video frames per clip (0 = disabled). "
+                             "When set, short videos are resampled at higher fps to meet this floor.")
     # Data-parallel sharding: split input across multiple GPU workers
     parser.add_argument("--shard_id", type=int, default=0, help="This worker's shard index (0-based)")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of parallel shards")
@@ -130,13 +138,16 @@ def build_multi_modal_data(example: dict[str, Any], args: argparse.Namespace) ->
     if videos:
         n_videos = len(videos)
         max_frames_per_video = max(1, args.max_frames // n_videos) if n_videos > 1 else args.max_frames
-        return {
+        data = {
             "videos": videos,
             "min_pixels": args.min_pixels,
             "max_pixels": args.max_pixels,
             "max_frames": max_frames_per_video,
             "video_fps": args.video_fps,
         }
+        if getattr(args, "min_frames", 0) > 0:
+            data["min_frames"] = args.min_frames
+        return data
     if images:
         return {
             "images": images,
@@ -162,6 +173,7 @@ def prepare_inputs(example: dict[str, Any], processor, args: argparse.Namespace)
                 max_pixels=args.max_pixels,
                 max_frames=max_frames_per_video,
                 video_fps=args.video_fps,
+                min_frames=getattr(args, "min_frames", 0),
                 return_fps=True,
             )
             if processed_video is not None:
@@ -446,7 +458,13 @@ def main() -> None:
         scores = reward_fn(reward_inputs)
         rewards = [round(float(score["overall"]), args.reward_round_digits) for score in scores]
         unique_rewards = sorted(set(rewards))
-        keep = len(unique_rewards) > 1
+        mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
+
+        # Diversity check + mean-reward range check
+        has_diversity = len(unique_rewards) > 1
+        in_mean_range = args.min_mean_reward < mean_reward < args.max_mean_reward
+        keep = has_diversity and in_mean_range
+
         ptype = item.get("problem_type", "unknown") or "unknown"
         if keep:
             fout.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -460,6 +478,9 @@ def main() -> None:
             "index": idx,
             "problem_type": item.get("problem_type", ""),
             "keep": keep,
+            "has_diversity": has_diversity,
+            "in_mean_range": in_mean_range,
+            "mean_reward": round(mean_reward, args.reward_round_digits),
             "rewards": rewards,
             "unique_rewards": unique_rewards,
             "answer": item.get("answer", ""),
@@ -529,6 +550,10 @@ def main() -> None:
         f"[offline_filter] done. input={len(items)} kept={kept} dropped={dropped} "
         f"output={output_path} report={report_path}"
     )
+    if args.min_mean_reward > 0.0 or args.max_mean_reward < 1.0:
+        print(
+            f"[offline_filter] mean_reward filter: ({args.min_mean_reward}, {args.max_mean_reward})"
+        )
 
     # Per-task breakdown
     all_types = sorted(set(list(kept_by_type) + list(dropped_by_type)))

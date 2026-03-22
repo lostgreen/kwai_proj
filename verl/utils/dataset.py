@@ -194,10 +194,24 @@ def process_image(
 
 
 def process_video(
-    video: str, min_pixels: int = 4*32*32, max_pixels: int = 48*32*32, max_frames: int = 256, video_fps: float = 2, return_fps: bool = False
+    video: str, min_pixels: int = 4*32*32, max_pixels: int = 48*32*32, max_frames: int = 256, video_fps: float = 2, min_frames: int = 0, return_fps: bool = False
 ):
     vision_info = {"video": video, "min_pixels": min_pixels, "max_pixels": max_pixels, "max_frames": max_frames, "fps": video_fps}
     result = fetch_video(vision_info, image_patch_size=16, return_video_sample_fps=return_fps, return_video_metadata=return_fps)
+
+    # If min_frames is set and the result has fewer frames, retry with higher fps
+    if min_frames > 0:
+        n_frames = _count_video_frames(result)
+        if n_frames is not None and n_frames < min_frames and n_frames > 0:
+            # Estimate the video duration from current sampling: duration ≈ n_frames / video_fps
+            # Compute the fps needed to get min_frames: new_fps = min_frames / duration
+            est_duration = n_frames / max(video_fps, 0.1)
+            new_fps = min(min_frames / max(est_duration, 0.1), max_frames / max(est_duration, 0.1))
+            new_fps = max(new_fps, video_fps)  # never go below the original fps
+            if new_fps > video_fps:
+                vision_info_retry = {"video": video, "min_pixels": min_pixels, "max_pixels": max_pixels, "max_frames": max_frames, "fps": new_fps}
+                result = fetch_video(vision_info_retry, image_patch_size=16, return_video_sample_fps=return_fps, return_video_metadata=return_fps)
+
     _maybe_log_video_debug(
         video=video,
         result=result,
@@ -335,6 +349,7 @@ class RLHFDataset(Dataset):
         min_pixels: Optional[int] = None,
         max_pixels: Optional[int] = None,
         max_frames: int = 256,
+        min_frames: int = 0,
         filter_overlong_prompts: bool = True,
         filter_overlong_prompts_workers: int = 16,
     ):
@@ -351,6 +366,7 @@ class RLHFDataset(Dataset):
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
         self.max_frames = max_frames
+        self.min_frames = min_frames
 
         if "@" in data_path:
             data_path, data_split = data_path.split("@")
@@ -491,7 +507,7 @@ class RLHFDataset(Dataset):
 
             processed_videos = [] if len(videos) != 0 else None  # text-only data
             for video in videos:
-                processed_videos.append(process_video(video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=self.max_frames, video_fps=self.video_fps))
+                processed_videos.append(process_video(video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=self.max_frames, min_frames=self.min_frames, video_fps=self.video_fps))
 
             model_inputs = self.processor(
                 videos=processed_videos, text=[prompt], add_special_tokens=False, return_tensors="pt"
@@ -549,7 +565,7 @@ class RLHFDataset(Dataset):
 
             for video in videos:
                 processed_video, video_fps = process_video(
-                    video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=max_frames_per_video, video_fps=self.video_fps, return_fps=True
+                    video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=max_frames_per_video, min_frames=self.min_frames, video_fps=self.video_fps, return_fps=True
                 )
                 video_kwargs = {"do_sample_frames": False}
                 processed_videos.append(processed_video)
@@ -576,6 +592,7 @@ class RLHFDataset(Dataset):
                 "min_pixels": self.min_pixels,
                 "max_pixels": self.max_pixels,
                 "max_frames": max_frames_per_video,
+                "min_frames": self.min_frames,
                 "video_fps": self.video_fps
             }
             token_stats_grid_video = model_inputs.get("video_grid_thw", None)

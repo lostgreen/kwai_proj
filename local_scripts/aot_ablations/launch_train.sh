@@ -187,8 +187,11 @@ if [[ ! -f "${FILTERED_TRAIN}" || "${FORCE_FILTER:-false}" == "true" ]]; then
       --max_new_tokens "${MAX_RESPONSE_LEN}" \
       --video_fps     "${VIDEO_FPS}" \
       --max_frames    "${MAX_FRAMES}" \
+      --min_frames    "${MIN_FRAMES:-0}" \
       --max_pixels    "${MAX_PIXELS}" \
       --min_pixels    "${MIN_PIXELS}" \
+      --min_mean_reward "${MIN_MEAN_REWARD:-0.0}" \
+      --max_mean_reward "${MAX_MEAN_REWARD:-1.0}" \
       --tensor_parallel_size "${_tp}" \
       --gpu_memory_utilization "${FILTER_GPU_MEM_UTIL:-0.7}" \
       --max_model_len "${FILTER_MAX_MODEL_LEN:-16384}" \
@@ -372,6 +375,7 @@ python3 -m verl.trainer.main \
   data.max_pixels="${MAX_PIXELS}" \
   data.min_pixels="${MIN_PIXELS}" \
   data.max_frames="${MAX_FRAMES}" \
+  data.min_frames="${MIN_FRAMES:-0}" \
   data.max_prompt_length="${MAX_PROMPT_LEN}" \
   data.max_response_length="${MAX_RESPONSE_LEN}" \
   data.rollout_batch_size="${ROLLOUT_BS}" \

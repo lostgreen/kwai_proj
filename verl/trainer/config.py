@@ -42,6 +42,7 @@ class DataConfig:
     image_dir: Optional[str] = None
     video_fps: float = 2.0
     max_frames: int = 256
+    min_frames: int = 0
     dataloader_num_workers: int = 8
     max_prompt_length: int = 512
     max_response_length: int = 512
