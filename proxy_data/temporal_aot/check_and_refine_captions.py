@@ -81,7 +81,11 @@ def _extract_json(raw: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    raise json.JSONDecodeError(f"Could not extract JSON from VLM response", raw, 0)
+    snippet = raw[:300] if len(raw) > 300 else raw
+    raise json.JSONDecodeError(
+        f"Could not extract JSON from VLM response. Raw ({len(raw)} chars): {snippet!r}",
+        raw, 0,
+    )
 
 
 # ---------------------------------------------------------------------------
