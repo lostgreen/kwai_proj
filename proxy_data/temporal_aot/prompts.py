@@ -220,14 +220,17 @@ def get_check_and_refine_prompt(
         + shuffle_rule
         + "\n\n"
         "## Output\n"
-        "Output valid JSON with these keys:\n"
+        "Return a **raw JSON string** — do NOT wrap it in Markdown code fences "
+        "(no ```json ... ```).\n"
+        "The JSON must have these keys:\n"
         "- `distinguishable` (bool): true if existing captions are already clearly "
         "distinguishable, false otherwise.\n"
         "- `reason` (string): brief explanation of your judgment.\n"
         "- `forward_caption` (string): the (possibly refined) forward caption.\n"
         "- `reverse_caption` (string): the (possibly refined) reverse caption.\n"
         + ('- `shuffle_caption` (string): the (possibly refined) shuffle caption.\n' if shuffle_caption else "")
-        + "\nIf the captions are already distinguishable, return them unchanged.\n\n"
+        + "\nIf the captions are already distinguishable, return them unchanged.\n"
+        "Ensure every string value is on a single line (no embedded newlines).\n\n"
         "Example output:\n"
         '{"distinguishable": false, "reason": "Both captions just say ingredients are '
         'being mixed without describing direction of change.", '
