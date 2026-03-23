@@ -15,8 +15,8 @@ EXP_NAME="${EXP_NAME:-tg_ablation_exp1_no_cot}"
 # ---- 数据（无 CoT 版本）----
 # 如果数据不存在，先生成
 DATA_DIR="${REPO_ROOT}/proxy_data/temporal_grounding/data"
-TRAIN_FILE="${DATA_DIR}/timerft_train_max256s_easyr1.jsonl"
-TEST_FILE="${DATA_DIR}/tvgbench_val_max256s_easyr1_200.jsonl"
+TRAIN_FILE="${DATA_DIR}/timerft_train_max256s_easyr1_clean.jsonl"
+TEST_FILE="${DATA_DIR}/tvgbench_val_max256s_easyr1_200_clean.jsonl"
 
 if [[ ! -f "${TRAIN_FILE}" ]]; then
   echo "[tg] Generating no_cot data ..."

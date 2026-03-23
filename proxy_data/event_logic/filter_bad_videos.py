@@ -38,7 +38,7 @@ import json
 import os
 import re
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from typing import Optional, Tuple
 
 
@@ -72,20 +72,28 @@ def parse_timestamp_from_filename(video_path: str) -> Optional[Tuple[float, floa
 # 单个视频可读性检查
 # ─────────────────────────────────────────────
 
-def check_video_decord(video_path: str, min_frames: int = 4) -> dict:
+def check_video_decord(
+    video_path: str,
+    min_frames: int = 4,
+    full_decode: bool = False,
+    decode_timeout: int = 120,
+) -> dict:
     """
     用 decord.VideoReader 尝试打开视频，和训练时行为完全一致。
-    
+
     Args:
         video_path: 视频文件路径
         min_frames: 最小帧数要求。Qwen3-VL 的 temporal_patch_size=2
                     要求至少 2 帧；多视频场景 max_frames_per_video 可能
                     很小，默认 4 留足余量。
-    
+        full_decode: 是否完整解码所有帧。开启后可检测视频中间损坏
+                     （如 h264 mmco 错误导致训练卡死在某帧）。
+        decode_timeout: full_decode 模式下单个视频的超时秒数（默认 120s）。
+
     返回 {
-        "path": str, 
-        "ok": bool, 
-        "error": str, 
+        "path": str,
+        "ok": bool,
+        "error": str,
         "num_frames": int,
         "duration": float,          # 实际视频时长（秒）
         "timestamp_duration": float, # 文件名中标注的时长，None 则无标注
@@ -93,9 +101,9 @@ def check_video_decord(video_path: str, min_frames: int = 4) -> dict:
     }
     """
     result = {
-        "path": video_path, 
-        "ok": False, 
-        "error": "", 
+        "path": video_path,
+        "ok": False,
+        "error": "",
         "num_frames": 0,
         "duration": 0.0,
         "timestamp_duration": None,
@@ -115,19 +123,19 @@ def check_video_decord(video_path: str, min_frames: int = 4) -> dict:
         vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
         n_frames = len(vr)
         result["num_frames"] = n_frames
-        
+
         # 计算实际时长
         fps = vr.get_avg_fps() or 24.0  # 默认 24fps
         actual_duration = n_frames / fps
         result["duration"] = actual_duration
-        
+
         if n_frames == 0:
             result["error"] = "视频帧数为 0"
             return result
         if n_frames < min_frames:
             result["error"] = f"视频帧数不足: {n_frames} < {min_frames} (min_frames)"
             return result
-        
+
         # 检查文件名中的时间戳
         ts = parse_timestamp_from_filename(video_path)
         if ts is not None:
@@ -137,13 +145,35 @@ def check_video_decord(video_path: str, min_frames: int = 4) -> dict:
             # 允许 ±10% 误差（帧率/采样问题）
             if abs(actual_duration - ts_duration) > max(ts_duration * 0.1, 0.5):
                 result["duration_mismatch"] = True
-        
-        # 额外验证：尝试读第 0 帧
-        _ = vr[0]
+
+        if full_decode:
+            # 完整解码所有帧，检测中间损坏
+            # 分批读取避免一次性占用过多内存
+            import signal
+
+            def _timeout_handler(signum, frame):
+                raise TimeoutError(f"视频解码超时 ({decode_timeout}s)")
+
+            old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.alarm(decode_timeout)
+            try:
+                batch_size = 64
+                for start in range(0, n_frames, batch_size):
+                    end = min(start + batch_size, n_frames)
+                    _ = vr.get_batch(list(range(start, end)))
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+        else:
+            # 仅验证第 0 帧（快速模式）
+            _ = vr[0]
+
         result["ok"] = True
     except ImportError:
         # decord 未安装时，降级用 ffprobe
         result = _check_video_ffprobe(video_path)
+    except TimeoutError as e:
+        result["error"] = str(e)[:300]
     except Exception as e:
         result["error"] = str(e)[:300]
 
@@ -194,8 +224,14 @@ def main():
     parser.add_argument("--video_key", default="videos",  help="视频路径字段名（默认 videos）")
     parser.add_argument("--workers", "-w", type=int, default=16, help="并行线程数（默认 16）")
     parser.add_argument("--bad_list", default=None, help="将不可读视频路径写入此文件")
+    parser.add_argument("--bad-list-input", default=None,
+                        help="读取已有的坏视频列表（每行一个路径），跳过视频解码直接过滤")
     parser.add_argument("--min-frames", type=int, default=4,
                         help="视频最少帧数（默认 4，Qwen3-VL temporal_patch_size=2 至少需要 2 帧）")
+    parser.add_argument("--full-decode", action="store_true", default=False,
+                        help="完整解码所有帧（慢但能检测中间损坏，如 h264 mmco 错误）")
+    parser.add_argument("--decode-timeout", type=int, default=120,
+                        help="full-decode 模式下单个视频的超时秒数（默认 120）")
     parser.add_argument("--filter-duration-mismatch", action="store_true", default=False,
                         help="丢弃时长不匹配样本（标注时长 vs 实际时长差异 >10%%）")
     args = parser.parse_args()
@@ -231,40 +267,63 @@ def main():
         print("⚠️  未找到任何视频路径（检查 --video_key 是否正确）")
         return
 
-    # ── 2. 并行验证视频 ──
-    print(f"\n🔍 验证视频可读性（workers={args.workers}）...")
+    # ── 2. 验证视频 ──
     bad_videos: set = set()
     duration_mismatch_videos: list = []  # [(path, actual_duration, ts_duration), ...]
-    checked = 0
-    total = len(all_videos)
 
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = {
-            executor.submit(check_video_decord, v, args.min_frames): v
-            for v in all_videos
-        }
-        for future in as_completed(futures):
-            res = future.result()
-            checked += 1
-            if not res["ok"]:
-                bad_videos.add(res["path"])
-                print(f"  ❌ [{checked:>6}/{total}] {res['path']}")
-                print(f"             原因: {res['error']}")
-            elif res.get("duration_mismatch", False):
-                # 时长不匹配但视频本身可读
-                duration_mismatch_videos.append((
-                    res["path"],
-                    res["duration"],
-                    res["timestamp_duration"]
-                ))
-                if args.filter_duration_mismatch:
+    if args.bad_list_input:
+        # 直接从已有列表加载，跳过解码
+        with open(args.bad_list_input, "r", encoding="utf-8") as f:
+            for line in f:
+                v = line.strip()
+                if v:
+                    bad_videos.add(v)
+        # 只保留当前数据集中实际存在的坏视频
+        bad_videos &= all_videos
+        print(f"\n📋 从 {args.bad_list_input} 加载坏视频列表: {len(bad_videos)} 个命中当前数据集")
+    else:
+        # 并行验证视频
+        mode_desc = "完整解码" if args.full_decode else "快速检查"
+        print(f"\n🔍 验证视频可读性（workers={args.workers}, 模式={mode_desc}）...")
+        checked = 0
+        total = len(all_videos)
+
+        # full_decode 模式用多进程（SIGALRM 的超时机制要求在主线程，多进程每个子进程有自己的主线程）
+        # 快速模式用多线程（更轻量，不需要超时保护）
+        PoolClass = ProcessPoolExecutor if args.full_decode else ThreadPoolExecutor
+
+        with PoolClass(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(
+                    check_video_decord, v, args.min_frames,
+                    full_decode=args.full_decode,
+                    decode_timeout=args.decode_timeout,
+                ): v
+                for v in all_videos
+            }
+            for future in as_completed(futures):
+                res = future.result()
+                checked += 1
+                if not res["ok"]:
                     bad_videos.add(res["path"])
-                    print(f"  ⚠️  [{checked:>6}/{total}] {res['path']}")
-                    print(f"             原因: 时长不匹配（标注 {res['timestamp_duration']:.1f}s vs 实际 {res['duration']:.1f}s）")
-            elif checked % 500 == 0 or checked == total:
-                print(f"  ✅ [{checked:>6}/{total}] 进度...")
+                    print(f"  ❌ [{checked:>6}/{total}] {res['path']}")
+                    print(f"             原因: {res['error']}")
+                elif res.get("duration_mismatch", False):
+                    # 时长不匹配但视频本身可读
+                    duration_mismatch_videos.append((
+                        res["path"],
+                        res["duration"],
+                        res["timestamp_duration"]
+                    ))
+                    if args.filter_duration_mismatch:
+                        bad_videos.add(res["path"])
+                        print(f"  ⚠️  [{checked:>6}/{total}] {res['path']}")
+                        print(f"             原因: 时长不匹配（标注 {res['timestamp_duration']:.1f}s vs 实际 {res['duration']:.1f}s）")
+                elif checked % 500 == 0 or checked == total:
+                    print(f"  ✅ [{checked:>6}/{total}] 进度...")
 
     # ── 3. 汇总统计 ──
+    total = len(all_videos)
     good_count = total - len(bad_videos)
     print(f"\n📊 结果汇总:")
     print(f"  可读视频   : {good_count} / {total}")
