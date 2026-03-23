@@ -18,15 +18,18 @@ DATA_DIR="${REPO_ROOT}/proxy_data/temporal_grounding/data"
 TRAIN_FILE="${DATA_DIR}/timerft_train_max256s_cot_easyr1_clean.jsonl"
 TEST_FILE="${DATA_DIR}/tvgbench_val_max256s_cot_easyr1_200_clean.jsonl"
 
+# 从已有的 no_cot JSONL 转换（只替换 prompt 模板）
+NOCOT_TRAIN="${DATA_DIR}/timerft_train_max256s_easyr1_clean.jsonl"
+NOCOT_TEST="${DATA_DIR}/tvgbench_val_max256s_easyr1_200_clean.jsonl"
+CONVERT_SCRIPT="${REPO_ROOT}/proxy_data/temporal_grounding/convert_nocot_to_cot.py"
+
 if [[ ! -f "${TRAIN_FILE}" ]]; then
-  echo "[tg] Generating cot data ..."
-  python3 "${REPO_ROOT}/proxy_data/temporal_grounding/build_dataset.py" \
-    --timerft_json "${REPO_ROOT}/proxy_data/temporal_grounding/annotations/train_2k5.json" \
-    --tvgbench_json "${REPO_ROOT}/proxy_data/temporal_grounding/annotations/tvgbench.json" \
-    --video_base "${TG_DATA_ROOT}" \
-    --output_dir "${DATA_DIR}" \
-    --max_duration 256 \
-    --mode cot
+  echo "[tg] Converting no_cot -> cot (train) ..."
+  python3 "${CONVERT_SCRIPT}" "${NOCOT_TRAIN}" "${TRAIN_FILE}"
+fi
+if [[ ! -f "${TEST_FILE}" ]]; then
+  echo "[tg] Converting no_cot -> cot (val) ..."
+  python3 "${CONVERT_SCRIPT}" "${NOCOT_TEST}" "${TEST_FILE}"
 fi
 
 # ---- CoT 需要更长的 response 空间 ----
