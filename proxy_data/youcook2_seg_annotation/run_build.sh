@@ -88,11 +88,34 @@ python "$SCRIPT_DIR/prepare_clips.py" \
 
 echo ""
 echo "========================================"
+echo "Building Level 3 Seg dataset (complete-only)"
+echo "========================================"
+python "$SCRIPT_DIR/build_dataset.py" \
+  --annotation-dir "$ANNOTATION_DIR" \
+  --output "$OUTPUT_DIR/youcook2_hier_L3_seg_train.jsonl" \
+  --level 3s \
+  --l3-min-actions 3 \
+  --l3-padding 5 \
+  --complete-only
+
+echo ""
+echo "========================================"
+echo "Extracting L3 Seg sub-clips & normalizing timestamps"
+echo "========================================"
+python "$SCRIPT_DIR/prepare_clips.py" \
+  --input   "$OUTPUT_DIR/youcook2_hier_L3_seg_train.jsonl" \
+  --output  "$OUTPUT_DIR/youcook2_hier_L3_seg_train_clipped.jsonl" \
+  --clip-dir "$CLIP_DIR/L3" \
+  --workers "$WORKERS"
+
+echo ""
+echo "========================================"
 echo "Done! Output directory: $OUTPUT_DIR"
 ls -lh "$OUTPUT_DIR"/*.jsonl 2>/dev/null || echo "(no jsonl files found)"
 echo ""
 echo "EasyR1-ready datasets:"
 echo "  L1: $OUTPUT_DIR/youcook2_hier_L1_train_clipped.jsonl"
 echo "  L2: $OUTPUT_DIR/youcook2_hier_L2_train_clipped.jsonl"
-echo "  L3: $OUTPUT_DIR/youcook2_hier_L3_train_clipped.jsonl"
+echo "  L3:     $OUTPUT_DIR/youcook2_hier_L3_train_clipped.jsonl"
+echo "  L3 Seg: $OUTPUT_DIR/youcook2_hier_L3_seg_train_clipped.jsonl"
 echo "========================================"

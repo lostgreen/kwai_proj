@@ -132,6 +132,7 @@ _DISPATCH = {
     "temporal_seg_hier_L1": _l1_l2_reward,
     "temporal_seg_hier_L2": _l1_l2_reward,
     "temporal_seg_hier_L3": _l3_reward,
+    "temporal_seg_hier_L3_seg": _l1_l2_reward,  # L3 segmentation: F1-IoU (like L1/L2)
 }
 
 

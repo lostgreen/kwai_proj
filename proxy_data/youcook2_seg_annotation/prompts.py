@@ -322,7 +322,25 @@ def get_level3_query_prompt(queries: list[str], duration: int) -> str:
     return _LEVEL3_QUERY_BASE.format(duration=duration, action_list=action_list)
 
 
-# Input:  frames within an L2 event clip + existing L3 grounding_results
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 3 Seg: Atomic Action Segmentation (无查询分割版)
+# Input:  an event video clip (possibly with padding)
+# Output: time segments for all atomic actions (no text queries given)
+# ─────────────────────────────────────────────────────────────────────────────
+_LEVEL3_SEG_BASE = """\
+You are given a {duration}s cooking video clip. \
+Detect all atomic cooking actions (state-changing physical operations like cutting, stirring, pouring) in this clip. \
+Skip idle waiting, narration, or tool pickup.
+
+Output the start and end time (integer seconds, 0-based) for each action in chronological order:
+<events>[[start_time, end_time], ...]</events>
+
+Example: <events>[[3, 7], [10, 14], [16, 22]]</events>"""
+
+
+def get_level3_seg_prompt(duration: int) -> str:
+    """Training prompt for Level 3 segmentation (no queries, detect all atomic actions)."""
+    return _LEVEL3_SEG_BASE.format(duration=duration)
 # Output: reviewed results with verdicts, corrections, and supplemented actions
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_CHECK_BASE = """\

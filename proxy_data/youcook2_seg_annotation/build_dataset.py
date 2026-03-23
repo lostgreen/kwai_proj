@@ -19,13 +19,14 @@ import random
 import sys
 from pathlib import Path
 
-from prompts import get_level1_train_prompt, get_level2_train_prompt, get_level3_query_prompt
+from prompts import get_level1_train_prompt, get_level2_train_prompt, get_level3_query_prompt, get_level3_seg_prompt
 
 
 _LEVEL_TO_PROBLEM_TYPE = {
     1: "temporal_seg_hier_L1",
     2: "temporal_seg_hier_L2",
     3: "temporal_seg_hier_L3",
+    "3s": "temporal_seg_hier_L3_seg",
 }
 
 
@@ -380,7 +381,103 @@ def build_level3_records(
     return records
 
 
-def main() -> None:
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 3 Seg: atomic action segmentation (no queries, detect all actions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_level3_seg_records(
+    ann: dict,
+    min_actions: int = 3,
+    padding: int = 5,
+) -> list[dict]:
+    """
+    Build training records for Level 3 segmentation (no query, detect all actions).
+
+    Same clip extraction as grounding but the prompt only asks to detect all
+    atomic actions without providing text queries. Answer segments are sorted
+    chronologically. Uses F1-IoU reward (like L1/L2).
+    """
+    l2 = ann.get("level2")
+    l3 = ann.get("level3")
+    if l2 is None or l3 is None or l3.get("_parse_error"):
+        return []
+
+    clip_duration = float(ann.get("clip_duration_sec") or 0)
+    if clip_duration <= 0:
+        return []
+
+    video_path = ann.get("source_video_path") or ann.get("video_path", "")
+    events = l2.get("events", [])
+    all_results = l3.get("grounding_results", [])
+
+    records = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_id = event.get("event_id")
+        ev_start = event.get("start_time")
+        ev_end = event.get("end_time")
+
+        if not isinstance(ev_start, (int, float)) or not isinstance(ev_end, (int, float)):
+            continue
+
+        ev_start, ev_end = int(ev_start), int(ev_end)
+
+        raw_results = sorted(
+            [r for r in all_results
+             if isinstance(r, dict) and r.get("parent_event_id") == event_id],
+            key=lambda r: r.get("start_time", 0),
+        )
+        if len(raw_results) < min_actions:
+            continue
+
+        clip_start = max(0, ev_start - padding)
+        clip_end = min(int(clip_duration), ev_end + padding)
+        if clip_end - clip_start > _L3_MAX_CLIP_SEC:
+            excess = (clip_end - clip_start) - _L3_MAX_CLIP_SEC
+            trim_start = min(excess // 2, ev_start - clip_start)
+            clip_start += trim_start
+            clip_end = clip_start + _L3_MAX_CLIP_SEC
+        duration = clip_end - clip_start
+
+        # Build segments (0-based, chronological order)
+        spans = []
+        for r in raw_results:
+            st = max(0, int(r.get("start_time", 0)) - clip_start)
+            et = min(duration, int(r.get("end_time", duration)) - clip_start)
+            spans.append([st, et])
+
+        user_text = (
+            "Watch the following cooking video clip carefully:\n<video>\n\n"
+            + get_level3_seg_prompt(duration)
+        )
+        answer_str = f"<events>{json.dumps(spans)}</events>"
+
+        records.append({
+            "messages": [{"role": "user", "content": user_text}],
+            "prompt": user_text,
+            "answer": answer_str,
+            "videos": [video_path] if video_path else [],
+            "data_type": "video",
+            "problem_type": _LEVEL_TO_PROBLEM_TYPE["3s"],
+            "metadata": {
+                "clip_key": ann.get("clip_key", ""),
+                "clip_duration_sec": clip_duration,
+                "level": "3s",
+                "parent_event_id": event_id,
+                "event_start_sec": ev_start,
+                "event_end_sec": ev_end,
+                "clip_start_sec": clip_start,
+                "clip_end_sec": clip_end,
+                "n_actions": len(spans),
+                "n_frames": int(ann.get("n_frames") or 0),
+                "frame_dir": ann.get("frame_dir", ""),
+                "source_mode": ann.get("source_mode", ""),
+                "annotated_at": ann.get("annotated_at"),
+            },
+        })
+
+    return records
     parser = argparse.ArgumentParser(
         description="Convert annotation JSONs to EasyR1 training JSONL",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -389,8 +486,9 @@ def main() -> None:
                         help="Directory with per-clip .json annotation files")
     parser.add_argument("--output", required=True,
                         help="Output JSONL path")
-    parser.add_argument("--level", type=int, choices=[1, 2, 3], default=1,
-                        help="Which annotation level to build the dataset for")
+    parser.add_argument("--level", type=str, choices=["1", "2", "3", "3s"], default="1",
+                        help="Which annotation level to build: 1 (phases), 2 (events), "
+                             "3 (query grounding), 3s (action segmentation)")
     parser.add_argument("--l2-window-size", type=int, default=128,
                         help="[Level 2] Sliding window size in seconds for training data")
     parser.add_argument("--l2-stride", type=int, default=64,
@@ -437,12 +535,14 @@ def main() -> None:
                 pass
         print(f"  --complete-only: {len(filtered)} clips have all 3 levels annotated (L1+L2+L3)")
         ann_files = filtered
-    if args.level == 1:
+    if args.level == "1":
         print(f"L1 warped compression: max_frames={args.max_frames}")
-    elif args.level == 2:
+    elif args.level == "2":
         print(f"L2 training windows: size={args.l2_window_size}s  stride={args.l2_stride}s  min_events={args.l2_min_events}")
-    elif args.level == 3:
+    elif args.level == "3":
         print(f"L3 query grounding: min_actions={args.l3_min_actions}  padding={args.l3_padding}s  order={args.l3_order}")
+    elif args.level == "3s":
+        print(f"L3 segmentation: min_actions={args.l3_min_actions}  padding={args.l3_padding}s")
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -458,14 +558,20 @@ def main() -> None:
                 skipped += 1
                 continue
 
-            if args.level == 1:
+            if args.level == "1":
                 records = build_level1_records(ann, max_frames=args.max_frames)
-            elif args.level == 2:
+            elif args.level == "2":
                 records = build_level2_records(
                     ann,
                     window_size=args.l2_window_size,
                     stride=args.l2_stride,
                     min_events=args.l2_min_events,
+                )
+            elif args.level == "3s":
+                records = build_level3_seg_records(
+                    ann,
+                    min_actions=args.l3_min_actions,
+                    padding=args.l3_padding,
                 )
             else:
                 records = build_level3_records(
