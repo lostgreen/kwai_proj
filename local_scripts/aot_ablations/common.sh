@@ -73,9 +73,10 @@ LR_MIN_RATIO="${LR_MIN_RATIO:-0.1}"           # 最终 LR = LR * 0.1
 WARMUP_STYLE="${WARMUP_STYLE:-cosine}"        # cosine | constant
 
 # ---- 核心算法 ----
-ADV_ESTIMATOR=ema_grpo
+ADV_ESTIMATOR="${ADV_ESTIMATOR:-ema_grpo}"     # ema_grpo | grpo
 DISABLE_KL=false
 ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
+TASK_HOMOGENEOUS="${TASK_HOMOGENEOUS:-true}"   # true: 每个 batch 内同任务; false: 随机混合
 ENTROPY_COEFF=0.005
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
@@ -85,6 +86,7 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 
 # ---- 训练轮次 & 保存 ----
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
+MAX_STEPS="${MAX_STEPS:-}"   # 若非空则覆盖 total_epochs（精确控制步数）
 SAVE_FREQ="${SAVE_FREQ:-20}"
 VAL_FREQ="${VAL_FREQ:-10}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot/ablations_refined}"

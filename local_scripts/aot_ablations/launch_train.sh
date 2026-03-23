@@ -386,7 +386,7 @@ python3 -m verl.trainer.main \
   data.rollout_batch_size="${ROLLOUT_BS}" \
   data.format_prompt="" \
   data.filter_overlong_prompts=false \
-  data.task_homogeneous_batching=true \
+  data.task_homogeneous_batching="${TASK_HOMOGENEOUS}" \
   data.task_weights="${TASK_WEIGHTS}" \
   data.task_key="problem_type" \
   algorithm.adv_estimator="${ADV_ESTIMATOR}" \
@@ -424,7 +424,7 @@ python3 -m verl.trainer.main \
   trainer.save_freq="${SAVE_FREQ}" \
   trainer.logger="[file,tensorboard]" \
   trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
-  data.val_batch_size=8
+  data.val_batch_size=8 ${MAX_STEPS:+trainer.max_steps="$MAX_STEPS"}
 
 # =========================================================
 # 训练结束：将 Ray session 日志复制到 ckpt 目录
