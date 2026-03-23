@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Temporal Grounding Reward 函数 — 纯 Temporal IoU。
+Temporal Grounding Reward 函数 — IoU × distance_penalty (iou_v2)。
 
 适配 <events>[[start, end]]</events> 格式。
 
 Reward 计算:
   1. 从 <events> 标签中解析预测的 [start, end]
   2. 计算与 GT 的 temporal IoU
-  3. 格式不合法时返回 0.0
+  3. 乘以归一化距离惩罚: (1 - |Δs/dur|) × (1 - |Δe/dur|)
+     惩罚端点偏移，抑制超长片段的"懒惰最优解"
+  4. 格式不合法时返回 0.0
 
 输出格式（兼容 EasyR1 batch reward 接口）:
     {"overall": float, "format": float, "accuracy": float}
@@ -55,12 +57,12 @@ def temporal_grounding_reward(
     metadata: Optional[Dict] = None,
 ) -> Dict[str, float]:
     """
-    Temporal Grounding 纯 IoU reward。
+    Temporal Grounding iou_v2 reward: IoU × distance_penalty。
 
     Args:
         response: 模型回复（包含 <events>[[s, e]]</events>）
         ground_truth: 标准答案（同格式）
-        metadata: 保留参数，当前不使用
+        metadata: 需包含 "duration" 字段（视频总时长秒数）
 
     Returns:
         {"overall": float, "format": float, "accuracy": float}
@@ -93,8 +95,22 @@ def temporal_grounding_reward(
     union = max(pred_e, gt_e) - min(pred_s, gt_s)
     iou = intersection / union if union > 0 else 0.0
 
+    # distance_penalty: 惩罚端点偏移，抑制超长片段
+    if metadata is None:
+        metadata = {}
+    duration = metadata.get("duration", 0.0)
+    if duration > 0:
+        dist_penalty = (
+            (1.0 - abs(gt_s - pred_s) / duration)
+            * (1.0 - abs(gt_e - pred_e) / duration)
+        )
+        dist_penalty = max(0.0, dist_penalty)
+        accuracy = iou * dist_penalty
+    else:
+        accuracy = iou
+
     return {
-        "overall": float(iou),
+        "overall": float(accuracy),
         "format": 1.0,
-        "accuracy": float(iou),
+        "accuracy": float(accuracy),
     }

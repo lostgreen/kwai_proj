@@ -273,14 +273,17 @@ def main():
 
     if args.bad_list_input:
         # 直接从已有列表加载，跳过解码
-        with open(args.bad_list_input, "r", encoding="utf-8") as f:
-            for line in f:
-                v = line.strip()
-                if v:
-                    bad_videos.add(v)
-        # 只保留当前数据集中实际存在的坏视频
-        bad_videos &= all_videos
-        print(f"\n📋 从 {args.bad_list_input} 加载坏视频列表: {len(bad_videos)} 个命中当前数据集")
+        if not os.path.exists(args.bad_list_input):
+            print(f"\n📋 坏视频列表 {args.bad_list_input} 不存在，视为无坏视频")
+        else:
+            with open(args.bad_list_input, "r", encoding="utf-8") as f:
+                for line in f:
+                    v = line.strip()
+                    if v:
+                        bad_videos.add(v)
+            # 只保留当前数据集中实际存在的坏视频
+            bad_videos &= all_videos
+            print(f"\n📋 从 {args.bad_list_input} 加载坏视频列表: {len(bad_videos)} 个命中当前数据集")
     else:
         # 并行验证视频
         mode_desc = "完整解码" if args.full_decode else "快速检查"
@@ -362,12 +365,12 @@ def main():
         print(f"  建议: 检查这些视频是否确实能被 qwen_vl_utils 正确处理")
 
     # ── 5. 输出不可读视频列表 ──
-    if args.bad_list and bad_videos:
+    if args.bad_list:
         os.makedirs(os.path.dirname(os.path.abspath(args.bad_list)), exist_ok=True)
         with open(args.bad_list, "w", encoding="utf-8") as f:
             for v in sorted(bad_videos):
                 f.write(v + "\n")
-        print(f"\n  不可读视频列表 → {args.bad_list}")
+        print(f"\n  不可读视频列表 ({len(bad_videos)} 个) → {args.bad_list}")
 
     # ── 6. 输出干净数据集 ──
     if args.output is None:

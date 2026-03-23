@@ -11,7 +11,7 @@ set -x
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 # ---- 实验标识 ----
-EXP_NAME="${EXP_NAME:-tg_ablation_exp2_cot}"
+EXP_NAME="${EXP_NAME:-tg_ablation_exp2_cot_v2}"
 
 # ---- 数据（CoT 版本）----
 DATA_DIR="${REPO_ROOT}/proxy_data/temporal_grounding/data"

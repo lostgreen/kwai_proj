@@ -129,6 +129,7 @@ class BatchFunctionRewardManager(FunctionRewardManager):
                     "problem_type": data.non_tensor_batch["problem_type"][i],
                     "problem": data.non_tensor_batch.get("problem_reserved_text", [None]*len(data))[i],
                     "problem_id": data.non_tensor_batch.get("problem_id", [None]*len(data))[i],
+                    "metadata": data.non_tensor_batch.get("metadata", [None]*len(data))[i],
                 }
             )
 

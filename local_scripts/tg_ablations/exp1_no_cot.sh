@@ -10,7 +10,7 @@ set -x
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 # ---- 实验标识 ----
-EXP_NAME="${EXP_NAME:-tg_ablation_exp1_no_cot}"
+EXP_NAME="${EXP_NAME:-tg_ablation_exp1_no_cot_v2}"
 
 # ---- 数据（无 CoT 版本）----
 # 如果数据不存在，先生成
