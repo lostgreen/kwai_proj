@@ -35,7 +35,7 @@ SEG_JSONL="${SEG_JSONL:-}"
 TEST_FILE="${TEST_FILE:-}"  # 留空，launch_train.sh 会用 MIXED_VAL 填充
 
 # ---- MCQ 构造参数（各实验可覆盖）----
-MCQ_MAX_SAMPLES="${MCQ_MAX_SAMPLES:-1200}"   # aot proxy 样本总量（对齐 1200 条 refined pairs）
+MCQ_MAX_SAMPLES="${MCQ_MAX_SAMPLES:-2000}"   # aot proxy 样本总量
 MCQ_MIN_CONFIDENCE="${MCQ_MIN_CONFIDENCE:-0.6}"
 
 # ---- 视频 & 分辨率 ----
@@ -67,8 +67,8 @@ FILTER_GPU_MEM_UTIL="${FILTER_GPU_MEM_UTIL:-0.7}"
 FILTER_MAX_MODEL_LEN="${FILTER_MAX_MODEL_LEN:-16384}"
 
 # ---- 学习率（cosine 衰减） ----
-LR="${LR:-2e-6}"
-LR_WARMUP_RATIO="${LR_WARMUP_RATIO:-0.05}"   # 前 5% steps warmup
+LR="${LR:-5e-7}"
+LR_WARMUP_RATIO="${LR_WARMUP_RATIO:-0.1}"    # 前 10% steps warmup
 LR_MIN_RATIO="${LR_MIN_RATIO:-0.1}"           # 最终 LR = LR * 0.1
 WARMUP_STYLE="${WARMUP_STYLE:-cosine}"        # cosine | constant
 
