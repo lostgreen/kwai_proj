@@ -104,7 +104,8 @@ python3 -m verl.trainer.main \
   trainer.save_freq="${SAVE_FREQ}" \
   trainer.logger="[file,tensorboard]" \
   trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
-  data.val_batch_size=8
+  data.val_batch_size=8 \
+  ${MAX_STEPS:+trainer.max_steps="$MAX_STEPS"}
 
 # =========================================================
 # 训练结束：复制 Ray 日志

@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Temporal Grounding Reward 函数 — IoU × 归一化距离惩罚。
+Temporal Grounding Reward 函数 — 纯 Temporal IoU。
 
-参考 Time-R1 的 iou_v2 最优配置，适配 <events>[[start, end]]</events> 格式。
+适配 <events>[[start, end]]</events> 格式。
 
 Reward 计算:
   1. 从 <events> 标签中解析预测的 [start, end]
   2. 计算与 GT 的 temporal IoU
-  3. 乘以归一化距离惩罚（Time-R1 iou_v2 风格）:
-     reward = IoU × (1 - |gt_s/dur - pred_s/dur|) × (1 - |gt_e/dur - pred_e/dur|)
-  4. 格式不合法时返回 0.0
+  3. 格式不合法时返回 0.0
 
 输出格式（兼容 EasyR1 batch reward 接口）:
     {"overall": float, "format": float, "accuracy": float}
@@ -57,14 +55,12 @@ def temporal_grounding_reward(
     metadata: Optional[Dict] = None,
 ) -> Dict[str, float]:
     """
-    Temporal Grounding IoU reward (Time-R1 iou_v2 风格)。
-
-    reward = IoU × (1 - |Δs_norm|) × (1 - |Δe_norm|)
+    Temporal Grounding 纯 IoU reward。
 
     Args:
         response: 模型回复（包含 <events>[[s, e]]</events>）
         ground_truth: 标准答案（同格式）
-        metadata: 包含 duration 信息的 dict
+        metadata: 保留参数，当前不使用
 
     Returns:
         {"overall": float, "format": float, "accuracy": float}
@@ -97,22 +93,8 @@ def temporal_grounding_reward(
     union = max(pred_e, gt_e) - min(pred_s, gt_s)
     iou = intersection / union if union > 0 else 0.0
 
-    # 归一化距离惩罚 (iou_v2)
-    duration = 1.0
-    if metadata and metadata.get("duration"):
-        duration = float(metadata["duration"])
-    if duration <= 0:
-        duration = max(gt_e, pred_e, 1.0)
-
-    gt_s_norm = gt_s / duration
-    gt_e_norm = gt_e / duration
-    pred_s_norm = pred_s / duration
-    pred_e_norm = pred_e / duration
-
-    accuracy = iou * (1 - abs(gt_s_norm - pred_s_norm)) * (1 - abs(gt_e_norm - pred_e_norm))
-
     return {
-        "overall": float(accuracy),
+        "overall": float(iou),
         "format": 1.0,
-        "accuracy": float(accuracy),
+        "accuracy": float(iou),
     }

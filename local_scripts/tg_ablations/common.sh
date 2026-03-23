@@ -46,16 +46,16 @@ TP_SIZE="${TP_SIZE:-2}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 NNODES="${NNODES:-1}"
 
-# ---- 学习率（cosine 衰减） ----
-LR="${LR:-2e-6}"
-LR_WARMUP_RATIO="${LR_WARMUP_RATIO:-0.05}"
+# ---- 学习率（cosine 衰减，与 aot_ablations 对齐） ----
+LR="${LR:-5e-7}"
+LR_WARMUP_RATIO="${LR_WARMUP_RATIO:-0.1}"
 LR_MIN_RATIO="${LR_MIN_RATIO:-0.1}"
 WARMUP_STYLE="${WARMUP_STYLE:-cosine}"
 
 # ---- 核心算法 ----
 ADV_ESTIMATOR=ema_grpo
 DISABLE_KL=false
-ONLINE_FILTERING=false
+ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
 ENTROPY_COEFF=0.005
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
@@ -65,6 +65,7 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 
 # ---- 训练轮次 & 保存 ----
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
+MAX_STEPS="${MAX_STEPS:-60}"
 SAVE_FREQ="${SAVE_FREQ:-20}"
 VAL_FREQ="${VAL_FREQ:-10}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/temporal_grounding/ablations}"
