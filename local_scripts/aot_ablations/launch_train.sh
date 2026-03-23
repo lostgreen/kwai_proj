@@ -271,57 +271,62 @@ RAW_TOTAL=$(wc -l < "${MIXED_TRAIN}")
 echo "[aot] Filtered: ${FILTERED_TOTAL}/${RAW_TOTAL} samples kept -> ${FILTERED_TRAIN}"
 
 # =========================================================
-# Step C': 难度优先采样，统一到固定样本数（curate）
-# 从 offline_filter_report 中按 mean_reward 分层采样:
-#   medium [0.3, 0.7] 60% / hard (0.0, 0.3) 30% / easy (0.7, 1.0) 10%
-#   排除 mean_reward==0（base 完全不会）和 ==1（已被 offline filter 删）
+# Step C'/C+: 难度优先采样 + 答案重平衡
+# 当 SKIP_CURATE=true 时跳过（在线过滤模式下动态筛选，无需预采样）
 # =========================================================
-CURATED_TRAIN="${DATA_DIR}/mixed_train.curated_${CURATE_TARGET_COUNT}.jsonl"
-if [[ ! -f "${CURATED_TRAIN}" || "${FORCE_CURATE:-false}" == "true" || "${FORCE_FILTER:-false}" == "true" ]]; then
-  echo "[aot] Curating ${CURATE_TARGET_COUNT} samples -> ${CURATED_TRAIN}"
+if [[ "${SKIP_CURATE:-false}" == "true" ]]; then
+  echo "[aot] SKIP_CURATE=true → using all filtered samples directly (${FILTERED_TOTAL} samples)"
+  TRAIN_FILE="${FILTERED_TRAIN}"
+else
+  # Step C': 难度优先采样，统一到固定样本数（curate）
+  # 从 offline_filter_report 中按 mean_reward 分层采样:
+  #   medium [0.3, 0.7] 60% / hard (0.0, 0.3) 30% / easy (0.7, 1.0) 10%
+  #   排除 mean_reward==0（base 完全不会）和 ==1（已被 offline filter 删）
+  CURATED_TRAIN="${DATA_DIR}/mixed_train.curated_${CURATE_TARGET_COUNT}.jsonl"
+  if [[ ! -f "${CURATED_TRAIN}" || "${FORCE_CURATE:-false}" == "true" || "${FORCE_FILTER:-false}" == "true" ]]; then
+    echo "[aot] Curating ${CURATE_TARGET_COUNT} samples -> ${CURATED_TRAIN}"
 
-  CURATE_ARGS=(
-    --report-jsonl   "${CURATE_REPORT_JSONLS:-${FILTER_REPORT}}"
-    --train-jsonl    "${CURATE_TRAIN_JSONLS:-${MIXED_TRAIN}}"
-    --output-jsonl   "${CURATED_TRAIN}"
-    --target-count   "${CURATE_TARGET_COUNT}"
-    --mid-ratio      "${CURATE_MID_RATIO}"
-    --hard-ratio     "${CURATE_HARD_RATIO}"
-    --easy-ratio     "${CURATE_EASY_RATIO}"
-    --mid-lo         "${CURATE_MID_LO}"
-    --mid-hi         "${CURATE_MID_HI}"
-    --seed           42
-  )
-  if [[ -n "${CURATE_PER_TYPE_QUOTA:-}" ]]; then
-    CURATE_ARGS+=(--per-type-quota "${CURATE_PER_TYPE_QUOTA}")
+    CURATE_ARGS=(
+      --report-jsonl   "${CURATE_REPORT_JSONLS:-${FILTER_REPORT}}"
+      --train-jsonl    "${CURATE_TRAIN_JSONLS:-${MIXED_TRAIN}}"
+      --output-jsonl   "${CURATED_TRAIN}"
+      --target-count   "${CURATE_TARGET_COUNT}"
+      --mid-ratio      "${CURATE_MID_RATIO}"
+      --hard-ratio     "${CURATE_HARD_RATIO}"
+      --easy-ratio     "${CURATE_EASY_RATIO}"
+      --mid-lo         "${CURATE_MID_LO}"
+      --mid-hi         "${CURATE_MID_HI}"
+      --seed           42
+    )
+    if [[ -n "${CURATE_PER_TYPE_QUOTA:-}" ]]; then
+      CURATE_ARGS+=(--per-type-quota "${CURATE_PER_TYPE_QUOTA}")
+    fi
+
+    python3 "${SCRIPT_DIR}/curate_1k_samples.py" "${CURATE_ARGS[@]}"
+  else
+    echo "[aot] Reusing curated file: ${CURATED_TRAIN} (set FORCE_CURATE=true to redo)"
   fi
 
-  python3 "${SCRIPT_DIR}/curate_1k_samples.py" "${CURATE_ARGS[@]}"
-else
-  echo "[aot] Reusing curated file: ${CURATED_TRAIN} (set FORCE_CURATE=true to redo)"
+  CURATED_TOTAL=$(wc -l < "${CURATED_TRAIN}")
+  echo "[aot] Curated: ${CURATED_TOTAL}/${FILTERED_TOTAL} samples selected -> ${CURATED_TRAIN}"
+
+  # Step C+: 答案选项重平衡（binary A/B + 3-way A/B/C）
+  # 消除离线过滤后因位置偏差导致的答案分布不均
+  BALANCED_TRAIN="${DATA_DIR}/mixed_train.curated_${CURATE_TARGET_COUNT}.balanced.jsonl"
+  if [[ ! -f "${BALANCED_TRAIN}" || "${FORCE_CURATE:-false}" == "true" || "${FORCE_FILTER:-false}" == "true" ]]; then
+    echo "[aot] Rebalancing answer distribution -> ${BALANCED_TRAIN}"
+    python3 "${REPO_ROOT}/proxy_data/temporal_aot/rebalance_aot_answers.py" \
+      --input-jsonl  "${CURATED_TRAIN}" \
+      --output-jsonl "${BALANCED_TRAIN}" \
+      --problem-types "aot_v2t,aot_t2v,aot_3way_v2t,aot_3way_t2v" \
+      --balance-scope problem_type \
+      --seed 42
+  else
+    echo "[aot] Reusing balanced file: ${BALANCED_TRAIN} (set FORCE_CURATE=true to redo)"
+  fi
+
+  TRAIN_FILE="${BALANCED_TRAIN}"
 fi
-
-CURATED_TOTAL=$(wc -l < "${CURATED_TRAIN}")
-echo "[aot] Curated: ${CURATED_TOTAL}/${FILTERED_TOTAL} samples selected -> ${CURATED_TRAIN}"
-
-# =========================================================
-# Step C+: 答案选项重平衡（binary A/B + 3-way A/B/C）
-# 消除离线过滤后因位置偏差导致的答案分布不均
-# =========================================================
-BALANCED_TRAIN="${DATA_DIR}/mixed_train.curated_${CURATE_TARGET_COUNT}.balanced.jsonl"
-if [[ ! -f "${BALANCED_TRAIN}" || "${FORCE_CURATE:-false}" == "true" || "${FORCE_FILTER:-false}" == "true" ]]; then
-  echo "[aot] Rebalancing answer distribution -> ${BALANCED_TRAIN}"
-  python3 "${REPO_ROOT}/proxy_data/temporal_aot/rebalance_aot_answers.py" \
-    --input-jsonl  "${CURATED_TRAIN}" \
-    --output-jsonl "${BALANCED_TRAIN}" \
-    --problem-types "aot_v2t,aot_t2v,aot_3way_v2t,aot_3way_t2v" \
-    --balance-scope problem_type \
-    --seed 42
-else
-  echo "[aot] Reusing balanced file: ${BALANCED_TRAIN} (set FORCE_CURATE=true to redo)"
-fi
-
-TRAIN_FILE="${BALANCED_TRAIN}"
 
 # =========================================================
 # Step D: 自动计算任务权重

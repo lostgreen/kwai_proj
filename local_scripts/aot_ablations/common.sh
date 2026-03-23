@@ -75,7 +75,7 @@ WARMUP_STYLE="${WARMUP_STYLE:-cosine}"        # cosine | constant
 # ---- 核心算法 ----
 ADV_ESTIMATOR=ema_grpo
 DISABLE_KL=false
-ONLINE_FILTERING=false
+ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
 ENTROPY_COEFF=0.005
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
@@ -90,6 +90,8 @@ VAL_FREQ="${VAL_FREQ:-10}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_aot/ablations_refined}"
 
 # ---- 难度优先采样（curate）----
+# 开启在线过滤时，curate 不再需要（在线过滤动态筛选），SKIP_CURATE=true 直接用离线过滤后全量数据
+SKIP_CURATE="${SKIP_CURATE:-true}"
 CURATE_TARGET_COUNT="${CURATE_TARGET_COUNT:-1000}"  # 每个实验统一的训练样本数
 CURATE_MID_RATIO="${CURATE_MID_RATIO:-0.6}"         # 中等难度占比
 CURATE_HARD_RATIO="${CURATE_HARD_RATIO:-0.3}"       # 困难占比
