@@ -24,8 +24,9 @@ _ckpt_dir="${CHECKPOINT_ROOT}/${EXP_NAME}"
 mkdir -p "${_ckpt_dir}"
 _run_log="${_ckpt_dir}/run_$(date +%Y%m%d_%H%M%S).log"
 _summary_log="${_ckpt_dir}/summary_$(date +%Y%m%d_%H%M%S).log"
-# Dual logging: full log + summary log (important lines only, no progress bars)
-exec > >(tee -a "${_run_log}" | grep --line-buffered -E '^\[tg\]|ERROR|Error|Exception|Traceback|SIGTERM|SIGKILL|OOM|killed|BAD_SAMPLE|step [0-9]|reward|val.*metric|WARNING.*__getitem__' >> "${_summary_log}") 2>&1
+# Dual logging: terminal shows everything; full log + filtered summary written to disk
+exec > >(tee -a "${_run_log}" \
+    >(grep --line-buffered -E '^\[tg\]|ERROR|Error|Exception|Traceback|SIGTERM|SIGKILL|OOM|killed|BAD_SAMPLE|step [0-9]|reward|val.*metric|WARNING.*__getitem__' >> "${_summary_log}")) 2>&1
 echo "[tg] ============================================================"
 echo "[tg] EXP : ${EXP_NAME}"
 echo "[tg] Date: $(date '+%Y-%m-%d %H:%M:%S')"
