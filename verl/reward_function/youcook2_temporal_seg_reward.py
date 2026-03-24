@@ -1,3 +1,4 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
 YouCook2 视频时序分割 Reward 函数 — F1-IoU + NMS + 格式奖励。
@@ -16,8 +17,8 @@ Reward = max(FORMAT_BONUS, matched_f1)
 注意：不依赖 scipy，使用纯 Python 匈牙利匹配实现。
 """
 
-import re
 import random
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -286,21 +287,21 @@ def compute_score(
                     "accuracy": 0.0, "structure_reward": 0.0,
                 })
                 continue
-            
+
             # --- 严格反黑客过滤 (Anti-Reward Hacking) ---
             # 如果出现类似 "[数字-数字]" 的破折号畸形
             if re.search(r"\[\d+-\d+\]", raw_response):
                 results.append({"overall": 0.0, "format": 0.0, "accuracy": 0.0, "structure_reward": 0.0})
                 continue
-                
+
             # 反多重标签复读 (比如模型疯狂重复 </events> 或者 <events>)
             if raw_response.count("</events>") > 1 or raw_response.count("<events>") > 1:
                 results.append({"overall": 0.0, "format": 0.0, "accuracy": 0.0, "structure_reward": 0.0})
                 continue
-                
+
             # 格式检查
             has_format = has_events_tag(raw_response)
-            
+
             if not has_format:
                 results.append({"overall": 0.0, "format": 0.0, "accuracy": 0.0, "structure_reward": 0.0})
                 continue
@@ -318,7 +319,7 @@ def compute_score(
 
             # 计算 F1-IoU reward
             f1_reward = compute_f1_iou(pred_segs, gt_segs)
-            
+
             # 彻底取消兜底，让 accuracy 和 overall 完全对齐
             overall = f1_reward
             format_score = 0.0 # 只有当模型真正有收益时才会体现出价值，不白给格式分

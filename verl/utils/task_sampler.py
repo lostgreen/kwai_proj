@@ -1,3 +1,4 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
 TaskHomogeneousBatchSampler: 保证每个 batch 内样本来自同一任务类型。

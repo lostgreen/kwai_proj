@@ -1,4 +1,4 @@
-# 
+#
 
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 #
@@ -32,6 +32,7 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 from . import torch_functional as VF
+
 
 _VIDEO_DEBUG_ENABLED = os.environ.get("EASYR1_DEBUG_VIDEO_FRAMES", "0").strip().lower() in {
     "1",
@@ -434,7 +435,7 @@ class RLHFDataset(Dataset):
 
         data_type = (example.get("data_type") or "").strip().lower()
         pt = example.get("problem_type") or ""
-        question = prompt_str  
+        question = prompt_str
 
         if (pt == "multiple choice") and isinstance(example.get("options"), list) and example["options"]:
             opts = "\n".join(example["options"])
@@ -486,7 +487,7 @@ class RLHFDataset(Dataset):
                 if self.image_dir is not None and len(images) != 0 and isinstance(images[0], str):  # image paths
                     images = [os.path.join(self.image_dir, image) for image in images]
 
-            except Exception as e:
+            except Exception:
                 print(f"images type: {type(images)} | value: {images}")
                 print("full example:", example)
 
@@ -497,7 +498,7 @@ class RLHFDataset(Dataset):
                 processed_images.append(process_image(image, self.min_pixels, self.max_pixels))
 
             model_inputs = self.processor(processed_images, [prompt], add_special_tokens=False, return_tensors="pt")
-            
+
             print(images, model_inputs["input_ids"].size(-1))
             return model_inputs["input_ids"].size(-1) <= self.max_prompt_length
         elif self.video_key in example and isinstance(example.get(self.video_key), list) and len(example.get(self.video_key)) > 0:
@@ -628,7 +629,7 @@ class RLHFDataset(Dataset):
             attention_mask = model_inputs.pop("attention_mask")[0]
 
 
-        if "images" in example: 
+        if "images" in example:
             example.pop("images")
         elif "videos" in example:
             example.pop("videos")

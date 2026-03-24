@@ -83,7 +83,7 @@ class AdvantageEstimator(str, Enum):
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REMAX = "remax"
     RLOO = "rloo"
-    EMA_GRPO = "ema_grpo" 
+    EMA_GRPO = "ema_grpo"
 
 
 ADV_ESTIMATOR_MAP: dict[str, Any] = {}

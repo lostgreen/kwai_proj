@@ -27,6 +27,7 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 )
 from transformers.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
 
+
 _VIDEO_DEBUG_ENABLED = os.environ.get("EASYR1_DEBUG_VIDEO_FRAMES", "0").strip().lower() in {
     "1",
     "true",
@@ -213,8 +214,9 @@ def _get_input_embeds(
             #     f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
             # )
 
+            import json
+            import os
             from datetime import datetime
-            import os, json
             msg = f"[NOT ALIGN][image] tokens={int(n_image_tokens)} features={int(n_image_features)}"
             print(msg)
             _log_path = os.environ.get("BAD_SAMPLES_LOG", "./EasyR1/bad_samples.txt")
@@ -266,8 +268,9 @@ def _get_input_embeds(
             #     f"Video features and video tokens do not match: tokens: {n_video_tokens}, features {n_video_features}"
             # )
 
+            import json
+            import os
             from datetime import datetime
-            import os, json
             msg = f"[NOT ALIGN][video] tokens={int(n_video_tokens)} features={int(n_video_features)}"
             print(msg)
             _log_path = os.environ.get("BAD_SAMPLES_LOG", "./EasyR1/bad_samples.txt")
@@ -337,7 +340,7 @@ def _get_input_embeds(
             inputs_embeds += 0.0 * emb.mean()
 
     # for image-video mixed training
-    
+
     if pixel_values is not None and pixel_values_videos is None:
         config = model.config.vision_config
         patch_dim = config.in_channels * config.temporal_patch_size * config.patch_size**2

@@ -1,3 +1,4 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 # Rewards for multimodal tasks with <think>...</think><answer>...</answer> outputs.
 import itertools

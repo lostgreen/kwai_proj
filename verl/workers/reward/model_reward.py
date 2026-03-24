@@ -1,4 +1,4 @@
-# Copyright 2025 POLAR Team and/or its affiliates
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Union
-from time import sleep
-import requests
 import re
+from time import sleep
+from typing import List, Union
+
+import requests
 from transformers import AutoTokenizer
+
 
 # Config reward model server
 ADDRESS = "127.0.0.1:30000"  # Modify according to your server address

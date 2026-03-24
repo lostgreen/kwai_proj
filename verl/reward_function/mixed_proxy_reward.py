@@ -1,3 +1,4 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
 混合代理任务 + 时序分割统一 Reward 函数。

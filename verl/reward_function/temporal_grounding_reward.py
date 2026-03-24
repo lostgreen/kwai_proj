@@ -1,3 +1,4 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
 Temporal Grounding Reward 函数 — IoU × distance_penalty (iou_v2)。
@@ -16,7 +17,7 @@ Reward 计算:
 """
 
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from verl.reward_function.youcook2_temporal_seg_reward import (
     EVENTS_PATTERN,
