@@ -463,7 +463,6 @@ class FSDPWorker(Worker):
         if "multi_modal_inputs" not in self._cache:
             min_pixels = data.meta_info["min_pixels"]
             max_pixels = data.meta_info["max_pixels"]
-            video_fps = data.meta_info["video_fps"]
             batch_multi_modal_inputs = []
             multi_modal_inputs_cache = {}  # avoid repeated processing for n > 1 samples
             for index, multi_modal_data in zip(

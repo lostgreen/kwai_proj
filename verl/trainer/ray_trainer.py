@@ -160,10 +160,8 @@ class ResourcePoolManager:
 
     def _check_resource_available(self):
         """Check if the resource pool can be satisfied in this ray cluster."""
-        gpus_available = ray.available_resources().get("GPU", 0)
-        gpus_required = self.get_num_gpus()
-        # if gpus_available < gpus_required:
-            # raise ValueError(f"Total available GPUs {gpus_available} is less than total desired GPUs {gpus_required}.")
+        # if ray.available_resources().get("GPU", 0) < self.get_num_gpus():
+            # raise ValueError(f"Total available GPUs is less than total desired GPUs.")
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: KLController, kl_penalty="kl"):
@@ -809,7 +807,7 @@ class RayPPOTrainer:
                         batch.batch["token_level_scores"] = reward_tensor
                         reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
                         metrics.update(reward_metrics)
-                        
+
                         # 按任务类型统计奖励
                         problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(reward_tensor))
                         task_rewards = {}
@@ -817,7 +815,7 @@ class RayPPOTrainer:
                             if ptype not in task_rewards:
                                 task_rewards[ptype] = []
                             task_rewards[ptype].append(reward_tensor[pidx].sum().item())
-                        
+
                         # 计算每个任务的平均奖励并记录
                         for task_type, task_scores in task_rewards.items():
                             if task_scores:

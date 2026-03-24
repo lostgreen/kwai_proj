@@ -29,9 +29,18 @@ Reward 输出格式（兼容 EasyR1 batch reward 接口）:
     }
 """
 
-import re
 import random
+import re
 from typing import Any, Dict, List, Optional
+
+from verl.reward_function.temporal_grounding_reward import (
+    temporal_grounding_reward,
+)
+from verl.reward_function.youcook2_temporal_seg_reward import (
+    compute_f1_iou,
+    has_events_tag,
+    parse_segments,
+)
 
 
 # ===================================================================
@@ -113,7 +122,7 @@ _DIGIT_PATTERN = re.compile(r"\d")
 def _parse_sort_digits(text: str) -> Optional[List[int]]:
     """
     解析排序序列数字版本 "13245" 或 "1 3 2 4 5" → [1, 3, 2, 4, 5]。
-    
+
     新格式：数字序列，1-索引，代表视频标号顺序。
     支持：
     - 连续数字: "13245" → [1, 3, 2, 4, 5]
@@ -125,10 +134,10 @@ def _parse_sort_digits(text: str) -> Optional[List[int]]:
 
     # 找所有单个数字
     digits = _DIGIT_PATTERN.findall(text)
-    
+
     if not digits:
         return None
-    
+
     # 转为整数
     try:
         int_seq = [int(d) for d in digits]
@@ -213,15 +222,6 @@ def _sort_reward(response: str, ground_truth: str) -> Dict[str, float]:
 # ===================================================================
 # ③ 时序分割 Reward (temporal_seg) — 复用已有 F1-IoU 逻辑
 # ===================================================================
-
-from verl.reward_function.youcook2_temporal_seg_reward import (
-    parse_segments,
-    has_events_tag,
-    compute_f1_iou,
-)
-from verl.reward_function.temporal_grounding_reward import (
-    temporal_grounding_reward,
-)
 
 
 def _temporal_seg_reward(response: str, ground_truth: str) -> Dict[str, float]:
@@ -336,7 +336,7 @@ def compute_score(
             score = reward_fn(response, ground_truth)
             results.append(score)
 
-        except Exception as e:
+        except Exception:
             # 防止单样本异常影响整个 batch
             results.append({"overall": 0.0, "format": 0.0, "accuracy": 0.0})
 

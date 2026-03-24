@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
 # Rewards for multimodal tasks with <think>...</think><answer>...</answer> outputs.
-import re
+import itertools
 import json
 import math
-import itertools
-from typing import Any, Dict, List, Optional
 import random
+import re
+from typing import Any, Dict, List, Optional
 
+import numpy as np
 import torch
-from rouge_score import rouge_scorer
-from math_verify import parse as math_parse, verify as math_verify
+from math_verify import parse as math_parse
+from math_verify import verify as math_verify
 from mathruler.grader import grade_answer
+from rouge_score import rouge_scorer
+
+from verl.workers.reward.model_reward import RewardModelClient
+
 
 # ===================== Model-based reward configuration =====================
 # Whether to use external Reward Model to compute accuracy for open-ended type
@@ -20,11 +25,6 @@ USE_MODEL_FOR_OPEN_ENDED: bool = False
 RM_MODEL_PATH = "internlm/POLAR-7B"
 RM_SERVER_ADDRESS = "xx.xx.xx.xx:xxxx"
 # ==========================================================
-
-# ===================== External RM evaluation dependencies =====================
-from verl.workers.reward.model_reward import RewardModelClient
-import numpy as np
-# =========================================================
 
 
 # -------------------------
@@ -70,8 +70,10 @@ def wer(reference: str, hypothesis: str) -> float:
     ref_words, hyp_words = (reference or "").split(), (hypothesis or "").split()
     m, n = len(ref_words), len(hyp_words)
     d = [[0] * (n + 1) for _ in range(m + 1)]
-    for i in range(m + 1): d[i][0] = i
-    for j in range(n + 1): d[0][j] = j
+    for i in range(m + 1):
+        d[i][0] = i
+    for j in range(n + 1):
+        d[0][j] = j
     for i in range(1, m + 1):
         for j in range(1, n + 1):
             d[i][j] = d[i - 1][j - 1] if ref_words[i - 1] == hyp_words[j - 1] else 1 + min(

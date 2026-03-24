@@ -73,8 +73,6 @@ def _process_multi_modal_data(
             images.append(process_image(image, multi_modal_data.get("min_pixels", min_pixels), multi_modal_data.get("max_pixels", max_pixels)))
 
     if "videos" in multi_modal_data:
-        # 记录第一段视频的 fps（vLLM 通常按每样本一个视频使用）
-        first_fps: Optional[float] = None
         kwargs = {k: v for k, v in multi_modal_data.items() if k not in ["images", "videos"]}
         for idx, video in enumerate(multi_modal_data["videos"]):
             # 兼容带 fps 返回；若项目内函数不支持 return_fps，则回退到原始行为
@@ -232,7 +230,7 @@ class vLLMRollout(BaseRollout):
         print("starting vllm", batch_multi_modal_data)
         # print(tmp_mm)
         # print(len(tmp_mm))
-        
+
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**prompts.meta_info):
             completions: list[RequestOutput] = self.inference_engine.generate(

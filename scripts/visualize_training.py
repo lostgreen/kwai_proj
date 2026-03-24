@@ -14,17 +14,16 @@
         --show
 """
 
-import json
 import argparse
+import json
 import os
 from pathlib import Path
-from typing import Optional
 
-import numpy as np
 import matplotlib
-import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.lines import Line2D
+import matplotlib.pyplot as plt
+import numpy as np
+
 
 # ─── 样式 ────────────────────────────────────────
 matplotlib.rcParams.update({
@@ -223,7 +222,6 @@ def build_figure(rows: list[dict]) -> plt.Figure:
     resp_max  = extract(rows, "response_length", "max")
     resp_clip = extract(rows, "response_length", "clip_ratio")
     prom_mean = extract(rows, "prompt_length", "mean")
-    vis_ratio = extract(rows, "visual_token_count", "ratio_in_prompt_mean")
 
     # Advantages / returns
     adv_mean = extract(rows, "critic", "advantages", "mean")
@@ -235,7 +233,6 @@ def build_figure(rows: list[dict]) -> plt.Figure:
     stage_keys = ["gen", "old", "ref", "update_actor", "reward", "adv"]
     for sk in stage_keys:
         timing_stages[sk] = extract(rows, "timing_s", sk)
-    total_time = extract(rows, "timing_s", "step")
 
     # Perf
     throughput = extract(rows, "perf", "throughput")
