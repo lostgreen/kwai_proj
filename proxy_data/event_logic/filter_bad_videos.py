@@ -77,6 +77,8 @@ def check_video_decord(
     min_frames: int = 4,
     full_decode: bool = False,
     decode_timeout: int = 120,
+    video_fps: float = 2.0,
+    max_frames: int = 256,
 ) -> dict:
     """
     用 decord.VideoReader 尝试打开视频，和训练时行为完全一致。
@@ -86,9 +88,11 @@ def check_video_decord(
         min_frames: 最小帧数要求。Qwen3-VL 的 temporal_patch_size=2
                     要求至少 2 帧；多视频场景 max_frames_per_video 可能
                     很小，默认 4 留足余量。
-        full_decode: 是否完整解码所有帧。开启后可检测视频中间损坏
-                     （如 h264 mmco 错误导致训练卡死在某帧）。
+        full_decode: 是否模拟训练时的跳帧采样来解码（比顺序读取更能检测
+                     seek 时的损坏，如 h264 mmco 导致的 skip frames 卡死）。
         decode_timeout: full_decode 模式下单个视频的超时秒数（默认 120s）。
+        video_fps: 模拟训练时的目标采样帧率（默认 2.0，与 common.sh 对齐）。
+        max_frames: 模拟训练时的最大帧数（默认 256，与 common.sh 对齐）。
 
     返回 {
         "path": str,
@@ -147,8 +151,10 @@ def check_video_decord(
                 result["duration_mismatch"] = True
 
         if full_decode:
-            # 完整解码所有帧，检测中间损坏
-            # 分批读取避免一次性占用过多内存
+            # 模拟训练时的跳帧采样（与 qwen_vl_utils.fetch_video 逻辑对齐）：
+            #   step = max(1, round(native_fps / target_fps))
+            #   sampled = [0, step, 2*step, ...][:max_frames]
+            # 这会触发 decord 的 seek 路径（非顺序读取），能复现训练崩溃的场景。
             import signal
 
             def _timeout_handler(signum, frame):
@@ -157,10 +163,11 @@ def check_video_decord(
             old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
             signal.alarm(decode_timeout)
             try:
-                batch_size = 64
-                for start in range(0, n_frames, batch_size):
-                    end = min(start + batch_size, n_frames)
-                    _ = vr.get_batch(list(range(start, end)))
+                step = max(1, round(fps / video_fps))
+                sampled_indices = list(range(0, n_frames, step))[:max_frames]
+                if not sampled_indices:
+                    sampled_indices = [0]
+                _ = vr.get_batch(sampled_indices)
             finally:
                 signal.alarm(0)
                 signal.signal(signal.SIGALRM, old_handler)
@@ -229,9 +236,13 @@ def main():
     parser.add_argument("--min-frames", type=int, default=4,
                         help="视频最少帧数（默认 4，Qwen3-VL temporal_patch_size=2 至少需要 2 帧）")
     parser.add_argument("--full-decode", action="store_true", default=False,
-                        help="完整解码所有帧（慢但能检测中间损坏，如 h264 mmco 错误）")
+                        help="模拟训练时跳帧采样解码（比顺序读取更能检测 seek 损坏，如 h264 mmco 错误）")
     parser.add_argument("--decode-timeout", type=int, default=120,
                         help="full-decode 模式下单个视频的超时秒数（默认 120）")
+    parser.add_argument("--video-fps", type=float, default=2.0,
+                        help="模拟训练时的目标采样帧率（默认 2.0，与 common.sh 对齐）")
+    parser.add_argument("--max-frames", type=int, default=256,
+                        help="模拟训练时的最大帧数（默认 256，与 common.sh 对齐）")
     parser.add_argument("--filter-duration-mismatch", action="store_true", default=False,
                         help="丢弃时长不匹配样本（标注时长 vs 实际时长差异 >10%%）")
     args = parser.parse_args()
@@ -301,6 +312,8 @@ def main():
                     check_video_decord, v, args.min_frames,
                     full_decode=args.full_decode,
                     decode_timeout=args.decode_timeout,
+                    video_fps=args.video_fps,
+                    max_frames=args.max_frames,
                 ): v
                 for v in all_videos
             }

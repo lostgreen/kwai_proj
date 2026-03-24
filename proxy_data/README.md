@@ -314,3 +314,71 @@ proxy_data/
 | Event Logic | `event_logic/data/proxy_train_text_options.jsonl` | — |
 | YouCook2 Base | `youcook2_train_easyr1.jsonl` | — |
 
+---
+
+## 九、训练前视频校验（必读）
+
+### 背景
+
+训练中曾多次因**损坏的 h264 视频**导致 decord 在 seek / 跳帧时卡死（`video_reader.cc: Failed to skip frames effectively`），引发 NCCL ALLGATHER 超时（10 分钟），最终 kill 掉所有 worker。
+
+**根因**：顺序解码（sequential `get_batch`）能通过的视频，在跳帧 seek（训练时 `fps=2.0` 采样）时可能卡死。必须用**模拟训练采样的方式**来校验视频。
+
+### 校验脚本
+
+`event_logic/filter_bad_videos.py` 支持两种模式：
+
+| 模式 | 命令 | 说明 |
+|------|------|------|
+| 快速检查 | `--workers 16` | 只读第 0 帧，几分钟，抓明显损坏 |
+| 训练采样校验 | `--full-decode` | 模拟 fps=2.0 跳帧 seek，抓 seek 时才卡死的视频 |
+
+**`--full-decode` 的采样逻辑与训练完全对齐**：
+```
+step = round(native_fps / video_fps)   # 例如 24fps 视频，step=12
+sampled = [0, 12, 24, ..., N][:max_frames]
+vr.get_batch(sampled)                  # 触发 decord seek 路径
+```
+
+### 标准操作流程（在训练服务器上运行）
+
+```bash
+# 1. 校验训练集（一次性，结果复用）
+python proxy_data/event_logic/filter_bad_videos.py \
+    -i proxy_data/temporal_grounding/data/timerft_train_max256s_easyr1.jsonl \
+    -o proxy_data/temporal_grounding/data/timerft_train_max256s_easyr1_clean.jsonl \
+    --full-decode --workers 8 \
+    --bad_list proxy_data/temporal_grounding/data/bad_videos_train.txt
+
+# 2. 校验验证集（tvgbench 视频与训练集不同，必须单独跑）
+python proxy_data/event_logic/filter_bad_videos.py \
+    -i proxy_data/temporal_grounding/data/tvgbench_val_max256s_easyr1_200.jsonl \
+    -o proxy_data/temporal_grounding/data/tvgbench_val_max256s_easyr1_200_clean.jsonl \
+    --full-decode --workers 8 \
+    --bad_list proxy_data/temporal_grounding/data/bad_videos_val.txt
+
+# 3. cot 版本复用已有坏视频列表（同一批视频，无需重新解码）
+python proxy_data/event_logic/filter_bad_videos.py \
+    -i proxy_data/temporal_grounding/data/timerft_train_max256s_cot_easyr1.jsonl \
+    -o proxy_data/temporal_grounding/data/timerft_train_max256s_cot_easyr1_clean.jsonl \
+    --bad-list-input proxy_data/temporal_grounding/data/bad_videos_train.txt
+
+python proxy_data/event_logic/filter_bad_videos.py \
+    -i proxy_data/temporal_grounding/data/tvgbench_val_max256s_cot_easyr1_200.jsonl \
+    -o proxy_data/temporal_grounding/data/tvgbench_val_max256s_cot_easyr1_200_clean.jsonl \
+    --bad-list-input proxy_data/temporal_grounding/data/bad_videos_val.txt
+
+# 4. 训练脚本已指向 _clean.jsonl，直接启动训练即可
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--full-decode` | False | 开启训练采样模拟校验（推荐，必须用） |
+| `--video-fps` | 2.0 | 目标采样帧率，与 `common.sh` 的 `VIDEO_FPS` 对齐 |
+| `--max-frames` | 256 | 最大帧数，与 `common.sh` 的 `MAX_FRAMES` 对齐 |
+| `--decode-timeout` | 120 | 单个视频解码超时（秒），防止卡死 |
+| `--bad-list-input` | — | 复用已有坏视频列表，跳过解码（秒级完成） |
+| `--bad_list` | — | 将坏视频路径写出到文件（即使 0 个也会写空文件） |
+

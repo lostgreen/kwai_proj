@@ -51,18 +51,22 @@ done
 # =========================================================
 _ckpt_dir="${CHECKPOINT_ROOT}/${EXP_NAME}"
 mkdir -p "${_ckpt_dir}"
-_run_log="${_ckpt_dir}/run_$(date +%Y%m%d_%H%M%S).log"
-exec > >(tee -a "${_run_log}") 2>&1
+_ts="$(date +%Y%m%d_%H%M%S)"
+_run_log="${_ckpt_dir}/run_${_ts}.log"
+_summary_log="${_ckpt_dir}/summary_${_ts}.log"
+exec > >(tee >(grep --line-buffered '\[aot\]\|\(Error\|ERROR\|Traceback\|FAILED\)' >> "${_summary_log}") -a "${_run_log}") 2>&1
 echo "[aot] ============================================================"
-echo "[aot] EXP : ${EXP_NAME} (cross-experiment mixed)"
-echo "[aot] Date: $(date '+%Y-%m-%d %H:%M:%S')"
-echo "[aot] Log : ${_run_log}"
-echo "[aot] Reports: ${CURATE_REPORT_JSONLS}"
-echo "[aot] Trains : ${CURATE_TRAIN_JSONLS}"
-echo "[aot] Quota  : ${CURATE_PER_TYPE_QUOTA}"
+echo "[aot] EXP     : ${EXP_NAME} (cross-experiment mixed)"
+echo "[aot] Date    : $(date '+%Y-%m-%d %H:%M:%S')"
+echo "[aot] Log     : ${_run_log}"
+echo "[aot] Summary : ${_summary_log}"
+echo "[aot] Reports : ${CURATE_REPORT_JSONLS}"
+echo "[aot] Trains  : ${CURATE_TRAIN_JSONLS}"
 echo "[aot] ============================================================"
 
-_ray_tmpdir="/tmp/ray_${EXP_NAME}"
+# AF_UNIX socket 路径上限 107 字节，Ray 内部再拼 ~68 字节，用 expN 短标识。
+_exp_short="$(echo "${EXP_NAME}" | grep -oP 'exp\d+' | head -1)"
+_ray_tmpdir="/tmp/ray_${_exp_short:-${EXP_NAME:0:20}}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 
@@ -78,6 +82,41 @@ if [[ ! -f "${TEST_FILE}" ]]; then
     TEST_FILE="${_first_dir}/mixed_val.jsonl"
     echo "[aot] Using val from source exp: ${TEST_FILE}"
   fi
+fi
+
+# =========================================================
+# 自动计算 per-type min quota（保证任务间 1:1 均衡）
+# 当 CURATE_PER_TYPE_QUOTA 未指定时，逐文件统计 keep=True 的各类型数量，
+# 取各类型在所有 report 文件中的最小值，确保均衡且使用最多可用数据。
+# =========================================================
+if [[ -z "${CURATE_PER_TYPE_QUOTA:-}" ]]; then
+  echo "[aot] Auto-computing per-type min quota from report files (1:1 balance) ..."
+  CURATE_PER_TYPE_QUOTA="$(python3 - "${CURATE_REPORT_JSONLS}" <<'PY'
+import json, sys
+from collections import Counter
+paths = [p.strip() for p in sys.argv[1].split(',') if p.strip()]
+per_file = []
+for p in paths:
+    c = Counter()
+    with open(p) as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            d = json.loads(line)
+            if d.get('keep', False):
+                t = d.get('problem_type', '')
+                if t: c[t] += 1
+    per_file.append(c)
+all_types = sorted({t for c in per_file for t in c})
+result = {t: min(c[t] for c in per_file if t in c) for t in all_types}
+result = {t: v for t, v in result.items() if v > 0}
+sys.stderr.write(f"[auto-quota] per-file counts: {[dict(c) for c in per_file]}\n")
+sys.stderr.write(f"[auto-quota] min per type:    {result}\n")
+print(json.dumps(result))
+PY
+)"
+  CURATE_TARGET_COUNT="$(python3 -c "import json; q=json.loads('${CURATE_PER_TYPE_QUOTA}'); print(sum(q.values()))")"
+  echo "[aot] Auto quota: ${CURATE_PER_TYPE_QUOTA}  (total=${CURATE_TARGET_COUNT})"
 fi
 
 # =========================================================
@@ -233,4 +272,4 @@ if [[ -d "${_ray_session_logs}" ]]; then
 else
   echo "[aot] Ray session logs not found at ${_ray_session_logs} (skipping)"
 fi
-echo "[aot] Done. Run log: ${_run_log}"
+echo "[aot] Done. Run log: ${_run_log}  |  Summary: ${_summary_log}"

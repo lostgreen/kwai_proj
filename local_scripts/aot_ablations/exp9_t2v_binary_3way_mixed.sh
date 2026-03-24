@@ -28,9 +28,8 @@ mkdir -p "${DATA_DIR}"
 EXP3_DIR="${AOT_DATA_ROOT}/ablations_refined/exp3"
 EXP4_DIR="${AOT_DATA_ROOT}/ablations_refined/exp4"
 
-# ---- 跨实验采样配置 ----
+# ---- 跨实验采样配置（CURATE_PER_TYPE_QUOTA 留空 → 自动按源文件 min 数量均衡）----
 CURATE_REPORT_JSONLS="${EXP3_DIR}/offline_filter_report.jsonl,${EXP4_DIR}/offline_filter_report.jsonl"
 CURATE_TRAIN_JSONLS="${EXP3_DIR}/mixed_train.jsonl,${EXP4_DIR}/mixed_train.jsonl"
-CURATE_PER_TYPE_QUOTA='{"aot_t2v": 500, "aot_3way_t2v": 500}'
 
 source "$(dirname "${BASH_SOURCE[0]}")/launch_train_cross_exp.sh"

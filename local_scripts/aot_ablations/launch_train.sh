@@ -23,18 +23,24 @@ mkdir -p "${DATA_DIR}"
 # =========================================================
 _ckpt_dir="${CHECKPOINT_ROOT}/${EXP_NAME}"
 mkdir -p "${_ckpt_dir}"
-_run_log="${_ckpt_dir}/run_$(date +%Y%m%d_%H%M%S).log"
-# 将当前 shell（含所有子进程）的 stdout+stderr 同时写入日志文件
-exec > >(tee -a "${_run_log}") 2>&1
+_ts="$(date +%Y%m%d_%H%M%S)"
+_run_log="${_ckpt_dir}/run_${_ts}.log"
+_summary_log="${_ckpt_dir}/summary_${_ts}.log"
+# 完整日志写入 run_*.log；同时过滤出 [aot]/Error/Traceback 写入 summary_*.log
+exec > >(tee >(grep --line-buffered '\[aot\]\|\(Error\|ERROR\|Traceback\|FAILED\)' >> "${_summary_log}") -a "${_run_log}") 2>&1
 echo "[aot] ============================================================"
-echo "[aot] EXP : ${EXP_NAME}"
-echo "[aot] Date: $(date '+%Y-%m-%d %H:%M:%S')"
-echo "[aot] Log : ${_run_log}"
+echo "[aot] EXP     : ${EXP_NAME}"
+echo "[aot] Date    : $(date '+%Y-%m-%d %H:%M:%S')"
+echo "[aot] Log     : ${_run_log}"
+echo "[aot] Summary : ${_summary_log}"
 echo "[aot] ============================================================"
 
 # Ray 需要本地快速 FS（IPC socket / SHM 不能放 NFS），用实验名命名方便识别
 # 训练结束后 Ray session 日志会被复制到 ckpt 目录
-_ray_tmpdir="/tmp/ray_${EXP_NAME}"
+# 注意：AF_UNIX socket 路径上限 107 字节，Ray 内部再拼 ~68 字节，
+# 所以 _ray_tmpdir 必须 ≤ 39 字节；用 expN 短标识代替完整实验名。
+_exp_short="$(echo "${EXP_NAME}" | grep -oP 'exp\d+' | head -1)"
+_ray_tmpdir="/tmp/ray_${_exp_short:-${EXP_NAME:0:20}}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 echo "[aot] Ray tmpdir (local): ${_ray_tmpdir}"
@@ -438,4 +444,4 @@ if [[ -d "${_ray_session_logs}" ]]; then
 else
   echo "[aot] Ray session logs not found at ${_ray_session_logs} (skipping)"
 fi
-echo "[aot] Done. Run log: ${_run_log}"
+echo "[aot] Done. Run log: ${_run_log}  |  Summary: ${_summary_log}"
