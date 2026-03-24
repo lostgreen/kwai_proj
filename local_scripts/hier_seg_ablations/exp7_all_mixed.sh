@@ -17,7 +17,7 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
   echo "[hier] Preparing data for ${EXP_NAME} ..."
   python3 "$(dirname "${BASH_SOURCE[0]}")/prepare_data.py" \
     --levels L1 L2 L3_both \
-    --val-per-level 20 \
+    --total-val 200 \
     --data-root "${HIER_DATA_ROOT}" \
     --output-dir "${DATA_DIR}"
 fi

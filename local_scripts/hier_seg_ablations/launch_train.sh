@@ -22,19 +22,26 @@ if [[ ! -f "${TEST_FILE}" ]];  then echo "[hier] TEST_FILE not found: ${TEST_FIL
 # =========================================================
 _ckpt_dir="${CHECKPOINT_ROOT}/${EXP_NAME}"
 mkdir -p "${_ckpt_dir}"
-_run_log="${_ckpt_dir}/run_$(date +%Y%m%d_%H%M%S).log"
-exec > >(tee -a "${_run_log}") 2>&1
+_ts="$(date +%Y%m%d_%H%M%S)"
+_run_log="${_ckpt_dir}/run_${_ts}.log"
+_summary_log="${_ckpt_dir}/summary_${_ts}.log"
+# 双重日志：完整日志 -> run_*.log；关键行（[hier] + 错误 + step/reward/val）-> summary_*.log
+exec > >(tee >(grep --line-buffered -E '^\[hier\]|ERROR|Error|Exception|Traceback|SIGTERM|SIGKILL|OOM|killed|BAD_SAMPLE|step [0-9]|reward|val.*metric' >> "${_summary_log}") -a "${_run_log}") 2>&1
 echo "[hier] ============================================================"
-echo "[hier] EXP : ${EXP_NAME}"
-echo "[hier] Date: $(date '+%Y-%m-%d %H:%M:%S')"
-echo "[hier] Log : ${_run_log}"
-echo "[hier] Train: ${TRAIN_FILE}  ($(wc -l < "${TRAIN_FILE}") samples)"
-echo "[hier] Val  : ${TEST_FILE}   ($(wc -l < "${TEST_FILE}") samples)"
+echo "[hier] EXP    : ${EXP_NAME}"
+echo "[hier] Date   : $(date '+%Y-%m-%d %H:%M:%S')"
+echo "[hier] Log    : ${_run_log}"
+echo "[hier] Summary: ${_summary_log}"
+echo "[hier] Train  : ${TRAIN_FILE}  ($(wc -l < "${TRAIN_FILE}") samples)"
+echo "[hier] Val    : ${TEST_FILE}   ($(wc -l < "${TEST_FILE}") samples)"
 echo "[hier] ============================================================"
 
-_ray_tmpdir="/tmp/ray_${EXP_NAME}"
+# Ray tmpdir: use short name to avoid AF_UNIX socket path >107 bytes
+_exp_short="$(echo "${EXP_NAME}" | grep -oE 'exp[0-9]+' || echo "${EXP_NAME:0:8}")"
+_ray_tmpdir="/tmp/ray_${_exp_short}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
+echo "[hier] Ray tmpdir (local): ${_ray_tmpdir}"
 
 # =========================================================
 # 自动计算 task weights（按 problem_type 等权重）
@@ -53,6 +60,48 @@ w = {t: round(1.0/n, 4) for t in sorted(types)}
 print(json.dumps(w))
 ")
 echo "[hier] Task weights: ${TASK_WEIGHTS}"
+
+# =========================================================
+# progress.txt 进度追踪（独立文件，后台更新）
+# =========================================================
+_progress_file="${_ckpt_dir}/progress.txt"
+_max_steps="${MAX_STEPS:-60}"
+_exp_log_jsonl="${_ckpt_dir}/experiment_log.jsonl"
+echo "[----------] 0/${_max_steps} | ${EXP_NAME} | waiting..." > "${_progress_file}"
+
+# 后台进度监控：从 experiment_log.jsonl 读取最新 step 和 reward
+_update_progress() {
+  while true; do
+    sleep 30
+    if [[ -f "${_exp_log_jsonl}" ]]; then
+      _last_line="$(tail -1 "${_exp_log_jsonl}" 2>/dev/null || true)"
+      if [[ -n "${_last_line}" ]]; then
+        _info="$(python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    step = d.get('step', 0)
+    max_s = ${_max_steps}
+    pct = min(step * 100 // max_s, 100) if max_s > 0 else 0
+    filled = pct * 30 // 100
+    bar = '#' * filled + '-' * (30 - filled)
+    reward = d.get('reward', {}).get('accuracy', d.get('reward', {}).get('reward_score', ''))
+    reward_str = f' | reward:{reward:.3f}' if isinstance(reward, (int, float)) else ''
+    print(f'[{bar}] {step}/{max_s}{reward_str}')
+except Exception:
+    pass
+" <<< "${_last_line}" 2>/dev/null || true)"
+        if [[ -n "${_info}" ]]; then
+          echo "${_info} | ${EXP_NAME}" > "${_progress_file}"
+        fi
+      fi
+    fi
+  done
+}
+_update_progress &
+_progress_pid=$!
+# 确保脚本退出时清理后台进程
+trap 'kill ${_progress_pid} 2>/dev/null || true' EXIT
 
 # =========================================================
 # 启动训练
@@ -121,9 +170,13 @@ python3 -m verl.trainer.main \
   ${MAX_STEPS:+trainer.max_steps="$MAX_STEPS"}
 
 # =========================================================
-# 训练结束：复制 Ray 日志
+# 训练结束：停止进度监控 & 写入完成状态
 # =========================================================
 set +x
+kill "${_progress_pid}" 2>/dev/null || true
+trap - EXIT
+echo "[##############################] ${_max_steps}/${_max_steps} | ${EXP_NAME} | done" > "${_progress_file}"
+
 _ray_session_logs="${_ray_tmpdir}/session_latest/logs"
 if [[ -d "${_ray_session_logs}" ]]; then
   echo "[hier] Copying Ray session logs -> ${_ckpt_dir}/ray_logs"
@@ -131,3 +184,4 @@ if [[ -d "${_ray_session_logs}" ]]; then
     echo "[hier] Warning: Ray log copy failed (non-fatal)" >&2
 fi
 echo "[hier] Done. Run log: ${_run_log}"
+echo "[hier] Done. Summary: ${_summary_log}"

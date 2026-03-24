@@ -4,17 +4,20 @@ prepare_data.py — 三层分割消融实验数据准备
 从 per-level _clipped.jsonl 中按指定层级/变体筛选、split val、合并输出。
 
 用法:
-    # L2 only
-    python prepare_data.py --levels L2 --val-per-level 20 --output-dir ./data/exp1
+    # L2 only (val 总共 200 条)
+    python prepare_data.py --levels L2 --total-val 200 --output-dir ./data/exp1
 
     # L3 sequential only
-    python prepare_data.py --levels L3_seq --val-per-level 20 --output-dir ./data/exp2
+    python prepare_data.py --levels L3_seq --total-val 200 --output-dir ./data/exp2
 
-    # L2 + L3 sequential
-    python prepare_data.py --levels L2 L3_seq --val-per-level 20 --output-dir ./data/exp5
+    # L2 + L3 sequential (each level gets 100 val)
+    python prepare_data.py --levels L2 L3_seq --total-val 200 --output-dir ./data/exp5
 
-    # L1 + L2 + L3 both (seq + shuffled)
-    python prepare_data.py --levels L1 L2 L3_both --val-per-level 20 --output-dir ./data/exp7
+    # L1 + L2 + L3 both (each level gets ~67 val)
+    python prepare_data.py --levels L1 L2 L3_both --total-val 200 --output-dir ./data/exp7
+
+    # 也可用旧的 --val-per-level 参数
+    python prepare_data.py --levels L2 --val-per-level 100 --output-dir ./data/exp1
 """
 
 import argparse
@@ -74,8 +77,12 @@ def main():
         help="层级列表: L1, L2, L3_seq, L3_shuf, L3_both",
     )
     parser.add_argument(
-        "--val-per-level", type=int, default=20,
-        help="每层验证集条数 (default: 20)",
+        "--val-per-level", type=int, default=None,
+        help="每层验证集条数 (与 --total-val 互斥)",
+    )
+    parser.add_argument(
+        "--total-val", type=int, default=200,
+        help="验证集总条数，自动按层级数均分 (default: 200)",
     )
     parser.add_argument(
         "--data-root", type=str, default=DEFAULT_DATA_ROOT,
@@ -92,6 +99,22 @@ def main():
     for lv in args.levels:
         if lv not in VALID_LEVELS:
             raise ValueError(f"Unknown level: {lv}. Valid: {VALID_LEVELS}")
+
+    # 计算 val_per_level
+    if args.val_per_level is not None:
+        val_per_level = args.val_per_level
+    else:
+        # 统计实际加载的层级数（L3_seq/L3_shuf/L3_both 共享一个文件 = 1 层）
+        n_levels = 0
+        for lv in args.levels:
+            if lv == "L3_seg":
+                n_levels += 1
+            elif lv.startswith("L3"):
+                n_levels += 1
+            else:
+                n_levels += 1
+        val_per_level = max(1, args.total_val // max(n_levels, 1))
+        print(f"  --total-val={args.total_val}, {n_levels} level(s) -> val_per_level={val_per_level}")
 
     rng = random.Random(args.seed)
 
@@ -124,7 +147,7 @@ def main():
         rng.shuffle(records)
 
         # Split val
-        n_val = min(args.val_per_level, len(records) // 5)
+        n_val = min(val_per_level, len(records) // 5)
         val_records = records[:n_val]
         train_records = records[n_val:]
 
