@@ -25,6 +25,9 @@ MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- 数据根目录 ----
 HIER_DATA_ROOT="${HIER_DATA_ROOT:-${REPO_ROOT}/proxy_data/youcook2_seg_annotation/datasets}"
+# 消融实验预处理数据目录（train/val jsonl）
+# 默认放在可写的 /m2v_intern 路径下，避免 repo 挂载只读时出错
+ABLATION_DATA_ROOT="${ABLATION_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg/ablation_data}"
 
 # ---- 视频 & 分辨率 ----
 VIDEO_FPS=2.0

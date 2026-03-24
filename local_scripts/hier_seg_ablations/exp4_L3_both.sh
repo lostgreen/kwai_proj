@@ -9,7 +9,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 EXP_NAME="${EXP_NAME:-hier_seg_exp4_L3_both}"
 
-DATA_DIR="${HIER_DATA_ROOT}/../ablation_data/${EXP_NAME}"
+DATA_DIR="${ABLATION_DATA_ROOT}/${EXP_NAME}"
 TRAIN_FILE="${DATA_DIR}/train.jsonl"
 TEST_FILE="${DATA_DIR}/val.jsonl"
 
