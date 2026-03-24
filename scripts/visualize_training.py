@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
 多任务融合训练日志可视化脚本
