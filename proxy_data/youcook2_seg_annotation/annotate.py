@@ -38,6 +38,7 @@ from prompts import (
     SYSTEM_PROMPT,
     get_level1_prompt,
     get_level2_prompt,
+    get_level2_check_prompt,
     get_level3_prompt,
     get_level3_check_prompt,
 )
@@ -362,15 +363,17 @@ def annotate_clip(
             existing = {}
 
     # Skip if the requested level is already done and not overwriting
-    level_key = f"level{level}" if level != "3c" else "level3"
-    is_check_mode = (level == "3c")
+    level_key = f"level{level}" if level not in ("2c", "3c") else ("level2" if level == "2c" else "level3")
+    is_check_mode = level in ("2c", "3c")
     if is_check_mode:
-        # For check mode, skip if level3 doesn't exist yet (nothing to check)
-        if existing.get("level3") is None:
+        check_target = "level2" if level == "2c" else "level3"
+        # For check mode, skip if the target level doesn't exist yet
+        if existing.get(check_target) is None:
             return {"clip_key": key, "ok": False,
-                    "error": "level3 annotation missing; run level 3 first before check", "skipped": False}
+                    "error": f"{check_target} annotation missing; run that level first before check",
+                    "skipped": False}
         # Also skip if already checked and not overwriting
-        if not overwrite and existing.get("level3", {}).get("_check_stats") is not None:
+        if not overwrite and existing.get(check_target, {}).get("_check_stats") is not None:
             return {"clip_key": key, "ok": True, "error": None, "skipped": True}
     else:
         if not overwrite and existing.get(level_key) is not None:
@@ -412,6 +415,18 @@ def annotate_clip(
                         "error": "level2 annotation missing; run level 2 first", "skipped": False}
             result_key, result_val = _annotate_level3(
                 frame_dir, clip_duration, l2,
+                api_base, api_key, model,
+                max_frames_per_call, resize_max_width, jpeg_quality,
+            )
+        elif level == "2c":
+            l1 = existing.get("level1")
+            l2 = existing.get("level2")
+            if l1 is None or l2 is None:
+                return {"clip_key": key, "ok": False,
+                        "error": "level1+level2 annotations required for L2 check; run level 1 & 2 first",
+                        "skipped": False}
+            result_key, result_val = _check_level2(
+                frame_dir, clip_duration, l1, l2,
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
             )
@@ -718,6 +733,211 @@ def _annotate_level3(
 # Level 3 Check: Model-based Quality Judge & Supplement
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _apply_l2_check_results(
+    existing_events: list[dict[str, Any]],
+    check_parsed: dict[str, Any],
+    parent_phase_id: int,
+    phase_start: int,
+    phase_end: int,
+) -> list[dict[str, Any]]:
+    """
+    Apply check verdicts to existing L2 events for one phase.
+
+    Returns the updated list of events for this phase.
+    """
+    event_by_id = {e.get("event_id"): e for e in existing_events}
+
+    reviews = check_parsed.get("reviews") or []
+    kept_events: list[dict[str, Any]] = []
+
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        eid = review.get("event_id")
+        verdict = review.get("verdict", "keep")
+        original = event_by_id.get(eid)
+        if original is None:
+            continue
+
+        if verdict == "keep":
+            kept_events.append(original)
+        elif verdict == "revise":
+            revised = review.get("revised")
+            if isinstance(revised, dict):
+                updated = dict(original)
+                for field in ("start_time", "end_time", "instruction", "visual_keywords"):
+                    if field in revised:
+                        updated[field] = revised[field]
+                st = updated.get("start_time")
+                et = updated.get("end_time")
+                if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
+                    updated["_checked"] = "revised"
+                    kept_events.append(updated)
+                else:
+                    original["_checked"] = "revise_failed_kept_original"
+                    kept_events.append(original)
+            else:
+                original["_checked"] = "revise_no_data_kept_original"
+                kept_events.append(original)
+        elif verdict == "remove":
+            pass  # intentionally removed
+        else:
+            kept_events.append(original)
+
+    # Any existing events not mentioned in reviews are kept
+    reviewed_ids = {r.get("event_id") for r in reviews if isinstance(r, dict)}
+    for e in existing_events:
+        if e.get("event_id") not in reviewed_ids:
+            kept_events.append(e)
+
+    # Add supplements
+    supplements = check_parsed.get("supplements") or []
+    for sup in supplements:
+        if not isinstance(sup, dict):
+            continue
+        st = sup.get("start_time")
+        et = sup.get("end_time")
+        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
+            continue
+        sup["parent_phase_id"] = parent_phase_id
+        sup["_checked"] = "supplemented"
+        kept_events.append(sup)
+
+    return kept_events
+
+
+def _check_level2(
+    frame_dir: Path,
+    clip_duration: float,
+    l1_result: dict[str, Any],
+    l2_result: dict[str, Any],
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+) -> tuple[str, dict[str, Any]]:
+    """
+    Level 2 Check: Model-based quality review and supplement for L2 annotations.
+
+    For each L1 phase:
+      1. Gather existing L2 events belonging to this phase.
+      2. Re-read phase frames and call the judge model.
+      3. Apply verdicts (keep/revise/remove) and add supplemented events.
+    """
+    phases = l1_result.get("macro_phases", [])
+    phases = sorted(
+        [p for p in phases if isinstance(p, dict)],
+        key=lambda p: (p.get("start_frame", 0), p.get("end_frame", 0)),
+    )
+    if not phases:
+        raise RuntimeError("level1 macro_phases missing or empty")
+
+    existing_events = l2_result.get("events", [])
+
+    # Build warped mapping to convert phase frame boundaries to real seconds
+    warped_mapping = l1_result.get("_warped_mapping") or []
+    warp_to_sec = {}
+    for m in warped_mapping:
+        warp_to_sec[m.get("warped_idx")] = m.get("real_sec")
+
+    all_checked: list[dict[str, Any]] = []
+    check_calls: list[dict[str, Any]] = []
+    stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
+
+    for phase in phases:
+        phase_id = phase.get("phase_id")
+        phase_name = phase.get("phase_name", "")
+        narrative = phase.get("narrative_summary", "")
+
+        # Convert warped frame bounds to real seconds
+        sf = phase.get("start_frame", 0)
+        ef = phase.get("end_frame", 0)
+        phase_start = warp_to_sec.get(sf, sf)
+        phase_end = warp_to_sec.get(ef, ef)
+
+        # Gather events belonging to this phase
+        phase_events = [
+            e for e in existing_events
+            if isinstance(e, dict) and e.get("parent_phase_id") == phase_id
+        ]
+
+        if not phase_events:
+            check_calls.append({
+                "phase_id": phase_id, "phase_name": phase_name,
+                "start_time": phase_start, "end_time": phase_end,
+                "skipped": True, "skip_reason": "no existing L2 events",
+            })
+            continue
+
+        ph_frames = get_frames_in_time_range(frame_dir, int(phase_start), int(phase_end))
+        if not ph_frames:
+            check_calls.append({
+                "phase_id": phase_id, "phase_name": phase_name,
+                "start_time": phase_start, "end_time": phase_end,
+                "skipped": True, "skip_reason": "no frames",
+            })
+            all_checked.extend(phase_events)
+            continue
+
+        sampled = sample_uniform(ph_frames, max_frames)
+        frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+        frame_labels = []
+        for fp in sampled:
+            idx = frame_stem_to_index(fp, 0)
+            frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+
+        prompt_text = get_level2_check_prompt(
+            int(phase_start), int(phase_end), phase_name, narrative, phase_events,
+        )
+        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+
+        if parsed is None:
+            check_calls.append({
+                "phase_id": phase_id, "phase_name": phase_name,
+                "start_time": phase_start, "end_time": phase_end,
+                "skipped": True, "skip_reason": "check parse failed",
+            })
+            all_checked.extend(phase_events)
+            continue
+
+        n_before = len(phase_events)
+        checked = _apply_l2_check_results(
+            phase_events, parsed, phase_id, int(phase_start), int(phase_end),
+        )
+        all_checked.extend(checked)
+
+        reviews = parsed.get("reviews") or []
+        for rv in reviews:
+            if isinstance(rv, dict):
+                v = rv.get("verdict", "keep")
+                if v == "keep":
+                    stats["kept"] += 1
+                elif v == "revise":
+                    stats["revised"] += 1
+                elif v == "remove":
+                    stats["removed"] += 1
+        n_supplements = len(parsed.get("supplements") or [])
+        stats["supplemented"] += n_supplements
+
+        check_calls.append({
+            "phase_id": phase_id, "phase_name": phase_name,
+            "start_time": phase_start, "end_time": phase_end,
+            "n_before": n_before,
+            "n_after": len(checked),
+            "n_supplements": n_supplements,
+        })
+
+    # Sort and re-number
+    all_checked.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
+    for i, e in enumerate(all_checked, 1):
+        e["event_id"] = i
+
+    return "level2", {
+        "events": all_checked,
+        "_check_calls": check_calls,
+        "_check_stats": stats,
+    }
+
+
 def _apply_l3_check_results(
     existing_results: list[dict[str, Any]],
     check_parsed: dict[str, Any],
@@ -943,8 +1163,8 @@ def main() -> None:
                         help="Root directory of pre-extracted 1fps frames")
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write per-clip annotation JSON files")
-    parser.add_argument("--level", type=str, choices=["1", "2", "3", "3c"], default="1",
-                        help="Annotation level (1=warped macro, 2=phase-based event, 3=grounding, 3c=check L3)")
+    parser.add_argument("--level", type=str, choices=["1", "2", "3", "2c", "3c"], default="1",
+                        help="Annotation level (1/2/3=annotate, 2c=check L2, 3c=check L3)")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -1001,8 +1221,10 @@ def main() -> None:
     print(f"resize_max_width={args.resize_max_width}  jpeg_quality={args.jpeg_quality}")
     if level == 2:
         print(f"L2 phase-based: events detected per L1 macro phase")
+    elif level == "2c":
+        print(f"L2 check mode: model-based quality review & supplement for L2 events")
     elif level == "3c":
-        print(f"L3 check mode: model-based quality review & supplement")
+        print(f"L3 check mode: model-based quality review & supplement for L3 actions")
     print(f"Frames: {frames_base}  Output: {output_dir}\n")
 
     ok_count = skipped_count = error_count = 0

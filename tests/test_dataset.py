@@ -43,6 +43,10 @@ def test_image_dataset(use_fast: bool):
         "raw_prompt_ids",
         "ground_truth",
         "multi_modal_data",
+        "prompt_token_count",
+        "visual_token_count",
+        "image_visual_token_count",
+        "video_visual_token_count",
     }
     assert torch.all(dataset[0]["input_ids"] == torch.tensor(token_ids))
     assert torch.all(dataset[0]["attention_mask"] == torch.ones(16))

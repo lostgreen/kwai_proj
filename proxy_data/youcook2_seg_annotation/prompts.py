@@ -341,10 +341,172 @@ Example: <events>[[3, 7], [10, 14], [16, 22]]</events>"""
 def get_level3_seg_prompt(duration: int) -> str:
     """Training prompt for Level 3 segmentation (no queries, detect all atomic actions)."""
     return _LEVEL3_SEG_BASE.format(duration=duration)
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 2 Check: Event Granularity Review (活动级审核)
+# Input:  frames within an L1 phase + existing L2 event annotations
+# Output: reviewed events with verdicts, corrections, and supplements
+# ─────────────────────────────────────────────────────────────────────────────
+_LEVEL2_CHECK_BASE = """\
+You are a quality reviewer for cooking event annotations. You are viewing \
+frames from a macro cooking phase ({phase_start}s to {phase_end}s). \
+Phase: "{phase_name}". Summary: "{narrative_summary}"
+
+Below are the EXISTING L2 event annotations for this phase:
+{existing_annotations}
+
+Your task: REVIEW each existing event AND identify any MISSING events.
+
+GRANULARITY SPECTRUM — use this to judge every annotation:
+
+This is a LEVEL 2 annotation review. Level 2 events sit in the middle of a \
+three-level hierarchy:
+
+  L1 Phase (ABOVE — too coarse for L2):
+    A broad cooking stage spanning the entire phase you are reviewing. \
+If an "event" essentially restates or summarizes the whole phase, it is \
+NOT a valid L2 event — it belongs at L1.
+    Example of TOO COARSE: "Prepare all ingredients" when the phase IS \
+"Ingredient Preparation".
+
+  L2 Event (THIS LEVEL — correct granularity):
+    A multi-second, goal-directed cooking workflow that transforms ingredients \
+or completes a meaningful recipe sub-goal. It typically involves a sequence \
+of physical interactions unified by a single cooking intent.
+    Duration guide: typically 10-60 seconds.
+    Examples: "Assemble wontons by filling and folding wrappers", \
+"Sauté diced onions until translucent", "Knead dough until smooth and elastic".
+
+  L3 Atomic Action (BELOW — too fine for L2):
+    A single momentary physical interaction (2-6s) that changes one object's \
+state once. If an annotation describes a single hand motion, a single pour, \
+or a single cut stroke, it is TOO FINE for L2.
+    Examples of TOO FINE: "Place filling on wrapper", "Pick up knife", \
+"Pour oil into pan", "Flip one pancake".
+
+REVIEW CRITERIA:
+
+1. [Granularity — Not Too Coarse]: Does the event describe something more \
+specific than the phase itself? An event that merely paraphrases the phase \
+name/summary should be REMOVED or REVISED to be more specific.
+
+2. [Granularity — Not Too Fine]: Does the event encompass a multi-step workflow \
+rather than a single atomic motion? If it describes only one brief physical \
+interaction (< 5 seconds, single object state change), it should be MERGED \
+with adjacent actions into a proper event, or REMOVED.
+
+3. [Temporal Accuracy]: Do start_time/end_time match the visible activity? \
+The event should start when the first contributing action begins and end \
+when the goal is achieved.
+
+4. [Description Quality]: Does the instruction clearly convey the cooking goal \
+being accomplished? It should describe WHAT is being achieved, not just \
+the physical motion.
+
+5. [Cooking Relevance]: Does the event involve actual food/ingredient \
+transformation? Exclude narration, idle waiting, tool-only movements, \
+beauty shots, or tasting without food manipulation.
+
+6. [Temporal Overlap]: Do multiple events cover the same time span with the \
+same intent? If so, the duplicate should be removed.
+
+7. [Completeness]: Are there any visible cooking workflows in the frames that \
+are NOT covered by existing annotations?
+
+For each existing event, output a verdict:
+- "keep": Event is correct as-is.
+- "revise": Event has issues — provide corrected fields.
+- "remove": Event is invalid (wrong granularity, not cooking, or duplicate).
+
+Then list any MISSING events.
+
+Output JSON:
+{{
+  "reviews": [
+    {{
+      "event_id": 1,
+      "verdict": "keep"
+    }},
+    {{
+      "event_id": 2,
+      "verdict": "revise",
+      "issue": "too_fine|too_coarse|bad_boundary|bad_description|overlap",
+      "revised": {{
+        "start_time": 35,
+        "end_time": 58,
+        "instruction": "Corrected event description",
+        "visual_keywords": ["keyword1", "keyword2", "keyword3"]
+      }}
+    }},
+    {{
+      "event_id": 3,
+      "verdict": "remove",
+      "issue": "too_fine|too_coarse|not_cooking|duplicate",
+      "reason": "Brief explanation of why this event is removed"
+    }}
+  ],
+  "supplements": [
+    {{
+      "start_time": 70,
+      "end_time": 90,
+      "instruction": "Description of missed cooking event",
+      "visual_keywords": ["keyword1", "keyword2"]
+    }}
+  ]
+}}
+
+IMPORTANT:
+- You MUST review every existing event by event_id.
+- "supplements" can be an empty list if nothing is missing.
+- Do NOT invent events not visible in the provided frames.
+- Always include the "issue" field for revise/remove verdicts.
+- Be strict on granularity: single atomic motions do NOT belong at L2."""
+
+
+def get_level2_check_prompt(
+    phase_start_sec: int,
+    phase_end_sec: int,
+    phase_name: str,
+    narrative_summary: str,
+    existing_events: list[dict],
+) -> str:
+    """
+    Build the Level 2 Check (Quality Judge & Supplement) user-turn prompt.
+
+    Args:
+        phase_start_sec: Start of the L1 macro phase (seconds).
+        phase_end_sec: End of the L1 macro phase (seconds).
+        phase_name: Name of the macro phase from L1.
+        narrative_summary: L1 narrative summary for context.
+        existing_events: List of existing event dicts for this phase.
+    """
+    import json as _json
+    display_events = []
+    for ev in existing_events:
+        display_events.append({
+            "event_id": ev.get("event_id"),
+            "start_time": ev.get("start_time"),
+            "end_time": ev.get("end_time"),
+            "instruction": ev.get("instruction"),
+            "visual_keywords": ev.get("visual_keywords"),
+        })
+    annotations_str = _json.dumps(display_events, ensure_ascii=False, indent=2)
+
+    return _LEVEL2_CHECK_BASE.format(
+        phase_start=phase_start_sec,
+        phase_end=phase_end_sec,
+        phase_name=phase_name,
+        narrative_summary=narrative_summary,
+        existing_annotations=annotations_str,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Level 3 Check: Atomic Action Granularity Review (动作级审核)
+# Input:  frames within an L2 event clip + existing L3 annotations
 # Output: reviewed results with verdicts, corrections, and supplemented actions
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_CHECK_BASE = """\
-You are a quality reviewer for temporal grounding annotations. You are viewing \
+You are a quality reviewer for atomic action annotations. You are viewing \
 frames from a cooking event clip ({event_start}s to {event_end}s). \
 The cooking event is: "{action_query}"
 
@@ -353,29 +515,67 @@ Below are the EXISTING L3 atomic action annotations for this event:
 
 Your task: REVIEW each existing annotation AND identify any MISSING atomic actions.
 
+GRANULARITY SPECTRUM — use this to judge every annotation:
+
+This is a LEVEL 3 annotation review. Level 3 atomic actions are the finest \
+level in a three-level hierarchy:
+
+  L2 Event (ABOVE — too coarse for L3):
+    A goal-directed cooking workflow spanning 10-60 seconds with multiple \
+physical steps. If an annotation's sub_action essentially restates the \
+parent event instruction, it is NOT a valid L3 action — it belongs at L2.
+    Example of TOO COARSE: "Assemble the wontons" when the parent event IS \
+"Assemble wontons by filling and folding wrappers".
+
+  L3 Atomic Action (THIS LEVEL — correct granularity):
+    A single, discrete physical interaction (2-6 seconds) where exactly ONE \
+object undergoes ONE irreversible visual state change. The start is the \
+moment of physical contact or the onset of the transformation; the end is \
+when the new state is visually established.
+    Examples: "Pour beaten eggs into the heated pan", \
+"Flip the pancake with a spatula", "Sprinkle salt over the sliced tomatoes".
+
+  Sub-atomic motion (BELOW — too fine for L3):
+    A partial body movement that does not by itself produce a complete object \
+state change. Reaching, gripping, lifting a tool, repositioning hands, or \
+adjusting posture are NOT valid L3 annotations.
+    Examples of TOO FINE: "Reach for the spatula", "Lift hand from the pan", \
+"Adjust grip on knife handle".
+
 REVIEW CRITERIA:
-1. [Temporal Accuracy]: Does start_time/end_time match what is actually visible in \
-the frames? Is the boundary precise (start = physical contact begins, end = new \
-state established)?
-2. [State Description Quality]: Are pre_state and post_state specific, concrete, \
-and visually verifiable? Vague descriptions like "food on table" or "ingredients \
-ready" are INSUFFICIENT — they should describe exact visual appearance.
-3. [Relevance]: Does the sub_action describe a real physical state change of an \
-object? Exclude pure hand movements, tool pickups, or posture adjustments without \
-any object state change.
-4. [Granularity]: Is the action truly atomic (2-6s typical)? If a single annotation \
-covers multiple distinct state changes, it should be split.
-5. [Boundary Compliance]: start_time must be >= {event_start} and end_time must \
-be <= {event_end}.
-6. [Completeness]: Are there any visible atomic state-change moments in the frames \
-that are NOT covered by the existing annotations?
+
+1. [Granularity — Not Too Coarse]: Does the sub_action describe a SINGLE \
+physical state change, not a multi-step workflow? If it covers multiple \
+distinct state changes, it should be SPLIT (revise into one, supplement \
+the others).
+
+2. [Granularity — Not Too Fine]: Does the sub_action produce a complete, \
+visible object state change? If it is merely a hand/body motion without \
+any object transformation, it should be REMOVED.
+
+3. [Temporal Accuracy]: Does start_time/end_time match what is visible? \
+start = physical contact or transformation onset. end = new state established. \
+Typical duration: 2-6 seconds.
+
+4. [State Description Quality]: Are pre_state and post_state specific, concrete, \
+and visually verifiable? Vague descriptions ("food ready", "ingredients on \
+table") are insufficient — they must describe exact visual appearance.
+
+5. [Cooking Relevance]: Does the sub_action involve real physical state change \
+of food, ingredient, or cookware contents? Exclude pure hand movements, \
+tool pickups, posture adjustments, narration, or idle frames.
+
+6. [Boundary Compliance]: start_time >= {event_start} and end_time <= {event_end}.
+
+7. [Completeness]: Are there visible atomic state changes in the frames not \
+covered by existing annotations?
 
 For each existing annotation, output a verdict:
 - "keep": Annotation is correct as-is.
-- "revise": Annotation has issues — provide the corrected version.
-- "remove": Annotation is invalid (no real state change, or duplicate).
+- "revise": Annotation has issues — provide corrected fields.
+- "remove": Annotation is invalid (no real state change, wrong granularity, or duplicate).
 
-Then, list any MISSING actions that should be added.
+Then list any MISSING actions.
 
 Output JSON:
 {{
@@ -387,6 +587,7 @@ Output JSON:
     {{
       "action_id": 2,
       "verdict": "revise",
+      "issue": "too_fine|too_coarse|bad_boundary|bad_state_desc|overlap",
       "revised": {{
         "start_time": 45,
         "end_time": 49,
@@ -398,7 +599,8 @@ Output JSON:
     {{
       "action_id": 3,
       "verdict": "remove",
-      "reason": "No visible state change; just hand repositioning"
+      "issue": "too_fine|too_coarse|not_cooking|duplicate",
+      "reason": "Brief explanation"
     }}
   ],
   "supplements": [
@@ -415,8 +617,9 @@ Output JSON:
 IMPORTANT:
 - You MUST review every existing annotation by action_id.
 - "supplements" can be an empty list if nothing is missing.
-- Do NOT invent actions that are not visible in the provided frames.
-- Be strict: vague or non-physical annotations should be revised or removed."""
+- Do NOT invent actions not visible in the provided frames.
+- Always include the "issue" field for revise/remove verdicts.
+- Be strict: vague, non-physical, or multi-step annotations should be revised or removed."""
 
 
 def get_level3_check_prompt(
@@ -435,7 +638,6 @@ def get_level3_check_prompt(
         existing_results: List of existing grounding_results dicts for this event.
     """
     import json as _json
-    # Format existing annotations compactly for the prompt
     display_results = []
     for r in existing_results:
         display_results.append({
