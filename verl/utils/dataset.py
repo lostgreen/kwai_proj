@@ -16,6 +16,7 @@
 
 import math
 import os
+import random
 from collections import defaultdict
 from io import BytesIO
 from typing import Any, Optional, Union
@@ -521,7 +522,31 @@ class RLHFDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
+    _BAD_VIDEO_MAX_RETRIES = 5
+
     def __getitem__(self, index):
+        for _attempt in range(self._BAD_VIDEO_MAX_RETRIES + 1):
+            try:
+                return self._getitem_inner(index)
+            except Exception as e:
+                err_msg = str(e)
+                # Log the bad sample
+                _log_path = os.environ.get("BAD_SAMPLES_LOG", "bad_samples.txt")
+                try:
+                    with open(_log_path, "a") as f:
+                        f.write(f"[BAD_SAMPLE] index={index} attempt={_attempt} error={err_msg}\n")
+                except OSError:
+                    pass
+                print(f"[dataset] WARNING: __getitem__ failed for index={index} "
+                      f"(attempt {_attempt+1}/{self._BAD_VIDEO_MAX_RETRIES+1}): {err_msg}")
+                # Pick a different random index for retry
+                index = random.randint(0, len(self) - 1)
+        raise RuntimeError(
+            f"[dataset] All {self._BAD_VIDEO_MAX_RETRIES+1} attempts failed in __getitem__. "
+            f"Last index={index}"
+        )
+
+    def _getitem_inner(self, index):
         example: dict = self.dataset[index]
         messages = self._build_messages(example)
         example.pop(self.prompt_key, None)

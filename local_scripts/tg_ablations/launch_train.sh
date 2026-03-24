@@ -23,16 +23,21 @@ if [[ ! -f "${TEST_FILE}" ]];  then echo "[tg] TEST_FILE not found: ${TEST_FILE}
 _ckpt_dir="${CHECKPOINT_ROOT}/${EXP_NAME}"
 mkdir -p "${_ckpt_dir}"
 _run_log="${_ckpt_dir}/run_$(date +%Y%m%d_%H%M%S).log"
-exec > >(tee -a "${_run_log}") 2>&1
+_summary_log="${_ckpt_dir}/summary_$(date +%Y%m%d_%H%M%S).log"
+# Dual logging: full log + summary log (important lines only, no progress bars)
+exec > >(tee -a "${_run_log}" | grep --line-buffered -E '^\[tg\]|ERROR|Error|Exception|Traceback|SIGTERM|SIGKILL|OOM|killed|BAD_SAMPLE|step [0-9]|reward|val.*metric|WARNING.*__getitem__' >> "${_summary_log}") 2>&1
 echo "[tg] ============================================================"
 echo "[tg] EXP : ${EXP_NAME}"
 echo "[tg] Date: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "[tg] Log : ${_run_log}"
+echo "[tg] Summary: ${_summary_log}"
 echo "[tg] Train: ${TRAIN_FILE}  ($(wc -l < "${TRAIN_FILE}") samples)"
 echo "[tg] Val  : ${TEST_FILE}   ($(wc -l < "${TEST_FILE}") samples)"
 echo "[tg] ============================================================"
 
-_ray_tmpdir="/tmp/ray_${EXP_NAME}"
+# Ray tmpdir: use short name to avoid AF_UNIX socket path >107 bytes
+_exp_short="$(echo "${EXP_NAME}" | grep -oE 'exp[0-9]+' || echo "${EXP_NAME:0:8}")"
+_ray_tmpdir="/tmp/ray_${_exp_short}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 
@@ -118,3 +123,4 @@ if [[ -d "${_ray_session_logs}" ]]; then
     echo "[tg] Warning: Ray log copy failed (non-fatal)" >&2
 fi
 echo "[tg] Done. Run log: ${_run_log}"
+echo "[tg] Done. Summary: ${_summary_log}"
