@@ -79,6 +79,9 @@ def check_video_decord(
     decode_timeout: int = 120,
     video_fps: float = 2.0,
     max_frames: int = 256,
+    use_fetch_video: bool = False,
+    min_pixels: int = 3136,
+    max_pixels: int = 49152,
 ) -> dict:
     """
     用 decord.VideoReader 尝试打开视频，和训练时行为完全一致。
@@ -93,6 +96,10 @@ def check_video_decord(
         decode_timeout: full_decode 模式下单个视频的超时秒数（默认 120s）。
         video_fps: 模拟训练时的目标采样帧率（默认 2.0，与 common.sh 对齐）。
         max_frames: 模拟训练时的最大帧数（默认 256，与 common.sh 对齐）。
+        use_fetch_video: 直接调用 qwen_vl_utils.fetch_video()（与训练代码完全一致的
+                         解码路径），比 full_decode 更准确地检测 seek 失败的视频。
+        min_pixels: use_fetch_video 模式下的最小像素数（与 common.sh 对齐）。
+        max_pixels: use_fetch_video 模式下的最大像素数（与 common.sh 对齐）。
 
     返回 {
         "path": str,
@@ -121,6 +128,39 @@ def check_video_decord(
     if os.path.getsize(video_path) == 0:
         result["error"] = "文件为空 (0 bytes)"
         return result
+
+    # ---- use_fetch_video 模式：直接走训练时的完整解码路径 ----
+    if use_fetch_video:
+        import signal
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError(f"fetch_video 超时 ({decode_timeout}s)")
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(decode_timeout)
+        try:
+            from qwen_vl_utils.vision_process import fetch_video as _fetch_video
+            vision_info = {
+                "video": video_path,
+                "min_pixels": min_pixels,
+                "max_pixels": max_pixels,
+                "max_frames": max_frames,
+                "fps": video_fps,
+            }
+            _fetch_video(vision_info, image_patch_size=16,
+                         return_video_sample_fps=True,
+                         return_video_metadata=True)
+            result["ok"] = True
+        except TimeoutError as e:
+            result["error"] = str(e)[:300]
+        except Exception as e:
+            result["error"] = str(e)[:300]
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+        return result
+
+    # ---- 原有 decord 模式 ----
 
     try:
         import decord
@@ -245,6 +285,14 @@ def main():
                         help="模拟训练时的最大帧数（默认 256，与 common.sh 对齐）")
     parser.add_argument("--filter-duration-mismatch", action="store_true", default=False,
                         help="丢弃时长不匹配样本（标注时长 vs 实际时长差异 >10%%）")
+    parser.add_argument("--use-fetch-video", action="store_true", default=False,
+                        help="直接调用 qwen_vl_utils.fetch_video()（与训练完全一致的解码路径），"
+                             "比 --full-decode 更准确。需要安装 qwen_vl_utils。"
+                             "隐含 --full-decode 行为，自动使用多进程 + 超时保护。")
+    parser.add_argument("--min-pixels", type=int, default=3136,
+                        help="use-fetch-video 模式下的最小像素数（默认 3136，与 common.sh 对齐）")
+    parser.add_argument("--max-pixels", type=int, default=49152,
+                        help="use-fetch-video 模式下的最大像素数（默认 49152，与 common.sh 对齐）")
     args = parser.parse_args()
 
     # ── 1. 读取数据集，收集所有唯一视频路径 ──
@@ -297,14 +345,15 @@ def main():
             print(f"\n📋 从 {args.bad_list_input} 加载坏视频列表: {len(bad_videos)} 个命中当前数据集")
     else:
         # 并行验证视频
-        mode_desc = "完整解码" if args.full_decode else "快速检查"
+        use_fv = args.use_fetch_video
+        mode_desc = "fetch_video" if use_fv else ("完整解码" if args.full_decode else "快速检查")
         print(f"\n🔍 验证视频可读性（workers={args.workers}, 模式={mode_desc}）...")
         checked = 0
         total = len(all_videos)
 
-        # full_decode 模式用多进程（SIGALRM 的超时机制要求在主线程，多进程每个子进程有自己的主线程）
-        # 快速模式用多线程（更轻量，不需要超时保护）
-        PoolClass = ProcessPoolExecutor if args.full_decode else ThreadPoolExecutor
+        # use_fetch_video / full_decode 模式用多进程（SIGALRM 超时要求在主线程）
+        # 快速模式用多线程（更轻量）
+        PoolClass = ProcessPoolExecutor if (args.full_decode or use_fv) else ThreadPoolExecutor
 
         with PoolClass(max_workers=args.workers) as executor:
             futures = {
@@ -314,6 +363,9 @@ def main():
                     decode_timeout=args.decode_timeout,
                     video_fps=args.video_fps,
                     max_frames=args.max_frames,
+                    use_fetch_video=use_fv,
+                    min_pixels=args.min_pixels,
+                    max_pixels=args.max_pixels,
                 ): v
                 for v in all_videos
             }
