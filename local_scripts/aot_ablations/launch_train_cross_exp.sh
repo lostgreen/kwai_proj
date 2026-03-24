@@ -23,7 +23,7 @@ if [[ -z "${DATA_DIR:-}" ]];               then echo "[aot] DATA_DIR not set"   
 if [[ -z "${CHECKPOINT_ROOT:-}" ]];        then echo "[aot] CHECKPOINT_ROOT not set"        >&2; exit 1; fi
 if [[ -z "${CURATE_REPORT_JSONLS:-}" ]];   then echo "[aot] CURATE_REPORT_JSONLS not set"   >&2; exit 1; fi
 if [[ -z "${CURATE_TRAIN_JSONLS:-}" ]];    then echo "[aot] CURATE_TRAIN_JSONLS not set"    >&2; exit 1; fi
-if [[ -z "${CURATE_PER_TYPE_QUOTA:-}" ]];  then echo "[aot] CURATE_PER_TYPE_QUOTA not set"  >&2; exit 1; fi
+# CURATE_PER_TYPE_QUOTA 可选：未设置时在 Step C' 前自动按 report min 数量计算
 mkdir -p "${DATA_DIR}"
 
 # ---- 检查依赖文件是否存在 ----
