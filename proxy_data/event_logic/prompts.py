@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Prompt templates for Event Logic proxy tasks (add / replace / sort).
+Prompt templates for Event Logic proxy tasks (add / replace / sort / t2v variants).
 
 Design philosophy:
-  - All prompts include CoT (<think>/<answer>) instructions baked in,
-    consistent with the format used by temporal_aot and youcook2_seg_annotation.
-  - add:     given N context video clips, select the correct next-step description.
-  - replace: given a sequence with one [MISSING] step, select the correct filler description.
-  - sort:    given N shuffled video clips, output the correct chronological order.
+  - All task prompts include CoT (<think>/<answer>) instructions baked in.
+  - V→T tasks: video context clips → text options (add, replace, sort).
+  - T→V tasks: text context descriptions → video option clips (add_t2v, replace_t2v).
+  - Step caption prompts: used by annotate_l2_step_captions.py to generate
+    recipe-instruction-style descriptions for each L2 event clip.
 
 Usage:
     from prompts import get_add_prompt, get_replace_prompt, get_sort_prompt
+    from prompts import get_add_t2v_prompt, get_replace_t2v_prompt
+    from prompts import STEP_CAPTION_SYSTEM_PROMPT, get_step_caption_prompt
 """
 
 _LETTERS = [chr(ord("A") + i) for i in range(26)]
@@ -192,3 +194,180 @@ Pay attention to:
 
 Respond strictly in JSON format:
 {{"causal_valid": <true if unique correct answer exists with sufficient context, false otherwise>, "reason": "<brief explanation in 1-2 sentences>", "confidence": <float between 0.0 and 1.0>}}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T→V Add — Predict next step video from text context
+# Input:  N consecutive step descriptions (text), 4 video clip options (<video>)
+# Output: single letter A/B/C/D
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_add_t2v_prompt(context_steps: list[str], num_options: int) -> str:
+    """
+    Build the T→V Add task prompt.
+
+    Args:
+        context_steps: List of recipe step descriptions (text context).
+        num_options: Number of video option clips (typically 4).
+
+    Returns:
+        User-turn prompt string with <video> placeholders for options and CoT instructions.
+    """
+    labels = _option_labels(num_options)
+    lines = ["Context Sequence (recipe steps):"]
+    for i, step in enumerate(context_steps):
+        lines.append(f"Step {i + 1}: {step}")
+
+    lines += [
+        "",
+        "Based on the cooking progression described above, "
+        "which of the following video clips shows the most logical next cooking step?",
+        "Options:",
+    ]
+    for label in labels:
+        lines.append(f"{label}. <video>")
+
+    lines += [
+        "",
+        "First, carefully read the Context Sequence to understand what has been done so far. "
+        "Then, reason about which video clip best shows the logical next step in the cooking process.",
+        "",
+        f"Think step by step inside <think> </think> tags, then provide your final answer "
+        f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
+    ]
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T→V Replace — Fill in missing step with a video clip
+# Input:  N step descriptions with one [MISSING], 4 video clip options (<video>)
+# Output: single letter A/B/C/D
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_replace_t2v_prompt(all_steps: list[str | None], missing_pos: int, num_options: int) -> str:
+    """
+    Build the T→V Replace task prompt.
+
+    Args:
+        all_steps: List of step descriptions; all_steps[missing_pos] should be None
+                   (it will be rendered as [MISSING]).
+        missing_pos: Zero-based index of the missing step.
+        num_options: Number of video option clips (typically 4).
+
+    Returns:
+        User-turn prompt string with <video> placeholders for options and CoT instructions.
+    """
+    labels = _option_labels(num_options)
+    lines = [
+        "The following cooking sequence has a [MISSING] step.",
+        "Context Sequence (recipe steps):",
+    ]
+    for i, step in enumerate(all_steps):
+        if i == missing_pos or step is None:
+            lines.append(f"Step {i + 1}: [MISSING]")
+        else:
+            lines.append(f"Step {i + 1}: {step}")
+
+    lines += [
+        "",
+        "Based on the recipe steps before and after the [MISSING] step, "
+        "which video clip correctly shows the missing cooking action?",
+        "Options:",
+    ]
+    for label in labels:
+        lines.append(f"{label}. <video>")
+
+    lines += [
+        "",
+        "First, carefully read the surrounding steps to understand what state the dish is in "
+        "before and after the [MISSING] step. Then, identify which video clip fills the gap logically.",
+        "",
+        f"Think step by step inside <think> </think> tags, then provide your final answer "
+        f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
+    ]
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T→V Causality Filter — Verify uniqueness and sufficiency for T→V tasks
+# Input: text context steps + keyframes of 4 option video clips
+# Output: {"causal_valid": bool, "reason": str, "confidence": float}
+# ─────────────────────────────────────────────────────────────────────────────
+
+CAUSALITY_T2V_SYSTEM_PROMPT = (
+    "You are an expert cooking video analysis assistant specializing in causal event chains. "
+    "Your task is to verify if a text-context video-option Event Logic question has a clear, "
+    "unambiguous, and uniquely correct answer. Respond only in JSON."
+)
+
+# Template fields: {task_type}, {text_context_str}, {correct_option}
+CAUSALITY_T2V_USER_PROMPT = """\
+You are given a cooking process described in text, followed by keyframes from 4 candidate video clips.
+The task is to {task_type}.
+
+Text Context (in order):
+{text_context_str}
+
+Candidate video clips are shown as keyframe images (Options A, B, C, D follow).
+Correct answer: Option {correct_option}
+
+Evaluate:
+1. Does the text context clearly establish a causal cooking progression with sufficient detail?
+2. Is there EXACTLY ONE video option that logically continues or fills the described sequence?
+3. Could the correct answer be identified from the text context alone without ambiguity?
+
+Pay attention to:
+- Whether the described steps have clear cause-and-effect relationships.
+- Whether the correct video option is visually distinct from the distractors.
+- Whether the text context narrows down the next step sufficiently.
+
+Respond strictly in JSON format:
+{{"causal_valid": <true if unique correct video answer with clear text context, false otherwise>, "reason": "<brief explanation in 1-2 sentences>", "confidence": <float between 0.0 and 1.0>}}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step Caption — Recipe-instruction-style description for L2 event clips
+# Used by annotate_l2_step_captions.py to generate T→V text context data
+# Input: keyframes of one event clip
+# Output: {"caption": str, "confidence": float}
+# ─────────────────────────────────────────────────────────────────────────────
+
+STEP_CAPTION_SYSTEM_PROMPT = (
+    "You are a culinary expert who writes precise, concise recipe instructions. "
+    "Given video frames from a single cooking step, write a clear recipe instruction "
+    "that describes this step. Respond only in JSON."
+)
+
+
+def get_step_caption_prompt(instruction_hint: str = "") -> str:
+    """
+    Build the step caption annotation prompt.
+
+    Args:
+        instruction_hint: Optional original L2 annotation text to guide the VLM.
+                          Used as a hint only; the VLM should primarily rely on the video.
+
+    Returns:
+        User-turn prompt string with instructions for generating a step caption.
+    """
+    hint_line = (
+        f"\nFor reference, the original annotation for this step is: \"{instruction_hint}\"\n"
+        "You may use this as a guide, but your description should be based on what you see in the video."
+        if instruction_hint else ""
+    )
+    return f"""\
+Watch the following video frames from a single cooking step carefully.{hint_line}
+
+Write a concise recipe instruction (1-2 sentences) that describes this cooking step. Your description must:
+1. State the main cooking action being performed (e.g., "Sauté", "Whisk", "Fold", "Simmer")
+2. Name the key ingredients or tools involved
+3. Describe what happens to the food during this step (texture, color, or state changes if visible)
+4. Be written in imperative style, like a recipe instruction
+
+Good examples:
+- "Add the diced onions to the heated pan and sauté over medium heat until they become translucent."
+- "Whisk the eggs and milk together in a bowl until a smooth, uniform mixture forms."
+- "Fold the dough over twice and press firmly to seal the edges before cutting into portions."
+
+Respond strictly in JSON format:
+{{"caption": "<your 1-2 sentence recipe instruction>", "confidence": <float 0.0-1.0 reflecting how clearly this step is visible in the frames>}}"""
