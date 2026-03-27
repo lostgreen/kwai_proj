@@ -21,7 +21,9 @@ set -euo pipefail
 set -x
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../common.sh"
+# 保存自身目录（common.sh 会覆盖 SCRIPT_DIR，这里提前存好）
+_EXP_DIR="${SCRIPT_DIR}"
+source "${_EXP_DIR}/../common.sh"
 
 VARIANT="${1:-${VARIANT:-V1}}"
 LEVELS="${2:-${LEVELS:-L1 L2 L3}}"  # 空格分隔的层级列表
@@ -47,7 +49,7 @@ fi
 if [[ ! -f "${TRAIN_FILE}" ]]; then
   echo "[hier] Preparing V2/${VARIANT} data for levels: ${LEVELS} ..."
   # shellcheck disable=SC2086
-  python3 "${SCRIPT_DIR}/prepare_v2_ablation_data.py" \
+  python3 "${_EXP_DIR}/prepare_v2_ablation_data.py" \
     --levels ${LEVELS} \
     --variant "${VARIANT}" \
     --val-per-level "${VAL_PER_LEVEL}" \
@@ -57,4 +59,4 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
 fi
 
 # ---- 启动训练 ----
-source "${SCRIPT_DIR}/../launch_train.sh"
+source "${_EXP_DIR}/../launch_train.sh"
