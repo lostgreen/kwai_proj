@@ -131,29 +131,204 @@ L3 标注基于 VLM 自动标注（Gemini），原子动作时间边界可能不
 
 ```
 local_scripts/hier_seg_ablations/
-├── README.md               # 本文件
-├── common.sh               # 共用超参数
-├── prepare_data.py          # 数据准备（按层/变体筛选 + split + merge）
-├── launch_train.sh          # 统一训练入口
+├── README.md                          # 本文件
+├── common.sh                          # 共用超参数
+│
+│ ── 层级组合消融 (Exp 1-7) ──
+├── prepare_data.py                    # 按层/变体筛选 + split + merge
+├── launch_train.sh                    # 统一训练入口
 ├── exp1_L2_only.sh
 ├── exp2_L3_seq.sh
 ├── exp3_L3_shuf.sh
 ├── exp4_L3_both.sh
 ├── exp5_L2_L3.sh
 ├── exp6_L1_L2_L3.sh
-└── exp7_all_mixed.sh
+├── exp7_all_mixed.sh
+│
+│ ── Prompt 消融 (P1-P4) ──
+├── prompt_variants.py                 # 四种 prompt 变体定义
+├── prepare_prompt_ablation_data.py    # Prompt 消融数据准备
+├── exp_prompt_ablation.sh             # 单变体训练入口 (接受 P1/P2/P3/P4 参数)
+├── run_prompt_ablation.sh             # 批量运行 P1-P4
+│
+│ ── Chain-of-Segment 消融 (Exp 8 + Track 4) ──
+├── exp8_chain_L2L3.sh                 # 链式层次分割训练 (使用 chain_seg_ablation/build_chain_seg_data.py)
+├── chain_seg_ablation/                # Chain-Seg 消融子目录 (L2L3/V1/V2)
+│
+│ ── 批量运行 ──
+└── run_batch.sh                       # 原始 exp1-7 批量运行
 
 proxy_data/youcook2_seg_annotation/datasets/
 ├── youcook2_hier_L1_train_clipped.jsonl       # 500 samples
 ├── youcook2_hier_L2_train_clipped.jsonl       # 1898 samples
 ├── youcook2_hier_L3_train_clipped.jsonl       # 3568 samples (grounding: seq+shuf)
 ├── youcook2_hier_L3_seg_train_clipped.jsonl   # ~376 samples (segmentation: 无 query)
-└── ablation_data/
-    ├── hier_seg_exp1_L2_only/             # 自动生成
-    │   ├── train.jsonl
-    │   └── val.jsonl
+└── ablation_data/                             # 自动生成
+    ├── hier_seg_exp1_L2_only/
+    ├── hier_seg_prompt_P1/
+    ├── hier_seg_prompt_P2/
+    ├── hier_seg_exp8_chain_L2L3/
     └── ...
 
 verl/reward_function/
-└── youcook2_hier_seg_reward.py   # L1/L2: F1-IoU, L3: aligned tIoU
+├── youcook2_hier_seg_reward.py        # L1/L2: F1-IoU, L3: aligned tIoU
+└── youcook2_chain_seg_reward.py       # Chain-of-Segment: 级联 L2+L3 reward
+```
+
+---
+
+## 消融实验 Track 2: Prompt 消融 (2×2 Factorial)
+
+### 研究问题
+
+**L2 事件检测中，prompt 的详细程度和 CoT 推理对分割质量有何影响？**
+
+### 四种 Prompt 变体
+
+|  | No CoT | CoT (`<think>`) |
+|---|---|---|
+| **Minimal** | P1 (baseline) | P3 |
+| **Granularity-Enhanced** | P2 | P4 |
+
+| Variant | 描述 | 关键差异 |
+|---------|------|----------|
+| **P1** | 当前基线 — 简短任务描述 + 格式示例 | 无事件定义，无 CoT |
+| **P2** | 加入粒度定义 — 事件时长范围、反碎片化规则、段数范围 | 详细定义但无推理 |
+| **P3** | 加入 CoT — 要求先 `<think>` 描述观察再输出 `<events>` | 简短定义但有推理 |
+| **P4** | 粒度定义 + CoT（P2 + P3） | 详细定义 + 推理 |
+
+### Prompt P2 增强内容
+
+```
+EVENT DEFINITION:
+- 10-60s 的目标导向工作流
+- 多个物理交互统一于同一烹饪意图
+- NOT segments < 5s (atomic) / NOT whole-clip restatement (phase)
+
+SEGMENT RULES:
+- 不需要覆盖全部视频，允许 gaps
+- 预期 2-8 个事件
+```
+
+### Prompt P3 CoT 模板
+
+```
+<think>briefly describe the cooking activities in chronological order</think>
+<events>[[start, end], ...]</events>
+```
+
+### 关键对比
+
+| 对比 | 测试什么 |
+|------|---------|
+| P1 vs P2 | 粒度定义是否减少碎片化/过粗分割 |
+| P1 vs P3 | CoT 推理是否提升定位精度 |
+| P2 vs P4 | 在粒度定义基础上加 CoT 是否有增益 |
+| P3 vs P4 | 在 CoT 基础上加粒度定义是否有增益 |
+| P1 vs P4 | 两个优化同时加是否最优 |
+
+### 运行
+
+```bash
+# 单个变体
+bash local_scripts/hier_seg_ablations/exp_prompt_ablation.sh P2
+
+# 全部四个
+bash local_scripts/hier_seg_ablations/run_prompt_ablation.sh
+
+# 选择性运行
+bash local_scripts/hier_seg_ablations/run_prompt_ablation.sh P3 P4
+```
+
+### 注意
+
+- P3/P4 (CoT) 变体会自动将 `MAX_RESPONSE_LEN` 设为 1024（`<think>` 需要额外 token）
+- GT answer 仍为纯 `<events>` 格式（不含 `<think>`），reward 只看 `<events>` 标签
+- CoT 的 `<think>` 内容不参与 reward 计算，RL 训练会自动优化 think 的有用性
+
+---
+
+## 消融实验 Track 3: Chain-of-Segment (链式层次分割)
+
+### 研究问题
+
+**让模型"先粗后精"（先 grounding L2 事件，再 segment L3 原子动作）是否优于独立训练 L2 和 L3？**
+
+### 任务设计
+
+```
+输入: 128s 视频片段 + L2 事件描述列表（caption 文本）
+      ↓
+Step 1: L2 Grounding — 定位每个事件的 [start, end]
+      ↓
+Step 2: L3 Segmentation — 每个事件内识别原子动作 [[s1,e1], [s2,e2], ...]
+      ↓
+输出: <l2_events>[[...]]</l2_events>
+      <l3_events>[[[...]], [[...]]]</l3_events>
+```
+
+### Reward 公式
+
+$$R = 0.4 \cdot R_{L2} + 0.6 \cdot R_{L3} \cdot \max(R_{L2}, 0.3)$$
+
+| 分项 | 计算方式 | 说明 |
+|------|---------|------|
+| $R_{L2}$ | Position-aligned mean tIoU | caption 给出顺序，pred[i] 对 gt[i] |
+| $R_{L3}$ | Per-event mean F1-IoU | 每个 L2 事件内的 L3 段用 F1-IoU (NMS+Hungarian) |
+| 级联因子 | $\max(R_{L2}, 0.3)$ | L2 差时保留 30% 的 L3 信号 |
+
+### 数据来源
+
+通过 `chain_seg_ablation/build_chain_seg_data.py` 直接从原始标注 JSON 构建：
+- 直接读取 annotations/*.json，通过 `parent_event_id` 关联 L2↔L3
+- L2 caption 直接取自 `level2.events[i].instruction`
+- ≥2 个 L2 事件有 L3 对应 (min_actions ≥ 3) → 组成一条样本
+- L3 时间戳自动转换为 L2 窗口相对坐标
+
+| 统计 | 值 |
+|------|-----|
+| 总样本 | 737 (590 train + 147 val) |
+| 平均事件数/样本 | 2.5 |
+
+### 关键对比
+
+| 对比 | 测试什么 |
+|------|---------|
+| exp8 vs exp5 | 链式推理 vs 独立 L2+L3 混合训练 |
+| exp8 vs exp1 | 多级输出 vs 纯 L2 事件检测 |
+
+### 运行
+
+```bash
+bash local_scripts/hier_seg_ablations/exp8_chain_L2L3.sh
+```
+
+---
+
+## 三条消融 Track 总览
+
+| Track | 研究问题 | 实验数 | 变量 |
+|-------|---------|--------|------|
+| **Track 1**: 层级组合 | 哪些层级组合最优？L3 顺序的影响？ | 7 (exp1-7) | 层级 × L3顺序 |
+| **Track 2**: Prompt 消融 | 粒度定义 & CoT 对 L2 分割的影响？ | 4 (P1-P4) | 粒度 × CoT |
+| **Track 3**: Chain-of-Segment | "先粗后精" 链式推理 vs 独立训练？ | 1 (exp8) | 任务结构 |
+| **Track 4**: Chain-Seg 消融 | L2L3 vs 无caption vs 单caption？ | 3 (L2L3/V1/V2) | 任务形式 |
+
+### 数据流程图
+
+```
+YouCook2 原始视频
+    ↓ (annotation pipeline)
+per-level JSONL (L1/L2/L3/L3_seg)
+    ↓
+    ├── prepare_data.py                       → Track 1: 层级组合数据
+    ├── prepare_prompt_ablation_data.py        → Track 2: Prompt 变体数据
+    └── chain_seg_ablation/build_chain_seg_data.py → Track 3 & 4: 直接从标注 JSON 构建
+    ↓
+EasyR1 训练 (launch_train.sh)
+    ↓ (reward dispatch)
+    ├── youcook2_hier_seg_reward.py   → Track 1 & 2 的 reward
+    └── youcook2_chain_seg_reward.py  → Track 3 & 4 的 reward
+    ↓
+WandB / TensorBoard 对比
 ```

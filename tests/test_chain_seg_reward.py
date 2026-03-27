@@ -53,6 +53,9 @@ compute_score = mod_chain.compute_score
 _anti_hack_check = mod_chain._anti_hack_check
 W_L2 = mod_chain.W_L2
 W_L3 = mod_chain.W_L3
+_W_L2_DUAL = mod_chain._W_L2_DUAL
+_W_L3_DUAL = mod_chain._W_L3_DUAL
+BOUNDARY_PENALTY_ALPHA = mod_chain.BOUNDARY_PENALTY_ALPHA
 CASCADE_FLOOR = mod_chain.CASCADE_FLOOR
 
 
@@ -353,32 +356,30 @@ def test_compute_l3_with_boundary_perfect():
 
 
 def test_compute_l3_with_boundary_penalty():
-    """L3 部分越界 → compliance < 1.0, score 被惩罚"""
-    # 假设 L3 完美匹配 GT 但有 50% 越界
-    gt_l3 = [[[10, 20], [25, 35]]]     # GT 完全在 L2 内
-    # L3 预测: 每段原始长=10, in_bounds=5 → compliance = 10/20 = 0.5
-    # (seg [5,15]: 10-15 in [10,30] = 5; seg [20,40]: 20-30 in [10,30] = 10)
-    pred_l3 = [[[5, 15], [20, 40]]]    # 第一段左越界, 第二段右越界
+    """L3 部分越界 → 软惩罚 penalty_factor = 1 - ALPHA*(1-compliance)"""
+    gt_l3 = [[[10, 20], [25, 35]]]
+    # pred: [5,15] 左越界, [20,40] 右越界; L2=[10,30]
+    # compliance = 15/30 = 0.5, penalty_factor = 1 - 0.3*0.5 = 0.85
+    pred_l3 = [[[5, 15], [20, 40]]]
     pred_l2 = [[10, 30]]
 
-    # compliance = (5 + 10) / (10 + 20) = 15/30 = 0.5
     score = _compute_l3_with_boundary(pred_l3, gt_l3, pred_l2)
-    # clipped pred: [[10,15],[20,30]] vs gt [[10,20],[25,35]]
-    # f1 > 0, score = f1 * 0.5
     assert score > 0.0
-    assert score < 0.5  # 因为 compliance=0.5 且 F1-IoU < 1.0
-    print(f"  ✓ test_compute_l3_with_boundary_penalty: score={score:.3f}")
+    # penalty_factor = 0.85, so score < 0.85
+    assert score < 0.85
+    print(f"  ✓ test_compute_l3_with_boundary_penalty: score={score:.3f} (penalty_factor=0.85)")
 
 
 # ===========================
 # V1 dual_seg_reward 测试
 # ===========================
 def test_dual_seg_reward_perfect():
-    """V1: 完美匹配"""
+    """V1: 完美匹配 (1:1 等权)"""
     gt = "<l2_events>[[5, 30], [35, 55]]</l2_events>\n<l3_events>[[[5, 10], [12, 20]], [[35, 42], [45, 55]]]</l3_events>"
     resp = gt  # 完美预测
     result = dual_seg_reward(resp, gt)
-    expected = W_L2 * 1.0 + W_L3 * 1.0 * max(1.0, CASCADE_FLOOR)
+    # V1 用 _W_L2_DUAL=0.5, _W_L3_DUAL=0.5; compliance=1.0 → penalty_factor=1.0
+    expected = _W_L2_DUAL * 1.0 + _W_L3_DUAL * 1.0 * max(1.0, CASCADE_FLOOR)
     assert abs(result["overall"] - expected) < 1e-6, f"Expected {expected}, got {result['overall']}"
     assert abs(result["l2_reward"] - 1.0) < 1e-6
     assert abs(result["l3_reward"] - 1.0) < 1e-6

@@ -656,3 +656,45 @@ def get_level3_check_prompt(
         action_query=action_query,
         existing_annotations=annotations_str,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chain-of-Segment: L2 Grounding + L3 Atomic Segmentation (链式层次分割)
+# Input:  video clip + numbered L2 event descriptions
+# Output: L2 grounding segments + per-event L3 atomic segments
+# ─────────────────────────────────────────────────────────────────────────────
+_CHAIN_SEG_BASE = """\
+You are given a {duration}s cooking video clip and a list of cooking events that occur in it. \
+Your task has two steps:
+1. **Locate** each event's time segment in the clip (L2 grounding).
+2. **Decompose** each event into its atomic cooking actions (L3 segmentation).
+
+Events to locate and decompose:
+{event_list}
+
+Rules:
+- L2: output one [start_time, end_time] per event, in the given order
+- L3: for each event, output the atomic actions as [[start, end], ...] within that event's time range
+- all timestamps are integer seconds (0-based, 0 ≤ start < end ≤ {duration})
+- atomic actions are brief (2-6s) physical state changes (cutting, pouring, stirring, etc.)
+- skip idle/narration within events; gaps between atomic actions are fine
+
+Output format:
+<l2_events>[[start, end], ...]</l2_events>
+<l3_events>[[[start, end], ...], [[start, end], ...], ...]</l3_events>
+
+Example (2 events, first has 3 atomic actions, second has 2):
+<l2_events>[[5, 30], [35, 55]]</l2_events>
+<l3_events>[[[5, 10], [12, 20], [22, 30]], [[35, 42], [45, 55]]]</l3_events>"""
+
+
+def get_chain_seg_prompt(event_descriptions: list[str], duration: int) -> str:
+    """
+    Build the Chain-of-Segment (L2 grounding + L3 segmentation) prompt.
+
+    Args:
+        event_descriptions: Ordered list of L2 event description strings.
+        duration: Duration of the video clip in seconds.
+    """
+    event_list = "\n".join(f'{i + 1}. "{d}"' for i, d in enumerate(event_descriptions))
+    return _CHAIN_SEG_BASE.format(duration=duration, event_list=event_list)

@@ -35,9 +35,18 @@ from verl.reward_function.youcook2_temporal_seg_reward import (
 # ===========================
 # 常量
 # ===========================
-W_L2 = 0.4             # L2 grounding 权重
-W_L3 = 0.6             # L3 segmentation 权重
+W_L2 = 0.4             # L2 权重 (chain_reward / ground_seg_reward)
+W_L3 = 0.6             # L3 权重 (chain_reward / ground_seg_reward)
 CASCADE_FLOOR = 0.3     # 级联因子下限
+
+# V1 (dual-seg) 专用: L2/L3 任务对称, 等权
+_W_L2_DUAL = 0.5
+_W_L3_DUAL = 0.5
+
+# L3 越界惩罚强度 ∈ (0, 1]:
+#   1.0 → score × compliance        (强惩罚, 完全越界得 0)
+#   0.3 → score × (1 - 0.3*(1-c))  (弱惩罚, 完全越界仍保留 70%)
+BOUNDARY_PENALTY_ALPHA = 0.3
 
 
 # ===========================
@@ -206,10 +215,11 @@ def _compute_l3_with_boundary(
     gt_l3: List[List[List[float]]],
     pred_l2: List[List[float]],
 ) -> float:
-    """逐 L2 事件计算 L3 F1-IoU，附带边界合规惩罚。
+    """逐 L2 事件计算 L3 F1-IoU，附带软边界合规惩罚。
 
-    每事件得分 = F1-IoU(clipped L3, gt_l3) × compliance
-    compliance = in_bounds_duration / total_pred_duration
+    每事件得分 = F1-IoU(clipped L3, gt_l3) × penalty_factor
+    penalty_factor = 1 - BOUNDARY_PENALTY_ALPHA * (1 - compliance)
+    compliance    = in_bounds_duration / total_pred_duration
 
     最终取所有 GT 事件的均值（缺失事件贡献 0）。
     """
@@ -229,6 +239,7 @@ def _compute_l3_with_boundary(
 
         l2_seg = pred_l2[i]
         compliance = _l3_boundary_compliance(pred_l3[i], l2_seg)
+        penalty_factor = 1.0 - BOUNDARY_PENALTY_ALPHA * (1.0 - compliance)
 
         # 裁剪后计算 F1-IoU
         l2_start, l2_end = l2_seg
@@ -238,7 +249,7 @@ def _compute_l3_with_boundary(
             if max(s, l2_start) < min(e, l2_end)
         ]
         f1 = compute_f1_iou(clipped, gt_l3[i]) if clipped else 0.0
-        total_score += f1 * compliance
+        total_score += f1 * penalty_factor
 
     return total_score / n_gt
 
@@ -360,7 +371,9 @@ def dual_seg_reward(
     """
     双层自由分割 reward: L2 用 F1-IoU (Hungarian), L3 按匹配配对后 F1-IoU.
 
-    R = W_L2 × R_L2 + W_L3 × R_L3 × φ(R_L2)
+    L2/L3 等权 (_W_L2_DUAL = _W_L3_DUAL = 0.5)
+    R = 0.5 × R_L2 + 0.5 × R_L3 × φ(R_L2)
+    L3 越界软惩罚: score × (1 - BOUNDARY_PENALTY_ALPHA × (1 - compliance))
     """
     if not _anti_hack_check(response):
         return dict(_ZERO)
@@ -405,8 +418,9 @@ def dual_seg_reward(
             if not pred_l3_segs or not gt_l3_segs:
                 l3_scores.append(0.0)
                 continue
-            # compliance penalty
+            # 软 compliance 惩罚
             compliance = _l3_boundary_compliance(pred_l3_segs, pred_l2[pred_idx])
+            penalty_factor = 1.0 - BOUNDARY_PENALTY_ALPHA * (1.0 - compliance)
             # clip L3 to matched L2 bounds
             l2_start, l2_end = pred_l2[pred_idx]
             clipped = [
@@ -415,7 +429,7 @@ def dual_seg_reward(
                 if max(s, l2_start) < min(e, l2_end)
             ]
             f1 = compute_f1_iou(clipped, gt_l3_segs) if clipped else 0.0
-            l3_scores.append(f1 * compliance)
+            l3_scores.append(f1 * penalty_factor)
 
         # 未匹配的 GT 事件贡献 0
         for gt_idx in range(n_gt):
@@ -425,7 +439,7 @@ def dual_seg_reward(
         r_l3 = sum(l3_scores) / len(gt_l3) if gt_l3 else 0.0
 
     cascade = max(r_l2, CASCADE_FLOOR)
-    overall = W_L2 * r_l2 + W_L3 * r_l3 * cascade
+    overall = _W_L2_DUAL * r_l2 + _W_L3_DUAL * r_l3 * cascade
 
     return {
         "overall": float(overall),
@@ -468,12 +482,13 @@ def ground_seg_reward(
     # L2: 单段 temporal_iou
     r_l2 = temporal_iou(pred_l2[0], gt_l2[0])
 
-    # L3: clip 到 pred L2 bounds + compliance 惩罚 → F1-IoU
+    # L3: clip 到 pred L2 bounds + 软 compliance 惩罚 → F1-IoU
     r_l3 = 0.0
     if gt_l3 and pred_l3:
         gt_l3_first = gt_l3[0] if gt_l3 else []
         if gt_l3_first and pred_l3[0]:
             compliance = _l3_boundary_compliance(pred_l3[0], pred_l2[0])
+            penalty_factor = 1.0 - BOUNDARY_PENALTY_ALPHA * (1.0 - compliance)
             l2_start, l2_end = pred_l2[0]
             clipped = [
                 [max(s, l2_start), min(e, l2_end)]
@@ -481,7 +496,7 @@ def ground_seg_reward(
                 if max(s, l2_start) < min(e, l2_end)
             ]
             f1 = compute_f1_iou(clipped, gt_l3_first) if clipped else 0.0
-            r_l3 = f1 * compliance
+            r_l3 = f1 * penalty_factor
 
     cascade = max(r_l2, CASCADE_FLOOR)
     overall = W_L2 * r_l2 + W_L3 * r_l3 * cascade

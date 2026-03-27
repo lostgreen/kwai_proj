@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Chain-Seg 消融: 批量运行 V1 → V2
+# Chain-Seg 消融: 批量运行 L2L3 → V1 → V2
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-VARIANTS="${VARIANTS:-V1 V2}"
+VARIANTS="${VARIANTS:-L2L3 V1 V2}"
 MAX_STEPS="${MAX_STEPS:-60}"
 
 _START=$(date +%s)
