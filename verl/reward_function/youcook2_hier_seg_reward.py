@@ -4,12 +4,14 @@
 YouCook2 分层时序分割 Reward 函数。
 
 支持三种 problem_type：
-  - temporal_seg_hier_L1: 宏观阶段分割 → F1-IoU（NMS + 匈牙利匹配）
-  - temporal_seg_hier_L2: 滑窗事件检测 → F1-IoU（同 L1）
-  - temporal_seg_hier_L3: 查询驱动定位 → position-aligned mean tIoU
+  - temporal_seg_hier_L1:     宏观阶段分割    → F1-IoU（NMS + 匈牙利匹配）
+  - temporal_seg_hier_L2:     滑窗事件检测    → F1-IoU（同 L1）
+  - temporal_seg_hier_L3:     原子操作分割    → F1-IoU（同 L1/L2，自由分割无 query）
+  - temporal_seg_hier_L3_seg: 同上（别名）    → F1-IoU
 
-L1/L2: 预测段数不定，需 NMS 去重 + 匈牙利匹配 → F1-IoU
-L3:    预测段数 = query 数（固定），位置对齐 → 逐位 tIoU 均值
+[变更] temporal_seg_hier_L3 已从 query-conditioned grounding（position-aligned tIoU）
+改为自由分割（free segmentation），reward 统一使用 F1-IoU，与 L1/L2 对齐。
+旧 _l3_reward / compute_aligned_iou 保留，仅供向后兼容或实验对比使用。
 
 所有 level 统一 <events>[[s,e],...]</events> 格式。
 """
@@ -130,10 +132,11 @@ def _l3_reward(response: str, ground_truth: str) -> Dict[str, float]:
 # ===========================
 
 _DISPATCH = {
-    "temporal_seg_hier_L1": _l1_l2_reward,
-    "temporal_seg_hier_L2": _l1_l2_reward,
-    "temporal_seg_hier_L3": _l3_reward,
-    "temporal_seg_hier_L3_seg": _l1_l2_reward,  # L3 segmentation: F1-IoU (like L1/L2)
+    "temporal_seg_hier_L1":     _l1_l2_reward,
+    "temporal_seg_hier_L2":     _l1_l2_reward,
+    # L3 改为自由分割，统一使用 F1-IoU（与 L1/L2 对齐）
+    "temporal_seg_hier_L3":     _l1_l2_reward,
+    "temporal_seg_hier_L3_seg": _l1_l2_reward,
 }
 
 
@@ -144,7 +147,7 @@ def compute_score(
     """
     Batch reward 接口（与 EasyR1 BatchFunctionRewardManager 兼容）。
 
-    根据 problem_type 分发到 L1/L2（F1-IoU）或 L3（aligned-IoU）。
+    根据 problem_type 分发到对应 reward 函数（L1/L2/L3 均使用 F1-IoU）。
     """
     if not isinstance(reward_inputs, list):
         raise ValueError("Please use `reward_type=batch` for this reward function.")
