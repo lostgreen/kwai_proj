@@ -2,16 +2,10 @@
 """
 build_chain_seg_data.py — 直接从原始标注 JSON 构建 Chain-of-Segment 训练数据。
 
-与 prepare_chain_seg_data.py 的区别:
-  - 直接读取 annotations/*.json，而非间接通过 L2/L3 中间 JSONL
-  - L2 caption 直接来自 level2.events[i].instruction（无歧义）
-  - L3 segments 直接来自 level3.grounding_results（通过 parent_event_id 关联）
-  - 避免了窗口裁剪边界导致的匹配失败问题
+仅支持 V2 (ground-seg): 单 caption grounding + 单事件内 L3 分割。
+每个窗口内的每个 matched event 独立拆为一条训练样本。
 
-支持三种变体:
-  L2L3 (原始):     多 caption grounding + L3 seg   → temporal_seg_chain_L2L3
-  V1 (dual-seg):   无 caption, 多事件自由分割       → temporal_seg_chain_dual_seg
-  V2 (ground-seg): 单 caption, 单事件 grounding+seg → temporal_seg_chain_ground_seg
+problem_type: temporal_seg_chain_ground_seg
 
 坐标系统: 全部输出为窗口相对坐标 (0 ~ window_duration)
 
@@ -19,8 +13,7 @@ build_chain_seg_data.py — 直接从原始标注 JSON 构建 Chain-of-Segment �
     python build_chain_seg_data.py \
         --annotation-dir /path/to/annotations \
         --clip-dir /path/to/clips/L2 \
-        --output-dir ./data/chain_seg \
-        --variants L2L3 V1 V2
+        --output-dir ./data/chain_seg
 """
 
 import argparse
@@ -31,61 +24,9 @@ from pathlib import Path
 
 
 # =====================================================================
-# Prompt 模板
+# Prompt 模板 — V2: ground-seg (单 caption, 单事件)
 # =====================================================================
 
-# L2L3: 多 caption grounding + L3 分割
-def _build_l2l3_prompt(event_descriptions: list[str], duration: int) -> str:
-    event_list = "\n".join(f'{i + 1}. "{d}"' for i, d in enumerate(event_descriptions))
-    return (
-        f"Watch the following cooking video clip carefully:\n<video>\n\n"
-        f"You are given a {duration}s cooking video clip and a list of cooking events that occur in it. "
-        f"Your task has two steps:\n"
-        f"1. **Locate** each event's time segment in the clip (L2 grounding).\n"
-        f"2. **Decompose** each event into its atomic cooking actions (L3 segmentation).\n\n"
-        f"Events to locate and decompose:\n{event_list}\n\n"
-        f"Rules:\n"
-        f"- L2: output one [start_time, end_time] per event, in the given order\n"
-        f"- L3: for each event, output the atomic actions as [[start, end], ...] within that event's time range\n"
-        f"- all timestamps are integer seconds (0-based, 0 ≤ start < end ≤ {duration})\n"
-        f"- atomic actions are brief (2-6s) physical state changes (cutting, pouring, stirring, etc.)\n"
-        f"- skip idle/narration within events; gaps between atomic actions are fine\n\n"
-        f"Output format:\n"
-        f"<l2_events>[[start, end], ...]</l2_events>\n"
-        f"<l3_events>[[[start, end], ...], [[start, end], ...], ...]</l3_events>\n\n"
-        f"Example (2 events, first has 3 atomic actions, second has 2):\n"
-        f"<l2_events>[[5, 30], [35, 55]]</l2_events>\n"
-        f"<l3_events>[[[5, 10], [12, 20], [22, 30]], [[35, 42], [45, 55]]]</l3_events>"
-    )
-
-
-# V1: dual-seg (无 caption, 多事件)
-def _build_v1_prompt(duration: int) -> str:
-    return (
-        f"Watch the following video clip carefully:\n<video>\n\n"
-        f"You are given a {duration}s video clip of a procedural activity. "
-        f"Your task has two steps:\n"
-        f"1. **Segment** the video into major events (coarse-level temporal segments).\n"
-        f"2. **Decompose** each event into its atomic actions "
-        f"(fine-grained sub-segments within each event).\n\n"
-        f"Rules:\n"
-        f"- L2 (events): output each event as [start_time, end_time]; events should be "
-        f"non-overlapping and cover the main activity\n"
-        f"- L3 (atomic actions): for each event, output the atomic actions as "
-        f"[[start, end], ...] within that event's time range\n"
-        f"- all timestamps are integer seconds (0-based, 0 ≤ start < end ≤ {duration})\n"
-        f"- atomic actions are brief (2-6s) physical state changes\n"
-        f"- skip idle or narration; gaps between atomic actions are fine\n\n"
-        f"Output format:\n"
-        f"<l2_events>[[start, end], ...]</l2_events>\n"
-        f"<l3_events>[[[start, end], ...], [[start, end], ...], ...]</l3_events>\n\n"
-        f"Example (3 events, with 2, 3, and 1 atomic actions respectively):\n"
-        f"<l2_events>[[0, 25], [28, 55], [60, 75]]</l2_events>\n"
-        f"<l3_events>[[[2, 8], [10, 22]], [[28, 35], [37, 45], [48, 55]], [[62, 73]]]</l3_events>"
-    )
-
-
-# V2: ground-seg (单 caption, 单事件)
 def _build_v2_prompt(event_description: str, duration: int) -> str:
     return (
         f"Watch the following video clip carefully:\n<video>\n\n"
@@ -159,13 +100,7 @@ def extract_chain_data_from_annotation(
     min_l3_actions: int = 3,
     clip_dir: str = "",
 ) -> list[dict]:
-    """从单个原始标注 JSON 提取所有 matched window 数据。
-
-    返回 list of dict, 每条包含:
-        - clip_key, window, duration
-        - matched_events: [{l2_seg, l3_segs, l2_caption}]
-        - video_path
-    """
+    """从单个原始标注 JSON 提取所有 matched window 数据。"""
     l2 = ann.get("level2")
     l3 = ann.get("level3")
     if not l2 or not l3 or l2.get("_parse_error") or l3.get("_parse_error"):
@@ -247,13 +182,13 @@ def extract_chain_data_from_annotation(
             matched_events.append({
                 "l2_seg": l2_seg_win,
                 "l3_segs": l3_segs_win,
-                "l2_caption": instruction,  # 直接来自 L2 event.instruction
+                "l2_caption": instruction,
             })
 
         if len(matched_events) < min_events:
             continue
 
-        # 构建视频路径 (复用已有 L2 clips)
+        # 构建视频路径
         if clip_dir:
             video_path = os.path.join(clip_dir, f"{clip_key}_L2_w{ws}_{we}.mp4")
         else:
@@ -272,67 +207,8 @@ def extract_chain_data_from_annotation(
 
 
 # =====================================================================
-# 从 window data → 各变体记录
+# 从 window data → V2 记录
 # =====================================================================
-
-def build_l2l3_records(window_data: list[dict]) -> list[dict]:
-    """L2L3: 多 caption grounding + L3 seg"""
-    records = []
-    for w in window_data:
-        event_descriptions = [e["l2_caption"] for e in w["matched_events"]]
-        l2_segs = [e["l2_seg"] for e in w["matched_events"]]
-        l3_nested = [e["l3_segs"] for e in w["matched_events"]]
-
-        prompt = _build_l2l3_prompt(event_descriptions, w["duration"])
-        answer = _build_answer(l2_segs, l3_nested)
-
-        records.append({
-            "messages": [{"role": "user", "content": prompt}],
-            "prompt": prompt,
-            "answer": answer,
-            "videos": [w["video_path"]],
-            "data_type": "video",
-            "problem_type": "temporal_seg_chain_L2L3",
-            "metadata": {
-                "clip_key": w["clip_key"],
-                "window_start_sec": w["window_start"],
-                "window_end_sec": w["window_end"],
-                "n_matched_events": len(w["matched_events"]),
-                "event_descriptions": event_descriptions,
-                "source": "annotation_json",
-            },
-        })
-    return records
-
-
-def build_v1_records(window_data: list[dict]) -> list[dict]:
-    """V1: dual-seg (无 caption, 多事件)"""
-    records = []
-    for w in window_data:
-        l2_segs = [e["l2_seg"] for e in w["matched_events"]]
-        l3_nested = [e["l3_segs"] for e in w["matched_events"]]
-
-        prompt = _build_v1_prompt(w["duration"])
-        answer = _build_answer(l2_segs, l3_nested)
-
-        records.append({
-            "messages": [{"role": "user", "content": prompt}],
-            "prompt": prompt,
-            "answer": answer,
-            "videos": [w["video_path"]],
-            "data_type": "video",
-            "problem_type": "temporal_seg_chain_dual_seg",
-            "metadata": {
-                "clip_key": w["clip_key"],
-                "window_start_sec": w["window_start"],
-                "window_end_sec": w["window_end"],
-                "n_events": len(w["matched_events"]),
-                "variant": "V1",
-                "source": "annotation_json",
-            },
-        })
-    return records
-
 
 def build_v2_records(window_data: list[dict]) -> list[dict]:
     """V2: ground-seg (单 caption, 单事件 per 样本)"""
@@ -354,7 +230,6 @@ def build_v2_records(window_data: list[dict]) -> list[dict]:
                     "window_start_sec": w["window_start"],
                     "window_end_sec": w["window_end"],
                     "event_description": ev["l2_caption"],
-                    "variant": "V2",
                     "source": "annotation_json",
                 },
             })
@@ -374,7 +249,7 @@ def write_jsonl(records: list[dict], path: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="从原始标注 JSON 直接构建 Chain-of-Segment 训练数据",
+        description="从原始标注 JSON 直接构建 Chain-of-Segment 训练数据 (V2 ground-seg)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--annotation-dir", required=True,
@@ -383,9 +258,6 @@ def main():
                         help="已有 L2 clips 目录 (clips/L2/)，留空则使用原始视频路径")
     parser.add_argument("--output-dir", required=True,
                         help="输出目录")
-    parser.add_argument("--variants", nargs="+", default=["L2L3", "V1", "V2"],
-                        choices=["L2L3", "V1", "V2"],
-                        help="要生成的变体")
     parser.add_argument("--window-size", type=int, default=128,
                         help="滑窗大小 (秒)")
     parser.add_argument("--stride", type=int, default=64,
@@ -460,35 +332,27 @@ def main():
     print(f"  Total matched events: {stats['events']}")
     print(f"  Avg events/window: {stats['events'] / max(stats['windows'], 1):.1f}")
 
-    # 为每个变体生成数据
-    variant_builders = {
-        "L2L3": ("chain_L2L3", build_l2l3_records),
-        "V1":   ("chain_dual_seg", build_v1_records),
-        "V2":   ("chain_ground_seg", build_v2_records),
-    }
+    # 生成 V2 数据
+    records = build_v2_records(all_window_data)
+    rng.shuffle(records)
 
-    for variant in args.variants:
-        prefix, builder = variant_builders[variant]
-        records = builder(all_window_data)
-        rng.shuffle(records)
+    n_val = min(args.total_val, len(records) // 5)
+    val_records = records[:n_val]
+    train_records = records[n_val:]
 
-        n_val = min(args.total_val, len(records) // 5)
-        val_records = records[:n_val]
-        train_records = records[n_val:]
+    train_path = os.path.join(args.output_dir, "chain_ground_seg_train.jsonl")
+    val_path = os.path.join(args.output_dir, "chain_ground_seg_val.jsonl")
+    write_jsonl(train_records, train_path)
+    write_jsonl(val_records, val_path)
 
-        train_path = os.path.join(args.output_dir, f"{prefix}_train.jsonl")
-        val_path = os.path.join(args.output_dir, f"{prefix}_val.jsonl")
-        write_jsonl(train_records, train_path)
-        write_jsonl(val_records, val_path)
+    print(f"\n=== V2 (ground-seg) ===")
+    print(f"  Train: {len(train_records)}")
+    print(f"  Val:   {len(val_records)}")
 
-        print(f"\n=== {variant} ({prefix}) ===")
-        print(f"  Train: {len(train_records)}")
-        print(f"  Val:   {len(val_records)}")
-
-        if train_records:
-            ex = train_records[0]
-            print(f"  Sample video: {ex['videos'][0]}")
-            print(f"  Sample answer (first 200): {ex['answer'][:200]}")
+    if train_records:
+        ex = train_records[0]
+        print(f"  Sample video: {ex['videos'][0]}")
+        print(f"  Sample answer (first 200): {ex['answer'][:200]}")
 
     print(f"\nOutput dir: {args.output_dir}")
 

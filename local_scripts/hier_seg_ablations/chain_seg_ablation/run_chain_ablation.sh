@@ -1,22 +1,14 @@
 #!/usr/bin/env bash
-# Chain-Seg 消融: 批量运行 L2L3 → V1 → V2
+# Chain-Seg: 运行 V2 (ground-seg) 实验
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-VARIANTS="${VARIANTS:-L2L3 V1 V2}"
 MAX_STEPS="${MAX_STEPS:-60}"
 
-_START=$(date +%s)
-echo "[chain_seg] Starting batch: variants=${VARIANTS}, max_steps=${MAX_STEPS}"
+echo "[chain_seg] Starting V2 (ground-seg), max_steps=${MAX_STEPS}"
 
-for VARIANT in ${VARIANTS}; do
-  echo "[chain_seg] Running VARIANT=${VARIANT}"
-  MAX_STEPS="${MAX_STEPS}" \
-  VARIANT="${VARIANT}" \
-  bash "${SCRIPT_DIR}/exp_chain_ablation.sh" "${VARIANT}"
-  echo "[chain_seg] Completed VARIANT=${VARIANT} at $(date)"
-done
+MAX_STEPS="${MAX_STEPS}" \
+bash "${SCRIPT_DIR}/exp_chain_ablation.sh"
 
-_END=$(date +%s)
-echo "[chain_seg] All variants completed. Elapsed: $(( (_END - _START) / 60 ))m"
+echo "[chain_seg] Completed at $(date)"
