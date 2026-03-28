@@ -784,9 +784,22 @@ class ComparisonHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def do_GET(self) -> None:
+        try:
+            self._handle_get()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            try:
+                self._send_json(500, {"ok": False, "error": str(exc)})
+            except Exception:
+                pass
+
+    def _handle_get(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         q = parse_qs(parsed.query)
+
+        print(f"[REQ] {self.command} {self.path}")
 
         # API endpoints
         if path == "/api/overview":

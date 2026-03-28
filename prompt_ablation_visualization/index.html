@@ -271,9 +271,9 @@ document.addEventListener('DOMContentLoaded', () => {
 async function fetchBoot() {
   try {
     const [a,b,c] = await Promise.all([
-      fetch('/api/overview').then(r=>r.json()),
-      fetch('/api/steps').then(r=>r.json()),
-      fetch('/api/reward_curves').then(r=>r.json()),
+      fetch('/api/overview').then(r=>{if(!r.ok)throw new Error('overview:'+r.status);return r.json()}),
+      fetch('/api/steps').then(r=>{if(!r.ok)throw new Error('steps:'+r.status);return r.json()}),
+      fetch('/api/reward_curves').then(r=>{if(!r.ok)throw new Error('curves:'+r.status);return r.json()}),
     ]);
     S.overview = a; S.steps = b.steps||[]; S.curves = c.curves||{};
     boot();
@@ -460,9 +460,10 @@ async function loadSamples(sk) {
     const url = `/api/samples?step_key=${encodeURIComponent(sk)}&task=${encodeURIComponent(task)}&limit=300`;
     console.log('[loadSamples]', url);
     const res = await fetch(url);
+    if(!res.ok) { const t=await res.text(); el.innerHTML=`<div class="error-msg">Server ${res.status}: <code>${escHtml(t.slice(0,500))}</code></div>`; return; }
     const d = await res.json();
     console.log('[loadSamples] got', d.samples?.length, 'samples');
-    if(!d.ok) { el.innerHTML = `<div class="error-msg">Server: <code>${d.error||'unknown'}</code></div>`; return; }
+    if(!d.ok) { el.innerHTML = `<div class="error-msg">Server: <code>${escHtml(d.error||'unknown')}</code></div>`; return; }
     S.samples = d.samples||[];
     renderSamples();
   } catch(e) {
@@ -513,8 +514,9 @@ async function loadDetail(uid) {
   p.innerHTML = '<div class="loading">Loading comparison...</div>';
   try {
     const res = await fetch(`/api/sample/${encodeURIComponent(uid)}`);
+    if(!res.ok) { const t=await res.text(); p.innerHTML=`<div class="error-msg">Server ${res.status}: <code>${escHtml(t.slice(0,500))}</code></div>`; return; }
     const d = await res.json();
-    if(!d.ok) { p.innerHTML = `<div class="error-msg">Server: <code>${d.error||'unknown'}</code></div>`; return; }
+    if(!d.ok) { p.innerHTML = `<div class="error-msg">Server: <code>${escHtml(d.error||'unknown')}</code></div>`; return; }
     S.comp = d.comparison;
     renderDetail(d.comparison);
     renderPromptInspector(d.comparison);
