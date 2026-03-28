@@ -1,0 +1,42 @@
+# ET-Instruct-164K 筛选配置
+
+source:
+  name: et_instruct_164k
+  remote_path: /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K
+  json_files:
+    - et_instruct_164k_vid.json   # 视频相关样本（优先处理）
+    - et_instruct_164k_txt.json   # 纯文本样本（可能跳过）
+  video_dir: videos/              # 各 domain 的 tar.gz 包
+
+# 视频域及其 tar.gz
+domains:
+  - activitynet
+  - coin
+  - didemo
+  - ego4d_naq
+  - ego_timeqa
+  - hacs
+  - how_to_caption
+  - how_to_step
+  - mr_hisum
+  - queryd
+  - tacos
+  - vitt
+
+# 文本筛选阈值（基于分布分析确定）
+text_filter:
+  min_duration_sec: 60
+  max_duration_sec: 240
+  min_events: 5           # ≥5 个事件，保证 L1 聚合 + L3 分解空间
+  min_text_length: 50     # GPT 回复最短字符数
+
+# 领域均衡
+domain_balance:
+  strategy: proportional_cap  # proportional_cap | equal | weighted
+  max_per_domain: 2000        # 单个 domain 上限
+  min_per_domain: 100         # 单个 domain 下限（不足则全部保留）
+
+# 输出
+output:
+  results_dir: sources/et_instruct_164k/results
+  review_sample_size: 50
