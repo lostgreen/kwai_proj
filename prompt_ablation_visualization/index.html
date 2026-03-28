@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt Ablation Comparison Studio</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+/* ── Reset & base ──────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,sans-serif;background:#0f1117;color:#e1e4e8;line-height:1.5;overflow-x:hidden}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#1a1d27}
+::-webkit-scrollbar-thumb{background:#3a3f4b;border-radius:3px}
+
+/* ── Layout ────────────────────────────────────────── */
+.app{display:flex;flex-direction:column;min-height:100vh}
+.header{background:#161822;border-bottom:1px solid #2a2d3a;padding:12px 24px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:100}
+.header h1{font-size:18px;font-weight:600;color:#e1e4e8}
+.header .subtitle{font-size:13px;color:#8b949e}
+.nav-tabs{display:flex;gap:4px;margin-left:auto}
+.nav-tab{padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;color:#8b949e;background:transparent;border:1px solid transparent;transition:all .2s}
+.nav-tab:hover{background:#1e2130;color:#c9d1d9}
+.nav-tab.active{background:#1f6feb33;color:#58a6ff;border-color:#1f6feb55}
+
+.main{flex:1;display:flex;overflow:hidden}
+
+/* ── Overview page ─────────────────────────────────── */
+.overview-page{padding:24px;width:100%;overflow-y:auto}
+.variant-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:24px}
+.variant-card{background:#161822;border:1px solid #2a2d3a;border-radius:10px;padding:16px;transition:border-color .2s}
+.variant-card:hover{border-color:#3a3f5a}
+.variant-card .v-name{font-size:15px;font-weight:600;margin-bottom:2px}
+.variant-card .v-label{font-size:12px;color:#8b949e;margin-bottom:10px}
+.variant-card .v-stat{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-bottom:1px solid #1e2130}
+.variant-card .v-stat:last-child{border-bottom:none}
+.variant-card .v-stat .val{font-weight:500;color:#58a6ff}
+
+.chart-section{background:#161822;border:1px solid #2a2d3a;border-radius:10px;padding:20px;margin-bottom:20px}
+.chart-section h3{font-size:14px;font-weight:600;margin-bottom:12px;color:#c9d1d9}
+.chart-controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.chart-btn{padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;color:#8b949e;background:#1a1d27;border:1px solid #2a2d3a;transition:all .15s}
+.chart-btn:hover{border-color:#3a3f5a;color:#c9d1d9}
+.chart-btn.active{background:#1f6feb33;color:#58a6ff;border-color:#1f6feb55}
+.chart-container{position:relative;height:300px}
+
+/* ── Sample browser page ───────────────────────────── */
+.browser-page{display:flex;width:100%;height:calc(100vh - 52px);overflow:hidden}
+.sidebar{width:320px;min-width:320px;background:#161822;border-right:1px solid #2a2d3a;display:flex;flex-direction:column;overflow:hidden}
+.sidebar-header{padding:12px;border-bottom:1px solid #2a2d3a}
+.sidebar-header select,.sidebar-header input{width:100%;padding:6px 10px;background:#1a1d27;border:1px solid #2a2d3a;color:#e1e4e8;border-radius:6px;font-size:13px;margin-bottom:6px}
+.sidebar-header select:focus,.sidebar-header input:focus{outline:none;border-color:#1f6feb}
+.filter-row{display:flex;gap:6px}
+.filter-row select{flex:1}
+.sample-list{flex:1;overflow-y:auto;padding:4px}
+.sample-item{padding:8px 12px;border-radius:6px;cursor:pointer;margin-bottom:2px;transition:background .15s}
+.sample-item:hover{background:#1e2130}
+.sample-item.active{background:#1f6feb22;border-left:3px solid #1f6feb}
+.sample-item .s-uid{font-size:12px;color:#8b949e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sample-item .s-type{font-size:11px;color:#6e7681;display:inline-block;background:#1a1d27;padding:1px 6px;border-radius:3px;margin-top:2px}
+.sample-item .s-rewards{display:flex;gap:6px;margin-top:4px;font-size:12px}
+.sample-item .s-reward-chip{padding:1px 6px;border-radius:3px;font-weight:500}
+.sample-item .s-spread{font-size:11px;color:#f0883e;margin-left:auto}
+
+.detail-panel{flex:1;overflow-y:auto;padding:20px}
+
+/* ── Detail: shared frame strip ────────────────────── */
+.frame-strip-container{background:#161822;border:1px solid #2a2d3a;border-radius:10px;padding:12px;margin-bottom:16px}
+.frame-strip-container h4{font-size:13px;color:#8b949e;margin-bottom:8px}
+.frame-strip{display:flex;overflow-x:auto;gap:4px;padding-bottom:8px}
+.frame-strip img{height:80px;border-radius:4px;flex-shrink:0;cursor:pointer;transition:transform .15s;border:1px solid #2a2d3a}
+.frame-strip img:hover{transform:scale(1.1);z-index:5;border-color:#58a6ff}
+
+/* ── Detail: 2×2 comparison grid ───────────────────── */
+.comparison-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.variant-panel{background:#161822;border:1px solid #2a2d3a;border-radius:10px;overflow:hidden}
+.variant-panel-header{padding:10px 14px;border-bottom:1px solid #2a2d3a;display:flex;align-items:center;gap:8px}
+.variant-panel-header .vp-name{font-size:14px;font-weight:600}
+.variant-panel-header .vp-label{font-size:11px;color:#8b949e}
+.variant-panel-header .vp-reward{margin-left:auto;font-size:13px;font-weight:600}
+.variant-panel-body{padding:12px}
+
+/* Timeline visualization */
+.timeline-section{position:relative;margin:8px 0}
+.timeline-row{display:flex;align-items:center;margin-bottom:4px;height:22px}
+.timeline-label{width:30px;font-size:11px;color:#8b949e;flex-shrink:0;text-align:right;margin-right:6px}
+.timeline-track{flex:1;position:relative;height:18px;background:#1a1d27;border-radius:3px;overflow:hidden}
+.timeline-seg{position:absolute;top:1px;height:16px;border-radius:2px;opacity:0.85;cursor:pointer;transition:opacity .15s}
+.timeline-seg:hover{opacity:1}
+.timeline-seg.gt{background:#3fb950}
+.timeline-seg.pred{background:#f0883e}
+.timeline-seg.pred.correct{background:#58a6ff}
+.timeline-axis{margin-top:4px;position:relative;height:14px;font-size:10px;color:#6e7681}
+.timeline-axis span{position:absolute;transform:translateX(-50%)}
+
+.attempt-list{margin-top:8px}
+.attempt-row{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;border-bottom:1px solid #1e2130}
+.attempt-row:last-child{border-bottom:none}
+.attempt-reward{font-weight:500;min-width:48px}
+
+/* Metrics bar */
+.metrics-row{display:flex;gap:12px;margin-top:8px;font-size:12px}
+.metric-item{display:flex;gap:4px}
+.metric-item .m-label{color:#8b949e}
+.metric-item .m-value{font-weight:500;color:#58a6ff}
+
+/* ── Detail: response comparison tabs ──────────────── */
+.response-section{background:#161822;border:1px solid #2a2d3a;border-radius:10px;overflow:hidden;margin-bottom:16px}
+.response-tabs{display:flex;border-bottom:1px solid #2a2d3a}
+.response-tab{flex:1;padding:8px 12px;text-align:center;cursor:pointer;font-size:13px;color:#8b949e;border-bottom:2px solid transparent;transition:all .15s}
+.response-tab:hover{color:#c9d1d9;background:#1a1d2766}
+.response-tab.active{color:#58a6ff;border-bottom-color:#1f6feb}
+.response-body{padding:14px;max-height:400px;overflow-y:auto}
+.response-text{font-family:'SF Mono',Consolas,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#c9d1d9}
+.response-text .think-tag{color:#bc8cff}
+.response-text .events-tag{color:#3fb950;font-weight:600}
+
+/* ── Prompt comparison page ────────────────────────── */
+.prompt-page{padding:24px;width:100%;overflow-y:auto}
+.prompt-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.prompt-card{background:#161822;border:1px solid #2a2d3a;border-radius:10px;overflow:hidden}
+.prompt-card-header{padding:10px 14px;border-bottom:1px solid #2a2d3a;font-weight:600;font-size:14px}
+.prompt-card-body{padding:14px;max-height:500px;overflow-y:auto}
+.prompt-card-body pre{font-family:'SF Mono',Consolas,monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#c9d1d9}
+.prompt-diff-add{background:#1a4d2e;color:#3fb950}
+.prompt-diff-only{background:#3b2300;color:#f0883e}
+
+/* ── Color coding per variant ──────────────────────── */
+.color-V1{color:#58a6ff}
+.color-V2{color:#f0883e}
+.color-V3{color:#bc8cff}
+.color-V4{color:#3fb950}
+.bg-V1{background:#58a6ff}
+.bg-V2{background:#f0883e}
+.bg-V3{background:#bc8cff}
+.bg-V4{background:#3fb950}
+.border-V1{border-color:#58a6ff !important}
+.border-V2{border-color:#f0883e !important}
+.border-V3{border-color:#bc8cff !important}
+.border-V4{border-color:#3fb950 !important}
+
+/* ── Reward color coding ───────────────────────────── */
+.reward-high{color:#3fb950}
+.reward-mid{color:#f0883e}
+.reward-low{color:#f85149}
+
+/* ── Loading / empty states ────────────────────────── */
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;color:#8b949e;font-size:14px}
+.loading::before{content:'';width:20px;height:20px;border:2px solid #3a3f4b;border-top-color:#58a6ff;border-radius:50%;margin-right:10px;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty-state{text-align:center;padding:40px;color:#6e7681;font-size:14px}
+
+/* ── Image lightbox ────────────────────────────────── */
+.lightbox{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;display:none;align-items:center;justify-content:center;cursor:pointer}
+.lightbox.visible{display:flex}
+.lightbox img{max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.5)}
+
+/* ── Ground truth section ──────────────────────────── */
+.gt-section{background:#161822;border:1px solid #2a2d3a;border-radius:10px;padding:14px;margin-bottom:16px}
+.gt-section h4{font-size:13px;color:#8b949e;margin-bottom:6px}
+.gt-text{font-family:'SF Mono',Consolas,monospace;font-size:12px;color:#3fb950;white-space:pre-wrap;word-break:break-word}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <div class="header">
+    <h1>Prompt Ablation Comparison</h1>
+    <span class="subtitle" id="headerSubtitle">Loading...</span>
+    <div class="nav-tabs">
+      <div class="nav-tab active" data-page="overview">Overview</div>
+      <div class="nav-tab" data-page="browser">Sample Browser</div>
+      <div class="nav-tab" data-page="prompts">Prompt Inspector</div>
+    </div>
+  </div>
+
+  <!-- Pages -->
+  <div class="main">
+    <!-- Overview page -->
+    <div class="overview-page page" id="overviewPage">
+      <div class="variant-cards" id="variantCards"></div>
+      <div class="chart-section">
+        <h3>Reward Curves</h3>
+        <div class="chart-controls" id="curveControls"></div>
+        <div class="chart-container"><canvas id="rewardChart"></canvas></div>
+      </div>
+      <div class="chart-section">
+        <h3>Per-Level Reward Comparison (Latest Step)</h3>
+        <div class="chart-container" style="height:250px"><canvas id="levelBarChart"></canvas></div>
+      </div>
+      <div class="chart-section">
+        <h3>Training Metrics</h3>
+        <div class="chart-controls" id="metricsControls"></div>
+        <div class="chart-container"><canvas id="metricsChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Browser page -->
+    <div class="browser-page page" id="browserPage" style="display:none">
+      <div class="sidebar">
+        <div class="sidebar-header">
+          <select id="stepSelect"><option value="">Select step...</option></select>
+          <div class="filter-row">
+            <select id="taskFilter">
+              <option value="all">All Tasks</option>
+            </select>
+            <select id="sortSelect">
+              <option value="spread">⇅ Reward Spread</option>
+              <option value="max">↑ Max Reward</option>
+              <option value="min">↓ Min Reward</option>
+            </select>
+          </div>
+        </div>
+        <div class="sample-list" id="sampleList">
+          <div class="empty-state">Select a step to view samples</div>
+        </div>
+      </div>
+      <div class="detail-panel" id="detailPanel">
+        <div class="empty-state">Select a sample from the list</div>
+      </div>
+    </div>
+
+    <!-- Prompt Inspector page -->
+    <div class="prompt-page page" id="promptPage" style="display:none">
+      <div style="margin-bottom:16px">
+        <select id="promptLevelSelect" style="padding:6px 10px;background:#1a1d27;border:1px solid #2a2d3a;color:#e1e4e8;border-radius:6px;font-size:13px">
+          <option value="">Select a sample to view prompts...</option>
+        </select>
+      </div>
+      <div class="prompt-grid" id="promptGrid">
+        <div class="empty-state" style="grid-column:1/-1">Select a sample in the Browser to compare prompts</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('visible')">
+  <img id="lightboxImg" src="" alt="enlarged frame">
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────
+const VARIANT_COLORS = {V1:'#58a6ff',V2:'#f0883e',V3:'#bc8cff',V4:'#3fb950'};
+const VARIANT_LABELS = {V1:'Minimal',V2:'Granularity-Enhanced',V3:'Structured-CoT',V4:'Gran + CoT'};
+let STATE = {
+  overview: null,
+  steps: [],
+  rewardCurves: null,
+  currentPage: 'overview',
+  currentStepKey: null,
+  currentSamples: [],
+  currentUid: null,
+  currentComparison: null,
+};
+let rewardChartInstance = null;
+let levelBarChartInstance = null;
+let metricsChartInstance = null;
+
+// ── Init ──────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  setupNavigation();
+  if (window.__PRELOADED__) {
+    STATE.overview = window.__PRELOADED__.overview;
+    STATE.steps = window.__PRELOADED__.steps || [];
+    STATE.rewardCurves = window.__PRELOADED__.reward_curves;
+    renderOverview();
+    populateStepSelect();
+  } else {
+    fetchAll();
+  }
+});
+
+async function fetchAll() {
+  try {
+    const [ovRes, stRes, rcRes] = await Promise.all([
+      fetch('/api/overview').then(r => r.json()),
+      fetch('/api/steps').then(r => r.json()),
+      fetch('/api/reward_curves').then(r => r.json()),
+    ]);
+    STATE.overview = ovRes;
+    STATE.steps = stRes.steps || [];
+    STATE.rewardCurves = rcRes.curves || {};
+    renderOverview();
+    populateStepSelect();
+  } catch (e) {
+    console.error('Failed to fetch data', e);
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────
+function setupNavigation() {
+  document.querySelectorAll('.nav-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const page = tab.dataset.page;
+      STATE.currentPage = page;
+      document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
+      document.getElementById(page + 'Page').style.display = page === 'browser' ? 'flex' : '';
+    });
+  });
+}
+
+// ── Overview rendering ────────────────────────────────────────────
+function renderOverview() {
+  const variants = STATE.overview?.variants || {};
+  const variantNames = Object.keys(variants).sort();
+
+  // Update subtitle
+  document.getElementById('headerSubtitle').textContent =
+    `${variantNames.length} variants: ${variantNames.join(', ')}`;
+
+  // Variant cards
+  const cardsEl = document.getElementById('variantCards');
+  cardsEl.innerHTML = variantNames.map(v => {
+    const d = variants[v];
+    return `
+      <div class="variant-card border-${v}">
+        <div class="v-name color-${v}">${v}</div>
+        <div class="v-label">${d.label || VARIANT_LABELS[v] || ''}</div>
+        <div class="v-stat"><span>Groups</span><span class="val">${d.group_count}</span></div>
+        <div class="v-stat"><span>Samples</span><span class="val">${d.sample_count}</span></div>
+        <div class="v-stat"><span>Steps</span><span class="val">${d.step_count}</span></div>
+        <div class="v-stat"><span>Mean Reward</span><span class="val">${d.mean_reward.toFixed(4)}</span></div>
+        ${renderTaskCountsHtml(d.task_counts)}
+      </div>
+    `;
+  }).join('');
+
+  renderRewardChart(variantNames, variants);
+  renderLevelBar(variantNames, variants);
+  renderMetricsChart(variantNames);
+}
+
+function renderTaskCountsHtml(tc) {
+  if (!tc) return '';
+  return Object.entries(tc).map(([t, n]) =>
+    `<div class="v-stat"><span>${t}</span><span class="val">${n}</span></div>`
+  ).join('');
+}
+
+// ── Reward curves chart ───────────────────────────────────────────
+function renderRewardChart(variantNames, variants) {
+  const curves = STATE.rewardCurves || {};
+  const allTasks = new Set();
+  variantNames.forEach(v => {
+    const tc = (curves[v] || {}).per_task || {};
+    Object.keys(tc).forEach(t => allTasks.add(t));
+  });
+  const tasks = ['overall', ...Array.from(allTasks).sort()];
+
+  // Controls
+  const ctrl = document.getElementById('curveControls');
+  ctrl.innerHTML = tasks.map(t =>
+    `<div class="chart-btn ${t === 'overall' ? 'active' : ''}" data-task="${t}">${t}</div>`
+  ).join('');
+  ctrl.querySelectorAll('.chart-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ctrl.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      updateRewardChart(variantNames, btn.dataset.task);
+    });
+  });
+
+  updateRewardChart(variantNames, 'overall');
+}
+
+function updateRewardChart(variantNames, task) {
+  const curves = STATE.rewardCurves || {};
+  const datasets = [];
+  variantNames.forEach(v => {
+    const vc = curves[v] || {};
+    let data;
+    if (task === 'overall') {
+      data = (vc.overall || []).map(p => ({x: p.step, y: p.reward}));
+    } else {
+      data = ((vc.per_task || {})[task] || []).map(p => ({x: p.step, y: p.reward}));
+    }
+    datasets.push({
+      label: v,
+      data: data,
+      borderColor: VARIANT_COLORS[v] || '#888',
+      backgroundColor: (VARIANT_COLORS[v] || '#888') + '33',
+      borderWidth: 2,
+      pointRadius: 2,
+      tension: 0.3,
+    });
+  });
+
+  if (rewardChartInstance) rewardChartInstance.destroy();
+  const ctx = document.getElementById('rewardChart').getContext('2d');
+  rewardChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {datasets},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: {type: 'linear', title: {display: true, text: 'Step', color: '#8b949e'}, ticks: {color: '#6e7681'}, grid: {color: '#1e2130'}},
+        y: {title: {display: true, text: 'Reward', color: '#8b949e'}, ticks: {color: '#6e7681'}, grid: {color: '#1e2130'}},
+      },
+      plugins: {legend: {labels: {color: '#c9d1d9'}}},
+    },
+  });
+}
+
+// ── Level bar chart ───────────────────────────────────────────────
+function renderLevelBar(variantNames, variants) {
+  // Extract per-task mean rewards from task_curves (use last point)
+  const curves = STATE.rewardCurves || {};
+  const allTasks = new Set();
+  variantNames.forEach(v => {
+    const tc = (curves[v] || {}).per_task || {};
+    Object.keys(tc).forEach(t => allTasks.add(t));
+  });
+  const tasks = Array.from(allTasks).sort();
+
+  const datasets = variantNames.map(v => {
+    const tc = (curves[v] || {}).per_task || {};
+    return {
+      label: v,
+      data: tasks.map(t => {
+        const pts = tc[t] || [];
+        return pts.length > 0 ? pts[pts.length - 1].reward : 0;
+      }),
+      backgroundColor: (VARIANT_COLORS[v] || '#888') + 'cc',
+      borderColor: VARIANT_COLORS[v] || '#888',
+      borderWidth: 1,
+    };
+  });
+
+  if (levelBarChartInstance) levelBarChartInstance.destroy();
+  const ctx = document.getElementById('levelBarChart').getContext('2d');
+  levelBarChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {labels: tasks, datasets},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: {ticks: {color: '#8b949e'}, grid: {color: '#1e2130'}},
+        y: {title: {display: true, text: 'Final Reward', color: '#8b949e'}, ticks: {color: '#6e7681'}, grid: {color: '#1e2130'}},
+      },
+      plugins: {legend: {labels: {color: '#c9d1d9'}}},
+    },
+  });
+}
+
+// ── Training metrics chart ────────────────────────────────────────
+function renderMetricsChart(variantNames) {
+  const curves = STATE.rewardCurves || {};
+  const metricNames = ['kl_loss', 'pg_loss', 'entropy_loss', 'grad_norm', 'advantage_mean', 'response_length_mean'];
+
+  const ctrl = document.getElementById('metricsControls');
+  ctrl.innerHTML = metricNames.map((m, i) =>
+    `<div class="chart-btn ${i === 0 ? 'active' : ''}" data-metric="${m}">${m.replace(/_/g, ' ')}</div>`
+  ).join('');
+  ctrl.querySelectorAll('.chart-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ctrl.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      updateMetricsChart(variantNames, btn.dataset.metric);
+    });
+  });
+
+  updateMetricsChart(variantNames, 'kl_loss');
+}
+
+function updateMetricsChart(variantNames, metric) {
+  const curves = STATE.rewardCurves || {};
+  const datasets = [];
+  variantNames.forEach(v => {
+    const ms = (curves[v] || {}).training_metrics || [];
+    const data = ms.filter(m => m[metric] != null).map(m => ({x: m.step, y: m[metric]}));
+    datasets.push({
+      label: v,
+      data,
+      borderColor: VARIANT_COLORS[v] || '#888',
+      borderWidth: 1.5,
+      pointRadius: 1,
+      tension: 0.3,
+    });
+  });
+
+  if (metricsChartInstance) metricsChartInstance.destroy();
+  const ctx = document.getElementById('metricsChart').getContext('2d');
+  metricsChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {datasets},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: {type: 'linear', title: {display: true, text: 'Step', color: '#8b949e'}, ticks: {color: '#6e7681'}, grid: {color: '#1e2130'}},
+        y: {title: {display: true, text: metric.replace(/_/g, ' '), color: '#8b949e'}, ticks: {color: '#6e7681'}, grid: {color: '#1e2130'}},
+      },
+      plugins: {legend: {labels: {color: '#c9d1d9'}}},
+    },
+  });
+}
+
+// ── Step selector ─────────────────────────────────────────────────
+function populateStepSelect() {
+  const sel = document.getElementById('stepSelect');
+  sel.innerHTML = '<option value="">Select step...</option>';
+  STATE.steps.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.step_key;
+    const rewards = Object.entries(s.per_variant || {}).map(([v, d]) =>
+      `${v}:${d.mean_reward.toFixed(2)}`).join(' ');
+    opt.textContent = `${s.step_label} (${s.per_variant ? Object.keys(s.per_variant).length : 0} variants) ${rewards}`;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => {
+    if (sel.value) loadSamples(sel.value);
+  });
+
+  // Auto-select last val step
+  const valSteps = STATE.steps.filter(s => s.phase === 'val');
+  if (valSteps.length > 0) {
+    const last = valSteps[valSteps.length - 1];
+    sel.value = last.step_key;
+    loadSamples(last.step_key);
+  }
+}
+
+// ── Sample list ───────────────────────────────────────────────────
+async function loadSamples(stepKey) {
+  STATE.currentStepKey = stepKey;
+  const task = document.getElementById('taskFilter').value;
+  const listEl = document.getElementById('sampleList');
+  listEl.innerHTML = '<div class="loading">Loading samples...</div>';
+
+  try {
+    const res = await fetch(`/api/samples?step_key=${encodeURIComponent(stepKey)}&task=${task}&limit=300`);
+    const data = await res.json();
+    STATE.currentSamples = data.samples || [];
+    renderSampleList();
+  } catch (e) {
+    listEl.innerHTML = '<div class="empty-state">Failed to load samples</div>';
+  }
+}
+
+function renderSampleList() {
+  const listEl = document.getElementById('sampleList');
+  const sort = document.getElementById('sortSelect').value;
+  let samples = [...STATE.currentSamples];
+
+  if (sort === 'spread') samples.sort((a, b) => (b.reward_spread || 0) - (a.reward_spread || 0));
+  else if (sort === 'max') samples.sort((a, b) => (b.max_reward || 0) - (a.max_reward || 0));
+  else if (sort === 'min') samples.sort((a, b) => (a.min_reward || 0) - (b.min_reward || 0));
+
+  // Populate task filter
+  const tasks = new Set(samples.map(s => s.problem_type));
+  const tf = document.getElementById('taskFilter');
+  const currentTask = tf.value;
+  tf.innerHTML = '<option value="all">All Tasks</option>';
+  tasks.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    if (t === currentTask) opt.selected = true;
+    tf.appendChild(opt);
+  });
+
+  if (samples.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">No samples found</div>';
+    return;
+  }
+
+  listEl.innerHTML = samples.map(s => {
+    const variants = s.variants || {};
+    const chips = Object.entries(variants).sort().map(([v, d]) => {
+      const r = d.mean_reward;
+      const cls = r >= 0.7 ? 'reward-high' : r >= 0.3 ? 'reward-mid' : 'reward-low';
+      return `<span class="s-reward-chip ${cls}" title="${v}">${v}:${r.toFixed(2)}</span>`;
+    }).join('');
+    return `
+      <div class="sample-item ${s.uid === STATE.currentUid ? 'active' : ''}" data-uid="${s.uid}">
+        <div class="s-uid" title="${s.uid}">${s.uid}</div>
+        <span class="s-type">${s.problem_type}</span>
+        <div class="s-rewards">
+          ${chips}
+          <span class="s-spread">Δ${(s.reward_spread || 0).toFixed(2)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  listEl.querySelectorAll('.sample-item').forEach(el => {
+    el.addEventListener('click', () => loadSampleDetail(el.dataset.uid));
+  });
+}
+
+// Wire up filter/sort changes
+document.getElementById('taskFilter').addEventListener('change', () => {
+  if (STATE.currentStepKey) loadSamples(STATE.currentStepKey);
+});
+document.getElementById('sortSelect').addEventListener('change', renderSampleList);
+
+// ── Sample detail ─────────────────────────────────────────────────
+async function loadSampleDetail(uid) {
+  STATE.currentUid = uid;
+  // Highlight active
+  document.querySelectorAll('.sample-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.uid === uid);
+  });
+
+  const panel = document.getElementById('detailPanel');
+  panel.innerHTML = '<div class="loading">Loading comparison...</div>';
+
+  try {
+    const res = await fetch(`/api/sample/${encodeURIComponent(uid)}`);
+    const data = await res.json();
+    STATE.currentComparison = data.comparison;
+    renderComparison(data.comparison);
+  } catch (e) {
+    panel.innerHTML = '<div class="empty-state">Failed to load sample</div>';
+  }
+}
+
+function renderComparison(comp) {
+  const panel = document.getElementById('detailPanel');
+  const variants = comp.variants || {};
+  const variantNames = Object.keys(variants).sort();
+  const maxT = comp.timeline_max_t || 0;
+
+  let html = '';
+
+  // Ground truth
+  const firstV = variants[variantNames[0]];
+  if (firstV) {
+    html += `
+      <div class="gt-section">
+        <h4>Ground Truth</h4>
+        <div class="gt-text">${escapeHtml(firstV.ground_truth || '')}</div>
+      </div>
+    `;
+  }
+
+  // Shared frame strip
+  html += `
+    <div class="frame-strip-container">
+      <h4>Video Frames (shared)</h4>
+      <div class="frame-strip" id="sharedFrameStrip">
+        <div class="loading">Loading frames...</div>
+      </div>
+    </div>
+  `;
+
+  // 2×2 comparison grid
+  html += '<div class="comparison-grid">';
+  variantNames.forEach(v => {
+    const vd = variants[v];
+    const reward = vd.mean_reward;
+    const rewardCls = reward >= 0.7 ? 'reward-high' : reward >= 0.3 ? 'reward-mid' : 'reward-low';
+    const attempts = vd.attempts || [];
+    const bestAttempt = attempts[0] || {};
+    const predSegs = (bestAttempt.temporal_segments || {}).predicted || [];
+    const gtSegs = (bestAttempt.temporal_segments || {}).ground_truth || [];
+
+    html += `
+      <div class="variant-panel border-${v}">
+        <div class="variant-panel-header">
+          <span class="vp-name color-${v}">${v}</span>
+          <span class="vp-label">${VARIANT_LABELS[v] || ''}</span>
+          <span class="vp-reward ${rewardCls}">${reward.toFixed(4)}</span>
+        </div>
+        <div class="variant-panel-body">
+          ${maxT > 0 ? renderTimeline(gtSegs, predSegs, maxT, v) : ''}
+          ${renderAttemptList(attempts, v)}
+        </div>
+      </div>
+    `;
+  });
+  html += '</div>';
+
+  // Response comparison tabs
+  html += `<div class="response-section">
+    <div class="response-tabs" id="responseTabs">
+      ${variantNames.map((v, i) =>
+        `<div class="response-tab ${i === 0 ? 'active' : ''} color-${v}" data-variant="${v}">${v} - ${VARIANT_LABELS[v] || ''}</div>`
+      ).join('')}
+    </div>
+    <div class="response-body" id="responseBody"></div>
+  </div>`;
+
+  panel.innerHTML = html;
+
+  // Load frames lazily
+  loadSharedFrames(comp.uid, comp.shared_frames, comp.shared_timeline_frames);
+
+  // Setup response tabs
+  setupResponseTabs(variants, variantNames);
+
+  // Setup lightbox
+  panel.querySelectorAll('.frame-strip img').forEach(img => {
+    img.addEventListener('click', () => {
+      document.getElementById('lightboxImg').src = img.src;
+      document.getElementById('lightbox').classList.add('visible');
+    });
+  });
+}
+
+function renderTimeline(gtSegs, predSegs, maxT, variant) {
+  if (maxT <= 0) return '';
+  const pxPerSec = 100; // percentage-based
+  const segHtml = (segs, cls) => segs.map(s => {
+    const left = (s[0] / maxT * 100).toFixed(2);
+    const width = ((s[1] - s[0]) / maxT * 100).toFixed(2);
+    const title = `[${s[0].toFixed(1)}, ${s[1].toFixed(1)}]`;
+    return `<div class="timeline-seg ${cls}" style="left:${left}%;width:${width}%" title="${title}"></div>`;
+  }).join('');
+
+  // Axis ticks
+  const nTicks = Math.min(8, Math.ceil(maxT / 10));
+  let ticks = '';
+  for (let i = 0; i <= nTicks; i++) {
+    const t = (maxT * i / nTicks);
+    const left = (i / nTicks * 100).toFixed(1);
+    const mm = Math.floor(t / 60);
+    const ss = Math.floor(t % 60);
+    ticks += `<span style="left:${left}%">${mm}:${String(ss).padStart(2, '0')}</span>`;
+  }
+
+  return `
+    <div class="timeline-section">
+      <div class="timeline-row">
+        <span class="timeline-label">GT</span>
+        <div class="timeline-track">${segHtml(gtSegs, 'gt')}</div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label">Pred</span>
+        <div class="timeline-track">${segHtml(predSegs, 'pred')}</div>
+      </div>
+      <div class="timeline-axis" style="margin-left:36px">${ticks}</div>
+    </div>
+  `;
+}
+
+function renderAttemptList(attempts, variant) {
+  if (!attempts || attempts.length <= 1) return '';
+  return `
+    <div class="attempt-list">
+      ${attempts.map((a, i) => {
+        const r = a.reward;
+        const cls = r >= 0.7 ? 'reward-high' : r >= 0.3 ? 'reward-mid' : 'reward-low';
+        return `<div class="attempt-row">
+          <span style="color:#6e7681">#${i + 1}</span>
+          <span class="attempt-reward ${cls}">${r.toFixed(3)}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function loadSharedFrames(uid, preloadedFrames, preloadedTlFrames) {
+  const strip = document.getElementById('sharedFrameStrip');
+  if (!strip) return;
+
+  if (preloadedFrames && preloadedFrames.length > 0) {
+    strip.innerHTML = preloadedFrames.map(src =>
+      `<img src="${src}" alt="frame" loading="lazy">`
+    ).join('');
+    setupFrameLightbox(strip);
+    return;
+  }
+
+  // Fetch from server
+  fetch(`/api/frames/${encodeURIComponent(uid)}?max_frames=30&timeline_fps=1`)
+    .then(r => r.json())
+    .then(data => {
+      const frames = data.frames || [];
+      if (frames.length === 0) {
+        strip.innerHTML = '<div class="empty-state">No frames available</div>';
+        return;
+      }
+      strip.innerHTML = frames.map(src =>
+        `<img src="${src}" alt="frame" loading="lazy">`
+      ).join('');
+      setupFrameLightbox(strip);
+    })
+    .catch(() => {
+      strip.innerHTML = '<div class="empty-state">Failed to load frames</div>';
+    });
+}
+
+function setupFrameLightbox(container) {
+  container.querySelectorAll('img').forEach(img => {
+    img.addEventListener('click', () => {
+      document.getElementById('lightboxImg').src = img.src;
+      document.getElementById('lightbox').classList.add('visible');
+    });
+  });
+}
+
+function setupResponseTabs(variants, variantNames) {
+  const tabs = document.getElementById('responseTabs');
+  const body = document.getElementById('responseBody');
+  if (!tabs || !body) return;
+
+  function showResponse(v) {
+    const vd = variants[v];
+    if (!vd) return;
+    const best = (vd.attempts || [])[0];
+    if (!best) {
+      body.innerHTML = '<div class="empty-state">No response</div>';
+      return;
+    }
+    body.innerHTML = `<div class="response-text">${highlightResponse(best.response || '')}</div>`;
+  }
+
+  tabs.querySelectorAll('.response-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.querySelectorAll('.response-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      showResponse(tab.dataset.variant);
+    });
+  });
+
+  // Show first variant
+  if (variantNames.length > 0) showResponse(variantNames[0]);
+}
+
+function highlightResponse(text) {
+  let s = escapeHtml(text);
+  // Highlight <think>...</think>
+  s = s.replace(/(&lt;think&gt;)/gi, '<span class="think-tag">$1</span>');
+  s = s.replace(/(&lt;\/think&gt;)/gi, '<span class="think-tag">$1</span>');
+  // Highlight <events>...</events>
+  s = s.replace(/(&lt;events&gt;)(.*?)(&lt;\/events&gt;)/gi,
+    '<span class="events-tag">$1</span>$2<span class="events-tag">$3</span>');
+  return s;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── Reward color helper ───────────────────────────────────────────
+function rewardColor(r) {
+  return r >= 0.7 ? '#3fb950' : r >= 0.3 ? '#f0883e' : '#f85149';
+}
+
+// ── Prompt Inspector ──────────────────────────────────────────────
+// Auto-update when comparison is loaded
+const origLoadSampleDetail = loadSampleDetail;
+// We hook into comparison rendering to also update prompt inspector
+const origRenderComparison = renderComparison;
+function renderComparisonWrapped(comp) {
+  origRenderComparison(comp);
+  updatePromptInspector(comp);
+}
+// Replace
+window.renderComparison = renderComparisonWrapped;
+// Re-wire loadSampleDetail to use wrapped version
+async function loadSampleDetailWrapped(uid) {
+  STATE.currentUid = uid;
+  document.querySelectorAll('.sample-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.uid === uid);
+  });
+  const panel = document.getElementById('detailPanel');
+  panel.innerHTML = '<div class="loading">Loading comparison...</div>';
+  try {
+    const res = await fetch(`/api/sample/${encodeURIComponent(uid)}`);
+    const data = await res.json();
+    STATE.currentComparison = data.comparison;
+    renderComparisonWrapped(data.comparison);
+  } catch (e) {
+    panel.innerHTML = '<div class="empty-state">Failed to load sample</div>';
+  }
+}
+// Override
+window.loadSampleDetail = loadSampleDetailWrapped;
+
+function updatePromptInspector(comp) {
+  const grid = document.getElementById('promptGrid');
+  const variants = comp?.variants || {};
+  const variantNames = Object.keys(variants).sort();
+
+  if (variantNames.length === 0) {
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">No variants loaded</div>';
+    return;
+  }
+
+  grid.innerHTML = variantNames.map(v => {
+    const vd = variants[v];
+    return `
+      <div class="prompt-card border-${v}">
+        <div class="prompt-card-header color-${v}">${v} — ${VARIANT_LABELS[v] || ''}</div>
+        <div class="prompt-card-body"><pre>${escapeHtml(vd.prompt || '(no prompt)')}</pre></div>
+      </div>
+    `;
+  }).join('');
+}
+</script>
+</body>
+</html>
