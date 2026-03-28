@@ -893,6 +893,7 @@ class ComparisonHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "invalid path"})
                 return
 
+        print(f"[STATIC] {path!r} -> {file_path} (exists={file_path.exists()})")
         if not file_path.exists() or not file_path.is_file():
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "file not found"})
             return
@@ -989,6 +990,9 @@ def main() -> None:
     ComparisonHandler.ablation_store = store
     ComparisonHandler.static_dir = static_dir
     ComparisonHandler.preloaded_html = preloaded_html
+
+    print(f"Static dir: {static_dir}")
+    print(f"index.html exists: {(static_dir / 'index.html').exists()}")
 
     server = ThreadingHTTPServer((args.host, args.port), ComparisonHandler)
     print(f"\nPrompt Ablation Comparison server running at http://{args.host}:{args.port}")
