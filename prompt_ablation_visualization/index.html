@@ -230,6 +230,15 @@ a:hover{text-decoration:underline}
 </div>
 
 <script>
+// ── Base URL (handles Jupyter/VS Code proxy) ──────────────────────
+const BASE = (() => {
+  const p = window.location.pathname;
+  // Strip trailing slash and everything after, keep proxy prefix
+  // e.g. /proxy/8890/  →  /proxy/8890
+  return p.replace(/\/$/, '').replace(/\/(index\.html)?$/, '');
+})();
+function api(path) { return BASE + path; }
+
 // ── Constants ─────────────────────────────────────────────────────
 const VC = {V1:'#0969da',V2:'#bf8700',V3:'#8250df',V4:'#1a7f37'};
 const VL = {V1:'Minimal',V2:'Granularity-Enhanced',V3:'Structured-CoT',V4:'Gran + CoT'};
@@ -271,9 +280,9 @@ document.addEventListener('DOMContentLoaded', () => {
 async function fetchBoot() {
   try {
     const [a,b,c] = await Promise.all([
-      fetch('/api/overview').then(r=>{if(!r.ok)throw new Error('overview:'+r.status);return r.json()}),
-      fetch('/api/steps').then(r=>{if(!r.ok)throw new Error('steps:'+r.status);return r.json()}),
-      fetch('/api/reward_curves').then(r=>{if(!r.ok)throw new Error('curves:'+r.status);return r.json()}),
+      fetch(api('/api/overview')).then(r=>{if(!r.ok)throw new Error('overview:'+r.status);return r.json()}),
+      fetch(api('/api/steps')).then(r=>{if(!r.ok)throw new Error('steps:'+r.status);return r.json()}),
+      fetch(api('/api/reward_curves')).then(r=>{if(!r.ok)throw new Error('curves:'+r.status);return r.json()}),
     ]);
     S.overview = a; S.steps = b.steps||[]; S.curves = c.curves||{};
     boot();
@@ -457,7 +466,7 @@ async function loadSamples(sk) {
   const el = $('sampleList');
   el.innerHTML = '<div class="loading">Loading samples...</div>';
   try {
-    const url = `/api/samples?step_key=${encodeURIComponent(sk)}&task=${encodeURIComponent(task)}&limit=300`;
+    const url = api(`/api/samples?step_key=${encodeURIComponent(sk)}&task=${encodeURIComponent(task)}&limit=300`);
     console.log('[loadSamples]', url);
     const res = await fetch(url);
     if(!res.ok) { const t=await res.text(); el.innerHTML=`<div class="error-msg">Server ${res.status}: <code>${escHtml(t.slice(0,500))}</code></div>`; return; }
@@ -513,7 +522,7 @@ async function loadDetail(uid) {
   const p = $('detailPanel');
   p.innerHTML = '<div class="loading">Loading comparison...</div>';
   try {
-    const res = await fetch(`/api/sample/${encodeURIComponent(uid)}`);
+    const res = await fetch(api(`/api/sample/${encodeURIComponent(uid)}`));
     if(!res.ok) { const t=await res.text(); p.innerHTML=`<div class="error-msg">Server ${res.status}: <code>${escHtml(t.slice(0,500))}</code></div>`; return; }
     const d = await res.json();
     if(!d.ok) { p.innerHTML = `<div class="error-msg">Server: <code>${escHtml(d.error||'unknown')}</code></div>`; return; }
@@ -608,7 +617,7 @@ function attHtml(att) {
 function loadFrames(uid, pre) {
   const el = $('fStrip'); if(!el) return;
   if(pre&&pre.length) { renderFrames(el,pre); return; }
-  fetch(`/api/frames/${encodeURIComponent(uid)}?max_frames=30&timeline_fps=1`)
+  fetch(api(`/api/frames/${encodeURIComponent(uid)}?max_frames=30&timeline_fps=1`))
     .then(r=>r.json()).then(d=>{
       if(!d.frames||!d.frames.length){el.innerHTML='<div class="empty-state" style="padding:12px">No frames</div>';return;}
       renderFrames(el, d.frames);

@@ -993,6 +993,7 @@ def main() -> None:
 
     print(f"Static dir: {static_dir}")
     print(f"index.html exists: {(static_dir / 'index.html').exists()}")
+    print(f"NOTE: If accessed via a proxy (Jupyter/VS Code), ensure the proxy forwards /api/* paths to this server.")
 
     server = ThreadingHTTPServer((args.host, args.port), ComparisonHandler)
     print(f"\nPrompt Ablation Comparison server running at http://{args.host}:{args.port}")
