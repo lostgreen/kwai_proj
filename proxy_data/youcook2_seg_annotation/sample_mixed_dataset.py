@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+[DEPRECATED] sample_mixed_dataset.py — 已被 local_scripts/hier_seg_ablations/build_hier_data.py 替代。
+
+新脚本内置 train/val 分割和按层均衡采样功能 (--total-val, --train-per-level)。
+
 sample_mixed_dataset.py — Sample balanced train/val splits from all 3 hierarchy levels.
 
 - Strips metadata field (not needed by EasyR1)

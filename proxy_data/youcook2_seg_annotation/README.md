@@ -2,58 +2,68 @@
 
 3-level hierarchical Dense Video Captioning (DVC) annotation tool for YouCook2 windowed clips.
 
-## 核心设计理念
+## 文件状态速查
 
-**标注阶段**和**训练数据构造**对 Level 2 采用不同的策略：
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `prompts.py` | **ACTIVE** | 核心 prompt 模板库，被 `build_hier_data.py` 和标注工具链 import |
+| `extract_frames.py` | Annotation-only | 标注阶段 1fps 抽帧，标注完成后无需运行 |
+| `annotate.py` | Annotation-only | VLM 分层标注 (L1→L2→L3)，标注完成后无需运行 |
+| `annotate_check.py` | Annotation-only | L2/L3 质量审核，审核完成后无需运行 |
+| `build_dataset.py` | **DEPRECATED** | 已被 `local_scripts/hier_seg_ablations/build_hier_data.py` 替代 |
+| `prepare_clips.py` | **ACTIVE** | 物理视频截取 (ffmpeg)，生成 `clips/L2/` 和 `clips/L3/` |
+| `sample_mixed_dataset.py` | **DEPRECATED** | 已被 `build_hier_data.py` 内置采样替代 |
+| `run_build.sh` | **DEPRECATED** | 旧流水线一键脚本 (因 build_dataset.py 损坏已失效) |
 
-- **标注时**：L2 依赖 L1 的 macro phase 结果，逐 phase 检测 events（不做滑窗）。这保证了每个 event 的标注有清晰的 phase 上下文，标注质量更高。
-- **训练时**：`build_dataset.py` 无视 L1 的 phase 划分，在全视频时间线上构造 128s 滑窗，筛选出窗口内包含 ≥N 个 event 的窗口作为训练样本。这让模型学习在任意时间窗口内检测多个 events。
+## 数据构造流程
+
+### 新流程 (推荐) — 一步构建
+
+```bash
+# 从 annotation JSON 直接构建训练数据 (支持 L1/L2/L3/L3_seg)
+python local_scripts/hier_seg_ablations/build_hier_data.py \
+  --annotation-dir /path/to/annotations \
+  --clip-dir-l2 /path/to/clips/L2 \
+  --clip-dir-l3 /path/to/clips/L3 \
+  --output-dir /path/to/output \
+  --levels L1 L2 L3_seg \
+  --complete-only
+```
+
+新流程的改进：
+- L1 改为真实时间戳 (秒数)，不再使用 warped 帧号
+- L2 直接在构建时归零到窗口相对坐标
+- 一步生成 train.jsonl / val.jsonl，无需中间 `_clipped.jsonl`
+
+### 旧流程 (5 步，已废弃)
 
 ```
-标注流水线:
-  L1 (全视频) ──► macro phases
-       │
-       ▼
-  L2 (逐 phase) ──► events（依赖 L1 phase 范围）
-       │
-       ▼
-  L3 (逐 event) ──► atomic grounding（依赖 L2 event 范围）
-       │
-       ▼ (可选)
-  L2c + L3c (审核) ──► 粒度光谱审核 → keep/revise/remove/supplement
-
-训练数据构造:
-  L1: 每个 clip 一条训练样本
-  L2: 128s 滑窗 × 筛选多 event 窗口（无视 L1 phase）
-  L3: 每个 L2 event 一条训练样本，两种模式可选：
-      --level 3  (query grounding): 给定 action 文本列表，按序定位
-      --level 3s (segmentation):    无 query，自行检测所有原子动作
+extract_frames.py → annotate.py → build_dataset.py → prepare_clips.py → sample_mixed_dataset.py
 ```
 
-## Directory layout
-
-```
-youcook2_seg_annotation/
-  prompts.py          — Annotation + check prompts (Level 0-3, L2c/L3c)
-  extract_frames.py   — ffmpeg 1fps frame extraction
-  annotate.py         — LLM annotation pipeline (OpenAI-compatible VLM API)
-  annotate_check.py   — Standalone quality audit script (L2+L3 check)
-  build_dataset.py    — Convert annotations → EasyR1 training JSONL
-  README.md
-  frames/             — extracted frames (git-ignored)
-  annotations/        — per-clip annotation JSONs (git-ignored)
-```
+Note: `build_dataset.py` 的 `main()` 已损坏 (unreachable code bug)。旧流水线不再可运行。
 
 ## Annotation levels
 
-| Level | Name | 标注策略 | 训练数据策略 | Prompt |
-|---|---|---|---|---|
-| 0 | System Prompt | — | — | `prompts.SYSTEM_PROMPT` |
-| 1 | Macro Phase (阶段级) | 全视频 uniform sampling, warped timeline | 每 clip 一条 | `prompts.get_level1_prompt()` |
-| 2 | Activity-level (活动级) | **逐 L1 phase** 检测 events | **128s 滑窗**，筛选 ≥2 events 的窗口 | `prompts.get_level2_prompt()` |
-| 2c | L2 Check (审核) | 逐 L1 phase 审核 L2 events | — | `prompts.get_level2_check_prompt()` |
-| 3 | Atomic Step (动作级) | 逐 L2 event 做 temporal grounding | 每 event 一条（query / seg 两种模式） | `prompts.get_level3_prompt()` |
-| 3c | L3 Check (审核) | 逐 L2 event 审核 L3 actions | — | `prompts.get_level3_check_prompt()` |
+| Level | Name | 标注策略 | Prompt |
+|---|---|---|---|
+| 0 | System Prompt | — | `prompts.SYSTEM_PROMPT` |
+| 1 | Macro Phase (阶段级) | 全视频 uniform sampling, warped timeline | `prompts.get_level1_prompt()` |
+| 2 | Activity-level (活动级) | **逐 L1 phase** 检测 events | `prompts.get_level2_prompt()` |
+| 2c | L2 Check (审核) | 逐 L1 phase 审核 L2 events | `prompts.get_level2_check_prompt()` |
+| 3 | Atomic Step (动作级) | 逐 L2 event 做 temporal grounding | `prompts.get_level3_prompt()` |
+| 3c | L3 Check (审核) | 逐 L2 event 审核 L3 actions | `prompts.get_level3_check_prompt()` |
+
+## Training prompts
+
+| 函数 | 用途 |
+|------|------|
+| `get_level1_train_prompt_temporal(duration)` | L1 训练 (真实时间戳模式, **推荐**) |
+| `get_level1_train_prompt(n_frames)` | L1 训练 (warped 帧号, 旧版) |
+| `get_level2_train_prompt(duration)` | L2 训练 |
+| `get_level3_query_prompt(queries, duration)` | L3 grounding 训练 |
+| `get_level3_seg_prompt(duration)` | L3 segmentation 训练 |
+| `get_chain_seg_prompt(events, duration)` | Chain-of-Segment (L2+L3 联合) |
 
 ## Quick start
 
@@ -167,54 +177,19 @@ python annotate_check.py ... --levels 2c
 
 ### Step 5: Build training dataset
 
+> **已废弃**: 旧的 `build_dataset.py` 已被替代。请使用新的统一构建脚本。
+
 ```bash
-# Level 1: 每个 clip 一条训练样本
-python build_dataset.py \
-  --annotation-dir annotations \
-  --output youcook2_hier_L1_train.jsonl \
-  --level 1
-
-# Level 2: 128s 滑窗，只保留包含 ≥2 个 event 的窗口
-python build_dataset.py \
-  --annotation-dir annotations \
-  --output youcook2_hier_L2_train.jsonl \
-  --level 2 \
-  --l2-window-size 128 \
-  --l2-stride 64 \
-  --l2-min-events 2
-
-# Level 3 Query Grounding (--level 3): 给定 action caption 列表，按序定位
-#   --l3-order sequential: 原始时序顺序
-#   --l3-order shuffled:   打乱顺序（测试模型视觉理解而非序列先验）
-#   --l3-order both:       两种都生成，每个 event 产出 2 条
-python build_dataset.py \
-  --annotation-dir annotations \
-  --output youcook2_hier_L3_train.jsonl \
-  --level 3 \
-  --l3-min-actions 3 \
-  --l3-order both
-
-# Level 3 Segmentation (--level 3s): 无 query，模型自行检测所有原子动作
-#   使用 F1-IoU reward（与 L1/L2 相同），段数不定
-python build_dataset.py \
-  --annotation-dir annotations \
-  --output youcook2_hier_L3_seg_train.jsonl \
-  --level 3s \
-  --l3-min-actions 3
-
-DATA_PATH=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_L3_train.jsonl \
-  PORT=8890 \
-  MAX_SAMPLES=10 \
-  bash data_visualization/segmentation_visualize/run.sh
+# 新方式 (推荐): 一步构建
+python local_scripts/hier_seg_ablations/build_hier_data.py \
+  --annotation-dir /path/to/annotations \
+  --clip-dir-l2 /path/to/clips/L2 \
+  --clip-dir-l3 /path/to/clips/L3 \
+  --output-dir /path/to/output \
+  --levels L1 L2 L3_seg \
+  --total-val 200 \
+  --complete-only
 ```
-
-说明：
-
-- L3 有两种训练模式：
-  - **Query Grounding** (`--level 3`)：给定 action caption 列表，模型按序输出每个 action 的 `[start, end]`。Reward 用 position-aligned mean tIoU。
-  - **Segmentation** (`--level 3s`)：不给 query，模型自行检测所有原子动作。Reward 用 F1-IoU（与 L1/L2 相同）。
-- L3 训练样本会过滤，只保留在对应 L2 event 内至少有 `3` 个 atomic actions 的样本（`--l3-min-actions`）。
-- 如果使用 `annotate_check.py` 审核后的标注（`annotations_checked/`），将 `--annotation-dir` 指向审核后的目录即可。
 
 ## Annotation JSON format
 

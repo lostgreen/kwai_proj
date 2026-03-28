@@ -16,107 +16,107 @@ prompt_variants_v2.py — 通用层次分割 prompt 消融实验（V2 版本）
 """
 
 # ==========================================================================
-# L1 — 高层阶段分割（词典: 帧编号, n_frames 参数）
+# L1 — 高层阶段分割（时间戳模式, duration 参数）
 # ==========================================================================
 
 L1_V1 = """\
-You are given {n_frames} frames uniformly sampled from a video, numbered 1 to {n_frames}. \
-Segment the frame sequence into high-level activity phases. \
+You are given a {duration}s video clip (timestamps 0 to {duration}). \
+Segment the video into high-level activity phases. \
 Skip non-active spans such as narration, idle waiting, or irrelevant content.
 
-Output the start and end frame number for each phase in order:
-<events>[[start_frame, end_frame], ...]</events>
+Output the start and end time (integer seconds, 0-based) for each phase in order:
+<events>[[start_time, end_time], ...]</events>
 
-Example: <events>[[3, 80], [95, 150], [160, 220]]</events>"""
+Example: <events>[[0, 85], [90, 170], [180, 240]]</events>"""
 
 
 L1_V2 = """\
-You are given {n_frames} frames uniformly sampled from a video, numbered 1 to {n_frames}. \
-Segment the frame sequence into high-level activity phases.
+You are given a {duration}s video clip (timestamps 0 to {duration}). \
+Segment the video into high-level activity phases.
 
 PHASE DEFINITION:
 - A high-level phase is a broad structural stage (typically 3-5 per video) \
 that represents a distinct process block or sub-goal within the overall activity.
-- Each phase spans many frames and may contain multiple fine-grained actions.
-- Phases do NOT need to cover all {n_frames} frames. \
+- Each phase spans many seconds and may contain multiple fine-grained actions.
+- Phases do NOT need to cover the entire {duration}s clip. \
 Skip intros, outros, narration-only spans, or idle content not advancing the activity.
 
 DO NOT output:
 - More than 6 phases (too fragmented — you are splitting too finely)
-- A single phase covering almost all frames (too coarse — look for natural stage boundaries)
+- A single phase covering almost the entire clip (too coarse — look for natural stage boundaries)
 - Phases for non-active content (narration, reactions, idle setup)
 
 SEGMENT RULES:
 - Group by intent, not by camera cut or single-motion change.
-- Expect 3-6 phases for a {n_frames}-frame sequence.
+- Expect 3-6 phases for a {duration}s clip.
 
-Output the start and end frame number for each phase in order:
-<events>[[start_frame, end_frame], ...]</events>
+Output the start and end time (integer seconds, 0-based) for each phase in order:
+<events>[[start_time, end_time], ...]</events>
 
-Example: <events>[[3, 80], [95, 150], [160, 220]]</events>"""
+Example: <events>[[0, 85], [90, 170], [180, 240]]</events>"""
 
 
 L1_V3 = """\
-You are given {n_frames} frames uniformly sampled from a video, numbered 1 to {n_frames}. \
-Segment the frame sequence into high-level activity phases. \
+You are given a {duration}s video clip (timestamps 0 to {duration}). \
+Segment the video into high-level activity phases. \
 Skip non-active spans such as narration, idle waiting, or irrelevant content.
 
 First, reason about the activity structure in a <think> block. Then output the phases.
 
 <think>
-Observations: [describe the main activities visible in the frames chronologically]
+Observations: [describe the main activities visible in the video chronologically]
 Stage boundaries: [identify where the activity's primary intent clearly shifts]
 Non-active spans: [list any narration, idle, or irrelevant spans to skip]
 </think>
-<events>[[start_frame, end_frame], ...]</events>
+<events>[[start_time, end_time], ...]</events>
 
 Example:
 <think>
-Observations: The frames show three distinct stages: setup and preparation in the early frames, \
+Observations: The video shows three distinct stages: setup and preparation in the early seconds, \
 a main execution phase in the middle, and assembly or finalization near the end.
-Stage boundaries: Activity intent shifts at ~frame 90 (setup → execution) and ~frame 160 (execution → finalization).
-Non-active spans: Frames 81-94 show narration with no hands-on activity.
+Stage boundaries: Activity intent shifts at ~90s (setup → execution) and ~170s (execution → finalization).
+Non-active spans: 85-89s show narration with no hands-on activity.
 </think>
-<events>[[3, 80], [95, 150], [160, 220]]</events>"""
+<events>[[0, 85], [90, 170], [180, 240]]</events>"""
 
 
 L1_V4 = """\
-You are given {n_frames} frames uniformly sampled from a video, numbered 1 to {n_frames}. \
-Segment the frame sequence into high-level activity phases.
+You are given a {duration}s video clip (timestamps 0 to {duration}). \
+Segment the video into high-level activity phases.
 
 PHASE DEFINITION:
 - A high-level phase is a broad structural stage (typically 3-5 per video) \
 that represents a distinct process block or sub-goal within the overall activity.
-- Each phase spans many frames and may contain multiple fine-grained actions.
-- Phases do NOT need to cover all {n_frames} frames. \
+- Each phase spans many seconds and may contain multiple fine-grained actions.
+- Phases do NOT need to cover the entire {duration}s clip. \
 Skip intros, outros, narration-only spans, or idle content not advancing the activity.
 
 DO NOT output:
 - More than 6 phases (too fragmented — you are splitting too finely)
-- A single phase covering almost all frames (too coarse — look for natural stage boundaries)
+- A single phase covering almost the entire clip (too coarse — look for natural stage boundaries)
 - Phases for non-active content (narration, reactions, idle setup)
 
 SEGMENT RULES:
 - Group by intent, not by camera cut or single-motion change.
-- Expect 3-6 phases for a {n_frames}-frame sequence.
+- Expect 3-6 phases for a {duration}s clip.
 
 First, reason about the activity structure in a <think> block. Then output the phases.
 
 <think>
-Observations: [describe the main activities visible in the frames chronologically]
+Observations: [describe the main activities visible in the video chronologically]
 Stage boundaries: [identify where the activity's primary intent clearly shifts]
 Non-active spans: [list any narration, idle, or irrelevant spans to skip]
 </think>
-<events>[[start_frame, end_frame], ...]</events>
+<events>[[start_time, end_time], ...]</events>
 
 Example:
 <think>
-Observations: The frames show three distinct stages: setup and preparation in the early frames, \
+Observations: The video shows three distinct stages: setup and preparation in the early seconds, \
 a main execution phase in the middle, and assembly or finalization near the end.
-Stage boundaries: Activity intent shifts at ~frame 90 (setup → execution) and ~frame 160 (execution → finalization).
-Non-active spans: Frames 81-94 show narration with no hands-on activity.
+Stage boundaries: Activity intent shifts at ~90s (setup → execution) and ~170s (execution → finalization).
+Non-active spans: 85-89s show narration with no hands-on activity.
 </think>
-<events>[[3, 80], [95, 150], [160, 220]]</events>"""
+<events>[[0, 85], [90, 170], [180, 240]]</events>"""
 
 
 # ==========================================================================
@@ -365,8 +365,9 @@ VARIANT_DESCRIPTIONS_V2 = {
     "V4": "Granularity + Structured-CoT (V2 definition + V3 reasoning)",
 }
 
-# L3 prompt params — V1/V2/V3/V4 都只需要 duration 参数（无 query 列表）
-L3_PARAMS = {"duration"}  # 与 L1(n_frames) / L2(duration) 对齐
+# 所有层级的 prompt params 都只需要 duration 参数
+# L1: duration (时间戳模式) / L2: duration / L3: duration (无 query 列表)
+PROMPT_PARAMS = {"duration"}
 
 # MAX_RESPONSE_LEN 建议
 RESPONSE_LEN_HINTS = {

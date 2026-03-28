@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# [DEPRECATED] run_build.sh — 旧流水线一键脚本，已失效。
+#
+# 新方式:
+#   python local_scripts/hier_seg_ablations/build_hier_data.py \
+#     --annotation-dir /path/to/annotations \
+#     --clip-dir-l2 /path/to/clips/L2 \
+#     --clip-dir-l3 /path/to/clips/L3 \
+#     --output-dir /path/to/output \
+#     --levels L1 L2 L3_seg --complete-only
+#
 # run_build.sh — Build training datasets from hierarchical annotations on the server.
 #
 # Usage (on server as xuboshen):

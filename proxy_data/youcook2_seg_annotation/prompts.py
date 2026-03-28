@@ -195,6 +195,23 @@ def get_level1_train_prompt(n_frames: int) -> str:
     return _LEVEL1_TRAIN_BASE.format(n_frames=n_frames)
 
 
+_LEVEL1_TRAIN_TEMPORAL_BASE = """\
+You are given a {duration}s cooking video clip (timestamps 0 to {duration}). \
+Segment the video into 3–5 high-level macro cooking phases \
+(e.g., ingredient preparation, cooking/heating, assembly, plating). \
+Skip non-cooking spans such as narration, beauty shots, or idle waiting.
+
+Output the start and end time (integer seconds, 0-based) for each phase in order:
+<events>[[start_time, end_time], ...]</events>
+
+Example: <events>[[0, 85], [90, 170], [180, 240]]</events>"""
+
+
+def get_level1_train_prompt_temporal(duration: int) -> str:
+    """Training prompt for Level 1 (temporal macro phase segmentation, 0-based seconds)."""
+    return _LEVEL1_TRAIN_TEMPORAL_BASE.format(duration=duration)
+
+
 _LEVEL2_TRAIN_BASE = """\
 You are given a {duration}s cooking video clip (timestamps 0 to {duration}). \
 Detect all complete cooking events in this clip. \

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 """
+[DEPRECATED] build_dataset.py — 已被 local_scripts/hier_seg_ablations/build_hier_data.py 替代。
+
+新脚本直接从 annotation JSON 一步构建训练数据，支持 L1(时间戳)/L2/L3/L3_seg，
+无需 prepare_clips.py 做二次时间戳归零。
+
+注意: 此文件的 main() 函数存在 unreachable code bug，无法作为 CLI 运行。
+仍保留此文件仅作为参考（滑窗逻辑、L3 clip 计算等）。
+
 build_dataset.py — Convert hierarchical annotations into EasyR1 training JSONL.
 
 Level 1: One record per clip (warped-time macro phase segmentation).

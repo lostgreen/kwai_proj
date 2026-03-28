@@ -1,19 +1,18 @@
 """
 prepare_v2_ablation_data.py — V2 通用 Prompt Ablation 数据准备
 
-从现有 L1/L2/L3 JSONL 中读取，替换 prompt 为 V2 版本变体（V1-V4）。
-- L3: 从 grounding 格式（含 action query 列表）转为自由分割格式（只需 duration）
+从 build_hier_data.py 的输出（合并的 train.jsonl / val.jsonl）中读取，
+替换 prompt 为 V2 版本变体（V1-V4）。
+
+- L3: 若为 grounding 格式 (problem_type=temporal_seg_hier_L3)，转为自由分割格式 (temporal_seg_hier_L3_seg)
 - answer / videos / metadata 保持不变
 
 用法:
-    # V1 (baseline) for L2 only
-    python prepare_v2_ablation_data.py --levels L2 --variant V1 --output-dir ./data/v2_V1
+    # 从 build_hier_data.py 输出读取 (推荐)
+    python prepare_v2_ablation_data.py --levels L1 L2 L3 --variant V1 --data-root /path/to/base --output-dir ./data/v2_V1
 
-    # V4 (gran+cot) for L1+L2+L3
-    python prepare_v2_ablation_data.py --levels L1 L2 L3 --variant V4 --output-dir ./data/v2_V4
-
-    # All four variants for L1+L2+L3 at once
-    python prepare_v2_ablation_data.py --levels L1 L2 L3 --variant all --output-dir ./data/v2_ablation
+    # All four variants
+    python prepare_v2_ablation_data.py --levels L1 L2 L3 --variant all --data-root /path/to/base --output-dir ./data/v2_ablation
 """
 
 import argparse
@@ -28,12 +27,13 @@ from prompt_variants_v2 import PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESP
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
-DEFAULT_DATA_ROOT = os.path.join(REPO_ROOT, "proxy_data", "youcook2_seg_annotation", "datasets")
 
-LEVEL_FILES = {
-    "L1": "youcook2_hier_L1_train_clipped.jsonl",
-    "L2": "youcook2_hier_L2_train_clipped.jsonl",
-    "L3": "youcook2_hier_L3_train_clipped.jsonl",
+# problem_type → level mapping (用于从合并文件中按层过滤)
+PROBLEM_TYPE_TO_LEVEL = {
+    "temporal_seg_hier_L1": "L1",
+    "temporal_seg_hier_L2": "L2",
+    "temporal_seg_hier_L3": "L3",
+    "temporal_seg_hier_L3_seg": "L3",
 }
 
 # L3 的新 problem_type（自由分割）
@@ -58,7 +58,7 @@ def write_jsonl(records, path):
 
 
 def extract_duration_from_prompt(prompt_text: str) -> int:
-    """从 prompt 中提取 duration（秒）。"""
+    """从 prompt 中提取 duration（秒）。适用于 L1/L2/L3。"""
     m = re.search(r"(\d+)s (?:cooking )?video clip", prompt_text)
     if m:
         return int(m.group(1))
@@ -68,36 +68,19 @@ def extract_duration_from_prompt(prompt_text: str) -> int:
     return 128
 
 
-def extract_n_frames_from_prompt(prompt_text: str) -> int:
-    """从 L1 prompt 中提取 n_frames。"""
-    m = re.search(r"(\d+) frames uniformly sampled", prompt_text)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"numbered 1 to (\d+)", prompt_text)
-    if m:
-        return int(m.group(1))
-    return 256
-
-
 def rewrite_prompt(record: dict, level: str, variant: str) -> dict:
     """
     重写一条记录的 prompt 为指定 V2 变体。
 
-    L3 特殊处理：
-      - 旧: prompt 含 action query 列表（grounding 格式）
-      - 新: 仅使用 duration 参数（自由分割格式），problem_type 改为 L3_seg
+    L1/L2/L3 全部统一使用 duration 参数。
+    L3 特殊处理：problem_type 改为 L3_seg（自由分割）。
     """
     record = dict(record)
     old_prompt = record.get("prompt", "")
 
     template = PROMPT_VARIANTS_V2[level][variant]
-
-    if level == "L1":
-        n_frames = extract_n_frames_from_prompt(old_prompt)
-        new_prompt_body = template.format(n_frames=n_frames)
-    else:  # L2 or L3 — both use duration
-        duration = extract_duration_from_prompt(old_prompt)
-        new_prompt_body = template.format(duration=duration)
+    duration = extract_duration_from_prompt(old_prompt)
+    new_prompt_body = template.format(duration=duration)
 
     # 重建完整 prompt（带 <video> 前缀）
     new_prompt = f"<video>\n\n{new_prompt_body}"
@@ -112,6 +95,31 @@ def rewrite_prompt(record: dict, level: str, variant: str) -> dict:
     return record
 
 
+def load_records_by_level(data_root: str, levels: list[str]) -> dict[str, list[dict]]:
+    """从 build_hier_data.py 输出的合并 train.jsonl 中按 problem_type 分层读取。"""
+    train_path = os.path.join(data_root, "train.jsonl")
+    val_path = os.path.join(data_root, "val.jsonl")
+
+    # 合并 train + val（后续由本脚本重新 split）
+    all_records = []
+    for path in [train_path, val_path]:
+        if os.path.exists(path):
+            all_records.extend(load_jsonl(path))
+
+    if not all_records:
+        raise FileNotFoundError(f"No data found in {data_root}/train.jsonl or val.jsonl")
+
+    # 按 problem_type 分类
+    by_level: dict[str, list[dict]] = {lv: [] for lv in levels}
+    for r in all_records:
+        pt = r.get("problem_type", "")
+        lv = PROBLEM_TYPE_TO_LEVEL.get(pt)
+        if lv and lv in by_level:
+            by_level[lv].append(r)
+
+    return by_level
+
+
 def process_variant(levels, variant, data_root, rng, val_per_level, train_per_level):
     """
     处理单个 V2 variant，返回 (train, val)。
@@ -122,12 +130,10 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
     all_train = []
     all_val = []
 
-    for level in sorted(levels):
-        filepath = os.path.join(data_root, LEVEL_FILES[level])
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Data file not found: {filepath}")
+    records_by_level = load_records_by_level(data_root, sorted(levels))
 
-        records = load_jsonl(filepath)
+    for level in sorted(levels):
+        records = records_by_level[level]
 
         # L3: shuffled 版本只保留 sequential（一个 event clip 一条记录，不重复）
         if level == "L3":
@@ -181,7 +187,8 @@ def main():
         "--train-per-level", type=int, default=400,
         help="每层 train 最多条数（默认 400；设为 -1 表示用全部剩余数据）",
     )
-    parser.add_argument("--data-root", type=str, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--data-root", type=str, required=True,
+                        help="build_hier_data.py 输出目录（含 train.jsonl / val.jsonl）")
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
