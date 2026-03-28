@@ -810,8 +810,12 @@ class ComparisonHandler(BaseHTTPRequestHandler):
             if not step_key:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "step_key required"})
                 return
-            samples = self.ablation_store.get_aligned_samples(step_key, task, min(limit, 500))
-            self._send_json(HTTPStatus.OK, {"ok": True, "samples": samples})
+            try:
+                samples = self.ablation_store.get_aligned_samples(step_key, task, min(limit, 500))
+                self._send_json(HTTPStatus.OK, {"ok": True, "samples": samples})
+            except Exception as e:
+                print(f"[ERROR] /api/samples: {e}")
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(e)})
             return
 
         if path.startswith("/api/sample/"):
@@ -819,8 +823,12 @@ class ComparisonHandler(BaseHTTPRequestHandler):
             if not uid:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "uid required"})
                 return
-            comparison = self.ablation_store.get_sample_comparison(uid)
-            self._send_json(HTTPStatus.OK, {"ok": True, "comparison": comparison})
+            try:
+                comparison = self.ablation_store.get_sample_comparison(uid)
+                self._send_json(HTTPStatus.OK, {"ok": True, "comparison": comparison})
+            except Exception as e:
+                print(f"[ERROR] /api/sample/{uid}: {e}")
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(e)})
             return
 
         if path == "/api/reward_curves":
@@ -890,6 +898,11 @@ class ComparisonHandler(BaseHTTPRequestHandler):
         self._send_text(HTTPStatus.OK, content, ct)
 
     def log_message(self, fmt: str, *args: Any) -> None:
+        # Log errors but not every request
+        if args and len(args) >= 2:
+            status = str(args[1]) if len(args) > 1 else ""
+            if status.startswith("4") or status.startswith("5"):
+                print(f"[HTTP] {args[0]} → {status}")
         return
 
 

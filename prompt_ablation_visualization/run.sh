@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Override these via environment variables or edit defaults below.
 
 VIZHOST="${VIZHOST:-0.0.0.0}"
-PORT="${PORT:-8891}"
+PORT="${PORT:-8890}"
 
 # Experiment rollout directories (comma-separated V=path pairs)
 # Example: V1=/path/to/V1/rollouts,V2=/path/to/V2/rollouts,...
