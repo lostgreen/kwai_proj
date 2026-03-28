@@ -50,6 +50,14 @@ from typing import Any
 
 from PIL import Image
 
+# 添加 proxy_data 父目录到 sys.path 以便 import shared
+# 脚本位于 proxy_data/youcook2_seg/event_logic/，需上溯三级到 proxy_data/
+_PROXY_DATA_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROXY_DATA_DIR not in sys.path:
+    sys.path.insert(0, _PROXY_DATA_DIR)
+
+from shared.seg_source import load_annotations as _load_ann_raw, get_l2_clip_path
+
 from prompts import (
     get_add_prompt,
     get_replace_prompt,
@@ -74,26 +82,25 @@ def _option_labels(n: int) -> list[str]:
 # Annotation loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_annotations(annotation_dir: Path, min_events: int = 4) -> tuple[list[dict], dict]:
-    """
-    Load all L2 annotation JSON files. Each becomes a "video" with events.
+def load_annotations(annotation_dir: Path, min_events: int = 4) -> tuple[list[dict], list[str]]:
+    """Load all L2 annotation JSON files and convert to event-logic format.
+
+    Uses ``shared.seg_source.load_annotations`` for raw JSON loading, then
+    converts each annotation into the per-video event list needed by this
+    pipeline.
 
     Returns:
-        (videos, sentence_pool_by_clip_key)
-        videos: list of dicts with keys: clip_key, events
-            where each event has: id, start, end, sentence, path
-        sentence_pool: {clip_key: [sentence, ...]} — for negative sampling
+        (videos, all_sentences)
+        videos: list of dicts with keys: clip_key, video_path, events
+            where each event has: id, start, end, sentence, video_path, clip_key
+        all_sentences: flat list of event instructions for cross-clip negative sampling
     """
-    videos = []
-    all_sentences: list[str] = []  # flat pool for cross-clip negatives
+    raw_annotations = _load_ann_raw(annotation_dir, complete_only=False)
 
-    for ann_file in sorted(annotation_dir.glob("*.json")):
-        try:
-            with open(ann_file, encoding="utf-8") as f:
-                ann = json.load(f)
-        except Exception:
-            continue
+    videos: list[dict] = []
+    all_sentences: list[str] = []
 
+    for ann in raw_annotations:
         l2 = ann.get("level2")
         if not isinstance(l2, dict):
             continue
@@ -102,10 +109,10 @@ def load_annotations(annotation_dir: Path, min_events: int = 4) -> tuple[list[di
         if not isinstance(events_raw, list):
             continue
 
-        clip_key = ann.get("clip_key") or ann_file.stem
+        clip_key = ann.get("clip_key", "")
         video_path = ann.get("video_path") or ann.get("source_video_path") or ""
 
-        events = []
+        events: list[dict] = []
         for ev in events_raw:
             s = ev.get("start_time")
             e = ev.get("end_time")

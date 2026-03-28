@@ -1,37 +1,173 @@
-# Temporal AoT Scripts
+# Temporal AoT（时序方向判断）
 
-这个目录现在默认复用已经切好的 YouCook2 event clips，而不是再从 `proxy_train_easyr1.jsonl` 里反查视频。
-
-推荐输入是现成的 `extracted_clips_database.json`，格式类似：
-
-```json
-{
-  "GLd3aX16zBg": [
-    {
-      "clip_path": "/m2v_intern/xuboshen/zgw/data/youcook2_event_clips/training/113/GLd3aX16zBg/GLd3aX16zBg_event00_90_102.mp4",
-      "original_video_id": "GLd3aX16zBg",
-      "recipe_type": "113",
-      "subset": "training",
-      "sentence": "spread margarine on two slices of white bread",
-      "segment_in_original": [90, 102],
-      "event_id": 0,
-      "sequence_index": 0
-    }
-  ]
-}
-```
-
-核心假设：
-
-1. 以单个 event clip 为基本单位
-2. forward clip 直接复用现成切好的 `clip_path`
-3. `reverse` 指该 event clip 的帧级倒放
-  `shuffle` 指该 event clip 等分为 N 段（N ∈ [3, 5]，按 clip_key 确定性随机）后随机重排
-5. 如需 `T2V`，输入视频仍然是 `forward + black gap + reverse`
+> **当前推荐管线**：`build_aot_from_seg.py` 直接从层次分割标注（`youcook2_seg_annotation/annotations/`）生成四种 AoT 任务数据，**无需独立的 VLM captioning 步骤**。
 
 ---
 
-## 整体流程
+## 文件状态速查
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `build_aot_from_seg.py` | ✅ **ACTIVE** | **推荐入口**：从 L2/L3 分割标注直接构建 4 种 AOT 任务 |
+| `prompts.py` | ✅ ACTIVE | AOT 训练 prompt 模板库 |
+| `rebalance_aot_answers.py` | ✅ ACTIVE | 答案重平衡工具（离线过滤后使用） |
+| `data/` | ✅ ACTIVE | 生成数据目录 |
+| `build_event_aot_data.py` | ⚠️ DEPRECATED | 旧版：从独立 event clips 构建 manifest |
+| `annotate_event_captions.py` | ⚠️ DEPRECATED | 旧版：VLM caption 生成 |
+| `check_and_refine_captions.py` | ⚠️ DEPRECATED | 旧版：caption 质量精修 |
+| `build_aot_mcq.py` | ⚠️ DEPRECATED | 旧版：基于 caption pairs 构建 MCQ |
+| `mix_aot_with_youcook2.py` | ⚠️ DEPRECATED | 旧版：与 YouCook2 seg 数据混合 |
+
+---
+
+## 整体架构
+
+### 数据流（新版）
+
+```
+youcook2_seg_annotation/annotations/*.json
+    │  (共享 L2/L3 三层分割标注)
+    │
+    ├─► action_v2t : L3 event clip → 判断哪个动作列表顺序正确     (A/B 二选一)
+    ├─► action_t2v : forward 动作列表 → 从两个 L3 clip 中选匹配的 (A/B 二选一)
+    ├─► event_v2t  : L2 window clip → 判断哪个事件列表顺序正确    (A/B/C 三选一)
+    └─► event_t2v  : forward 事件列表 → 从三个 L2 clip 中选匹配的 (A/B/C 三选一)
+```
+
+直接复用 L3 `grounding_results[*].sub_action` 和 L2 `events[*].instruction` 作为选项文本，无需额外 VLM captioning。
+
+### 四种任务类型（2×2 factorial）
+
+| 任务 | problem_type | 粒度 | 形式 |
+|------|-------------|------|------|
+| **action V2T** | `seg_aot_action_v2t` | L3 (action) | 给 L3 event clip，判断哪个动作列表顺序正确（A/B）|
+| **action T2V** | `seg_aot_action_t2v` | L3 (action) | 给 forward 动作列表，从两个 L3 clip 中选匹配的（A/B）|
+| **event V2T** | `seg_aot_event_v2t` | L2 (event) | 给 L2 window clip，判断哪个事件列表顺序正确（A/B/C）|
+| **event T2V** | `seg_aot_event_t2v` | L2 (event) | 给 forward 事件列表，从三个 L2 clip 中选匹配的（A/B/C）|
+
+---
+
+## 快速开始
+
+### 前提条件
+
+1. L2/L3 标注已完成（`youcook2_seg_annotation/annotations/*.json`）
+2. L2 clips 已由 `youcook2_seg_annotation/prepare_clips.py` 生成（`clips/L2/*.mp4`）
+3. L3 clips 已由 `youcook2_seg_annotation/prepare_clips.py` 生成（`clips/L3/*.mp4`）
+
+### 一键构建（全部 4 种任务）
+
+```bash
+cd /path/to/VideoProxy/train
+
+export ANN_DIR=/path/to/youcook2_seg_annotation/annotations
+export CLIP_L2=/path/to/youcook2_seg_annotation/clips/L2
+export CLIP_L3=/path/to/youcook2_seg_annotation/clips/L3
+export OUTPUT_DIR=proxy_data/youcook2_seg/temporal_aot/data
+
+python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
+    --annotation-dir $ANN_DIR \
+    --clip-dir-l2    $CLIP_L2 \
+    --clip-dir-l3    $CLIP_L3 \
+    --output-dir     $OUTPUT_DIR \
+    --tasks action_v2t action_t2v event_v2t event_t2v \
+    --complete-only \
+    --total-val 200 \
+    --seed 42
+```
+
+### 只构建 L2 事件级任务
+
+```bash
+python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
+    --annotation-dir $ANN_DIR \
+    --clip-dir-l2    $CLIP_L2 \
+    --output-dir     $OUTPUT_DIR/event_only \
+    --tasks event_v2t event_t2v \
+    --complete-only
+```
+
+### 输出结构
+
+```
+$OUTPUT_DIR/
+├── train.jsonl   # 打乱混合的训练数据
+├── val.jsonl     # 验证集
+└── stats.json    # 各 problem_type 数量统计
+```
+
+---
+
+## 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--tasks` | 全部 4 种 | 要构建的任务，可任意组合 |
+| `--l2-window-size` | 128 | L2 滑窗大小（秒），`-1` = 不切窗 |
+| `--l2-stride` | 64 | L2 滑窗步长（秒） |
+| `--min-events` | 3 | event_* 任务每窗口最少事件数 |
+| `--min-actions` | 3 | action_* 任务每事件最少 action 数 |
+| `--total-val` | 200 | 验证集总样本数（按 task 均分） |
+| `--train-per-task` | -1 | 每任务最多训练样本数（-1 = 不限） |
+| `--complete-only` | False | 跳过 clip 文件不存在的记录 |
+| `--seed` | 42 | 随机数种子 |
+
+---
+
+## 从零扩充数据
+
+只需往上游 `youcook2_seg_annotation/annotations/` 追加新的标注 JSON，重新执行 clip 截取后重跑即可：
+
+```bash
+# Step 1: 对新视频做三层 VLM 标注（详见 youcook2_seg_annotation/README.md）
+python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
+    --frames-dir /path/to/frames --output-dir $ANN_DIR \
+    --level 1 --model qwen/qwen2.5-vl-72b-instruct --workers 4
+# 依次执行 level 2, 3 ...
+
+# Step 2: 截取 L2/L3 clip 文件
+python proxy_data/youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+    --input /tmp/l2_raw.jsonl --output /tmp/l2_clipped.jsonl \
+    --clip-dir $CLIP_L2
+python proxy_data/youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+    --input /tmp/l3_raw.jsonl --output /tmp/l3_clipped.jsonl \
+    --clip-dir $CLIP_L3
+
+# Step 3: 重新生成 AoT 数据（自动纳入新标注文件）
+python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
+    --annotation-dir $ANN_DIR \
+    --clip-dir-l2 $CLIP_L2 --clip-dir-l3 $CLIP_L3 \
+    --output-dir $OUTPUT_DIR \
+    --tasks action_v2t action_t2v event_v2t event_t2v \
+    --complete-only
+```
+
+---
+
+## 消融实验（local_scripts/aot_ablations/）
+
+消融对比各 task 类型及组合的效果，实验脚本见 `local_scripts/aot_ablations/`。
+
+| 实验 | 训练 task | 核心假设 |
+|------|-----------|---------|
+| exp1 | `seg_aot_action_v2t` | action 粒度 V2T 是否已足够 |
+| exp2 | `seg_aot_event_v2t` | event 粒度 V2T 的效果 |
+| exp3 | `seg_aot_action_t2v` | action T2V 与 V2T 的对比 |
+| exp4 | `seg_aot_event_t2v` | event T2V 与 V2T 的对比 |
+| exp5 | action_v2t + event_v2t | 两粒度 V2T 混合 |
+| exp6 | 全部 4 种任务 | 全量混合的边际增益 |
+
+---
+
+## 旧版管线（已废弃）
+
+> ⚠️ 以下管线依赖独立的 event clip 数据库（`extracted_clips_database.json`）和 VLM caption 标注，已由 `build_aot_from_seg.py` 完全替代，不再维护。
+
+旧版三步流程：
+
+---
+
+## 旧版整体流程
 
 按顺序依次运行以下脚本：
 

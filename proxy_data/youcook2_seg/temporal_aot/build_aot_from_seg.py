@@ -29,23 +29,33 @@ import argparse
 import json
 import os
 import random
+import sys
 from collections import defaultdict
 from pathlib import Path
 
+# 添加 proxy_data 父目录到 sys.path 以便 import shared
+# 脚本位于 proxy_data/youcook2_seg/temporal_aot/，需上溯三级到 proxy_data/
+_PROXY_DATA_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROXY_DATA_DIR not in sys.path:
+    sys.path.insert(0, _PROXY_DATA_DIR)
 
-# =====================================================================
-# 常量 — 与 build_hier_data.py 保持一致
-# =====================================================================
-L2_WINDOW_SIZE = 128
-L2_STRIDE = 64
-L3_MAX_CLIP_SEC = 128
-L3_PADDING = 5
+from shared.seg_source import (
+    load_annotations,
+    generate_sliding_windows,
+    compute_l3_clip as _compute_l3_clip,
+    get_l2_clip_path,
+    get_l3_clip_path,
+    L2_WINDOW_SIZE,
+    L2_STRIDE,
+    L3_MAX_CLIP_SEC,
+    L3_PADDING,
+)
 
 ANSWER_LETTERS = ["A", "B", "C"]
 
 
 # =====================================================================
-# Prompt 模板
+# Prompt 模板  (AOT-specific, not in shared)
 # =====================================================================
 _ACTION_V2T_PROMPT = """\
 Watch this {duration}s cooking video clip.
@@ -106,48 +116,6 @@ Think step by step inside <think></think> tags, then provide your final answer \
 
 def _format_list(items: list[str]) -> str:
     return "\n".join(f"   {i + 1}. {item}" for i, item in enumerate(items))
-
-
-# =====================================================================
-# 公用: 滑窗生成（与 build_hier_data.py 相同逻辑）
-# =====================================================================
-def generate_sliding_windows(
-    total_duration: float,
-    window_size: int = L2_WINDOW_SIZE,
-    stride: int = L2_STRIDE,
-) -> list[tuple[int, int]]:
-    windows = []
-    start = 0
-    total = int(total_duration)
-    while start < total:
-        end = min(start + window_size, total)
-        if end - start >= stride // 2:
-            windows.append((start, end))
-        if end >= total:
-            break
-        start += stride
-    return windows
-
-
-# =====================================================================
-# 公用: L3 clip 窗口计算（与 build_hier_data.py 相同逻辑）
-# =====================================================================
-def _compute_l3_clip(
-    ev_start: int,
-    ev_end: int,
-    clip_duration: int,
-    padding: int = L3_PADDING,
-    max_clip: int = L3_MAX_CLIP_SEC,
-) -> tuple[int, int, int]:
-    """返回 (clip_start, clip_end, duration)。"""
-    clip_start = max(0, ev_start - padding)
-    clip_end = min(clip_duration, ev_end + padding)
-    if clip_end - clip_start > max_clip:
-        excess = (clip_end - clip_start) - max_clip
-        trim_start = min(excess // 2, ev_start - clip_start)
-        clip_start += trim_start
-        clip_end = clip_start + max_clip
-    return clip_start, clip_end, clip_end - clip_start
 
 
 # =====================================================================
@@ -215,8 +183,7 @@ def build_action_v2t_records(
         clip_start, clip_end, duration = _compute_l3_clip(
             ev_start_i, ev_end_i, int(clip_duration),
         )
-        clip_filename = f"{clip_key}_L3_ev{event_id}_{clip_start}_{clip_end}.mp4"
-        vp = os.path.join(clip_dir_l3, clip_filename) if clip_dir_l3 else ann.get("video_path", "")
+        vp = get_l3_clip_path(clip_key, event_id, clip_start, clip_end, clip_dir_l3) if clip_dir_l3 else ann.get("video_path", "")
         if complete_only and clip_dir_l3 and not os.path.exists(vp):
             continue
 
@@ -311,8 +278,7 @@ def build_action_t2v_records(
         clip_start, clip_end, duration = _compute_l3_clip(
             ev_start_i, ev_end_i, int(clip_duration),
         )
-        clip_filename = f"{clip_key}_L3_ev{event_id}_{clip_start}_{clip_end}.mp4"
-        vp = os.path.join(clip_dir_l3, clip_filename) if clip_dir_l3 else ann.get("video_path", "")
+        vp = get_l3_clip_path(clip_key, event_id, clip_start, clip_end, clip_dir_l3) if clip_dir_l3 else ann.get("video_path", "")
         if complete_only and clip_dir_l3 and not os.path.exists(vp):
             continue
 
@@ -386,10 +352,13 @@ def build_event_v2t_records(
     min_events: int = 3,
     complete_only: bool = False,
     rng: random.Random | None = None,
+    window_size: int = L2_WINDOW_SIZE,
+    stride: int = L2_STRIDE,
 ) -> list[dict]:
     """每个 L2 window 构建一条 event-order V2T 三选一记录。
 
     三个选项: forward / shuffle / reversed。
+    window_size <= 0 时不切窗，直接以完整 clip 为单一窗口。
     """
     if rng is None:
         rng = random.Random(42)
@@ -404,7 +373,11 @@ def build_event_v2t_records(
 
     events = l2.get("events", [])
     clip_key = ann.get("clip_key", "")
-    windows = generate_sliding_windows(clip_duration)
+
+    if window_size > 0:
+        windows = generate_sliding_windows(clip_duration, window_size, stride)
+    else:
+        windows = [(0, int(clip_duration))]
 
     records = []
     for ws, we in windows:
@@ -439,8 +412,7 @@ def build_event_v2t_records(
         # 生成 reversed (直接倒序，len≥2 时一定 ≠ forward)
         reversed_events = list(reversed(matched_events))
 
-        clip_filename = f"{clip_key}_L2_w{ws}_{we}.mp4"
-        vp = os.path.join(clip_dir_l2, clip_filename) if clip_dir_l2 else ann.get("video_path", "")
+        vp = get_l2_clip_path(clip_key, ws, we, clip_dir_l2) if clip_dir_l2 else ann.get("video_path", "")
         if complete_only and clip_dir_l2 and not os.path.exists(vp):
             continue
 
@@ -579,6 +551,10 @@ def main():
         default=["action_v2t", "action_t2v", "event_v2t", "event_t2v"],
         help="要构建的任务类型",
     )
+    parser.add_argument("--l2-window-size", type=int, default=L2_WINDOW_SIZE,
+                        help="L2 滑窗大小（秒）。-1 = 不切窗，直接用完整 clip（默认: 128）")
+    parser.add_argument("--l2-stride", type=int, default=L2_STRIDE,
+                        help="L2 滑窗步长（秒），仅在 --l2-window-size > 0 时生效（默认: 64）")
     parser.add_argument("--min-events", type=int, default=3,
                         help="event_*: 每窗口最少事件数")
     parser.add_argument("--min-actions", type=int, default=3,
@@ -598,8 +574,9 @@ def main():
         print(f"ERROR: annotation-dir not found: {ann_dir}")
         return
 
-    ann_files = sorted(ann_dir.glob("*.json"))
-    print(f"Found {len(ann_files)} annotation files")
+    # 使用 shared 统一加载接口
+    ann_list = load_annotations(ann_dir, complete_only=False)
+    print(f"Found {len(ann_list)} annotation files")
 
     # event_t2v 依赖先建好的 event_v2t 池，确保 event_v2t 先执行
     build_order = []
@@ -612,13 +589,7 @@ def main():
     # 逐文件构建 action/event V2T 记录（T2V 后处理）
     task_records: dict[str, list[dict]] = {t: [] for t in args.tasks}
 
-    for af in ann_files:
-        try:
-            with open(af, encoding="utf-8") as f:
-                ann = json.load(f)
-        except Exception as e:
-            print(f"  SKIP (parse error): {af.name}: {e}")
-            continue
+    for ann in ann_list:
 
         if "action_v2t" in args.tasks:
             task_records["action_v2t"].extend(
@@ -639,6 +610,8 @@ def main():
                 build_event_v2t_records(
                     ann, args.clip_dir_l2, args.min_events, args.complete_only,
                     random.Random(rng.random()),
+                    window_size=args.l2_window_size,
+                    stride=args.l2_stride,
                 )
             )
 
@@ -696,7 +669,7 @@ def main():
     train_types = dict(Counter(r["problem_type"] for r in all_train))
     val_types = dict(Counter(r["problem_type"] for r in all_val))
     stats = {
-        "total_annotation_files": len(ann_files),
+        "total_annotation_files": len(ann_list),
         "tasks": args.tasks,
         "train_total": len(all_train),
         "val_total": len(all_val),

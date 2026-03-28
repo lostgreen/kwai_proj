@@ -6,50 +6,49 @@
 
 ## 一、数据源谱系与区分
 
-本项目中存在 **三套独立的数据源**，必须严格区分，不能混用：
+> ⚠️ **注意**：AoT（`temporal_aot/`）已重构。`build_aot_from_seg.py` 现在直接复用与本任务相同的 L2 分层标注（数据源 B），旧版的独立 VLM captioning 管线（数据源 C）已废弃。
+
+本目录的活跃构建脚本使用 **两套数据源**：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     YouCook2 原始视频（共约 2000 个）                  │
 └────────────┬────────────────────┬────────────────────┬──────────────┘
-             │                    │                    │
-     ┌───────▼────────┐  ┌───────▼────────┐  ┌───────▼────────┐
-     │  数据源 A       │  │  数据源 B       │  │  数据源 C       │
-     │ 原始标注        │  │ L2 分层标注     │  │ AoT 标注        │
-     │ (youcookii_     │  │ (youcook2_seg_  │  │ (temporal_aot/) │
-     │  annotations_   │  │  annotation/    │  │                 │
-     │  trainval.json) │  │  annotations/)  │  │                 │
-     └───────┬────────┘  └───────┬────────┘  └───────┬────────┘
-             │                    │                    │
-     ┌───────▼────────┐  ┌───────▼────────┐  ┌───────▼────────┐
-     │ event_logic/   │  │ event_logic/   │  │ temporal_aot/  │
-     │ build_text_    │  │ build_l2_      │  │ build_aot_     │
-     │ option_proxy   │  │ event_logic    │  │ mcq            │
-     │ .py            │  │ .py            │  │ .py            │
-     └───────┬────────┘  └───────┬────────┘  └───────┬────────┘
-             │                    │                    │
-             ▼                    ▼                    ▼
-     proxy_train_text_   l2_event_logic_     aot_v2t / aot_t2v
-     options.jsonl        raw.jsonl           训练数据
+             │                    │
+     ┌───────▼────────┐  ┌───────▼────────┐
+     │  数据源 A       │  │  数据源 B       │
+     │ 原始标注        │  │ L2/L3 分层标注  │   ← AoT 新版也用此源
+     │ (youcookii_     │  │ (youcook2_seg_  │
+     │  annotations_   │  │  annotation/    │
+     │  trainval.json) │  │  annotations/)  │
+     └───────┬────────┘  └───────┬────────┘
+             │                    │
+     ┌───────▼────────┐  ┌───────▼────────┐
+     │ build_text_    │  │ build_l2_      │   ← 本目录推荐入口
+     │ option_proxy   │  │ event_logic    │
+     │ .py (旧版)     │  │ .py            │
+     └───────┬────────┘  └───────┬────────┘
+             │                    │
+             ▼                    ▼
+     proxy_train_text_   l2_event_logic_
+     options.jsonl        *.jsonl
      (add/replace/sort)  (add/replace/sort)
 ```
 
 ### 数据源详情
 
-| 数据源 | 路径 | 标注方式 | 标注粒度 | 视频来源 |
-|--------|------|---------|---------|---------|
-| **A: 原始标注** | `youcookii_annotations_trainval.json` | YouCook2 官方人工标注 | 视频级，每段一句话 | 预切好的 event clips (`youcook2_event_clips/`) |
-| **B: L2 分层标注** | `youcook2_seg_annotation/annotations/*.json` | VLM 自动标注（Qwen2.5-VL-72B） | 三层分层（L1 阶段→L2 活动→L3 动作） | 原始完整视频 → ffmpeg 截取窗口/event clips |
-| **C: AoT 标注** | `temporal_aot/data/aot_event_manifest.jsonl` | 复用数据源 A 的 event clips + VLM 标注正/反/乱序 caption | 单 event clip 的时序方向 | 数据源 A 的 event clips → ffmpeg 生成 reverse/shuffle |
+| 数据源 | 路径 | 标注方式 | 标注粒度 | 备注 |
+|--------|------|---------|---------|------|
+| **A: 原始标注** | `youcookii_annotations_trainval.json` | YouCook2 官方人工标注 | 视频级，每段一句话 | 旧版管线使用，不推荐 |
+| **B: L2 分层标注** | `youcook2_seg_annotation/annotations/*.json` | VLM 自动标注（Qwen2.5-VL-72B） | 三层分层（L1 阶段→L2 活动→L3 动作） | **推荐**；AoT 新版同样使用此源 |
 
 ### ⚠️ 关键区分
 
 1. **数据源 A 与 B 的关系**：都基于 YouCook2，但标注体系完全不同。A 是原始一句话描述，B 是三层分层标注（macro phase → event → atomic action）。B 的 `level2.events` 提供了更精细的 `instruction` + `visual_keywords`，质量更可控。
 
-2. **数据源 C（AoT）是完全独立的任务体系**：
+2. **AoT（temporal_aot/）与 Event Logic 的区别**（两者现在共享同一 L2 标注数据源，但任务目标不同）：
    - AoT 关注的是时序**方向感知**（正放 vs 倒放 vs 乱序）
    - Event Logic 关注的是事件**逻辑推理**（下一步/替换/排序）
-   - 两者目标不同，数据构造方式不同，reward 函数不同
    - **消融实验中不应将 AoT 数据与 Event Logic 数据混合**，否则无法归因能力提升来自哪个任务
 
 ---
@@ -238,16 +237,16 @@ l2_event_logic_filtered.jsonl  (过滤后)
 ### 快速开始（推荐管线 2，基于 L2 标注）
 
 ```bash
-cd /path/to/EasyR1
+cd /path/to/VideoProxy/train
 
 # 环境变量
-export L2_ANNOTATION_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations
-export L2_CLIPS_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/L2
-export L2_FRAMES_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames
-export OUTPUT_DIR=proxy_data/event_logic/data
+export L2_ANNOTATION_DIR=/path/to/youcook2_seg_annotation/annotations
+export L2_CLIPS_DIR=/path/to/youcook2_seg_annotation/clips/L2
+export L2_FRAMES_DIR=/path/to/youcook2_seg_annotation/frames
+export OUTPUT_DIR=proxy_data/youcook2_seg/event_logic/data
 
 # Step 1: 构造 Event Logic 数据（不过滤）
-python proxy_data/event_logic/build_l2_event_logic.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
     --annotation-dir  $L2_ANNOTATION_DIR \
     --clips-dir       $L2_CLIPS_DIR \
     --frames-dir      $L2_FRAMES_DIR \
@@ -257,7 +256,7 @@ python proxy_data/event_logic/build_l2_event_logic.py \
     --seed 42 --shuffle
 
 # Step 2: AI 因果过滤（可选，推荐）
-python proxy_data/event_logic/build_l2_event_logic.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
     --annotation-dir  $L2_ANNOTATION_DIR \
     --clips-dir       $L2_CLIPS_DIR \
     --frames-dir      $L2_FRAMES_DIR \
@@ -274,7 +273,7 @@ python proxy_data/event_logic/build_l2_event_logic.py \
 
 ```bash
 # 一键运行
-bash proxy_data/event_logic/run_build.sh
+bash proxy_data/youcook2_seg/event_logic/run_build.sh
 ```
 
 ---
@@ -294,7 +293,7 @@ export L2_CLIPS_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/
 export L2_FRAMES_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames
 
 # Step 1: 小规模构造（每视频各 1 条，限制总量 20）
-python proxy_data/event_logic/build_l2_event_logic.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
     --annotation-dir  $L2_ANNOTATION_DIR \
     --clips-dir       $L2_CLIPS_DIR \
     --frames-dir      $L2_FRAMES_DIR \
@@ -308,7 +307,7 @@ python proxy_data/event_logic/build_l2_event_logic.py \
 head -3 /tmp/el_smoketest_raw.jsonl | python3 -m json.tool
 
 # Step 3: 验证视频文件可读
-python proxy_data/event_logic/filter_bad_videos.py \
+python proxy_data/youcook2_seg/event_logic/filter_bad_videos.py \
     --input-jsonl  /tmp/el_smoketest_raw.jsonl \
     --output-jsonl /tmp/el_smoketest_clean.jsonl
 
@@ -338,11 +337,11 @@ AI 因果过滤用 VLM 自动判断每条 add/replace 样本的因果质量：
 
 ```bash
 # 方式 1: 构造时直接过滤（--filter 开关）
-python proxy_data/event_logic/build_l2_event_logic.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
     --annotation-dir  $L2_ANNOTATION_DIR \
     --clips-dir       $L2_CLIPS_DIR \
     --frames-dir      $L2_FRAMES_DIR \
-    --output          proxy_data/event_logic/data/l2_event_logic_filtered.jsonl \
+    --output          proxy_data/youcook2_seg/event_logic/data/l2_event_logic_filtered.jsonl \
     --add-per-video 2 --replace-per-video 2 --sort-per-video 1 \
     --filter \
     --api-base https://api.novita.ai/v3/openai \
@@ -355,11 +354,11 @@ python proxy_data/event_logic/build_l2_event_logic.py \
 # 先启动 vLLM 服务:
 #   python -m vllm.entrypoints.openai.api_server \
 #       --model Qwen/Qwen2.5-VL-72B-Instruct --tp 4 --port 8000
-python proxy_data/event_logic/build_l2_event_logic.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
     --annotation-dir  $L2_ANNOTATION_DIR \
     --clips-dir       $L2_CLIPS_DIR \
     --frames-dir      $L2_FRAMES_DIR \
-    --output          proxy_data/event_logic/data/l2_event_logic_filtered.jsonl \
+    --output          proxy_data/youcook2_seg/event_logic/data/l2_event_logic_filtered.jsonl \
     --filter \
     --api-base http://localhost:8000/v1 \
     --model Qwen2.5-VL-72B-Instruct \
@@ -384,20 +383,20 @@ python proxy_data/event_logic/build_l2_event_logic.py \
 
 ```bash
 # Step 1: 为 L2 event clips 标注 recipe-instruction 风格的 step caption
-python proxy_data/event_logic/annotate_l2_step_captions.py \
-    --from-dataset proxy_data/event_logic/data/l2_event_logic_raw.jsonl \
-    --output proxy_data/event_logic/data/l2_step_captions.jsonl \
+python proxy_data/youcook2_seg/event_logic/annotate_l2_step_captions.py \
+    --from-dataset proxy_data/youcook2_seg/event_logic/data/l2_event_logic_raw.jsonl \
+    --output proxy_data/youcook2_seg/event_logic/data/l2_step_captions.jsonl \
     --api-base http://localhost:8000/v1 \
     --model Qwen2.5-VL-72B-Instruct \
     --workers 8
 
 # Step 2: 构造 T→V 训练数据
-python proxy_data/event_logic/build_l2_event_logic_t2v.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic_t2v.py \
     --annotation-dir  $L2_ANNOTATION_DIR \
     --clips-dir       $L2_CLIPS_DIR \
     --frames-dir      $L2_FRAMES_DIR \
-    --caption-jsonl   proxy_data/event_logic/data/l2_step_captions.jsonl \
-    --output          proxy_data/event_logic/data/l2_event_logic_t2v.jsonl \
+    --caption-jsonl   proxy_data/youcook2_seg/event_logic/data/l2_step_captions.jsonl \
+    --output          proxy_data/youcook2_seg/event_logic/data/l2_event_logic_t2v.jsonl \
     --seed 42 --shuffle
 ```
 
@@ -413,7 +412,7 @@ cd /path/to/EasyR1
 # 每个视频生成一个 clip_key（格式: {video_id}_{start}_{end}）
 
 # ==== Step 2: 抽帧 ====
-python proxy_data/youcook2_seg_annotation/extract_frames.py \
+python proxy_data/youcook2_seg/youcook2_seg_annotation/extract_frames.py \
     --video-dir /path/to/new_videos \
     --output-dir $L2_FRAMES_DIR \
     --fps 1.0 \
@@ -421,7 +420,7 @@ python proxy_data/youcook2_seg_annotation/extract_frames.py \
 
 # ==== Step 3: 逐层 VLM 标注（L1 → L2 → L3）====
 # L1: 宏观阶段划分
-python proxy_data/youcook2_seg_annotation/annotate.py \
+python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
     --frames-dir $L2_FRAMES_DIR \
     --output-dir $L2_ANNOTATION_DIR \
     --level 1 \
@@ -430,7 +429,7 @@ python proxy_data/youcook2_seg_annotation/annotate.py \
     --workers 2
 
 # L2: 事件细分（在 L1 基础上）
-python proxy_data/youcook2_seg_annotation/annotate.py \
+python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
     --frames-dir $L2_FRAMES_DIR \
     --output-dir $L2_ANNOTATION_DIR \
     --level 2 \
@@ -439,7 +438,7 @@ python proxy_data/youcook2_seg_annotation/annotate.py \
     --workers 2
 
 # L3: 原子动作 grounding（在 L2 基础上）
-python proxy_data/youcook2_seg_annotation/annotate.py \
+python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
     --frames-dir $L2_FRAMES_DIR \
     --output-dir $L2_ANNOTATION_DIR \
     --level 3 \
@@ -448,27 +447,27 @@ python proxy_data/youcook2_seg_annotation/annotate.py \
     --workers 2
 
 # ==== Step 4: 截取 L2 视频窗口片段 ====
-python proxy_data/youcook2_seg_annotation/prepare_clips.py \
+python proxy_data/youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
     --input  $L2_ANNOTATION_DIR/l2_dataset.jsonl \
     --output $L2_ANNOTATION_DIR/l2_dataset_clipped.jsonl \
     --clip-dir $L2_CLIPS_DIR \
     --workers 4
 
 # ==== Step 5: 构造 Event Logic 训练数据 ====
-python proxy_data/event_logic/build_l2_event_logic.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
     --annotation-dir $L2_ANNOTATION_DIR \
     --clips-dir      $L2_CLIPS_DIR \
     --frames-dir     $L2_FRAMES_DIR \
-    --output         proxy_data/event_logic/data/l2_event_logic_raw.jsonl \
+    --output         proxy_data/youcook2_seg/event_logic/data/l2_event_logic_raw.jsonl \
     --add-per-video 2 --replace-per-video 2 --sort-per-video 1 \
     --seed 42 --shuffle
 
 # ==== Step 6 (可选): AI 因果过滤 ====
-python proxy_data/event_logic/build_l2_event_logic.py \
+python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
     --annotation-dir $L2_ANNOTATION_DIR \
     --clips-dir      $L2_CLIPS_DIR \
     --frames-dir     $L2_FRAMES_DIR \
-    --output         proxy_data/event_logic/data/l2_event_logic_filtered.jsonl \
+    --output         proxy_data/youcook2_seg/event_logic/data/l2_event_logic_filtered.jsonl \
     --filter \
     --api-base https://api.novita.ai/v3/openai \
     --model qwen/qwen2.5-vl-72b-instruct \

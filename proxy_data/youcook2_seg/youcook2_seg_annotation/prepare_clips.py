@@ -3,10 +3,11 @@
 prepare_clips.py — Build EasyR1-ready video inputs for all three levels.
 
 For each L1 record:
-  - Read warped_mapping (already subsampled to ≤256 frames by build_dataset.py)
-  - Collect the corresponding 1fps JPEG frames from the frame directory
-  - Concatenate them (1s per frame) into a synthetic mp4 via ffmpeg concat demuxer
-  - The resulting video has exactly M frames → warped frame index i = video frame i
+  - Re-encode the source video at a fixed frame rate (default 1 fps) via ffmpeg.
+  - The resulting video preserves real timestamps, so the model sees a temporally
+    faithful but low-fps version of the full clip.
+  - Output name: {clip_key}_L1_{fps}fps.mp4
+  - Source video is read from metadata["source_video_path"] (set by build_hier_data.py).
 
 For each L2 record:
   - Extract [window_start_sec, window_end_sec] from the source video via ffmpeg
@@ -22,7 +23,8 @@ Usage:
         --input  datasets/youcook2_hier_L1_train.jsonl \
         --output datasets/youcook2_hier_L1_train_clipped.jsonl \
         --clip-dir /path/to/clip_output_dir \
-        --workers 8
+        --workers 8 \
+        --l1-fps 1
 """
 
 import argparse
@@ -31,7 +33,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -39,66 +40,53 @@ sys.path.insert(0, str(Path(__file__).parent))
 from prompts import get_level2_train_prompt
 
 
-def _ffmpeg_concat_frames(frame_paths: list[Path], dst: Path) -> None:
-    """Create a 1fps video from an ordered list of JPEG frames via ffmpeg concat demuxer.
+def _ffmpeg_fps_resample(src: str, dst: Path, fps: int = 1) -> None:
+    """Re-encode *src* at *fps* frames per second and save to *dst*.
 
-    Each frame is shown for exactly 1 second, so warped frame index i = video frame i.
-    The concat demuxer handles non-consecutive frame selections correctly.
+    Preserves real timestamps so the model sees a temporally faithful but
+    low-fps version of the full clip.  This replaces the old warped-JPEG-concat
+    approach for L1 records.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
-    # Build concat file: each entry gets `duration 1`; last entry repeated without duration
-    # (ffmpeg concat demuxer requirement for accurate last-frame duration)
-    lines: list[str] = []
-    for p in frame_paths:
-        lines.append(f"file '{p.resolve()}'")
-        lines.append("duration 1")
-    lines.append(f"file '{frame_paths[-1].resolve()}'")
-
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt", dir=dst.parent)
-    try:
-        with os.fdopen(tmp_fd, "w") as f:
-            f.write("\n".join(lines) + "\n")
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0", "-i", tmp_path,
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            str(dst),
-        ]
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg concat failed for {dst}:\n"
-                + result.stderr.decode(errors="replace")
-            )
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", src,
+        "-vf", f"fps={fps}",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        str(dst),
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg fps-resample failed for {src}:\n"
+            + result.stderr.decode(errors="replace")
+        )
 
 
-def _process_l1(record: dict, clip_dir: Path) -> dict:
-    """Assemble a synthetic video from the warped-selected 1fps frames for L1.
+def _process_l1(record: dict, clip_dir: Path, fps: int = 1) -> dict:
+    """Re-encode the L1 source video at *fps* frames per second.
 
-    warped_mapping (already subsampled to ≤256 in build_dataset.py) maps
-    warped_idx 1..M → real_sec.  Each frame is stored as {real_sec:04d}.jpg
-    inside frame_dir.  The output video has exactly M frames at 1fps, so the
-    model's i-th frame exactly corresponds to warped index i.
+    The source video path is read from ``metadata["source_video_path"]``,
+    which is set by ``build_hier_data.py``.  This replaces the old approach
+    of concatenating warped JPEG frames into a synthetic MP4.
+
+    Output name: ``{clip_key}_L1_{fps}fps.mp4``
     """
-    meta = record["metadata"]
+    meta     = record["metadata"]
     clip_key = meta["clip_key"]
-    mapping  = meta["warped_mapping"]
-    frame_dir = Path(meta["frame_dir"])
+    fps      = meta.get("l1_fps", fps)
 
-    out_name = f"{clip_key}_L1_warped{len(mapping)}f.mp4"
+    # source_video_path is always the original full clip, not a prior output
+    src_video = meta.get("source_video_path") or record["videos"][0]
+
+    out_name = f"{clip_key}_L1_{fps}fps.mp4"
     out_path = clip_dir / out_name
 
     if not out_path.exists():
-        frame_paths = [frame_dir / f"{e['real_sec']:04d}.jpg" for e in mapping]
-        _ffmpeg_concat_frames(frame_paths, out_path)
+        _ffmpeg_fps_resample(src_video, out_path, fps)
 
     rec = dict(record)
-    rec["videos"]   = [str(out_path)]
+    rec["videos"] = [str(out_path)]
     return rec
 
 
@@ -191,10 +179,11 @@ def main() -> None:
         description="Extract sub-clips for L2/L3 records and normalize timestamps",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input",    required=True, help="Input JSONL (L2 or L3 from build_dataset.py)")
+    parser.add_argument("--input",    required=True, help="Input JSONL (from build_hier_data.py)")
     parser.add_argument("--output",   required=True, help="Output JSONL with updated videos/timestamps")
     parser.add_argument("--clip-dir", required=True, help="Directory to write extracted video clips")
     parser.add_argument("--workers",  type=int, default=4, help="Parallel ffmpeg workers")
+    parser.add_argument("--l1-fps",   type=int, default=1, help="Frame rate for L1 fps-resampled clips (default: 1)")
     parser.add_argument("--dry-run",  action="store_true", help="Skip ffmpeg, only rewrite JSONL (clips must exist)")
     parser.add_argument("--overwrite", action="store_true", help="Re-run even if output JSONL already exists")
     args = parser.parse_args()
@@ -226,7 +215,12 @@ def main() -> None:
     if args.dry_run:
         print("DRY RUN: skipping ffmpeg")
 
-    process_fn = {1: _process_l1, 2: _process_l2, 3: _process_l3}[level]
+    l1_fps = args.l1_fps
+    process_fn = {
+        1: lambda rec, d: _process_l1(rec, d, fps=l1_fps),
+        2: _process_l2,
+        3: _process_l3,
+    }[level]
 
     done = skipped = errors = 0
     results: list[tuple[int, dict | Exception]] = []
@@ -238,7 +232,8 @@ def main() -> None:
                 # Patch the video path only, skip ffmpeg
                 meta = rec["metadata"]
                 if level == 1:
-                    name = f"{meta['clip_key']}_L1_warped{meta['n_warped_frames']}f.mp4"
+                    fps = meta.get("l1_fps", args.l1_fps)
+                    name = f"{meta['clip_key']}_L1_{fps}fps.mp4"
                 elif level == 2:
                     name = f"{meta['clip_key']}_L2_w{meta['window_start_sec']}_{meta['window_end_sec']}.mp4"
                 else:

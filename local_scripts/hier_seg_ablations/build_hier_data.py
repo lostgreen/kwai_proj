@@ -31,12 +31,14 @@ import random
 import sys
 from pathlib import Path
 
-# 添加 repo root 到 sys.path 以便 import prompts
+# 添加 repo root 到 sys.path 以便 import prompts + shared
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-PROMPTS_DIR = os.path.join(REPO_ROOT, "proxy_data", "youcook2_seg_annotation")
-if PROMPTS_DIR not in sys.path:
-    sys.path.insert(0, PROMPTS_DIR)
+PROMPTS_DIR = os.path.join(REPO_ROOT, "proxy_data", "youcook2_seg", "youcook2_seg_annotation")
+PROXY_DATA_DIR = os.path.join(REPO_ROOT, "proxy_data")
+for _p in (PROMPTS_DIR, PROXY_DATA_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from prompts import (
     get_level1_train_prompt_temporal,
@@ -44,15 +46,18 @@ from prompts import (
     get_level3_query_prompt,
     get_level3_seg_prompt,
 )
-
-
-# =====================================================================
-# 常量
-# =====================================================================
-L2_WINDOW_SIZE = 128
-L2_STRIDE = 64
-L3_MAX_CLIP_SEC = 128
-L3_PADDING = 5
+from shared.seg_source import (
+    load_annotations,
+    generate_sliding_windows,
+    compute_l3_clip as _compute_l3_clip,
+    get_l1_clip_path,
+    get_l2_clip_path,
+    get_l3_clip_path,
+    L2_WINDOW_SIZE,
+    L2_STRIDE,
+    L3_MAX_CLIP_SEC,
+    L3_PADDING,
+)
 
 PROBLEM_TYPES = {
     "L1": "temporal_seg_hier_L1",
@@ -63,28 +68,7 @@ PROBLEM_TYPES = {
 
 
 # =====================================================================
-# 公用: 滑窗生成
-# =====================================================================
-def generate_sliding_windows(
-    total_duration: float,
-    window_size: int = L2_WINDOW_SIZE,
-    stride: int = L2_STRIDE,
-) -> list[tuple[int, int]]:
-    windows = []
-    start = 0
-    total = int(total_duration)
-    while start < total:
-        end = min(start + window_size, total)
-        if end - start >= stride // 2:
-            windows.append((start, end))
-        if end >= total:
-            break
-        start += stride
-    return windows
-
-
-# =====================================================================
-# 公用: JSONL 写入
+# JSONL 写入
 # =====================================================================
 def write_jsonl(records: list[dict], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -94,13 +78,17 @@ def write_jsonl(records: list[dict], path: str) -> None:
 
 
 # =====================================================================
-# L1: Macro Phase Segmentation (时间戳模式)
+# L1: Macro Phase Segmentation (全视频 fps 重采样，时间戳模式)
 # =====================================================================
-def build_l1_records(ann: dict) -> list[dict]:
+def build_l1_records(
+    ann: dict,
+    clip_dir_l1: str = "",
+    l1_fps: int = 1,
+) -> list[dict]:
     """从标注 JSON 构建 L1 训练记录 (基于真实时间戳)。
 
-    直接读取 level1.macro_phases[*].start_time / end_time。
-    使用原始视频全长。
+    视频输入: 原始视频以 l1_fps 帧率重采样后的 MP4 (由 prepare_clips.py 生成)。
+    当 clip_dir_l1 为空时，videos 指向原始源视频 (可后续由 prepare_clips.py 处理)。
     """
     l1 = ann.get("level1")
     if not l1 or l1.get("_parse_error"):
@@ -114,7 +102,7 @@ def build_l1_records(ann: dict) -> list[dict]:
     if not phases:
         return []
 
-    video_path = ann.get("source_video_path") or ann.get("video_path", "")
+    source_video = ann.get("source_video_path") or ann.get("video_path", "")
     clip_key = ann.get("clip_key", "")
     duration = int(clip_duration)
 
@@ -128,7 +116,6 @@ def build_l1_records(ann: dict) -> list[dict]:
         st, et = int(st), int(et)
         if st >= et or st < 0:
             continue
-        # 裁剪到视频边界
         st = max(0, st)
         et = min(duration, et)
         if st < et:
@@ -136,6 +123,12 @@ def build_l1_records(ann: dict) -> list[dict]:
 
     if not spans:
         return []
+
+    # 确定视频路径: 优先用 fps 重采样 clip，否则用源视频
+    if clip_dir_l1:
+        vp = get_l1_clip_path(clip_key, clip_dir_l1, fps=l1_fps)
+    else:
+        vp = source_video
 
     prompt = (
         "Watch the following cooking video clip carefully:\n<video>\n\n"
@@ -147,13 +140,15 @@ def build_l1_records(ann: dict) -> list[dict]:
         "messages": [{"role": "user", "content": prompt}],
         "prompt": prompt,
         "answer": answer,
-        "videos": [video_path] if video_path else [],
+        "videos": [vp] if vp else [],
         "data_type": "video",
         "problem_type": PROBLEM_TYPES["L1"],
         "metadata": {
             "clip_key": clip_key,
             "clip_duration_sec": clip_duration,
             "level": 1,
+            "l1_fps": l1_fps,
+            "source_video_path": source_video,  # 供 prepare_clips.py 使用
             "n_phases": len(spans),
             "source": "annotation_json",
         },
@@ -167,10 +162,13 @@ def build_l2_records(
     ann: dict,
     clip_dir_l2: str = "",
     min_events: int = 2,
+    window_size: int = L2_WINDOW_SIZE,
+    stride: int = L2_STRIDE,
 ) -> list[dict]:
     """从标注 JSON 构建 L2 训练记录。
 
-    128s 滑窗(stride=64s)，裁剪事件到窗口边界，直接转为 0-based。
+    window_size > 0: 按 (window_size, stride) 滑窗切分，裁剪事件到窗口边界，归零。
+    window_size <= 0: 不切窗，直接以完整 clip 作为单一 "窗口" ([0, clip_duration])。
     """
     l2 = ann.get("level2")
     if not l2 or l2.get("_parse_error"):
@@ -183,7 +181,12 @@ def build_l2_records(
     events = l2.get("events", [])
     clip_key = ann.get("clip_key", "")
     video_path = ann.get("source_video_path") or ann.get("video_path", "")
-    windows = generate_sliding_windows(clip_duration)
+
+    # 生成窗口列表：-1 / 0 表示不切窗，直接用完整 clip
+    if window_size > 0:
+        windows = generate_sliding_windows(clip_duration, window_size, stride)
+    else:
+        windows = [(0, int(clip_duration))]
 
     records = []
     for ws, we in windows:
@@ -212,7 +215,7 @@ def build_l2_records(
 
         # 确定视频路径
         if clip_dir_l2:
-            vp = os.path.join(clip_dir_l2, f"{clip_key}_L2_w{ws}_{we}.mp4")
+            vp = get_l2_clip_path(clip_key, ws, we, clip_dir_l2)
         else:
             vp = video_path
 
@@ -241,27 +244,6 @@ def build_l2_records(
         })
 
     return records
-
-
-# =====================================================================
-# L3 公用: 计算 event clip 窗口 + 归零
-# =====================================================================
-def _compute_l3_clip(
-    ev_start: int,
-    ev_end: int,
-    clip_duration: int,
-    padding: int = L3_PADDING,
-    max_clip: int = L3_MAX_CLIP_SEC,
-) -> tuple[int, int, int]:
-    """返回 (clip_start, clip_end, duration)。"""
-    clip_start = max(0, ev_start - padding)
-    clip_end = min(clip_duration, ev_end + padding)
-    if clip_end - clip_start > max_clip:
-        excess = (clip_end - clip_start) - max_clip
-        trim_start = min(excess // 2, ev_start - clip_start)
-        clip_start += trim_start
-        clip_end = clip_start + max_clip
-    return clip_start, clip_end, clip_end - clip_start
 
 
 # =====================================================================
@@ -330,7 +312,7 @@ def build_l3_records(
 
         # 确定视频路径
         if clip_dir_l3:
-            vp = os.path.join(clip_dir_l3, f"{clip_key}_L3_ev{event_id}_{clip_start}_{clip_end}.mp4")
+            vp = get_l3_clip_path(clip_key, event_id, clip_start, clip_end, clip_dir_l3)
         else:
             vp = video_path
 
@@ -430,7 +412,7 @@ def build_l3_seg_records(
             spans.append([st, et])
 
         if clip_dir_l3:
-            vp = os.path.join(clip_dir_l3, f"{clip_key}_L3_ev{event_id}_{clip_start}_{clip_end}.mp4")
+            vp = get_l3_clip_path(clip_key, event_id, clip_start, clip_end, clip_dir_l3)
         else:
             vp = video_path
 
@@ -474,6 +456,10 @@ def main():
     )
     parser.add_argument("--annotation-dir", required=True,
                         help="标注 JSON 目录 (annotations/*.json)")
+    parser.add_argument("--clip-dir-l1", default="",
+                        help="L1 fps-重采样 clips 目录 (clips/L1/), 留空则用原始视频路径")
+    parser.add_argument("--l1-fps", type=int, default=1,
+                        help="L1 视频重采样帧率 (默认: 1fps)")
     parser.add_argument("--clip-dir-l2", default="",
                         help="L2 clips 目录 (clips/L2/), 留空则用原始视频路径")
     parser.add_argument("--clip-dir-l3", default="",
@@ -490,6 +476,10 @@ def main():
                         help="总验证集样本数")
     parser.add_argument("--train-per-level", type=int, default=-1,
                         help="每层最多 train 条数 (-1 = 无限制)")
+    parser.add_argument("--l2-window-size", type=int, default=L2_WINDOW_SIZE,
+                        help="L2 滑窗大小（秒）。设为 -1 则不切窗，直接用完整 clip（默认: 128）")
+    parser.add_argument("--l2-stride", type=int, default=L2_STRIDE,
+                        help="L2 滑窗步长（秒），仅在 --l2-window-size > 0 时生效（默认: 64）")
     parser.add_argument("--min-events", type=int, default=2,
                         help="L2 每窗口最少事件数")
     parser.add_argument("--min-actions", type=int, default=3,
@@ -505,43 +495,24 @@ def main():
         print(f"ERROR: annotation-dir not found: {ann_dir}")
         return
 
-    ann_files = sorted(ann_dir.glob("*.json"))
-    print(f"Found {len(ann_files)} annotation files")
-
-    # 过滤只保留完整标注
-    if args.complete_only:
-        filtered = []
-        for af in ann_files:
-            try:
-                with open(af, encoding="utf-8") as f:
-                    d = json.load(f)
-                has_l1 = d.get("level1") and not d["level1"].get("_parse_error")
-                has_l2 = d.get("level2") and not d["level2"].get("_parse_error")
-                has_l3 = d.get("level3") and not d["level3"].get("_parse_error")
-                if has_l1 and has_l2 and has_l3:
-                    filtered.append(af)
-            except Exception:
-                pass
-        print(f"  --complete-only: {len(filtered)} clips have L1+L2+L3")
-        ann_files = filtered
+    # 使用 shared 统一加载接口
+    ann_list = load_annotations(ann_dir, complete_only=args.complete_only)
+    print(f"Found {len(ann_list)} annotation files"
+          + (" (complete-only filtered)" if args.complete_only else ""))
 
     # 按层级收集记录
     level_records: dict[str, list[dict]] = {lv: [] for lv in args.levels}
     stats = {lv: {"clips": 0, "records": 0} for lv in args.levels}
 
-    for af in ann_files:
-        try:
-            with open(af, encoding="utf-8") as f:
-                ann = json.load(f)
-        except Exception as e:
-            print(f"  SKIP (parse error): {af.name}: {e}")
-            continue
-
+    for ann in ann_list:
         for lv in args.levels:
             if lv == "L1":
-                recs = build_l1_records(ann)
+                recs = build_l1_records(ann, args.clip_dir_l1, args.l1_fps)
             elif lv == "L2":
-                recs = build_l2_records(ann, args.clip_dir_l2, args.min_events)
+                recs = build_l2_records(
+                    ann, args.clip_dir_l2, args.min_events,
+                    args.l2_window_size, args.l2_stride,
+                )
             elif lv == "L3":
                 recs = build_l3_records(ann, args.clip_dir_l3, args.min_actions, args.l3_order)
             elif lv == "L3_seg":
