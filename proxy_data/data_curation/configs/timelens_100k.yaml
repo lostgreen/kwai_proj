@@ -1,0 +1,39 @@
+# TimeLens-100K 筛选配置
+
+source:
+  name: timelens_100k
+  remote_path: /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K
+  annotation_file: timelens-100k.jsonl
+  video_root: video_shards/    # 视频路径 = video_root + video_path 字段
+
+# 域及视频存放位置
+domains:
+  - cosmo_cap          # 产品演示/教程类 YouTube — 9549 条
+  - internvid_vtime    # InternVid 时序标注 — 4651 条
+  - didemo             # DiDeMo 片段检索 — 2955 条
+  - queryd             # QuerYD 时序定位 — 1518 条
+  - hirest_step        # ★ HiREST 层次步骤标注 — 387 条（优先级最高）
+  - hirest_grounding   # HiREST 时序 grounding — 249 条
+  - hirest             # HiREST 基础 — 157 条
+
+# 文本筛选阈值
+# （TimeLens 数据质量已较高：97% 有 ≥5 事件，70% 在 60-240s 范围内）
+text_filter:
+  min_duration_sec: 60
+  max_duration_sec: 240
+  min_events: 5         # events 列表长度 ≥ 5
+  min_event_span: 2.0   # 每个 event 的 span 至少 2s（过滤噪声点）
+
+# 领域均衡
+domain_balance:
+  strategy: proportional_cap
+  max_per_domain: 3000
+  min_per_domain: 50    # hirest 系列较小，全部保留
+  priority_domains:     # 优先保留的域（不受 max_per_domain 限制）
+    - hirest_step
+    - hirest_grounding
+    - hirest
+
+# 输出
+output:
+  results_dir: sources/timelens_100k/results
