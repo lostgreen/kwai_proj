@@ -272,8 +272,10 @@ _TASK_REWARD_DISPATCH = {
     "aot_t2v":              _choice_reward,
     "aot_3way_v2t":         _choice_reward,
     "aot_3way_t2v":         _choice_reward,
-    "seg_aot_event_shuffle":  _choice_reward,
-    "seg_aot_action_reverse": _choice_reward,
+    "seg_aot_action_v2t":     _choice_reward,
+    "seg_aot_action_t2v":     _choice_reward,
+    "seg_aot_event_v2t":      _choice_reward,
+    "seg_aot_event_t2v":      _choice_reward,
     "sort":         _sort_reward,
     "temporal_seg": _temporal_seg_reward,
     "temporal_grounding": None,  # 特殊处理：需要 metadata
