@@ -36,6 +36,40 @@ domain_balance:
   max_per_domain: 2000        # 单个 domain 上限
   min_per_domain: 100         # 单个 domain 下限（不足则全部保留）
 
+# ── 两阶段 LLM 筛选 ──
+
+# Stage A: L2 粒度粗筛
+# 目的: 快速判断 ET 的 tgt 事件粒度是否适合作为 L2
+stage_a:
+  model: pa/gmn-2.5-pr
+  api_base: https://api.novita.ai/v3/openai
+  workers: 8
+  sample_n: 200                  # 抽样先跑 200 条看分布
+  # 硬规则阈值（覆盖 LLM decision）
+  keep_rules:
+    granularity_label: mostly_L2_like
+    l2_fit_score_min: 4
+    granularity_issue: good
+    mixed_ratio_estimate: low
+  reject_rules:
+    granularity_labels:           # 任一命中即 reject
+      - mostly_L1_like
+      - mostly_L3_like
+    l2_fit_score_max: 2
+
+# Stage B: 层次潜力精筛
+# 目的: 对 Stage A keep 的样本评估 L1/L3 扩展潜力和时序结构
+stage_b:
+  model: pa/gmn-2.5-pr
+  api_base: https://api.novita.ai/v3/openai
+  workers: 8
+  keep_rules:
+    overall_score_min: 4
+    all_dimensions_min: 3        # l1_potential, l3_potential, temporal_structure 均 >= 3
+  reject_rules:
+    overall_score_max: 2
+    any_dimension_max: 1         # 任一维度 <= 1 即 reject
+
 # 输出
 output:
   results_dir: sources/et_instruct_164k/results

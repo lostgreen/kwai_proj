@@ -145,6 +145,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
           <option value="L2">L2</option>
           <option value="L3">L3</option>
         </select>
+        <select id="stepFilter" onchange="onStepChange()">
+          <option value="">最佳 reward</option>
+        </select>
         <span class="meta" id="sampleCount"></span>
       </div>
     </div>
@@ -174,6 +177,7 @@ const BASE = window.location.pathname.replace(/\/[^/]*$/, '');
 let settingNames = [];
 let allSamples = [];
 let currentVideoKey = null;
+let currentStep = null; /* null = best reward, number = specific step */
 
 /* ── Utilities ── */
 function esc(s) {
@@ -198,6 +202,21 @@ async function api(path) {
   return r.json();
 }
 
+function populateStepFilter(steps) {
+  var sel = document.getElementById('stepFilter');
+  // Keep the default "最佳 reward" option, remove old step options
+  sel.innerHTML = '<option value="">\u6700\u4f73 reward</option>';
+  for (var i = 0; i < steps.length; i++) {
+    sel.innerHTML += '<option value="' + steps[i] + '">step ' + steps[i] + '</option>';
+  }
+}
+
+function onStepChange() {
+  var val = document.getElementById('stepFilter').value;
+  currentStep = val ? parseInt(val, 10) : null;
+  if (currentVideoKey) selectSample(currentVideoKey);
+}
+
 /* ── Init ── */
 async function init() {
   // Use server-injected pre-loaded data if available (no API call needed)
@@ -206,6 +225,7 @@ async function init() {
     try {
       var summary = pre.summary;
       settingNames = summary.setting_names || [];
+      populateStepFilter(summary.steps || []);
       var info = settingNames.map(function (n) {
         return n + ': ' + summary.settings[n].count;
       }).join(' \u00b7 ');
@@ -228,6 +248,7 @@ async function init() {
   try {
     var summary = await api('/api/summary');
     settingNames = summary.setting_names || [];
+    populateStepFilter(summary.steps || []);
     var info = settingNames.map(function (n) {
       return n + ': ' + summary.settings[n].count;
     }).join(' \u00b7 ');
@@ -283,7 +304,9 @@ async function selectSample(videoKey) {
   var content = document.getElementById('content');
   content.innerHTML = '<div class="empty"><span class="spin"></span></div>';
   try {
-    var data = await api('/api/sample/' + encodeURIComponent(videoKey));
+    var apiUrl = '/api/sample/' + encodeURIComponent(videoKey);
+    if (currentStep !== null) apiUrl += '?step=' + currentStep;
+    var data = await api(apiUrl);
     if (data.error) { content.innerHTML = '<div class="empty">\u672a\u627e\u5230</div>'; return; }
     renderComparison(data);
     // Async load frame thumbnails (non-blocking, optional)

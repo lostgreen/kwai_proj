@@ -34,6 +34,37 @@ domain_balance:
     - hirest_grounding
     - hirest
 
+# ── 两阶段 LLM 筛选 ──
+
+# Stage A: L2 粒度粗筛
+stage_a:
+  model: pa/gmn-2.5-pr
+  api_base: https://api.novita.ai/v3/openai
+  workers: 8
+  sample_n: 200
+  keep_rules:
+    granularity_label: mostly_L2_like
+    l2_fit_score_min: 4
+    granularity_issue: good
+    mixed_ratio_estimate: low
+  reject_rules:
+    granularity_labels:
+      - mostly_L1_like
+      - mostly_L3_like
+    l2_fit_score_max: 2
+
+# Stage B: 层次潜力精筛
+stage_b:
+  model: pa/gmn-2.5-pr
+  api_base: https://api.novita.ai/v3/openai
+  workers: 8
+  keep_rules:
+    overall_score_min: 4
+    all_dimensions_min: 3
+  reject_rules:
+    overall_score_max: 2
+    any_dimension_max: 1
+
 # 输出
 output:
   results_dir: sources/timelens_100k/results

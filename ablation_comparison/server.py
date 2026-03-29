@@ -272,6 +272,11 @@ class ComparisonStore:
         return frames
 
     def summary(self) -> dict:
+        # Collect all unique steps across all settings
+        all_steps: set[int] = set()
+        for info in self.settings.values():
+            for rec in info["records"]:
+                all_steps.add(int(rec.get("step", 0)))
         return {
             "settings": {
                 name: {"dir": info["dir"], "count": info["count"]}
@@ -279,6 +284,7 @@ class ComparisonStore:
             },
             "total_videos": len(self.video_keys),
             "setting_names": list(self.settings.keys()),
+            "steps": sorted(all_steps),
         }
 
     def list_samples(self, offset: int = 0, limit: int = 50, level_filter: str = "") -> dict:
@@ -356,8 +362,9 @@ class ComparisonStore:
                         "reward": r["reward"],
                         "step": r["step"],
                         "level": r["level"],
+                        "response": r["response"],
                     }
-                    for r in records
+                    for r in candidates
                 ],
             }
 
