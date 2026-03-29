@@ -33,46 +33,29 @@ from pathlib import Path
 def apply_richness_rules(assessment: dict) -> str:
     """Apply programmatic rules to video richness assessment.
 
-    Returns the corrected decision: "keep" | "maybe" | "reject"
+    Returns the corrected decision: "keep" | "reject"
 
     Rules:
     1. Parse error -> reject
-    2. action_density >= 3 AND temporal_flow >= 3 -> keep
-    3. action_density <= 1 -> reject
-    4. video_hierarchy_potential == "low" -> reject
-    5. Any score == 2 with potential == "medium" -> maybe
-    6. Default -> maybe
+    2. boundary_clarity >= 3 AND phase_diversity >= 3 -> keep
+    3. Otherwise -> reject
     """
     if assessment.get("_parse_error") or assessment.get("error"):
         return "reject"
 
-    action = assessment.get("action_density_score", 0)
-    state = assessment.get("state_change_score", 0)
-    temporal = assessment.get("temporal_flow_score", 0)
-    potential = assessment.get("video_hierarchy_potential", "")
+    boundary = assessment.get("boundary_clarity_score", 0)
+    diversity = assessment.get("phase_diversity_score", 0)
 
     # Ensure numeric
-    for val in [action, state, temporal]:
+    for val in [boundary, diversity]:
         if not isinstance(val, (int, float)):
-            return "maybe"
+            return "reject"
 
-    # Hard reject: monotonous or structureless
-    if action <= 1:
-        return "reject"
-    if potential == "low":
-        return "reject"
-
-    # Hard keep: rich content with temporal flow
-    if action >= 3 and temporal >= 3:
+    # Keep: clear boundaries + diverse phases
+    if boundary >= 3 and diversity >= 3:
         return "keep"
 
-    # Gray zone
-    if potential == "medium":
-        return "maybe"
-    if action == 2 or temporal == 2:
-        return "maybe"
-
-    return "maybe"
+    return "reject"
 
 
 # ── Stage A Decision Rules (DEPRECATED — kept for reference) ──

@@ -47,34 +47,34 @@ from shared.decision_rules import apply_richness_rules
 # ── Stage A Prompts — 视频内容潜力评估 ─────────────────
 
 STAGE_A_SYSTEM = """\
-You are evaluating whether a video, described by its temporal text annotations, \
-has the potential to support a 3-level hierarchical segmentation \
-(macro-phases -> tasks -> atomic actions).
+You are a data curator selecting videos for a 3-level Hierarchical Temporal \
+Segmentation task (Macro-phases L1 -> Local events L2 -> Atomic actions L3).
 
-Your goal is to assess the RICHNESS and COMPLEXITY of the underlying video, \
-NOT to judge if the current annotations are perfectly formatted. The text is \
-merely a proxy to understand what happens in the video.
+We are looking for videos that have BOTH clear action boundaries AND \
+structural diversity. The video does NOT need to be a strict instructional \
+tutorial; sports, daily life, and unstructured events are perfectly fine \
+AS LONG AS they can be naturally grouped into distinct "chapters" or \
+"macro-phases".
 
-A highly suitable video for hierarchical analysis should contain:
-1. Multi-step processes (e.g., cooking, assembling, repairing) rather than \
-a single monotonous activity (e.g., just running or talking).
-2. Meaningful state changes or tool usages.
-3. A chronological flow of distinct events.
+Criteria for a GOOD video (Keep):
+1. Clear Boundaries: The annotations describe distinct, observable actions \
+or events.
+2. Phase Diversity (Crucial): The video progresses through different themes \
+or stages (e.g., a sports video with "setup -> gameplay -> celebration", \
+or a cooking video with "prep -> cook -> serve").
 
-Do NOT reject a sample just because its text annotations are too fine-grained \
-(atomic actions) or mixed in granularity. Fine-grained annotations are \
-EXCELLENT because they can be easily grouped into higher-level phases later.
-
-ONLY REJECT IF:
-- The events are highly repetitive (e.g., "jumping", "jumping again", "jumping").
-- The events are extremely sparse or lack any sub-step structure (e.g., a \
-single broad event "playing football" covering the whole video).
-- The video appears to be a static scene or a non-procedural activity \
-without distinct phases.
+Criteria for REJECTION:
+1. Flat Repetition (Looping): The exact same type of action is repeated \
+over and over (e.g., "Person A jumps, Person B jumps, Person C jumps" OR \
+"applying cream 1, cream 2, cream 3..."). These cannot be grouped into \
+meaningful L1 macro-phases.
+2. Monolithic Activity: The entire video is essentially one continuous \
+state with no clear event boundaries (e.g., "kids dancing for 2 minutes" \
+or "a person talking to the camera the whole time").
 
 ## Examples
 
-### Example 1 — rich multi-step process (keep)
+### Example 1 — diverse phases (keep)
 
 Input:
 Video duration: 180.0s | Domain: coin | Segments: 7
@@ -87,21 +87,23 @@ Video duration: 180.0s | Domain: coin | Segments: 7
   7. [155.0s - 180.0s] Apply final protective coat
 
 Output:
-{"richness_analysis":"7 distinct woodworking steps with clear tool usage and state changes (gluing, cutting, sanding, finishing). Strong multi-phase progression.","action_density_score":5,"state_change_score":5,"temporal_flow_score":5,"video_hierarchy_potential":"high","decision":"keep"}
+{"structural_analysis":"3 clear chapters: surface prep (1-2), shaping (3-4), finishing (5-7). Each event has distinct tools and observable state changes.","boundary_clarity_score":5,"phase_diversity_score":5,"decision":"keep"}
 
-### Example 2 — monotonous talking head (reject)
+### Example 2 — flat repetition (reject)
 
 Input:
-Video duration: 150.0s | Domain: queryd | Segments: 5
-  1. [10.0s - 35.0s] A person talks about their morning routine
-  2. [40.0s - 65.0s] The same person describes their favorite food
-  3. [70.0s - 95.0s] A different topic about travel plans
-  4. [100.0s - 125.0s] Discussion of weekend hobbies
-  5. [130.0s - 150.0s] Summary and closing remarks
+Video duration: 150.0s | Domain: hacs | Segments: 6
+  1. [0.0s - 25.0s] Player A serves the ball
+  2. [25.0s - 50.0s] Player B returns the serve
+  3. [50.0s - 75.0s] Player A hits a backhand
+  4. [75.0s - 100.0s] Player B hits a forehand
+  5. [100.0s - 125.0s] Player A serves again
+  6. [125.0s - 150.0s] Player B returns another serve
 
 Output:
-{"richness_analysis":"Talking-head video with no physical actions or state changes. Topics are independent with no procedural flow.","action_density_score":1,"state_change_score":1,"temporal_flow_score":2,"video_hierarchy_potential":"low","decision":"reject"}
+{"structural_analysis":"All 6 events are the same type of action (hitting a ball back and forth). No phase transitions — just repetitive rallying with no macro-structure.","boundary_clarity_score":3,"phase_diversity_score":1,"decision":"reject"}
 
+Focus on finding videos with distinct "chapters" and clear event transitions. \
 Return ONLY valid JSON."""
 
 STAGE_A_USER = """\
@@ -112,17 +114,15 @@ Number of annotated segments: {n_events}
 Annotated segments:
 {events_text}
 
-Evaluate whether this video has rich enough content to support hierarchical \
-segmentation, based on these text annotations.
+Evaluate whether this video has clear action boundaries and structural \
+diversity suitable for hierarchical temporal segmentation.
 
 Respond with ONLY valid JSON:
 {{
-  "richness_analysis": "<1-2 sentences analyzing action diversity and hierarchy potential>",
-  "action_density_score": <1-5>,
-  "state_change_score": <1-5>,
-  "temporal_flow_score": <1-5>,
-  "video_hierarchy_potential": "high | medium | low",
-  "decision": "keep | maybe | reject"
+  "structural_analysis": "<1-2 sentences: can this video be divided into 2+ distinct chapters/phases? Any flat repetition?>",
+  "boundary_clarity_score": <1-5>,
+  "phase_diversity_score": <1-5>,
+  "decision": "keep | reject"
 }}"""
 
 
@@ -206,7 +206,7 @@ def print_stats(results: list[dict]):
         print(f"    {d}: {c} ({c/len(assessments)*100:.1f}%)")
 
     # Score distributions for each dimension
-    for field in ["action_density_score", "state_change_score", "temporal_flow_score"]:
+    for field in ["boundary_clarity_score", "phase_diversity_score"]:
         scores = [a.get(field, 0) for a in assessments if isinstance(a.get(field), (int, float))]
         if scores:
             print(f"\n  == {field} 分布 ==")
@@ -214,15 +214,6 @@ def print_stats(results: list[dict]):
                 count = sum(1 for s in scores if s >= threshold)
                 print(f"    >= {threshold}: {count} ({count/len(scores)*100:.1f}%)")
             print(f"    mean={sum(scores)/len(scores):.2f}")
-
-    # Hierarchy potential distribution
-    potentials = {}
-    for a in assessments:
-        p = a.get("video_hierarchy_potential", "unknown")
-        potentials[p] = potentials.get(p, 0) + 1
-    print(f"\n  == Video Hierarchy Potential 分布 ==")
-    for p, c in sorted(potentials.items(), key=lambda x: -x[1]):
-        print(f"    {p}: {c} ({c/len(assessments)*100:.1f}%)")
 
     # Rule override stats
     overrides = sum(1 for a in assessments if "_original_decision" in a)
