@@ -22,7 +22,20 @@ import random
 import re
 from collections import Counter
 
-from prompt_variants_v2 import PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESPONSE_LEN_HINTS
+
+def _load_prompt_module(version: str):
+    """加载 prompt 模板（V3 版本: 边界判据 + 稀疏采样感知）。"""
+    from prompt_variants_v3 import (
+        PROMPT_VARIANTS_V3 as variants,
+        VARIANT_DESCRIPTIONS_V3 as descriptions,
+        RESPONSE_LEN_HINTS,
+    )
+    return variants, descriptions, RESPONSE_LEN_HINTS
+
+
+# 默认使用 v3
+_PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "v3")
+PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESPONSE_LEN_HINTS = _load_prompt_module(_PROMPT_VERSION)
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -168,7 +181,7 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
 
 
 def main():
-    parser = argparse.ArgumentParser(description="V2 Prompt Ablation 数据准备")
+    parser = argparse.ArgumentParser(description="V2/V3 Prompt Ablation 数据准备")
     parser.add_argument(
         "--levels", nargs="+", required=True,
         choices=["L1", "L2", "L3"],
@@ -178,6 +191,12 @@ def main():
         "--variant", type=str, required=True,
         choices=["V1", "V2", "V3", "V4", "all"],
         help="Prompt 变体 (V1-V4) 或 all",
+    )
+    parser.add_argument(
+        "--prompt-version", type=str, default=None,
+        choices=["v2", "v3"],
+        help="Prompt 模板版本: v2 (语义描述) 或 v3 (边界判据+稀疏采样). "
+             "默认使用环境变量 PROMPT_VERSION 或 v2",
     )
     parser.add_argument(
         "--val-per-level", type=int, default=100,
@@ -192,6 +211,12 @@ def main():
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    # 运行时切换 prompt 版本（命令行优先于环境变量）
+    global PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESPONSE_LEN_HINTS
+    if args.prompt_version:
+        PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESPONSE_LEN_HINTS = _load_prompt_module(args.prompt_version)
+        print(f"[prepare] Using prompt version: {args.prompt_version}")
 
     rng = random.Random(args.seed)
     variants = ["V1", "V2", "V3", "V4"] if args.variant == "all" else [args.variant]
