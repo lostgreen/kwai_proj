@@ -171,13 +171,17 @@ function settingSegClass(name) {
   return 'seg-s' + (i >= 0 ? i % 8 : 0);
 }
 async function api(path) {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(r.statusText);
+  var url = window.location.origin + path;
+  console.log('[ablation] fetch:', url);
+  var r = await fetch(url, {cache: 'no-store'});
+  console.log('[ablation] response:', r.status, r.statusText, 'url:', r.url);
+  if (!r.ok) throw new Error(r.status + ' ' + r.statusText + ' (url: ' + r.url + ')');
   return r.json();
 }
 
 /* ── Init ── */
 async function init() {
+  console.log('[ablation] init, origin:', window.location.origin, 'href:', window.location.href);
   try {
     const summary = await api('/api/summary');
     settingNames = summary.setting_names || [];
@@ -189,6 +193,7 @@ async function init() {
     await loadSamples();
   } catch (e) {
     document.getElementById('headerInfo').textContent = '\u52a0\u8f7d\u5931\u8d25: ' + e.message;
+    console.error('[ablation] init failed:', e);
   }
 }
 
