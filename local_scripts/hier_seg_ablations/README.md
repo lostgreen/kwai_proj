@@ -110,7 +110,7 @@ bash local_scripts/hier_seg_ablations/exp7_all_mixed.sh
 
 > **新数据流 (推荐)**: `build_hier_data.py` 可直接从 annotation JSON 一步构建所有层级数据，
 > 取代旧的 5 步流水线。Prompt 消融实验 (Track 2 V2 系统) 已迁移为先用 `build_hier_data.py`
-> 构建基础数据，再用 `prepare_v2_ablation_data.py` 做 prompt variant 替换。
+> 构建基础数据，再用 `prepare_prompt_data.py` 做 prompt variant 替换。
 
 ---
 
@@ -146,7 +146,7 @@ local_scripts/hier_seg_ablations/
 ├── prompt_ablation/
 │   ├── exp_v2_ablation.sh             # 单变体训练入口 (VARIANT=V1..V4, LEVELS=L1 L2 L3)
 │   ├── run_v2_ablation.sh             # 批量运行 V1-V4
-│   ├── prepare_v2_ablation_data.py    # Prompt variant 替换 (从 build_hier_data.py 输出读)
+│   ├── prepare_prompt_data.py         # Prompt variant 替换 (从 build_hier_data.py 输出读)
 │   └── prompt_variants_v2.py          # V1-V4 prompt 模板 (domain-agnostic, L1 时间戳模式)
 │
 │ ── Chain-of-Segment (V2 = ground-seg) ──
@@ -220,7 +220,7 @@ VARIANT=V2 LEVELS="L2" bash local_scripts/hier_seg_ablations/prompt_ablation/exp
 
 - V3/V4 (CoT) 变体会自动将 `MAX_RESPONSE_LEN` 设为 1024（`<think>` 需要额外 token）
 - GT answer 仍为纯 `<events>` 格式（不含 `<think>`），reward 只看 `<events>` 标签
-- 数据流: `build_hier_data.py` 先构建基础数据 → `prepare_v2_ablation_data.py` 替换 prompt variant
+- 数据流: `build_hier_data.py` 先构建基础数据 → `prepare_prompt_data.py` 替换 prompt variant
 - L3 使用自由分割模式（`L3_seg`），三层统一用 F1-IoU reward
 
 ---
@@ -294,7 +294,7 @@ bash local_scripts/hier_seg_ablations/exp8_chain_L2L3.sh
 ```
 YouCook2 原始标注 JSON
     ↓ (一步构建)
-    ├── build_hier_data.py + prepare_v2_ablation_data.py → Track 2: Prompt 消融数据 (V1-V4)
+    ├── build_hier_data.py + prepare_prompt_data.py → Track 2: Prompt 消融数据 (V1-V4)
     ├── prepare_data.py (从 _clipped.jsonl 读)          → Track 1: 层级组合数据
     └── chain_seg_ablation/build_chain_seg_data.py       → Track 3: Chain-Seg 数据
     ↓

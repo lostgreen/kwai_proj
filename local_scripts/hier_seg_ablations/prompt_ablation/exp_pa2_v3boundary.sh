@@ -54,10 +54,9 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
   # Step 2: 替换为 V3 prompt V2 变体 (边界判据 + 稀疏采样 + 硬规则)
   echo "[prompt_ablation] Step 2: Applying V3-prompt V2 variant (boundary-criterion + sparse-aware) ..."
   # shellcheck disable=SC2086
-  python3 "${_EXP_DIR}/prepare_v2_ablation_data.py" \
+  python3 "${_EXP_DIR}/prepare_prompt_data.py" \
     --levels ${LEVELS} \
     --variant V2 \
-    --prompt-version v3 \
     --val-per-level "${VAL_PER_LEVEL}" \
     --train-per-level "${TRAIN_PER_LEVEL}" \
     --data-root "${BASE_DATA_DIR}" \

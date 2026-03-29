@@ -16,7 +16,7 @@ prompt_ablation/
   exp_pa2_v3boundary.sh         PA2: V3 边界判据 prompt 实验
   run_prompt_ablation.sh        批量运行 PA1/PA2
   prompt_variants_v3.py         V3 prompt 模板定义（L2/L3 × V1-V4，共 8 个）
-  prepare_v2_ablation_data.py   数据准备脚本（替换 prompt + 生成 train/val）
+  prepare_prompt_data.py             数据准备脚本（替换 prompt + 生成 train/val）
   prompt_design.md              设计文档（消融逻辑、术语映射）
   README.md                     本文档
 ```
@@ -85,7 +85,7 @@ prompt_ablation/
                     └────────┬───────────┬───────────────┘
                              │           │
                     PA1 直接采样    PA2 替换 prompt
-                    (保留原始)     (prepare_v2_ablation_data.py)
+                    (保留原始)     (prepare_prompt_data.py)
                              │           │
                     ┌────────▼──┐  ┌─────▼──────────────┐
                     │ PA1 data  │  │ PA2 data            │
@@ -124,7 +124,7 @@ PA1 从基础数据中按 `problem_type` 分层采样（每层 400 train + 100 v
 
 ### Step 2b: PA2 — 替换为 V3 prompt
 
-`prepare_v2_ablation_data.py` 读取基础数据:
+`prepare_prompt_data.py` 读取基础数据:
 1. 提取每条记录中的 `duration` 参数
 2. 用 `prompt_variants_v3.py` V2 模板替换 prompt（`.format(duration=N)`）
 3. 输出新的 train/val JSONL
@@ -194,16 +194,15 @@ bash local_scripts/hier_seg_ablations/prompt_ablation/exp_pa2_v3boundary.sh
 脚本会自动:
 1. 调用 `build_hier_data.py` 从标注 JSON 生成基础 JSONL（若不存在）
 2. PA1: 从基础数据采样，保留原始 prompt
-3. PA2: 调用 `prepare_v2_ablation_data.py` 替换为 V3 V2 prompt
+3. PA2: 调用 `prepare_prompt_data.py` 替换为 V3 V2 prompt
 4. 调用 `launch_train.sh` 启动 `verl.trainer.main` 训练
 
 ### 3. 只准备数据（不训练）
 
 ```bash
-python3 local_scripts/hier_seg_ablations/prompt_ablation/prepare_v2_ablation_data.py \
+python3 local_scripts/hier_seg_ablations/prompt_ablation/prepare_prompt_data.py \
   --levels L2 L3 \
   --variant V2 \
-  --prompt-version v3 \
   --val-per-level 100 \
   --train-per-level 400 \
   --data-root /path/to/base_data \

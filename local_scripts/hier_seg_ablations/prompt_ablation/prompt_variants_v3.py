@@ -421,7 +421,7 @@ PROMPT_VARIANTS_V3 = {
     "L3": {"V1": L3_V1, "V2": L3_V2, "V3": L3_V3, "V4": L3_V4},
 }
 
-# 向后兼容: 让 prepare_v2_ablation_data.py 也能直接引用 V3 版本
+# 向后兼容: 让 prepare_prompt_data.py 也能直接引用 V3 版本
 PROMPT_VARIANTS_V2 = PROMPT_VARIANTS_V3
 
 VARIANT_DESCRIPTIONS_V3 = {

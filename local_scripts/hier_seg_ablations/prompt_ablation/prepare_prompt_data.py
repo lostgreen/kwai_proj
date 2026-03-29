@@ -1,18 +1,10 @@
 """
-prepare_v2_ablation_data.py — V2 通用 Prompt Ablation 数据准备
+prepare_prompt_data.py — Prompt Ablation 数据准备
 
-从 build_hier_data.py 的输出（合并的 train.jsonl / val.jsonl）中读取，
-替换 prompt 为 V2 版本变体（V1-V4）。
-
-- L3: 若为 grounding 格式 (problem_type=temporal_seg_hier_L3)，转为自由分割格式 (temporal_seg_hier_L3_seg)
-- answer / videos / metadata 保持不变
+从 build_hier_data.py 的输出中读取，替换 prompt 为 V3 版本变体（V1-V4）。
 
 用法:
-    # 从 build_hier_data.py 输出读取 (推荐)
-    python prepare_v2_ablation_data.py --levels L1 L2 L3 --variant V1 --data-root /path/to/base --output-dir ./data/v2_V1
-
-    # All four variants
-    python prepare_v2_ablation_data.py --levels L1 L2 L3 --variant all --data-root /path/to/base --output-dir ./data/v2_ablation
+    python prepare_prompt_data.py --levels L2 L3 --variant V2 --data-root /path/to/base --output-dir ./data/pa2
 """
 
 import argparse
@@ -22,20 +14,11 @@ import random
 import re
 from collections import Counter
 
-
-def _load_prompt_module(version: str):
-    """加载 prompt 模板（V3 版本: 边界判据 + 稀疏采样感知）。"""
-    from prompt_variants_v3 import (
-        PROMPT_VARIANTS_V3 as variants,
-        VARIANT_DESCRIPTIONS_V3 as descriptions,
-        RESPONSE_LEN_HINTS,
-    )
-    return variants, descriptions, RESPONSE_LEN_HINTS
-
-
-# 默认使用 v3
-_PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "v3")
-PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESPONSE_LEN_HINTS = _load_prompt_module(_PROMPT_VERSION)
+from prompt_variants_v3 import (
+    PROMPT_VARIANTS_V3 as PROMPT_VARIANTS,
+    VARIANT_DESCRIPTIONS_V3 as VARIANT_DESCRIPTIONS,
+    RESPONSE_LEN_HINTS,
+)
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -91,7 +74,7 @@ def rewrite_prompt(record: dict, level: str, variant: str) -> dict:
     record = dict(record)
     old_prompt = record.get("prompt", "")
 
-    template = PROMPT_VARIANTS_V2[level][variant]
+    template = PROMPT_VARIANTS[level][variant]
     duration = extract_duration_from_prompt(old_prompt)
     new_prompt_body = template.format(duration=duration)
 
@@ -173,7 +156,7 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
         all_train.extend(level_train)
 
         print(f"  {level}/{variant}: {len(level_train)} train + {len(level_val)} val "
-              f"(available={len(rewritten)}, response_len={RESPONSE_LEN_HINTS[variant]})")
+              f"(available={len(rewritten)}, max_resp={RESPONSE_LEN_HINTS[variant]})")
 
     rng.shuffle(all_train)
     rng.shuffle(all_val)
@@ -181,7 +164,7 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
 
 
 def main():
-    parser = argparse.ArgumentParser(description="V2/V3 Prompt Ablation 数据准备")
+    parser = argparse.ArgumentParser(description="Prompt Ablation 数据准备（V3 prompt 模板）")
     parser.add_argument(
         "--levels", nargs="+", required=True,
         choices=["L1", "L2", "L3"],
@@ -191,12 +174,6 @@ def main():
         "--variant", type=str, required=True,
         choices=["V1", "V2", "V3", "V4", "all"],
         help="Prompt 变体 (V1-V4) 或 all",
-    )
-    parser.add_argument(
-        "--prompt-version", type=str, default=None,
-        choices=["v2", "v3"],
-        help="Prompt 模板版本: v2 (语义描述) 或 v3 (边界判据+稀疏采样). "
-             "默认使用环境变量 PROMPT_VERSION 或 v2",
     )
     parser.add_argument(
         "--val-per-level", type=int, default=100,
@@ -212,19 +189,13 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    # 运行时切换 prompt 版本（命令行优先于环境变量）
-    global PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESPONSE_LEN_HINTS
-    if args.prompt_version:
-        PROMPT_VARIANTS_V2, VARIANT_DESCRIPTIONS_V2, RESPONSE_LEN_HINTS = _load_prompt_module(args.prompt_version)
-        print(f"[prepare] Using prompt version: {args.prompt_version}")
-
     rng = random.Random(args.seed)
     variants = ["V1", "V2", "V3", "V4"] if args.variant == "all" else [args.variant]
     train_per_level = None if args.train_per_level < 0 else args.train_per_level
 
     for variant in variants:
         print(f"\n{'=' * 60}")
-        print(f"  Variant {variant}: {VARIANT_DESCRIPTIONS_V2[variant]}")
+        print(f"  Variant {variant}: {VARIANT_DESCRIPTIONS[variant]}")
         print(f"  val_per_level={args.val_per_level}, train_per_level={train_per_level or 'all'}")
         print(f"{'=' * 60}")
 
