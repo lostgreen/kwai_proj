@@ -27,9 +27,9 @@ WORKERS="${WORKERS:-16}"
 SEED="${SEED:-42}"
 
 # L2 annotation pipeline paths
-L2_ANNOTATION_DIR="${L2_ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations}"
-L2_CLIPS_DIR="${L2_CLIPS_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/L2}"
-L2_FRAMES_DIR="${L2_FRAMES_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames}"
+L2_ANNOTATION_DIR="${L2_ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
+L2_CLIPS_DIR="${L2_CLIPS_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L2}"
+L2_FRAMES_DIR="${L2_FRAMES_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/frames}"
 L2_MODEL="${L2_MODEL:-qwen/qwen2.5-vl-72b-instruct}"
 L2_API_BASE="${L2_API_BASE:-https://api.novita.ai/v3/openai}"
 L2_CONFIDENCE="${L2_CONFIDENCE:-0.75}"

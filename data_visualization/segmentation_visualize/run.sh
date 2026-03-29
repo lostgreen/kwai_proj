@@ -19,7 +19,7 @@ PREFER_COMPLETE="${PREFER_COMPLETE:-1}"
 if [[ -n "${DATA_PATH:-}" ]]; then
   LOAD_PATH="${DATA_PATH}"
 else
-  LOAD_PATH="${ANNOTATION_DIR:-proxy_data/youcook2_seg_annotation/annotations}"
+  LOAD_PATH="${ANNOTATION_DIR:-proxy_data/hier_seg_annotation/annotations}"
 fi
 
 echo "[seg-viz] host=${HOST} port=${PORT}"

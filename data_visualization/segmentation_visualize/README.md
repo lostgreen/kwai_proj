@@ -1,6 +1,6 @@
 # Segmentation Visualize
 
-轻量本地可视化工具，用于查看 `youcook2_seg_annotation` 的三层时序标注结果，
+轻量本地可视化工具，用于查看 `hier_seg_annotation` 的三层时序标注结果，
 也支持查看 `build_dataset.py` 产出的训练 JSONL（尤其是 L3）：
 
 - `1fps` 帧条
@@ -19,7 +19,7 @@ bash data_visualization/segmentation_visualize/run.sh
 也可以通过环境变量指定要预加载的目录：
 
 ```bash
-ANNOTATION_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
+ANNOTATION_DIR=/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations \
 MAX_SAMPLES=200 \
 PORT=8890 \
 bash data_visualization/segmentation_visualize/run.sh
@@ -29,21 +29,21 @@ bash data_visualization/segmentation_visualize/run.sh
 
 ```bash
 # 可视化 L3 训练数据
-DATA_PATH=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_L3_train.jsonl \
+DATA_PATH=/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/datasets/youcook2_hier_L3_train.jsonl \
 PORT=8893 \
 bash data_visualization/segmentation_visualize/run.sh
 
 # 可视化 L2 训练数据（滑窗样本）
-DATA_PATH=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_L2_train.jsonl \
+DATA_PATH=/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/datasets/youcook2_hier_L2_train.jsonl \
 PORT=8892 \
 bash data_visualization/segmentation_visualize/run.sh
 
 # 可视化 L1 训练数据
-DATA_PATH=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets/youcook2_hier_L1_train.jsonl \
+DATA_PATH=/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/datasets/youcook2_hier_L1_train.jsonl \
 PORT=8891 \
 bash data_visualization/segmentation_visualize/run.sh
 
- DATA_PATH=/home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_L3_train_clipped.jsonl   PORT=8890   MAX_SAMPLES=100   bash data_visualization/segmentation_visualize/run.sh
+ DATA_PATH=/home/xuboshen/zgw/EasyR1/proxy_data/hier_seg_annotation/datasets/youcook2_hier_L3_train_clipped.jsonl   PORT=8890   MAX_SAMPLES=100   bash data_visualization/segmentation_visualize/run.sh
 ```
 
 或手动启动：
@@ -53,7 +53,7 @@ python data_visualization/segmentation_visualize/server.py \
   --host 127.0.0.1 \
   --port 8890 \
   --static-dir data_visualization/segmentation_visualize \
-  --annotation-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations \
+  --annotation-dir /m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations \
   --max-samples 200 \
   --prefer-complete
 ```
@@ -77,19 +77,19 @@ python data_visualization/segmentation_visualize/server.py \
 页面顶部填写数据路径，例如：
 
 ```text
-proxy_data/youcook2_seg_annotation/annotations
+proxy_data/hier_seg_annotation/annotations
 ```
 
 也支持绝对路径，例如：
 
 ```text
-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations
+/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations
 ```
 
 也支持直接加载 `build_dataset.py` 输出的 JSONL，例如：
 
 ```text
-proxy_data/youcook2_seg_annotation/youcook2_hier_L3_train.jsonl
+proxy_data/hier_seg_annotation/youcook2_hier_L3_train.jsonl
 ```
 
 加载后：

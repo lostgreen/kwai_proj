@@ -15,9 +15,9 @@ extract_frames.py — Extract 1fps frames for YouCook2 segmentation annotation.
 2. 抽帧后帧数低于阈值的视频
 
 Usage:
-    python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/extract_frames.py \
+    python /home/xuboshen/zgw/EasyR1/proxy_data/hier_seg_annotation/extract_frames.py \
         --original-video-root /m2v_intern/xuboshen/zgw/data/YouCook2_mp4 \
-        --output-dir /m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames \
+        --output-dir /m2v_intern/xuboshen/zgw/data/hier_seg_annotation/frames \
         --workers 8 \
         --limit 1000
 

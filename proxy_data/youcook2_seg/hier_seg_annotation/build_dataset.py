@@ -16,8 +16,8 @@ Level 3: One record per L2 event (local temporal grounding).
 
 Usage:
     python build_dataset.py \
-        --annotation-dir proxy_data/youcook2_seg_annotation/annotations \
-        --output proxy_data/youcook2_seg_annotation/youcook2_hier_L1_train.jsonl \
+        --annotation-dir proxy_data/hier_seg_annotation/annotations \
+        --output proxy_data/hier_seg_annotation/youcook2_hier_L1_train.jsonl \
         --level 1
 """
 

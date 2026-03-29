@@ -17,7 +17,7 @@ Responsibilities
 NOT responsible for
 -------------------
 - ffmpeg execution  → stays in prepare_clips.py
-- Prompt templates  → stays in youcook2_seg_annotation/prompts.py
+- Prompt templates  → stays in hier_seg_annotation/prompts.py
 - Task-specific record building → stays in each pipeline's builder script
 
 Import pattern (add proxy_data/ parent to sys.path first):

@@ -29,7 +29,7 @@ from collections import Counter
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-DEFAULT_DATA_ROOT = os.path.join(REPO_ROOT, "proxy_data", "youcook2_seg_annotation", "datasets")
+DEFAULT_DATA_ROOT = os.path.join(REPO_ROOT, "proxy_data", "hier_seg_annotation", "datasets")
 
 # 层级 -> 文件名
 LEVEL_FILES = {

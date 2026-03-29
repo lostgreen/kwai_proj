@@ -38,7 +38,7 @@ MAX_STEPS=60 bash local_scripts/event_logic_ablations/run_batch.sh 3  # Machine 
 ## 数据流
 
 ```
-L2 annotations (youcook2_seg_annotation/annotations/*.json)
+L2 annotations (hier_seg_annotation/annotations/*.json)
     │
     │  build_l2_event_logic.py
     │  --add-per-video N --replace-per-video N --sort-per-video N

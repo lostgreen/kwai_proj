@@ -23,9 +23,9 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-seg-aot-ablation}"
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- Seg Annotation 数据路径 ----
-ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations}"
-CLIP_DIR_L2="${CLIP_DIR_L2:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/L2}"
-CLIP_DIR_L3="${CLIP_DIR_L3:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/L3}"
+ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
+CLIP_DIR_L2="${CLIP_DIR_L2:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L2}"
+CLIP_DIR_L3="${CLIP_DIR_L3:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L3}"
 
 # ---- 数据根目录 ----
 SEG_AOT_DATA_ROOT="${SEG_AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg_aot}"

@@ -1,6 +1,6 @@
 # Temporal AoT（时序方向判断）
 
-> **当前推荐管线**：`build_aot_from_seg.py` 直接从层次分割标注（`youcook2_seg_annotation/annotations/`）生成四种 AoT 任务数据，**无需独立的 VLM captioning 步骤**。
+> **当前推荐管线**：`build_aot_from_seg.py` 直接从层次分割标注（`hier_seg_annotation/annotations/`）生成四种 AoT 任务数据，**无需独立的 VLM captioning 步骤**。
 
 ---
 
@@ -25,7 +25,7 @@
 ### 数据流（新版）
 
 ```
-youcook2_seg_annotation/annotations/*.json
+hier_seg_annotation/annotations/*.json
     │  (共享 L2/L3 三层分割标注)
     │
     ├─► action_v2t : L3 event clip → 判断哪个动作列表顺序正确     (A/B 二选一)
@@ -51,18 +51,18 @@ youcook2_seg_annotation/annotations/*.json
 
 ### 前提条件
 
-1. L2/L3 标注已完成（`youcook2_seg_annotation/annotations/*.json`）
-2. L2 clips 已由 `youcook2_seg_annotation/prepare_clips.py` 生成（`clips/L2/*.mp4`）
-3. L3 clips 已由 `youcook2_seg_annotation/prepare_clips.py` 生成（`clips/L3/*.mp4`）
+1. L2/L3 标注已完成（`hier_seg_annotation/annotations/*.json`）
+2. L2 clips 已由 `hier_seg_annotation/prepare_clips.py` 生成（`clips/L2/*.mp4`）
+3. L3 clips 已由 `hier_seg_annotation/prepare_clips.py` 生成（`clips/L3/*.mp4`）
 
 ### 一键构建（全部 4 种任务）
 
 ```bash
 cd /path/to/VideoProxy/train
 
-export ANN_DIR=/path/to/youcook2_seg_annotation/annotations
-export CLIP_L2=/path/to/youcook2_seg_annotation/clips/L2
-export CLIP_L3=/path/to/youcook2_seg_annotation/clips/L3
+export ANN_DIR=/path/to/hier_seg_annotation/annotations
+export CLIP_L2=/path/to/hier_seg_annotation/clips/L2
+export CLIP_L3=/path/to/hier_seg_annotation/clips/L3
 export OUTPUT_DIR=proxy_data/youcook2_seg/temporal_aot/data
 
 python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
@@ -116,20 +116,20 @@ $OUTPUT_DIR/
 
 ## 从零扩充数据
 
-只需往上游 `youcook2_seg_annotation/annotations/` 追加新的标注 JSON，重新执行 clip 截取后重跑即可：
+只需往上游 `hier_seg_annotation/annotations/` 追加新的标注 JSON，重新执行 clip 截取后重跑即可：
 
 ```bash
-# Step 1: 对新视频做三层 VLM 标注（详见 youcook2_seg_annotation/README.md）
-python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
+# Step 1: 对新视频做三层 VLM 标注（详见 hier_seg_annotation/README.md）
+python proxy_data/youcook2_seg/hier_seg_annotation/annotate.py \
     --frames-dir /path/to/frames --output-dir $ANN_DIR \
     --level 1 --model qwen/qwen2.5-vl-72b-instruct --workers 4
 # 依次执行 level 2, 3 ...
 
 # Step 2: 截取 L2/L3 clip 文件
-python proxy_data/youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+python proxy_data/youcook2_seg/hier_seg_annotation/prepare_clips.py \
     --input /tmp/l2_raw.jsonl --output /tmp/l2_clipped.jsonl \
     --clip-dir $CLIP_L2
-python proxy_data/youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+python proxy_data/youcook2_seg/hier_seg_annotation/prepare_clips.py \
     --input /tmp/l3_raw.jsonl --output /tmp/l3_clipped.jsonl \
     --clip-dir $CLIP_L3
 

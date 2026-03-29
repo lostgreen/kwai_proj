@@ -13,8 +13,8 @@ EXP_NAME="${EXP_NAME:-chain_seg_V2}"
 REWARD_FUNCTION="${REPO_ROOT}/verl/reward_function/youcook2_chain_seg_reward.py:compute_score"
 
 # ---- 原始标注 JSON 目录 & L2 clips 目录 ----
-ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations}"
-CLIP_DIR="${CLIP_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/L2}"
+ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
+CLIP_DIR="${CLIP_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L2}"
 
 # ---- 数据目录 ----
 DATA_DIR="${ABLATION_DATA_ROOT}/${EXP_NAME}"

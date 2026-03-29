@@ -13,7 +13,7 @@
 proxy_data/
 ├── shared/                    ← 三条流水线统一接口（seg_source.py）
 ├── youcook2_seg/              ← ★ 共享 YouCook2 层次分割标注的三条流水线
-│   ├── youcook2_seg_annotation/  ← 标注数据源 + 标注工具
+│   ├── hier_seg_annotation/  ← 标注数据源 + 标注工具
 │   ├── temporal_aot/             ← AoT 任务（从 seg 标注构建）
 │   └── event_logic/              ← 事件逻辑任务（从 L2 标注构建）
 └── temporal_grounding/        ← 独立数据源（TimeRFT，与 seg 无关）
@@ -22,7 +22,7 @@ proxy_data/
 ### 数据来源（单一标注源，三条流水线共享）
 
 ```
-youcook2_seg/youcook2_seg_annotation/annotations/*.json
+youcook2_seg/hier_seg_annotation/annotations/*.json
     ↕ 三条流水线共享同一标注源，通过 shared/seg_source.py 统一加载
 ```
 
@@ -34,7 +34,7 @@ youcook2_seg/youcook2_seg_annotation/annotations/*.json
 ### 三条 Proxy 数据流水线
 
 ```
-youcook2_seg/youcook2_seg_annotation/annotations/*.json (共享标注源)
+youcook2_seg/hier_seg_annotation/annotations/*.json (共享标注源)
        │
        ├─► [hier_seg]    build_hier_data.py      → L1/L2/L3/L3_seg 时序分割任务
        │
@@ -63,7 +63,7 @@ youcook2_seg/youcook2_seg_annotation/annotations/*.json (共享标注源)
 
 | Proxy 类型 | 目录 | 任务描述 | problem_type | 状态 |
 |-----------|------|---------|-------------|------|
-| **Hierarchical Seg** | `youcook2_seg/youcook2_seg_annotation/` + `local_scripts/hier_seg_ablations/` | 三层分层视频分割（阶段/活动/动作） | `temporal_seg_hier_L1/L2/L3/L3_seg` | ✅ 可用 |
+| **Hierarchical Seg** | `youcook2_seg/hier_seg_annotation/` + `local_scripts/hier_seg_ablations/` | 三层分层视频分割（阶段/活动/动作） | `temporal_seg_hier_L1/L2/L3/L3_seg` | ✅ 可用 |
 | **Temporal AoT (from seg)** | `youcook2_seg/temporal_aot/` | 从 seg 标注构建 action/event 顺序判断 MCQ | `seg_aot_action_v2t/t2v`, `seg_aot_event_v2t/t2v` | ✅ 可用 |
 | **Event Logic** | `youcook2_seg/event_logic/` | 基于 L2 事件的 add/replace/sort 推理 | `add` / `replace` / `sort` | ✅ 可用 |
 | **Temporal Grounding** | `temporal_grounding/` | 独立来源（TimeRFT），时序定位 | `temporal_grounding` | ✅ 可用 |
@@ -76,12 +76,12 @@ youcook2_seg/youcook2_seg_annotation/annotations/*.json (共享标注源)
 
 **构建入口**：`local_scripts/hier_seg_ablations/build_hier_data.py`
 
-**标注数据源**：`youcook2_seg/youcook2_seg_annotation/annotations/`
+**标注数据源**：`youcook2_seg/hier_seg_annotation/annotations/`
 
 **用法**：
 ```bash
 python build_hier_data.py \
-    --annotation-dir /path/to/youcook2_seg/youcook2_seg_annotation/annotations \
+    --annotation-dir /path/to/youcook2_seg/hier_seg_annotation/annotations \
     --clip-dir-l1 /path/to/clips/L1 \   # 可选，L1 fps-重采样 clips
     --clip-dir-l2 /path/to/clips/L2 \   # 可选，L2 窗口 clips
     --clip-dir-l3 /path/to/clips/L3 \   # 可选，L3 event clips
@@ -163,7 +163,7 @@ python prepare_clips.py --input train.jsonl --output train_l2.jsonl \
 **用法**：
 ```bash
 python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
-    --annotation-dir /path/to/youcook2_seg/youcook2_seg_annotation/annotations \
+    --annotation-dir /path/to/youcook2_seg/hier_seg_annotation/annotations \
     --clip-dir-l2 /path/to/clips/L2 \
     --clip-dir-l3 /path/to/clips/L3 \
     --output-dir /path/to/output \
@@ -188,7 +188,7 @@ python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
 **用法**：
 ```bash
 python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
-    --annotation-dir proxy_data/youcook2_seg/youcook2_seg_annotation/annotations \
+    --annotation-dir proxy_data/youcook2_seg/hier_seg_annotation/annotations \
     --clips-dir /path/to/clips/L2 \
     --output proxy_data/youcook2_seg/event_logic/data/l2_event_logic.jsonl
 ```
@@ -242,7 +242,7 @@ proxy_data/
 │
 ├── youcook2_seg/                        # ★ 共享 YouCook2 层次分割标注的三条流水线
 │   │
-│   ├── youcook2_seg_annotation/         # 三层分层标注数据源
+│   ├── hier_seg_annotation/         # 三层分层标注数据源
 │   │   ├── annotations/                #   ★ 核心：所有 *.json 标注文件（三条流水线共享）
 │   │   ├── clips/                      #   物理 clip 文件（由 prepare_clips.py 生成）
 │   │   │   ├── L1/                     #     {clip_key}_L1_1fps.mp4（fps 重采样）
@@ -296,36 +296,36 @@ proxy_data/
 
 ```bash
 # 提取 1fps 帧
-python youcook2_seg/youcook2_seg_annotation/extract_frames.py ...
+python youcook2_seg/hier_seg_annotation/extract_frames.py ...
 
 # 三层级联标注（L1→L2→L3）
-python youcook2_seg/youcook2_seg_annotation/annotate.py ...
+python youcook2_seg/hier_seg_annotation/annotate.py ...
 
 # 质量审核
-python youcook2_seg/youcook2_seg_annotation/annotate_check.py ...
+python youcook2_seg/hier_seg_annotation/annotate_check.py ...
 ```
 
 ### 步骤 2：生成物理 Clip 文件
 
 ```bash
 # L1：fps 重采样（新流程，替代 warped 帧拼接）
-python youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+python youcook2_seg/hier_seg_annotation/prepare_clips.py \
     --input /tmp/l1_raw.jsonl --output /tmp/l1_clipped.jsonl \
     --clip-dir /data/clips/L1 --l1-fps 1
 
 # L2：128s 窗口截取
-python youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+python youcook2_seg/hier_seg_annotation/prepare_clips.py \
     --input /tmp/l2_raw.jsonl --output /tmp/l2_clipped.jsonl \
     --clip-dir /data/clips/L2
 
 # L3：event clip 截取（±5s padding）
-python youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+python youcook2_seg/hier_seg_annotation/prepare_clips.py \
     --input /tmp/l3_raw.jsonl --output /tmp/l3_clipped.jsonl \
     --clip-dir /data/clips/L3
 ```
 
 # L3：event clip 截取（±5s padding）
-python youcook2_seg_annotation/prepare_clips.py \
+python hier_seg_annotation/prepare_clips.py \
     --input /tmp/l3_raw.jsonl --output /tmp/l3_clipped.jsonl \
     --clip-dir /data/clips/L3
 ```
@@ -335,7 +335,7 @@ python youcook2_seg_annotation/prepare_clips.py \
 ```bash
 # Hier-Seg（L1/L2/L3/L3_seg）
 python local_scripts/hier_seg_ablations/build_hier_data.py \
-    --annotation-dir /data/youcook2_seg/youcook2_seg_annotation/annotations \
+    --annotation-dir /data/youcook2_seg/hier_seg_annotation/annotations \
     --clip-dir-l1 /data/clips/L1 --l1-fps 1 \
     --clip-dir-l2 /data/clips/L2 \
     --clip-dir-l3 /data/clips/L3 \
@@ -344,21 +344,21 @@ python local_scripts/hier_seg_ablations/build_hier_data.py \
 
 # AOT（4 种任务）
 python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
-    --annotation-dir /data/youcook2_seg/youcook2_seg_annotation/annotations \
+    --annotation-dir /data/youcook2_seg/hier_seg_annotation/annotations \
     --clip-dir-l2 /data/clips/L2 \
     --clip-dir-l3 /data/clips/L3 \
     --output-dir /data/output/aot
 
 # Event Logic
 python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
-    --annotation-dir /data/youcook2_seg/youcook2_seg_annotation/annotations \
+    --annotation-dir /data/youcook2_seg/hier_seg_annotation/annotations \
     --clips-dir /data/clips/L2 \
     --output /data/output/event_logic/train.jsonl
 ```
 
 ### 扩充数据
 
-只需往 `youcook2_seg/youcook2_seg_annotation/annotations/` 加入新的 `*.json` 标注文件，重新运行步骤 2–3 即可。
+只需往 `youcook2_seg/hier_seg_annotation/annotations/` 加入新的 `*.json` 标注文件，重新运行步骤 2–3 即可。
 共享接口 `shared/seg_source.py` 自动被三条流水线加载。
 
 ---

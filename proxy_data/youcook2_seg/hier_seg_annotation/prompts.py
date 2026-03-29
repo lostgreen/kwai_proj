@@ -1,12 +1,12 @@
 """
-3-level hierarchical annotation prompts for YouCook2 DVC.
+3-level hierarchical annotation prompts (domain-agnostic).
 
 Design philosophy:
   Level 1 — Warped-Time Segmentation: model sees uniformly sampled frames
              numbered 1..N (no real timestamps), predicts phase boundaries on
              the warped frame axis.  Engineering maps back to real time.
   Level 2 — Phase-Based Event Detection: for each L1 macro phase, model
-             detects cooking events within that phase scope.  Depends on L1.
+             detects activity events within that phase scope.  Depends on L1.
              (128s sliding windows are only used at training-data construction
              time in build_dataset.py, NOT during annotation.)
   Level 3 — Local Temporal Grounding: given an L2 event clip + text query,
@@ -21,7 +21,7 @@ Usage:
 # Injected as the system role message in every API call.
 # ─────────────────────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """\
-You are an expert in structured video analysis, specializing in instructional cooking content. \
+You are an expert in structured video analysis, specializing in procedural and activity-based content. \
 Your task is to accurately parse temporal actions and visual state transitions.
 
 Core annotation principles:
@@ -39,28 +39,28 @@ or the moment a visual state solidifies.
 # Output: JSON with macro_phases, boundaries in warped frame indices
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL1_BASE = """\
-You are given {n_frames} frames uniformly sampled from a cooking video. \
+You are given {n_frames} frames uniformly sampled from a video. \
 The frames are numbered 1 to {n_frames}. These numbers are ordinal positions, \
 NOT real-world timestamps. Your task is to segment the frame sequence into \
 high-level macro phases (typically 3 to 5).
 
 LEVEL 1 DEFINITION:
-- A macro phase is a broad cooking stage such as ingredient preparation, \
-sauce making, cooking/heating, assembly, or plating/finalization.
+- A macro phase is a broad activity stage such as preparation, setup, \
+main execution, finishing, or cleanup.
 - A macro phase may span many frames and contain multiple fine-grained actions.
 - Macro phases do NOT need to cover all {n_frames} frames. Skip intros, outros, \
-talking-only spans, beauty shots, or any content not advancing the dish.
-- Group by recipe intent, not by camera cut or tiny motion change.
+talking-only spans, beauty shots, or any content not advancing the main activity.
+- Group by process intent, not by camera cut or tiny motion change.
 
-COOKING RELEVANCE FILTER — exclude frames/spans that show:
-- Pure narration or face-to-camera talking with no food manipulation
-- Beauty shots, eating/tasting reactions, idle waiting
-- Unrelated setup/cleanup, tool-only motions not affecting food
+ACTIVITY RELEVANCE FILTER — exclude frames/spans that show:
+- Pure narration or face-to-camera talking with no physical manipulation
+- Non-activity content, reactions, idle waiting
+- Unrelated setup/cleanup, tool-only motions not affecting the task object
 
 For each phase, provide:
 - phase_id: Sequential integer starting from 1.
 - start_frame / end_frame: Boundary frame numbers (1-indexed, within 1..{n_frames}).
-- phase_name: A concise noun phrase (e.g., "Ingredient Preparation").
+- phase_name: A concise noun phrase (e.g., "Material Preparation").
 - narrative_summary: One sentence describing the phase's core objective.
 
 Output JSON:
@@ -70,8 +70,8 @@ Output JSON:
       "phase_id": 1,
       "start_frame": 3,
       "end_frame": 12,
-      "phase_name": "Ingredient Preparation",
-      "narrative_summary": "Wash and dice all vegetables and proteins."
+      "phase_name": "Material Preparation",
+      "narrative_summary": "Gather and organize all required materials."
     }}
   ]
 }}"""
@@ -88,44 +88,43 @@ def get_level1_prompt(n_frames: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Level 2: Cooking Event — Phase-Based Event Detection (活动级)
+# Level 2: Activity Event — Phase-Based Event Detection (活动级)
 # Input:  frames within an L1 macro phase (real timestamps) + phase context
 # Output: events detected in this phase
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL2_BASE = """\
-You are an event detector. You are viewing frames from a cooking phase \
+You are an event detector. You are viewing frames from an activity phase \
 ({phase_start}s to {phase_end}s, duration {phase_duration}s). \
 {phase_context}\
-Identify all complete cooking events that occur within this phase.
+Identify all complete activity events that occur within this phase.
 
 LEVEL 2 DEFINITION:
-- A cooking event is a multi-second, goal-directed workflow that transforms \
-ingredients, cookware contents, or the dish state, OR completes a meaningful \
-recipe subgoal.
-- It is larger than a single atomic motion but smaller than a full recipe stage.
+- An activity event is a multi-second, goal-directed workflow that transforms \
+materials, objects, or the scene state, OR completes a meaningful process subgoal.
+- It is larger than a single atomic motion but smaller than a full activity stage.
 
 CRITICAL GRANULARITY RULES:
 1. [Aggregation Constraint]: Each event MUST be a complete logical sub-process, \
 NOT an isolated atomic action.
 2. [Anti-Fragmentation]: DO NOT split into single momentary actions (e.g., \
-"pick up spoon", "place filling", "fold corner"). Group them into one coherent event.
+"pick up tool", "place part", "fold corner"). Group them into one coherent event.
 3. [Good vs. Bad]:
-   - BAD (too granular): "Place a spoonful of filling onto the wrapper" (~1s)
-   - GOOD (correct): "Assemble the wonton by filling and folding the wrapper" (~15-20s)
-4. [Cooking-Only Filter]: Exclude:
-   - talking/explaining without food manipulation
-   - showing ingredients/tools without using them
-   - idle motions, repositioning, tool pickup with no food-state change
+   - BAD (too granular): "Place a component onto the surface" (~1s)
+   - GOOD (correct): "Assemble the components by fitting and securing the parts" (~15-20s)
+4. [Activity Filter]: Exclude:
+   - talking/explaining without physical manipulation
+   - showing materials/tools without using them
+   - idle motions, repositioning, tool pickup without progress
    - waiting/resting with no visible progress
-   - beauty shots, serving, tasting reactions
+   - non-activity content, reactions, or result display
 5. [Boundary Events]: If an event extends slightly beyond phase boundaries, \
 still annotate it with accurate timestamps.
-6. [Empty Is Valid]: If no cooking event occurs in this phase, return: {{"events": []}}
+6. [Empty Is Valid]: If no activity event occurs in this phase, return: {{"events": []}}
 
 For each event, provide:
 - event_id: Sequential integer starting from 1.
 - start_time / end_time: Timestamps in integer seconds (absolute, not phase-relative).
-- instruction: High-level description of the complete cooking event.
+- instruction: High-level description of the complete activity event.
 - visual_keywords: 3-5 key visual elements observed during this event.
 
 Output JSON:
@@ -135,8 +134,8 @@ Output JSON:
       "event_id": 1,
       "start_time": 32,
       "end_time": 55,
-      "instruction": "Assemble the wontons by filling and folding wrappers",
-      "visual_keywords": ["wonton wrapper", "meat filling", "hands folding"]
+      "instruction": "Assemble the components by fitting and securing the parts",
+      "visual_keywords": ["component A", "component B", "hands assembling"]
     }}
   ]
 }}"""
@@ -179,10 +178,10 @@ def get_level2_prompt(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LEVEL1_TRAIN_BASE = """\
-You are given {n_frames} frames uniformly sampled from a cooking video, numbered 1 to {n_frames}. \
-Segment the frame sequence into 3–5 high-level macro cooking phases \
-(e.g., ingredient preparation, cooking/heating, assembly, plating). \
-Skip non-cooking spans such as narration, beauty shots, or idle waiting.
+You are given {n_frames} frames uniformly sampled from a video, numbered 1 to {n_frames}. \
+Segment the frame sequence into 3–5 high-level macro phases \
+(e.g., preparation, execution, assembly, finishing). \
+Skip non-activity spans such as narration, beauty shots, or idle waiting.
 
 Output the start and end frame number for each phase in order:
 <events>[[start_frame, end_frame], ...]</events>
@@ -196,10 +195,10 @@ def get_level1_train_prompt(n_frames: int) -> str:
 
 
 _LEVEL1_TRAIN_TEMPORAL_BASE = """\
-You are given a {duration}s cooking video clip (timestamps 0 to {duration}). \
-Segment the video into 3–5 high-level macro cooking phases \
-(e.g., ingredient preparation, cooking/heating, assembly, plating). \
-Skip non-cooking spans such as narration, beauty shots, or idle waiting.
+You are given a {duration}s video clip (timestamps 0 to {duration}). \
+Segment the video into 3–5 high-level macro phases \
+(e.g., preparation, execution, assembly, finishing). \
+Skip non-activity spans such as narration, beauty shots, or idle waiting.
 
 Output the start and end time (integer seconds, 0-based) for each phase in order:
 <events>[[start_time, end_time], ...]</events>
@@ -213,10 +212,10 @@ def get_level1_train_prompt_temporal(duration: int) -> str:
 
 
 _LEVEL2_TRAIN_BASE = """\
-You are given a {duration}s cooking video clip (timestamps 0 to {duration}). \
-Detect all complete cooking events in this clip. \
-Each event is a multi-second, goal-directed workflow that transforms ingredients or completes a recipe subgoal. \
-Skip idle waiting, narration, tool pickup, or beauty shots.
+You are given a {duration}s video clip (timestamps 0 to {duration}). \
+Detect all complete activity events in this clip. \
+Each event is a multi-second, goal-directed workflow that transforms materials/objects or completes a process subgoal. \
+Skip idle waiting, narration, tool pickup without progress, or beauty shots.
 
 Output the start and end time (integer seconds, 0-based) for each event in order:
 <events>[[start_time, end_time], ...]</events>
@@ -235,13 +234,13 @@ def get_level2_train_prompt(duration: int) -> str:
 # Output: grounding results with pre/post state descriptions
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_BASE = """\
-You are a temporal grounding model. You are viewing frames from a cooking event \
-clip ({event_start}s to {event_end}s). The cooking event is: "{action_query}"
+You are a temporal grounding model. You are viewing frames from an event \
+clip ({event_start}s to {event_end}s). The event is: "{action_query}"
 
 Your task: pinpoint every atomic state-change moment within this clip.
 
 LEVEL 3 DEFINITION — KINEMATIC BOUNDARIES:
-1. [Physics over Recipe]: You are NOT writing recipe steps. Focus ENTIRELY on \
+1. [Physics over Procedure]: You are NOT writing procedural steps. Focus ENTIRELY on \
 physical, visual changes of objects (deformation, separation, merging, transfer, \
 material state change).
 2. [State Transition Focus]: Only annotate moments where a target object undergoes \
@@ -275,9 +274,9 @@ Output JSON:
       "action_id": 1,
       "start_time": 42,
       "end_time": 47,
-      "sub_action": "Pour minced garlic into the heated pan",
-      "pre_state": "Dry pan with a thin layer of oil",
-      "post_state": "Minced garlic scattered across the pan surface, beginning to sizzle"
+      "sub_action": "Transfer material A into container B",
+      "pre_state": "Empty container with prepared surface",
+      "post_state": "Material A distributed across the container surface"
     }}
   ]
 }}"""
@@ -309,7 +308,7 @@ def get_level3_prompt(
 # Output: start/end times for each action, in the given query order
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_QUERY_BASE = """\
-You are given a {duration}s cooking video clip and a numbered list of actions to locate. \
+You are given a {duration}s video clip and a numbered list of actions to locate. \
 Find the time segment for each action, answering in the given order.
 
 Actions to locate:
@@ -345,8 +344,8 @@ def get_level3_query_prompt(queries: list[str], duration: int) -> str:
 # Output: time segments for all atomic actions (no text queries given)
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_SEG_BASE = """\
-You are given a {duration}s cooking video clip. \
-Detect all atomic cooking actions (state-changing physical operations like cutting, stirring, pouring) in this clip. \
+You are given a {duration}s video clip. \
+Detect all atomic actions (state-changing physical operations like cutting, assembling, transferring, adjusting) in this clip. \
 Skip idle waiting, narration, or tool pickup.
 
 Output the start and end time (integer seconds, 0-based) for each action in chronological order:
@@ -364,8 +363,8 @@ def get_level3_seg_prompt(duration: int) -> str:
 # Output: reviewed events with verdicts, corrections, and supplements
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL2_CHECK_BASE = """\
-You are a quality reviewer for cooking event annotations. You are viewing \
-frames from a macro cooking phase ({phase_start}s to {phase_end}s). \
+You are a quality reviewer for activity event annotations. You are viewing \
+frames from a macro phase ({phase_start}s to {phase_end}s). \
 Phase: "{phase_name}". Summary: "{narrative_summary}"
 
 Below are the EXISTING L2 event annotations for this phase:
@@ -379,26 +378,26 @@ This is a LEVEL 2 annotation review. Level 2 events sit in the middle of a \
 three-level hierarchy:
 
   L1 Phase (ABOVE — too coarse for L2):
-    A broad cooking stage spanning the entire phase you are reviewing. \
+    A broad activity stage spanning the entire phase you are reviewing. \
 If an "event" essentially restates or summarizes the whole phase, it is \
 NOT a valid L2 event — it belongs at L1.
-    Example of TOO COARSE: "Prepare all ingredients" when the phase IS \
-"Ingredient Preparation".
+    Example of TOO COARSE: "Prepare all materials" when the phase IS \
+"Material Preparation".
 
   L2 Event (THIS LEVEL — correct granularity):
-    A multi-second, goal-directed cooking workflow that transforms ingredients \
-or completes a meaningful recipe sub-goal. It typically involves a sequence \
-of physical interactions unified by a single cooking intent.
+    A multi-second, goal-directed workflow that transforms materials/objects \
+or completes a meaningful process sub-goal. It typically involves a sequence \
+of physical interactions unified by a single intent.
     Duration guide: typically 10-60 seconds.
-    Examples: "Assemble wontons by filling and folding wrappers", \
-"Sauté diced onions until translucent", "Knead dough until smooth and elastic".
+    Examples: "Assemble components by fitting and securing parts", \
+"Process materials until target state reached", "Shape raw material into desired form".
 
   L3 Atomic Action (BELOW — too fine for L2):
     A single momentary physical interaction (2-6s) that changes one object's \
 state once. If an annotation describes a single hand motion, a single pour, \
 or a single cut stroke, it is TOO FINE for L2.
-    Examples of TOO FINE: "Place filling on wrapper", "Pick up knife", \
-"Pour oil into pan", "Flip one pancake".
+    Examples of TOO FINE: "Place part onto surface", "Pick up tool", \
+"Pour liquid into container", "Flip one piece".
 
 REVIEW CRITERIA:
 
@@ -415,24 +414,24 @@ with adjacent actions into a proper event, or REMOVED.
 The event should start when the first contributing action begins and end \
 when the goal is achieved.
 
-4. [Description Quality]: Does the instruction clearly convey the cooking goal \
+4. [Description Quality]: Does the instruction clearly convey the goal \
 being accomplished? It should describe WHAT is being achieved, not just \
 the physical motion.
 
-5. [Cooking Relevance]: Does the event involve actual food/ingredient \
+5. [Activity Relevance]: Does the event involve actual physical object/material \
 transformation? Exclude narration, idle waiting, tool-only movements, \
-beauty shots, or tasting without food manipulation.
+non-activity content, or reactions without physical manipulation.
 
 6. [Temporal Overlap]: Do multiple events cover the same time span with the \
 same intent? If so, the duplicate should be removed.
 
-7. [Completeness]: Are there any visible cooking workflows in the frames that \
+7. [Completeness]: Are there any visible activity workflows in the frames that \
 are NOT covered by existing annotations?
 
 For each existing event, output a verdict:
 - "keep": Event is correct as-is.
 - "revise": Event has issues — provide corrected fields.
-- "remove": Event is invalid (wrong granularity, not cooking, or duplicate).
+- "remove": Event is invalid (wrong granularity, not relevant, or duplicate).
 
 Then list any MISSING events.
 
@@ -457,7 +456,7 @@ Output JSON:
     {{
       "event_id": 3,
       "verdict": "remove",
-      "issue": "too_fine|too_coarse|not_cooking|duplicate",
+      "issue": "too_fine|too_coarse|not_relevant|duplicate",
       "reason": "Brief explanation of why this event is removed"
     }}
   ],
@@ -465,7 +464,7 @@ Output JSON:
     {{
       "start_time": 70,
       "end_time": 90,
-      "instruction": "Description of missed cooking event",
+      "instruction": "Description of missed activity event",
       "visual_keywords": ["keyword1", "keyword2"]
     }}
   ]
@@ -524,8 +523,8 @@ def get_level2_check_prompt(
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_CHECK_BASE = """\
 You are a quality reviewer for atomic action annotations. You are viewing \
-frames from a cooking event clip ({event_start}s to {event_end}s). \
-The cooking event is: "{action_query}"
+frames from an event clip ({event_start}s to {event_end}s). \
+The event is: "{action_query}"
 
 Below are the EXISTING L3 atomic action annotations for this event:
 {existing_annotations}
@@ -538,26 +537,26 @@ This is a LEVEL 3 annotation review. Level 3 atomic actions are the finest \
 level in a three-level hierarchy:
 
   L2 Event (ABOVE — too coarse for L3):
-    A goal-directed cooking workflow spanning 10-60 seconds with multiple \
+    A goal-directed workflow spanning 10-60 seconds with multiple \
 physical steps. If an annotation's sub_action essentially restates the \
 parent event instruction, it is NOT a valid L3 action — it belongs at L2.
-    Example of TOO COARSE: "Assemble the wontons" when the parent event IS \
-"Assemble wontons by filling and folding wrappers".
+    Example of TOO COARSE: "Assemble the components" when the parent event IS \
+"Assemble components by fitting and securing parts".
 
   L3 Atomic Action (THIS LEVEL — correct granularity):
     A single, discrete physical interaction (2-6 seconds) where exactly ONE \
 object undergoes ONE irreversible visual state change. The start is the \
 moment of physical contact or the onset of the transformation; the end is \
 when the new state is visually established.
-    Examples: "Pour beaten eggs into the heated pan", \
-"Flip the pancake with a spatula", "Sprinkle salt over the sliced tomatoes".
+    Examples: "Transfer material into the container", \
+"Flip the piece with a tool", "Apply adhesive along the edge".
 
   Sub-atomic motion (BELOW — too fine for L3):
     A partial body movement that does not by itself produce a complete object \
 state change. Reaching, gripping, lifting a tool, repositioning hands, or \
 adjusting posture are NOT valid L3 annotations.
-    Examples of TOO FINE: "Reach for the spatula", "Lift hand from the pan", \
-"Adjust grip on knife handle".
+    Examples of TOO FINE: "Reach for the tool", "Lift hand from the surface", \
+"Adjust grip on handle".
 
 REVIEW CRITERIA:
 
@@ -575,11 +574,11 @@ start = physical contact or transformation onset. end = new state established. \
 Typical duration: 2-6 seconds.
 
 4. [State Description Quality]: Are pre_state and post_state specific, concrete, \
-and visually verifiable? Vague descriptions ("food ready", "ingredients on \
+and visually verifiable? Vague descriptions ("task done", "materials on \
 table") are insufficient — they must describe exact visual appearance.
 
-5. [Cooking Relevance]: Does the sub_action involve real physical state change \
-of food, ingredient, or cookware contents? Exclude pure hand movements, \
+5. [Activity Relevance]: Does the sub_action involve real physical state change \
+of objects, materials, or workspace contents? Exclude pure hand movements, \
 tool pickups, posture adjustments, narration, or idle frames.
 
 6. [Boundary Compliance]: start_time >= {event_start} and end_time <= {event_end}.
@@ -616,7 +615,7 @@ Output JSON:
     {{
       "action_id": 3,
       "verdict": "remove",
-      "issue": "too_fine|too_coarse|not_cooking|duplicate",
+      "issue": "too_fine|too_coarse|not_relevant|duplicate",
       "reason": "Brief explanation"
     }}
   ],
@@ -681,10 +680,10 @@ def get_level3_check_prompt(
 # Output: L2 grounding segments + per-event L3 atomic segments
 # ─────────────────────────────────────────────────────────────────────────────
 _CHAIN_SEG_BASE = """\
-You are given a {duration}s cooking video clip and a list of cooking events that occur in it. \
+You are given a {duration}s video clip and a list of events that occur in it. \
 Your task has two steps:
 1. **Locate** each event's time segment in the clip (L2 grounding).
-2. **Decompose** each event into its atomic cooking actions (L3 segmentation).
+2. **Decompose** each event into its atomic actions (L3 segmentation).
 
 Events to locate and decompose:
 {event_list}
@@ -693,7 +692,7 @@ Rules:
 - L2: output one [start_time, end_time] per event, in the given order
 - L3: for each event, output the atomic actions as [[start, end], ...] within that event's time range
 - all timestamps are integer seconds (0-based, 0 ≤ start < end ≤ {duration})
-- atomic actions are brief (2-6s) physical state changes (cutting, pouring, stirring, etc.)
+- atomic actions are brief (2-6s) physical state changes (transferring, adjusting, shaping, etc.)
 - skip idle/narration within events; gaps between atomic actions are fine
 
 Output format:

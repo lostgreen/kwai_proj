@@ -155,7 +155,7 @@ local_scripts/hier_seg_ablations/
 │ ── 批量运行 ──
 └── run_batch.sh
 
-proxy_data/youcook2_seg_annotation/
+proxy_data/hier_seg_annotation/
 ├── prompts.py                         # [ACTIVE] prompt 模板库 (含 L1 temporal)
 ├── prepare_clips.py                   # [ACTIVE] 物理视频截取 (clips/L2/, clips/L3/)
 ├── annotate.py / annotate_check.py    # [Annotation-only] 标注工具链

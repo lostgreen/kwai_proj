@@ -9,8 +9,8 @@ Three annotation levels with distinct strategies:
 
 Usage:
     python annotate.py \
-        --frames-dir proxy_data/youcook2_seg_annotation/frames \
-        --output-dir proxy_data/youcook2_seg_annotation/annotations \
+        --frames-dir proxy_data/hier_seg_annotation/frames \
+        --output-dir proxy_data/hier_seg_annotation/annotations \
         --level 1 \
         --api-base https://api.novita.ai/v3/openai \
         --model pa/gmn-2.5-pr \

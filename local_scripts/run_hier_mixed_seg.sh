@@ -18,8 +18,8 @@ exp_name='qwen3_vl_youcook2_hier_mixed_L123_grpo'
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"
-TRAIN_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl"
-TEST_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_val.jsonl"
+TRAIN_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/hier_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl"
+TEST_FILE="/home/xuboshen/zgw/EasyR1/proxy_data/hier_seg_annotation/datasets/youcook2_hier_mixed_val.jsonl"
 IMAGE_DIR=""
 
 # ---- 训练超参数 ----

@@ -13,7 +13,7 @@
 #
 # Usage (on server as xuboshen):
 #   cd /home/xuboshen/zgw/EasyR1
-#   bash proxy_data/youcook2_seg_annotation/run_build.sh
+#   bash proxy_data/hier_seg_annotation/run_build.sh
 #
 # Pipeline:
 #   L1: build_dataset.py  → prepare_clips.py  (concat selected JPEG frames → synthetic mp4)
@@ -23,9 +23,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ANNOTATION_DIR="/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations"
-OUTPUT_DIR="/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/datasets"
-CLIP_DIR="/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips"
+ANNOTATION_DIR="/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations"
+OUTPUT_DIR="/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/datasets"
+CLIP_DIR="/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips"
 WORKERS="${WORKERS:-8}"
 
 mkdir -p "$OUTPUT_DIR" "$CLIP_DIR"

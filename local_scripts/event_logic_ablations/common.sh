@@ -21,9 +21,9 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-event-logic-ablation}"
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- L2 标注数据源（管线 2，推荐）----
-L2_ANNOTATION_DIR="${L2_ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations}"
-L2_CLIPS_DIR="${L2_CLIPS_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/L2}"
-L2_FRAMES_DIR="${L2_FRAMES_DIR:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames}"
+L2_ANNOTATION_DIR="${L2_ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
+L2_CLIPS_DIR="${L2_CLIPS_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L2}"
+L2_FRAMES_DIR="${L2_FRAMES_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/frames}"
 
 # ---- 消融实验数据根目录 ----
 EL_DATA_ROOT="${EL_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/event_logic/ablations}"

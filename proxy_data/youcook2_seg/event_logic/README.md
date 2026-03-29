@@ -40,7 +40,7 @@
 | 数据源 | 路径 | 标注方式 | 标注粒度 | 备注 |
 |--------|------|---------|---------|------|
 | **A: 原始标注** | `youcookii_annotations_trainval.json` | YouCook2 官方人工标注 | 视频级，每段一句话 | 旧版管线使用，不推荐 |
-| **B: L2 分层标注** | `youcook2_seg_annotation/annotations/*.json` | VLM 自动标注（Qwen2.5-VL-72B） | 三层分层（L1 阶段→L2 活动→L3 动作） | **推荐**；AoT 新版同样使用此源 |
+| **B: L2 分层标注** | `hier_seg_annotation/annotations/*.json` | VLM 自动标注（Qwen2.5-VL-72B） | 三层分层（L1 阶段→L2 活动→L3 动作） | **推荐**；AoT 新版同样使用此源 |
 
 ### ⚠️ 关键区分
 
@@ -121,7 +121,7 @@ proxy_train_text_options_clean.jsonl  (最终)
 ### 管线 2：基于 L2 分层标注（数据源 B）— **推荐**
 
 ```
-youcook2_seg_annotation/annotations/*.json
+hier_seg_annotation/annotations/*.json
     │
     │  load_annotations(): 读取每个 clip 的 level2.events
     │  字段: event_id, start_time, end_time, instruction, visual_keywords
@@ -178,7 +178,7 @@ l2_event_logic_filtered.jsonl  (过滤后)
 - `sentence`: 原始一句话描述（英文）
 - `recipe_type`: 菜谱类型编号（用于同类型内负例采样）
 
-### 数据源 B: youcook2_seg_annotation/annotations/{clip_key}.json
+### 数据源 B: hier_seg_annotation/annotations/{clip_key}.json
 
 ```json
 {
@@ -240,9 +240,9 @@ l2_event_logic_filtered.jsonl  (过滤后)
 cd /path/to/VideoProxy/train
 
 # 环境变量
-export L2_ANNOTATION_DIR=/path/to/youcook2_seg_annotation/annotations
-export L2_CLIPS_DIR=/path/to/youcook2_seg_annotation/clips/L2
-export L2_FRAMES_DIR=/path/to/youcook2_seg_annotation/frames
+export L2_ANNOTATION_DIR=/path/to/hier_seg_annotation/annotations
+export L2_CLIPS_DIR=/path/to/hier_seg_annotation/clips/L2
+export L2_FRAMES_DIR=/path/to/hier_seg_annotation/frames
 export OUTPUT_DIR=proxy_data/youcook2_seg/event_logic/data
 
 # Step 1: 构造 Event Logic 数据（不过滤）
@@ -288,9 +288,9 @@ bash proxy_data/youcook2_seg/event_logic/run_build.sh
 cd /path/to/EasyR1
 
 # 设置环境变量
-export L2_ANNOTATION_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/annotations
-export L2_CLIPS_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/clips/L2
-export L2_FRAMES_DIR=/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/frames
+export L2_ANNOTATION_DIR=/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations
+export L2_CLIPS_DIR=/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L2
+export L2_FRAMES_DIR=/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/frames
 
 # Step 1: 小规模构造（每视频各 1 条，限制总量 20）
 python proxy_data/youcook2_seg/event_logic/build_l2_event_logic.py \
@@ -412,7 +412,7 @@ cd /path/to/EasyR1
 # 每个视频生成一个 clip_key（格式: {video_id}_{start}_{end}）
 
 # ==== Step 2: 抽帧 ====
-python proxy_data/youcook2_seg/youcook2_seg_annotation/extract_frames.py \
+python proxy_data/youcook2_seg/hier_seg_annotation/extract_frames.py \
     --video-dir /path/to/new_videos \
     --output-dir $L2_FRAMES_DIR \
     --fps 1.0 \
@@ -420,7 +420,7 @@ python proxy_data/youcook2_seg/youcook2_seg_annotation/extract_frames.py \
 
 # ==== Step 3: 逐层 VLM 标注（L1 → L2 → L3）====
 # L1: 宏观阶段划分
-python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
+python proxy_data/youcook2_seg/hier_seg_annotation/annotate.py \
     --frames-dir $L2_FRAMES_DIR \
     --output-dir $L2_ANNOTATION_DIR \
     --level 1 \
@@ -429,7 +429,7 @@ python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
     --workers 2
 
 # L2: 事件细分（在 L1 基础上）
-python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
+python proxy_data/youcook2_seg/hier_seg_annotation/annotate.py \
     --frames-dir $L2_FRAMES_DIR \
     --output-dir $L2_ANNOTATION_DIR \
     --level 2 \
@@ -438,7 +438,7 @@ python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
     --workers 2
 
 # L3: 原子动作 grounding（在 L2 基础上）
-python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
+python proxy_data/youcook2_seg/hier_seg_annotation/annotate.py \
     --frames-dir $L2_FRAMES_DIR \
     --output-dir $L2_ANNOTATION_DIR \
     --level 3 \
@@ -447,7 +447,7 @@ python proxy_data/youcook2_seg/youcook2_seg_annotation/annotate.py \
     --workers 2
 
 # ==== Step 4: 截取 L2 视频窗口片段 ====
-python proxy_data/youcook2_seg/youcook2_seg_annotation/prepare_clips.py \
+python proxy_data/youcook2_seg/hier_seg_annotation/prepare_clips.py \
     --input  $L2_ANNOTATION_DIR/l2_dataset.jsonl \
     --output $L2_ANNOTATION_DIR/l2_dataset_clipped.jsonl \
     --clip-dir $L2_CLIPS_DIR \

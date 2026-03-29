@@ -16,13 +16,13 @@
 
 ```bash
 # 加载 annotation JSON 目录
-./data_visualization/run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/
+./data_visualization/run.sh --data-path proxy_data/hier_seg_annotation/datasets/
 
 # 加载单个 dataset JSONL（任一层级）
-./data_visualization/run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl
+./data_visualization/run.sh --data-path proxy_data/hier_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl
 
 # 限制预加载数量（大数据集提速）
-./data_visualization/run.sh --data-path proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
+./data_visualization/run.sh --data-path proxy_data/hier_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
   --max-samples 200 --prefer-complete
 
 # 远端服务器（env-var 方式，路径较长时更方便）
@@ -75,7 +75,7 @@ MCQ_DATA=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/v2t_train.js
 
 ```bash
 ./data_visualization/run.sh \
-  --data-path     proxy_data/youcook2_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
+  --data-path     proxy_data/hier_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
   --caption-pairs proxy_data/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
   --manifest      proxy_data/temporal_aot/data/aot_event_manifest.jsonl \
   --mcq-data      proxy_data/temporal_aot/data/aot_annotations/v2t_train.jsonl

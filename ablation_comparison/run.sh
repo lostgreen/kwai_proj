@@ -21,7 +21,7 @@ cd "$SCRIPT_DIR"
 PORT="${PORT:-8790}"
 
 # Default data roots (adjust for your server)
-ABLATION_DATA_ROOT="${ABLATION_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/ablation_data}"
+ABLATION_DATA_ROOT="${ABLATION_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/ablation_data}"
 ROLLOUT_ROOT="${ROLLOUT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/hier_seg/ablations}"
 
 if [[ "${1:-}" == "--data" ]]; then

@@ -34,7 +34,7 @@ from pathlib import Path
 # 添加 repo root 到 sys.path 以便 import prompts + shared
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-PROMPTS_DIR = os.path.join(REPO_ROOT, "proxy_data", "youcook2_seg", "youcook2_seg_annotation")
+PROMPTS_DIR = os.path.join(REPO_ROOT, "proxy_data", "youcook2_seg", "hier_seg_annotation")
 PROXY_DATA_DIR = os.path.join(REPO_ROOT, "proxy_data")
 for _p in (PROMPTS_DIR, PROXY_DATA_DIR):
     if _p not in sys.path:
@@ -131,7 +131,7 @@ def build_l1_records(
         vp = source_video
 
     prompt = (
-        "Watch the following cooking video clip carefully:\n<video>\n\n"
+        "Watch the following video clip carefully:\n<video>\n\n"
         + get_level1_train_prompt_temporal(duration)
     )
     answer = f"<events>{json.dumps(spans)}</events>"
@@ -220,7 +220,7 @@ def build_l2_records(
             vp = video_path
 
         prompt = (
-            "Watch the following cooking video clip carefully:\n<video>\n\n"
+            "Watch the following video clip carefully:\n<video>\n\n"
             + get_level2_train_prompt(duration)
         )
         answer = f"<events>{json.dumps(matched)}</events>"
@@ -320,7 +320,7 @@ def build_l3_records(
             queries = [a["sub_action"] for a in ordered_actions]
             spans = [[a["start_time"], a["end_time"]] for a in ordered_actions]
             prompt_text = (
-                "Watch the following cooking video clip carefully:\n<video>\n\n"
+                "Watch the following video clip carefully:\n<video>\n\n"
                 + get_level3_query_prompt(queries, duration)
             )
             answer_str = f"<events>{json.dumps(spans)}</events>"
@@ -417,7 +417,7 @@ def build_l3_seg_records(
             vp = video_path
 
         prompt = (
-            "Watch the following cooking video clip carefully:\n<video>\n\n"
+            "Watch the following video clip carefully:\n<video>\n\n"
             + get_level3_seg_prompt(duration)
         )
         answer = f"<events>{json.dumps(spans)}</events>"
