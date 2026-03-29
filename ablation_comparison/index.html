@@ -149,6 +149,11 @@ const MIN_WIDTH = 800;
 const GT_COLOR = '#ef4444';
 const COLORS = ['#2d6cdf','#e49d1c','#d4577c','#059669','#7c3aed','#0891b2','#eab308','#f87171'];
 
+/* Base path prefix: handles reverse-proxy deployments.
+   e.g. http://localhost:8790/  → BASE=''
+        https://proxy.corp.com/proxy/8790/  → BASE='/proxy/8790' */
+const BASE = window.location.pathname.replace(/\/[^/]*$/, '');
+
 let settingNames = [];
 let allSamples = [];
 let currentVideoKey = null;
@@ -171,21 +176,42 @@ function settingSegClass(name) {
   return 'seg-s' + (i >= 0 ? i % 8 : 0);
 }
 async function api(path) {
-  var url = window.location.origin + path;
-  console.log('[ablation] fetch:', url);
-  var r = await fetch(url, {cache: 'no-store'});
-  console.log('[ablation] response:', r.status, r.statusText, 'url:', r.url);
-  if (!r.ok) throw new Error(r.status + ' ' + r.statusText + ' (url: ' + r.url + ')');
+  var r = await fetch(BASE + path);
+  if (!r.ok) throw new Error(r.statusText);
   return r.json();
 }
 
 /* ── Init ── */
 async function init() {
-  console.log('[ablation] init, origin:', window.location.origin, 'href:', window.location.href);
+  // Use server-injected pre-loaded data if available (no API call needed)
+  var pre = window.__PRELOADED__;
+  if (pre && pre.summary) {
+    try {
+      var summary = pre.summary;
+      settingNames = summary.setting_names || [];
+      var info = settingNames.map(function (n) {
+        return n + ': ' + summary.settings[n].count;
+      }).join(' \u00b7 ');
+      document.getElementById('headerInfo').textContent =
+        summary.total_videos + ' \u4e2a\u89c6\u9891 \u00b7 ' + info;
+      // Use preloaded samples
+      if (pre.samples) {
+        allSamples = pre.samples.items || [];
+        document.getElementById('sampleCount').textContent = pre.samples.total + ' \u4e2a';
+        renderSampleList(allSamples);
+      } else {
+        await loadSamples();
+      }
+      return;
+    } catch (e) {
+      console.warn('[ablation] preloaded data error, falling back to API:', e);
+    }
+  }
+  // Fallback: fetch from API
   try {
-    const summary = await api('/api/summary');
+    var summary = await api('/api/summary');
     settingNames = summary.setting_names || [];
-    const info = settingNames.map(function (n) {
+    var info = settingNames.map(function (n) {
       return n + ': ' + summary.settings[n].count;
     }).join(' \u00b7 ');
     document.getElementById('headerInfo').textContent =
@@ -193,7 +219,6 @@ async function init() {
     await loadSamples();
   } catch (e) {
     document.getElementById('headerInfo').textContent = '\u52a0\u8f7d\u5931\u8d25: ' + e.message;
-    console.error('[ablation] init failed:', e);
   }
 }
 

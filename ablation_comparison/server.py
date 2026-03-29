@@ -368,6 +368,7 @@ class ComparisonStore:
 
 store = ComparisonStore()
 _static_dir = Path(__file__).resolve().parent
+_preloaded_html: Optional[bytes] = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -402,6 +403,13 @@ class Handler(BaseHTTPRequestHandler):
         else:
             ct = "application/octet-stream"
         payload = target.read_bytes()
+        # Inject preloaded data into index.html (works through reverse proxies)
+        if target.name == "index.html" and _preloaded_html:
+            marker = b"</head>"
+            if marker in payload:
+                payload = payload.replace(marker, _preloaded_html + marker, 1)
+            else:
+                payload = _preloaded_html + payload
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(len(payload)))
@@ -478,6 +486,23 @@ def main():
     summary = store.summary()
     print(f"\n  Total videos: {summary['total_videos']}")
     print(f"  Settings:     {summary['setting_names']}")
+
+    # Pre-compute data blob to inject into index.html (works through reverse proxies)
+    global _preloaded_html
+    try:
+        samples = store.list_samples(offset=0, limit=5000)
+        preload = {
+            "summary": summary,
+            "samples": samples,
+        }
+        _preloaded_html = (
+            b'<script>window.__PRELOADED__='
+            + json.dumps(preload, ensure_ascii=False).encode("utf-8")
+            + b';</script>\n'
+        )
+        print(f"  Preloaded HTML inject size: {len(_preloaded_html) / 1024:.0f} KB")
+    except Exception as e:
+        print(f"  [warn] Failed to build preloaded data: {e}")
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"\n  → http://localhost:{args.port}/")
