@@ -2,31 +2,34 @@
 将 Stage A/B 筛选结果转为 segmentation_visualize 可读格式
 
 把 stage_a_results_keep.jsonl 或 stage_b_results_keep.jsonl 里的候选样本
-转为 segmentation_visualize 三层标注 JSON 格式，然后用现有的可视化服务器查看。
+转为 segmentation_visualize 三层标注 JSON 格式，并从视频抽取 1fps 帧，
+然后用现有的可视化服务器查看。
 
 思路：
   - ET-Instruct / TimeLens 的事件标注 → L2 segments
   - Stage B 的 phase_sketch → L1 segments（如果有的话）
   - L3 留空（尚未标注）
+  - 从视频抽取 1fps 帧到 frames/ 子目录
 
 用法:
-    # 转换 ET-Instruct Stage A keep 样本
+    # 转换 ET-Instruct Stage A keep 样本（含抽帧）
     python convert_to_viz.py \\
         --input et_instruct_164k/results/stage_a_results_keep.jsonl \\
         --output et_instruct_164k/results/viz_candidates/ \\
         --data-source et_instruct \\
         --video-root /path/to/et_instruct_videos/
 
-    # 转换 TimeLens Stage B keep 样本
+    # 跳过抽帧（仅生成 JSON）
     python convert_to_viz.py \\
-        --input timelens_100k/results/stage_b_results_keep.jsonl \\
-        --output timelens_100k/results/viz_candidates/ \\
-        --data-source timelens \\
-        --video-root /path/to/timelens_videos/
+        --input et_instruct_164k/results/stage_a_results_keep.jsonl \\
+        --output et_instruct_164k/results/viz_candidates/ \\
+        --data-source et_instruct \\
+        --video-root /path/to/et_instruct_videos/ \\
+        --no-frames
 
     # 然后用 segmentation_visualize 查看
-    python ../../data_visualization/segmentation_visualize/server.py \\
-        --data et_instruct_164k/results/viz_candidates/ \\
+    python data_visualization/segmentation_visualize/server.py \\
+        --annotation-dir et_instruct_164k/results/viz_candidates/ \\
         --port 8765
 """
 
@@ -34,6 +37,8 @@ import json
 import argparse
 import os
 import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -105,6 +110,43 @@ def get_sample_id(sample: dict, data_source: str) -> str:
     return path.replace("/", "__").replace(".mp4", "").replace(".mkv", "").replace(".webm", "")
 
 
+# ── Frame Extraction ─────────────────────────────────────
+
+def extract_frames(
+    video_path: str,
+    frame_dir: str,
+    fps: float = 1.0,
+    duration_sec: float | None = None,
+) -> int:
+    """Extract 1fps frames from video using ffmpeg.
+
+    Returns number of extracted frames, or 0 on failure.
+    """
+    os.makedirs(frame_dir, exist_ok=True)
+    pattern = os.path.join(frame_dir, "%04d.jpg")
+
+    cmd = ["ffmpeg", "-y", "-i", video_path]
+    if duration_sec is not None and duration_sec > 0:
+        cmd += ["-t", f"{duration_sec:.3f}"]
+    cmd += ["-vf", f"fps={fps}", "-q:v", "2", pattern]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return 0
+
+    n_frames = len(list(Path(frame_dir).glob("*.jpg")))
+    return n_frames
+
+
 # ── Conversion ───────────────────────────────────────────
 
 def convert_sample(
@@ -112,6 +154,8 @@ def convert_sample(
     parse_fn,
     data_source: str,
     video_root: str | None = None,
+    frame_dir: str | None = None,
+    n_frames: int = 0,
 ) -> dict:
     """Convert a single curation candidate to segmentation_visualize format."""
     events = parse_fn(sample)
@@ -174,6 +218,8 @@ def convert_sample(
         "clip_key": sample_id,
         "video_path": full_video_path,
         "clip_duration_sec": duration,
+        "n_frames": n_frames,
+        "frame_dir": frame_dir or "",
         "level1": {"macro_phases": l1_phases},
         "level2": {"events": l2_events},
         "level3": {"grounding_results": []},
@@ -225,18 +271,78 @@ def _parse_event_range(range_str: str, n_events: int) -> list[int]:
 
 # ── Main ─────────────────────────────────────────────────
 
+def process_one_sample(
+    sample: dict,
+    parse_fn,
+    data_source: str,
+    video_root: str | None,
+    output_dir: str,
+    extract: bool,
+    fps: float,
+    overwrite: bool,
+) -> dict:
+    """Process a single sample: extract frames + write JSON. Returns status dict."""
+    sample_id = get_sample_id(sample, data_source)
+    video_path = get_video_path(sample, data_source)
+    full_video_path = os.path.join(video_root, video_path) if video_root else video_path
+
+    frame_dir_path = os.path.join(output_dir, "frames", sample_id)
+    n_frames = 0
+    frame_error = None
+
+    if extract:
+        # Check if already extracted
+        existing = list(Path(frame_dir_path).glob("*.jpg")) if os.path.isdir(frame_dir_path) else []
+        if existing and not overwrite:
+            n_frames = len(existing)
+        else:
+            if not os.path.isfile(full_video_path):
+                frame_error = f"video not found: {full_video_path}"
+            else:
+                duration = sample.get("duration")
+                n_frames = extract_frames(
+                    full_video_path,
+                    frame_dir_path,
+                    fps=fps,
+                    duration_sec=duration,
+                )
+                if n_frames == 0:
+                    frame_error = "ffmpeg extraction failed"
+
+    annotation = convert_sample(
+        sample, parse_fn, data_source, video_root,
+        frame_dir=frame_dir_path if extract and n_frames > 0 else "",
+        n_frames=n_frames,
+    )
+
+    json_path = os.path.join(output_dir, f"{sample_id}.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(annotation, f, indent=2, ensure_ascii=False)
+
+    return {
+        "sample_id": sample_id,
+        "n_frames": n_frames,
+        "error": frame_error,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="将 Stage A/B 结果转为 segmentation_visualize 格式",
+        description="将 Stage A/B 结果转为 segmentation_visualize 格式（含抽帧）",
     )
     parser.add_argument("--input", required=True, help="stage_a/b_results_keep.jsonl")
-    parser.add_argument("--output", required=True, help="输出目录（每样本一个 JSON）")
+    parser.add_argument("--output", required=True, help="输出目录（每样本一个 JSON + frames/）")
     parser.add_argument("--data-source", required=True, choices=list(PARSERS.keys()))
     parser.add_argument("--video-root", default=None, help="视频文件根目录")
     parser.add_argument("--limit", type=int, default=0, help="最多转换条数（0=全部）")
+    parser.add_argument("--no-frames", action="store_true", help="跳过抽帧（仅生成 JSON）")
+    parser.add_argument("--fps", type=float, default=1.0, help="抽帧帧率（默认 1fps）")
+    parser.add_argument("--workers", type=int, default=4, help="并行抽帧 worker 数")
+    parser.add_argument("--overwrite", action="store_true", help="覆盖已有帧")
     args = parser.parse_args()
 
     parse_fn = PARSERS[args.data_source]
+    do_extract = not args.no_frames
 
     # Load candidates
     samples = []
@@ -250,19 +356,53 @@ def main():
         samples = samples[:args.limit]
 
     print(f"加载 {len(samples)} 条候选样本")
+    if do_extract:
+        print(f"抽帧: fps={args.fps}, workers={args.workers}")
+    else:
+        print("跳过抽帧（--no-frames）")
 
-    # Convert
     os.makedirs(args.output, exist_ok=True)
-    converted = 0
-    for sample in samples:
-        annotation = convert_sample(sample, parse_fn, args.data_source, args.video_root)
-        sample_id = annotation["clip_key"]
-        output_path = os.path.join(args.output, f"{sample_id}.json")
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(annotation, f, indent=2, ensure_ascii=False)
-        converted += 1
 
-    print(f"转换完成: {converted} 个标注文件 -> {args.output}")
+    success = 0
+    frame_errors = 0
+
+    if do_extract and args.workers > 1:
+        # Parallel extraction
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {
+                pool.submit(
+                    process_one_sample,
+                    sample, parse_fn, args.data_source, args.video_root,
+                    args.output, do_extract, args.fps, args.overwrite,
+                ): i
+                for i, sample in enumerate(samples)
+            }
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                res = fut.result()
+                if res["error"]:
+                    frame_errors += 1
+                    if frame_errors <= 10:
+                        print(f"  [{idx+1}/{len(samples)}] WARN {res['sample_id']}: {res['error']}")
+                else:
+                    success += 1
+                    if success % 50 == 0:
+                        print(f"  [{success}/{len(samples)}] OK  (latest: {res['n_frames']} frames)")
+    else:
+        # Sequential
+        for i, sample in enumerate(samples):
+            res = process_one_sample(
+                sample, parse_fn, args.data_source, args.video_root,
+                args.output, do_extract, args.fps, args.overwrite,
+            )
+            if res["error"]:
+                frame_errors += 1
+                if frame_errors <= 10:
+                    print(f"  [{i+1}/{len(samples)}] WARN {res['sample_id']}: {res['error']}")
+            else:
+                success += 1
+
+    print(f"\n转换完成: {success} 成功, {frame_errors} 抽帧失败 -> {args.output}")
     print(f"\n查看命令:")
     print(f"  python data_visualization/segmentation_visualize/server.py \\")
     print(f"      --annotation-dir {args.output} \\")

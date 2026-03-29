@@ -136,16 +136,22 @@ python proxy_data/data_curation/sources/shared/analyze_results.py \
 ### 可视化验证（帧 + 时间线）
 
 ```bash
-# 转换 keep 样本为 segmentation_visualize 格式
+# 转换 keep 样本为 segmentation_visualize 格式（含 1fps 抽帧）
+# --output 建议指向数据集目录，避免大量帧文件进入 git
 python proxy_data/data_curation/sources/shared/convert_to_viz.py \
     --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results_keep.jsonl \
-    --output proxy_data/data_curation/sources/et_instruct_164k/results/viz_candidates/ \
+    --output /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/viz_candidates/ \
     --data-source et_instruct \
-    --video-root /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos/
+    --video-root /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos/ \
+    --workers 8
+
+# 仅生成 JSON（不抽帧）
+# python proxy_data/data_curation/sources/shared/convert_to_viz.py \
+#     --input ... --output ... --data-source et_instruct --no-frames
 
 # 启动可视化服务器
 python data_visualization/segmentation_visualize/server.py \
-    --annotation-dir proxy_data/data_curation/sources/et_instruct_164k/results/viz_candidates/ \
+    --annotation-dir /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/viz_candidates/ \
     --port 8765
 
 # 浏览器打开 http://127.0.0.1:8765

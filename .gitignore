@@ -188,5 +188,7 @@ memory/
 proxy_data/data_curation/**/results/*.jsonl
 proxy_data/data_curation/**/results/*.json
 proxy_data/data_curation/**/sampled/*.jsonl
+# viz_candidates: extracted frames + annotation JSON (large, generated)
+proxy_data/data_curation/**/viz_candidates/
 
 docs/
