@@ -1136,8 +1136,6 @@ class CandidateStore:
             return summaries
         return [s for s in summaries if q in s["record_id"].lower() or q in s.get("source", "").lower()]
 
-    MAX_FRAMES_PER_VIDEO = 12
-
     def get_record(self, record_id: str) -> Optional[dict[str, Any]]:
         r = self.record_map.get(record_id)
         if r is None:
@@ -1156,8 +1154,11 @@ class CandidateStore:
         video_path = video_id
         if self.video_root and not Path(video_id).is_absolute():
             video_path = str(Path(self.video_root) / video_id)
+        # ~1fps: use duration as frame count, capped at 240
+        duration = record.get("duration", 0)
+        max_frames = max(12, min(int(duration) if duration > 0 else 60, 240))
         record["video_frames"] = _FRAME_EXTRACTOR.extract(
-            video_path, max_frames=self.MAX_FRAMES_PER_VIDEO, max_width=200
+            video_path, max_frames=max_frames, max_width=160
         )
 
     def _build_record(self, item: dict[str, Any], idx: int, fmt: str) -> dict[str, Any]:
