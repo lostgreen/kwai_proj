@@ -569,6 +569,11 @@ button,input,textarea{font:inherit}
           <div class="clip-subtitle">左侧选择后会显示事件时间线。</div>
         </section>
 
+        <section class="detail-card card" id="cand-frames">
+          <div class="section-title">Video Frames</div>
+          <div class="detail-empty">选择记录后显示采样帧。</div>
+        </section>
+
         <section class="timeline-card card" id="cand-timeline">
           <div class="section-title">Event Timeline (L2)</div>
           <div class="detail-empty">选择记录后显示事件分布时间线。</div>
@@ -1372,8 +1377,22 @@ function candRenderActive(){
   const r=CAND.activeRecord;
   if(!r) return;
   candRenderHeader(r);
+  candRenderFrames(r);
   candRenderTimeline(r);
   candRenderDetails(r);
+}
+function candRenderFrames(r){
+  const container=document.getElementById('cand-frames');
+  const frames=r.video_frames||[];
+  if(!frames.length){
+    container.innerHTML='<div class="section-title">Video Frames</div><div class="detail-empty">无视频帧（视频文件不可访问或路径不正确）</div>';
+    return;
+  }
+  container.innerHTML=`
+    <div class="section-title">Video Frames (${frames.length})</div>
+    <div class="caption-frame-strip">
+      ${frames.map((src,i)=>`<div class="caption-frame-thumb" onclick="openFrameModal('${src}')"><img src="${src}" alt="frame ${i+1}" loading="lazy"/></div>`).join('')}
+    </div>`;
 }
 function candRenderHeader(r){
   document.getElementById('cand-header').innerHTML=`

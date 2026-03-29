@@ -1135,8 +1135,25 @@ class CandidateStore:
             return summaries
         return [s for s in summaries if q in s["record_id"].lower() or q in s.get("source", "").lower()]
 
+    MAX_FRAMES_PER_VIDEO = 12
+
     def get_record(self, record_id: str) -> Optional[dict[str, Any]]:
-        return self.record_map.get(record_id)
+        r = self.record_map.get(record_id)
+        if r is None:
+            return None
+        if not r.get("_frames_loaded"):
+            self._load_frames(r)
+            r["_frames_loaded"] = True
+        return r
+
+    def _load_frames(self, record: dict[str, Any]) -> None:
+        video_id = record.get("video_id", "")
+        if not video_id:
+            record["video_frames"] = []
+            return
+        record["video_frames"] = _FRAME_EXTRACTOR.extract(
+            video_id, max_frames=self.MAX_FRAMES_PER_VIDEO, max_width=200
+        )
 
     def _build_record(self, item: dict[str, Any], idx: int, fmt: str) -> dict[str, Any]:
         source = str(item.get("source", "unknown"))
@@ -1167,6 +1184,8 @@ class CandidateStore:
             "n_events": len(events),
             "events": events,
             "format_type": fmt,
+            "video_frames": [],
+            "_frames_loaded": False,
         }
 
     @staticmethod
@@ -1737,14 +1756,23 @@ def main() -> None:
             fmt = summary["format_type"]
             print(f"[candidate] Loaded {total_cand} records ({fmt}) from: {args.candidate_data}")
             all_cand_records: dict[str, Any] = {}
-            for r in candidate_store.records:
-                all_cand_records[r["record_id"]] = r
+            record_ids = [r["record_id"] for r in candidate_store.records]
+            with ThreadPoolExecutor(max_workers=max(1, args.build_workers)) as _pool:
+                def _extract_cand(rid: str) -> tuple[str, dict]:
+                    r = candidate_store.get_record(rid)
+                    return rid, {kk: vv for kk, vv in r.items() if kk != "_frames_loaded"}
+
+                _futures = {_pool.submit(_extract_cand, rid): rid for rid in record_ids}
+                for i, fut in enumerate(as_completed(_futures), 1):
+                    rid, rec = fut.result()
+                    all_cand_records[rid] = rec
+                    print_progress("  [candidate] Extracting frames", i, len(record_ids))
             preload_data["candidate"] = {
                 "summary": summary,
                 "all_records": all_cand_records,
                 "data_path": args.candidate_data,
             }
-            print(f"  [candidate] Done. {len(all_cand_records)} records embedded.")
+            print(f"  [candidate] Done. {len(all_cand_records)} records with frames embedded.")
         except Exception as exc:
             print(f"[warn] candidate pre-load failed: {exc}")
 
