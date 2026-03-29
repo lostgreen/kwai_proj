@@ -46,6 +46,7 @@ from shared.llm_client import (
     stratified_sample,
     write_results,
 )
+from shared.decision_rules import apply_stage_b_rules
 
 # ── Stage B Prompts ──────────────────────────────────────
 
@@ -73,6 +74,35 @@ with distinct themes? (5=clear phases, 1=events are all independent)
 
 Be strict: only give overall_score >= 4 if ALL three dimensions score >= 3.
 
+## Examples
+
+### Example 1 — strong hierarchical potential (keep)
+
+Input:
+Video duration: 200.0s | Domain: coin | Segments: 6
+  1. [0.0s - 28.0s] Measure and mark the wood pieces for cutting
+  2. [28.0s - 58.0s] Cut the wood along marked lines with a saw
+  3. [58.0s - 85.0s] Sand all cut pieces to smooth the surfaces
+  4. [85.0s - 120.0s] Apply wood glue and clamp pieces together
+  5. [120.0s - 160.0s] Drill pilot holes and insert screws for reinforcement
+  6. [160.0s - 200.0s] Apply stain and protective finish
+
+Output:
+{"reasoning":"Clear 3 macro phases emerge (Preparation: 1-2, Assembly: 3-5, Finishing: 6). Each event implies multiple sub-actions (e.g. measure→pick up ruler, mark length, draw line). Strong temporal flow.","l1_potential":5,"l3_potential":4,"temporal_structure":5,"overall_score":5,"phase_sketch":["Preparation: 1,2","Assembly: 3,4,5","Finishing: 6"],"decision":"keep"}
+
+### Example 2 — poor hierarchical potential (reject)
+
+Input:
+Video duration: 150.0s | Domain: queryd | Segments: 5
+  1. [10.0s - 35.0s] A person talks about their morning routine
+  2. [40.0s - 65.0s] The same person describes their favorite food
+  3. [70.0s - 95.0s] A different topic about travel plans
+  4. [100.0s - 125.0s] Discussion of weekend hobbies
+  5. [130.0s - 150.0s] Summary and closing remarks
+
+Output:
+{"reasoning":"Talking-head video with no physical actions. L3 decomposition impossible — each segment is just continuous speech on a topic. No meaningful temporal structure beyond sequential presentation.","l1_potential":2,"l3_potential":1,"temporal_structure":2,"overall_score":1,"phase_sketch":["Monologue: 1,2,3,4,5"],"decision":"reject"}
+
 Return only valid JSON."""
 
 STAGE_B_USER = """\
@@ -87,13 +117,13 @@ Evaluate this sample for hierarchical segmentation suitability.
 
 Respond with ONLY valid JSON:
 {{
+  "reasoning": "<1-2 short sentences>",
   "l1_potential": <1-5>,
   "l3_potential": <1-5>,
   "temporal_structure": <1-5>,
   "overall_score": <1-5>,
   "phase_sketch": ["phase_name: event_indices", ...],
-  "decision": "keep | maybe | reject",
-  "reasoning": "<1-2 short sentences>"
+  "decision": "keep | maybe | reject"
 }}"""
 
 
@@ -184,6 +214,13 @@ def assess_sample(
 
     result = call_llm(messages, api_base, api_key, model)
 
+    # Apply programmatic rules to override LLM decision
+    llm_decision = result.get("decision", "unknown")
+    rule_decision = apply_stage_b_rules(result)
+    if llm_decision != rule_decision:
+        result["_original_decision"] = llm_decision
+        result["decision"] = rule_decision
+
     assessed = dict(sample)
     # Preserve Stage A assessment, add Stage B
     stage_a = sample.get("_assessment", {})
@@ -236,6 +273,19 @@ def print_stats(results: list[dict]):
             total = sum(dd.values())
             parts = ", ".join(f"{k}={v}" for k, v in sorted(dd.items()))
             print(f"    {domain}: {parts} (total={total})")
+
+    # Rule override stats
+    overrides = sum(1 for a in assessments if "_original_decision" in a)
+    if overrides:
+        print(f"\n  == 规则覆盖 ==")
+        print(f"    覆盖总数: {overrides}/{len(assessments)} ({overrides/len(assessments)*100:.1f}%)")
+        override_details: dict[str, int] = {}
+        for a in assessments:
+            if "_original_decision" in a:
+                key = f"{a['_original_decision']} → {a['decision']}"
+                override_details[key] = override_details.get(key, 0) + 1
+        for key, c in sorted(override_details.items(), key=lambda x: -x[1]):
+            print(f"    {key}: {c}")
 
 
 # ── Main ─────────────────────────────────────────────────

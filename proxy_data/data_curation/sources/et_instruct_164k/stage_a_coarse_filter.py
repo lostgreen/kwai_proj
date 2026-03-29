@@ -46,6 +46,7 @@ from shared.llm_client import (
     stratified_sample,
     write_results,
 )
+from shared.decision_rules import apply_stage_a_rules
 
 # ── Stage A Prompts ──────────────────────────────────────
 
@@ -79,6 +80,40 @@ ingredients", "cook the dish", "make the sauce", or similar multi-subgoal \
 stages, the sample is likely too coarse.
 - If uncertain, err on the side of "mixed" or "reject" rather than "keep".
 
+## Examples
+
+### Example 1 — mostly_L2_like (keep)
+
+Input:
+Video duration: 180.0s | Domain: coin | Segments: 7
+  1. [0.0s - 23.5s] Spread glue evenly on the wood surface
+  2. [23.5s - 48.0s] Attach decorative veneer to the glued surface
+  3. [48.0s - 72.0s] Trim excess veneer with a utility knife
+  4. [72.0s - 98.0s] Sand the edges smooth with fine sandpaper
+  5. [98.0s - 125.0s] Apply first coat of lacquer finish
+  6. [125.0s - 155.0s] Let dry and sand lightly between coats
+  7. [155.0s - 180.0s] Apply final protective coat
+
+Output:
+{"reasoning":"Each segment covers one distinct sub-goal in a woodworking process with 20-30s durations — clearly goal-directed L2 units, not atomic actions nor broad phases.","granularity_label":"mostly_L2_like","l2_fit_score":5,"granularity_issue":"good","mixed_ratio_estimate":"low","decision":"keep"}
+
+### Example 2 — mostly_L3_like (reject)
+
+Input:
+Video duration: 120.0s | Domain: activitynet | Segments: 9
+  1. [0.0s - 5.2s] Pick up the eggs from the counter
+  2. [5.2s - 8.0s] Crack each egg into a bowl
+  3. [8.0s - 12.5s] Add a pinch of salt
+  4. [12.5s - 18.0s] Whisk the mixture
+  5. [18.0s - 23.0s] Pour oil into the pan
+  6. [23.0s - 28.5s] Turn on the stove
+  7. [28.5s - 35.0s] Pour egg mixture into pan
+  8. [35.0s - 42.0s] Stir gently with spatula
+  9. [42.0s - 48.0s] Slide onto a plate
+
+Output:
+{"reasoning":"Segments are very short (3-7s) single atomic actions (pick up, crack, add, whisk). These are L3 fine-grained steps, not L2 goal-directed units.","granularity_label":"mostly_L3_like","l2_fit_score":1,"granularity_issue":"too_fine","mixed_ratio_estimate":"low","decision":"reject"}
+
 Return only valid JSON."""
 
 STAGE_A_USER = """\
@@ -94,12 +129,12 @@ serve as L2 events.
 
 Respond with ONLY valid JSON:
 {{
+  "reasoning": "<1-2 short sentences>",
   "granularity_label": "mostly_L1_like | mostly_L2_like | mostly_L3_like | mixed",
   "l2_fit_score": <1-5>,
   "granularity_issue": "too_coarse | good | too_fine | mixed",
   "mixed_ratio_estimate": "low | medium | high",
-  "decision": "keep | maybe | reject",
-  "reasoning": "<1-2 short sentences>"
+  "decision": "keep | maybe | reject"
 }}"""
 
 
@@ -170,6 +205,13 @@ def assess_sample(
 
     result = call_llm(messages, api_base, api_key, model)
 
+    # Apply programmatic rules to override LLM decision
+    llm_decision = result.get("decision", "unknown")
+    rule_decision = apply_stage_a_rules(result)
+    if llm_decision != rule_decision:
+        result["_original_decision"] = llm_decision
+        result["decision"] = rule_decision
+
     assessed = dict(sample)
     assessed["_assessment"] = result
     assessed["_stage"] = "A"
@@ -229,6 +271,19 @@ def print_stats(results: list[dict]):
     print(f"\n  == Mixed Ratio Estimate 分布 ==")
     for mr, c in sorted(mixed_ratios.items(), key=lambda x: -x[1]):
         print(f"    {mr}: {c} ({c/len(assessments)*100:.1f}%)")
+
+    # Rule override stats
+    overrides = sum(1 for a in assessments if "_original_decision" in a)
+    if overrides:
+        print(f"\n  == 规则覆盖 ==")
+        print(f"    覆盖总数: {overrides}/{len(assessments)} ({overrides/len(assessments)*100:.1f}%)")
+        override_details: dict[str, int] = {}
+        for a in assessments:
+            if "_original_decision" in a:
+                key = f"{a['_original_decision']} → {a['decision']}"
+                override_details[key] = override_details.get(key, 0) + 1
+        for key, c in sorted(override_details.items(), key=lambda x: -x[1]):
+            print(f"    {key}: {c}")
 
     # Per-domain stats
     domain_decisions: dict[str, dict] = {}
