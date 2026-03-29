@@ -78,7 +78,7 @@ def apply_richness_rules(assessment: dict) -> str:
 # ── Stage A Decision Rules (DEPRECATED — kept for reference) ──
 
 def apply_stage_a_rules(assessment: dict) -> str:
-    """[DEPRECATED] Old L2-granularity rules. Use apply_richness_rules() instead."""
+    """[DEPRECATED] Old L2-granularity rules. Use apply_richness_rules() instead.
 
     Returns the corrected decision: "keep" | "maybe" | "reject"
 
