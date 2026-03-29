@@ -359,6 +359,7 @@ button,input,textarea{font:inherit}
     <button class="tab-btn active" data-tab="seg" onclick="switchTab('seg')">Segmentation</button>
     <button class="tab-btn" data-tab="caption" onclick="switchTab('caption')">AoT Caption</button>
     <button class="tab-btn" data-tab="mcq" onclick="switchTab('mcq')">AoT MCQ</button>
+    <button class="tab-btn" data-tab="candidate" onclick="switchTab('candidate')">Candidate</button>
   </div>
 
   <!-- =========================================================
@@ -525,6 +526,62 @@ button,input,textarea{font:inherit}
     </section>
   </div><!-- /view-mcq -->
 
+  <!-- =========================================================
+       TAB: Candidate Preview
+       ========================================================= -->
+  <div id="view-candidate" style="display:none">
+    <section class="hero card">
+      <div class="hero-top">
+        <div>
+          <div class="title">Candidate Preview</div>
+          <div class="subtitle">预览 ET-Instruct / TimeLens 筛选输出，查看 L2 事件时间线分布</div>
+        </div>
+        <div class="toolbar">
+          <span id="cand-dataSourceLabel" class="status" style="font-size:0.8rem;color:var(--muted)">通过 <code>--candidate-data &lt;path&gt;</code> 启动参数指定数据路径</span>
+        </div>
+      </div>
+      <div id="cand-statusMsg" class="status"></div>
+    </section>
+
+    <section class="stats">
+      <article class="stat card"><div class="stat-k">Total</div><div class="stat-v" id="cand-statTotal">-</div></article>
+      <article class="stat card"><div class="stat-k">Sources</div><div class="stat-v" id="cand-statSources">-</div></article>
+      <article class="stat card"><div class="stat-k">Avg Duration</div><div class="stat-v" id="cand-statDuration">-</div></article>
+      <article class="stat card"><div class="stat-k">Avg Events</div><div class="stat-v" id="cand-statEvents">-</div></article>
+    </section>
+
+    <section class="layout">
+      <aside class="sidebar card">
+        <div class="sidebar-head">
+          <div class="sidebar-title">Records</div>
+          <div class="chip" id="cand-counter">0</div>
+        </div>
+        <input id="cand-searchInput" class="search" placeholder="搜索 source / video_id" oninput="candFilterRecords()" />
+        <div id="cand-sourceChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
+        <div id="cand-recordList" class="clip-list">
+          <div class="clip-row"><div class="clip-key">通过 --candidate-data 启动后自动显示</div></div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section class="clip-header card" id="cand-header">
+          <div class="clip-title">选择一个记录</div>
+          <div class="clip-subtitle">左侧选择后会显示事件时间线。</div>
+        </section>
+
+        <section class="timeline-card card" id="cand-timeline">
+          <div class="section-title">Event Timeline (L2)</div>
+          <div class="detail-empty">选择记录后显示事件分布时间线。</div>
+        </section>
+
+        <section class="detail-card card" id="cand-detail">
+          <div class="section-title">Event Details</div>
+          <div class="detail-empty">选择记录后显示各事件描述。</div>
+        </section>
+      </main>
+    </section>
+  </div><!-- /view-candidate -->
+
 </div><!-- /page -->
 
 <!-- Frame modal (shared) -->
@@ -572,7 +629,7 @@ function confidenceBar(v){
 }
 
 /* ---- Tab routing ---- */
-const TABS=['seg','caption','mcq'];
+const TABS=['seg','caption','mcq','candidate'];
 function switchTab(tab){
   TABS.forEach(t=>{
     document.getElementById('view-'+t).style.display= t===tab?'':'none';
@@ -1224,18 +1281,205 @@ function mcqBootPreloaded(){
 }
 
 /* ============================================================
+   CANDIDATE tab logic
+   ============================================================ */
+const CAND={
+  records:[],
+  filteredRecords:[],
+  allRecords:{},
+  activeRecordId:null,
+  activeRecord:null,
+  sourceFilter:null,
+};
+const CAND_EVENT_COLORS=[
+  '#e49d1c','#2d6cdf','#159a8c','#d4577c','#7c3aed',
+  '#c26820','#3b7dd8','#0e8a70','#a83860','#6530c9',
+];
+
+function candSetStatus(msg,err=false){
+  const el=document.getElementById('cand-statusMsg');
+  el.textContent=msg||'';
+  el.style.color=err?'var(--danger)':'var(--blue)';
+}
+function candApplySummary(s){
+  CAND.records=s.records||[];
+  CAND.filteredRecords=[...CAND.records];
+  document.getElementById('cand-statTotal').textContent=s.total??0;
+  document.getElementById('cand-statSources').textContent=Object.keys(s.source_counts||{}).length;
+  document.getElementById('cand-statDuration').textContent=`${s.duration_stats?.mean??0}s`;
+  document.getElementById('cand-statEvents').textContent=s.event_stats?.mean??0;
+  candRenderSourceChips(s.source_counts||{});
+  candRenderRecordList();
+}
+function candRenderSourceChips(sourceCounts){
+  const container=document.getElementById('cand-sourceChips');
+  const entries=Object.entries(sourceCounts).sort((a,b)=>b[1]-a[1]);
+  container.innerHTML=`<span class="chip ${CAND.sourceFilter===null?'blue':''}" style="cursor:pointer" onclick="candFilterSource(null)">All (${CAND.records.length})</span>`+
+    entries.map(([s,c])=>`<span class="chip ${CAND.sourceFilter===s?'blue':''}" style="cursor:pointer" onclick="candFilterSource('${esc(s)}')">${esc(s)} (${c})</span>`).join('');
+}
+function candFilterSource(source){
+  CAND.sourceFilter=source;
+  candFilterRecords();
+  // Re-render chips to show active state
+  const s=window.__PRELOADED__?.candidate?.summary;
+  if(s) candRenderSourceChips(s.source_counts||{});
+}
+function candFilterRecords(){
+  const q=document.getElementById('cand-searchInput').value.trim().toLowerCase();
+  CAND.filteredRecords=CAND.records.filter(r=>{
+    if(CAND.sourceFilter && r.source!==CAND.sourceFilter) return false;
+    if(!q) return true;
+    return r.record_id.toLowerCase().includes(q)||r.source.toLowerCase().includes(q)||(r.video_id||'').toLowerCase().includes(q);
+  });
+  candRenderRecordList();
+}
+function candRenderRecordList(){
+  const list=document.getElementById('cand-recordList');
+  document.getElementById('cand-counter').textContent=CAND.filteredRecords.length;
+  if(!CAND.filteredRecords.length){
+    list.innerHTML='<div class="clip-row"><div class="clip-key">没有匹配的记录</div></div>';
+    return;
+  }
+  list.innerHTML=CAND.filteredRecords.map(r=>`
+    <div class="clip-row ${r.record_id===CAND.activeRecordId?'active':''}" onclick="candSelectRecord('${esc(r.record_id)}')">
+      <div class="clip-top">
+        <div class="clip-key" style="font-size:12px;word-break:break-all">${esc(r.video_id)}</div>
+      </div>
+      <div class="clip-meta">
+        <span class="chip blue">${esc(r.source)}</span>
+        <span class="chip">${Math.round(r.duration)}s</span>
+        <span class="chip amber">${r.n_events} events</span>
+        ${r.task?`<span class="chip purple">${esc(r.task)}</span>`:''}
+      </div>
+    </div>`).join('');
+}
+function candSelectRecord(recordId){
+  CAND.activeRecordId=recordId;
+  CAND.activeRecord=null;
+  candRenderRecordList();
+  document.getElementById('cand-header').innerHTML=`<div class="clip-title">加载中...</div>`;
+  const r=CAND.allRecords[recordId];
+  if(r){
+    CAND.activeRecord=r;
+    candRenderActive();
+  }else{
+    fetchJson('/api/candidate/record/'+encodeURIComponent(recordId))
+      .then(rec=>{CAND.allRecords[recordId]=rec;CAND.activeRecord=rec;candRenderActive();})
+      .catch(e=>candSetStatus(e.message,true));
+  }
+}
+function candRenderActive(){
+  const r=CAND.activeRecord;
+  if(!r) return;
+  candRenderHeader(r);
+  candRenderTimeline(r);
+  candRenderDetails(r);
+}
+function candRenderHeader(r){
+  document.getElementById('cand-header').innerHTML=`
+    <div class="clip-head-top">
+      <div>
+        <div class="clip-title" style="font-size:20px">${esc(r.video_id)}</div>
+        <div class="clip-subtitle">${esc(r.format_type)} · source: ${esc(r.source)}${r.task?' · task: '+esc(r.task):''}</div>
+      </div>
+    </div>
+    <div class="meta-grid" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+      <div class="meta-box"><div class="meta-k">Duration</div><div class="meta-v">${mmss(r.duration)}</div></div>
+      <div class="meta-box"><div class="meta-k">Events</div><div class="meta-v">${r.n_events}</div></div>
+      <div class="meta-box"><div class="meta-k">Source</div><div class="meta-v">${esc(r.source)}</div></div>
+      <div class="meta-box"><div class="meta-k">Format</div><div class="meta-v">${esc(r.format_type)}</div></div>
+    </div>`;
+}
+function candRenderTimeline(r){
+  const container=document.getElementById('cand-timeline');
+  const events=r.events||[];
+  if(!events.length){
+    container.innerHTML='<div class="section-title">Event Timeline (L2)</div><div class="detail-empty">No events.</div>';
+    return;
+  }
+  const dur=r.duration||1;
+  const trackWidth=Math.max(600,events.length*100);
+  const segHtml=events.map((ev,i)=>{
+    const left=(ev.start/dur)*100;
+    const width=Math.max(1,((ev.end-ev.start)/dur)*100);
+    const color=CAND_EVENT_COLORS[i%CAND_EVENT_COLORS.length];
+    const desc=esc(ev.description||`event ${i+1}`);
+    return `<div class="segment seg-l2" style="left:${left}%;width:${width}%;background:${color};opacity:0.88" title="${desc} [${ev.start.toFixed(1)}s-${ev.end.toFixed(1)}s]">
+      <div class="segment-label">${i+1}. ${desc}</div>
+      <div class="segment-time">${ev.start.toFixed(1)}s - ${ev.end.toFixed(1)}s</div>
+    </div>`;
+  }).join('');
+
+  // Coverage stats
+  const covered=events.reduce((s,e)=>s+(e.end-e.start),0);
+  const coverPct=Math.round((covered/dur)*100);
+
+  container.innerHTML=`
+    <div class="section-title">Event Timeline (L2) · coverage ${coverPct}%</div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div>Events</div>
+      <div class="legend-item" style="margin-left:auto;font-size:11px">Duration: ${mmss(dur)} · ${events.length} events</div>
+    </div>
+    <div style="position:relative;height:54px;border-radius:16px;border:1px solid rgba(71,85,105,.1);background:linear-gradient(180deg,rgba(255,255,255,.8),rgba(241,245,249,.9));overflow:visible">
+      ${segHtml}
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:4px;padding:0 2px">
+      <span>0:00</span><span>${mmss(dur)}</span>
+    </div>`;
+}
+function candRenderDetails(r){
+  const container=document.getElementById('cand-detail');
+  const events=r.events||[];
+  if(!events.length){
+    container.innerHTML='<div class="section-title">Event Details</div><div class="detail-empty">No events.</div>';
+    return;
+  }
+  container.innerHTML=`
+    <div class="section-title">Event Details (${events.length})</div>
+    <div class="detail-stack">
+      ${events.map((ev,i)=>{
+        const color=CAND_EVENT_COLORS[i%CAND_EVENT_COLORS.length];
+        const span=(ev.end-ev.start).toFixed(1);
+        return `<div class="detail-body">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="detail-pill" style="background:${color}22;color:${color}">E${i+1}</span>
+            <span class="detail-k" style="font-family:monospace">${ev.start.toFixed(1)}s - ${ev.end.toFixed(1)}s (${span}s)</span>
+          </div>
+          <div class="detail-v" style="margin-top:6px">${esc(ev.description)}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+function candBootPreloaded(){
+  const p=window.__PRELOADED__;
+  if(!p||!p.candidate){
+    candSetStatus('未检测到预加载数据。请通过 --candidate-data <path> 启动。',true);
+    return;
+  }
+  const c=p.candidate;
+  const srcLabel=document.getElementById('cand-dataSourceLabel');
+  if(srcLabel) srcLabel.textContent=c.data_path||'（预加载）';
+  CAND.allRecords=c.all_records||{};
+  candApplySummary(c.summary);
+  candSetStatus(`已预加载 ${c.summary.total} 个 ${c.summary.format_type} 候选记录`);
+  if(CAND.filteredRecords.length>0) candSelectRecord(CAND.filteredRecords[0].record_id);
+}
+
+/* ============================================================
    Boot
    ============================================================ */
 segBootPreloaded();
 capBootPreloaded();
 mcqBootPreloaded();
+candBootPreloaded();
 // Auto-switch to the first tab that has preloaded data
 (function(){
   const p=window.__PRELOADED__;
   if(!p) return;
   // Only auto-switch if URL has no explicit hash
   if(location.hash && location.hash!=='#') return;
-  if(p.caption) switchTab('caption');
+  if(p.candidate) switchTab('candidate');
+  else if(p.caption) switchTab('caption');
   else if(p.mcq) switchTab('mcq');
   // seg: stay on default tab
 })();

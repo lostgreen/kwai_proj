@@ -88,7 +88,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # Build config dict (CLI args override YAML)
+    # Build config dict (YAML as base, CLI args override)
     cfg: dict = {
         "min_duration_sec": args.min_duration,
         "max_duration_sec": args.max_duration,
@@ -99,7 +99,18 @@ def main():
     }
     if args.config:
         file_cfg = load_config(args.config)
-        cfg.update({k: v for k, v in file_cfg.items() if v is not None})
+        # YAML as base, then CLI overrides (only override if user explicitly set)
+        cli_defaults = {
+            "min_duration_sec": 60.0, "max_duration_sec": 240.0,
+            "min_events": 5, "min_event_span": 2.0,
+            "max_per_domain": 3000,
+            "priority_domains": ["hirest_step", "hirest_grounding", "hirest"],
+        }
+        merged = dict(file_cfg)
+        for k, v in cfg.items():
+            if v != cli_defaults.get(k):  # user explicitly changed this CLI arg
+                merged[k] = v
+        cfg = merged
 
     # --- Pass 1: basic filters + dedup by video_path (keep most events) ---
     video_best: dict[str, dict] = {}  # video_path -> best sample
@@ -178,12 +189,37 @@ def main():
         print("No --output specified, skipping write.")
         return
 
+    # 添加溯源元数据
+    origin_meta = {
+        "dataset": "TimeLens-100K",
+        "source_file": str(Path(args.input).resolve()),
+        "filter_config": str(Path(args.config).resolve()) if args.config else None,
+        "filter_params": cfg,
+    }
+
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         for s in passed_cap:
+            s["_origin"] = origin_meta
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
     print(f"\nWrote {len(passed_cap)} records → {out_path}")
+
+    # 写出筛选 summary
+    summary = {
+        "total_input": total,
+        "skipped_duration": skipped_dur,
+        "skipped_events": skipped_events,
+        "after_dedup": len(passed_dedup),
+        "after_domain_cap": len(passed_cap),
+        "domain_breakdown": {d: len(items) for d, items in by_domain.items()},
+        "config_used": cfg,
+        "origin": origin_meta,
+    }
+    summary_path = out_path.parent / "filter_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    print(f"✅ summary → {summary_path}")
 
 
 if __name__ == "__main__":

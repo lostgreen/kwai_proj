@@ -235,10 +235,19 @@ def main():
     if not args.dry_run:
         os.makedirs(args.output_dir, exist_ok=True)
 
+        # 添加溯源元数据
+        origin_meta = {
+            "dataset": "ET-Instruct-164K",
+            "source_file": os.path.abspath(args.json_path),
+            "filter_config": os.path.abspath(args.config) if args.config else None,
+            "filter_params": cfg,
+        }
+
         passed_path = os.path.join(args.output_dir, "passed.jsonl")
         with open(passed_path, "w", encoding="utf-8") as f:
             for s in passed:
                 s.pop("_n_events", None)
+                s["_origin"] = origin_meta
                 f.write(json.dumps(s, ensure_ascii=False) + "\n")
         print(f"\n✅ passed → {passed_path} ({len(passed)} 条)")
 
@@ -258,6 +267,7 @@ def main():
             "domain_final": dict(domain_final),
             "task_distribution": dict(task_dist),
             "config_used": cfg,
+            "origin": origin_meta,
         }
         summary_path = os.path.join(args.output_dir, "filter_summary.json")
         with open(summary_path, "w", encoding="utf-8") as f:

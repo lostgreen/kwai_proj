@@ -1030,6 +1030,207 @@ class AoTCaptionStore:
 # AoT MCQ Store
 # ============================================================================
 
+# ============================================================================
+# Candidate Preview Store (ET-Instruct / TimeLens filter output)
+# ============================================================================
+
+class CandidateStore:
+    """Load filter-output JSONL from ET-Instruct-164K or TimeLens-100K.
+
+    Auto-detects format and normalizes events to a common schema for preview.
+    """
+
+    MAX_RECORDS = 5000
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.clear()
+
+    def clear(self) -> None:
+        self.data_path: str = ""
+        self.format_type: str = ""  # "timelens" | "et_instruct"
+        self.records: list[dict[str, Any]] = []
+        self.record_map: dict[str, dict[str, Any]] = {}
+        self.record_order: list[str] = []
+
+    def load(self, data_path: str) -> dict[str, Any]:
+        p = Path(data_path).expanduser().resolve()
+        if not p.exists():
+            raise FileNotFoundError(f"Candidate data not found: {p}")
+
+        raw: list[dict[str, Any]]
+        if p.suffix.lower() == ".jsonl":
+            raw = load_jsonl(p)
+        elif p.suffix.lower() == ".json":
+            with open(p, encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, list):
+                raise ValueError(f"Expected JSON array in {p}")
+        else:
+            raise ValueError(f"Unsupported file type: {p.suffix}")
+
+        if not raw:
+            raise ValueError(f"No records found in {p}")
+
+        # Auto-detect format
+        sample = raw[0]
+        if "events" in sample and isinstance(sample.get("events"), list):
+            fmt = "timelens"
+        elif "tgt" in sample or "conversations" in sample:
+            fmt = "et_instruct"
+        else:
+            fmt = "unknown"
+
+        records: list[dict[str, Any]] = []
+        record_map: dict[str, dict[str, Any]] = {}
+        record_order: list[str] = []
+
+        for idx, item in enumerate(raw[:self.MAX_RECORDS]):
+            rec = self._build_record(item, idx, fmt)
+            records.append(rec)
+            record_map[rec["record_id"]] = rec
+            record_order.append(rec["record_id"])
+
+        with self._lock:
+            self.clear()
+            self.data_path = str(p)
+            self.format_type = fmt
+            self.records = records
+            self.record_map = record_map
+            self.record_order = record_order
+            return self.summary()
+
+    def summary(self) -> dict[str, Any]:
+        source_counts: dict[str, int] = {}
+        durations: list[float] = []
+        event_counts: list[int] = []
+        for r in self.records:
+            s = r.get("source", "unknown")
+            source_counts[s] = source_counts.get(s, 0) + 1
+            durations.append(r.get("duration", 0))
+            event_counts.append(len(r.get("events", [])))
+        return {
+            "loaded": bool(self.data_path),
+            "data_path": self.data_path,
+            "format_type": self.format_type,
+            "total": len(self.records),
+            "source_counts": source_counts,
+            "duration_stats": {
+                "min": round(min(durations), 1) if durations else 0,
+                "max": round(max(durations), 1) if durations else 0,
+                "mean": round(sum(durations) / len(durations), 1) if durations else 0,
+            },
+            "event_stats": {
+                "min": min(event_counts) if event_counts else 0,
+                "max": max(event_counts) if event_counts else 0,
+                "mean": round(sum(event_counts) / len(event_counts), 1) if event_counts else 0,
+            },
+            "records": [self._record_summary(r) for r in self.records],
+        }
+
+    def list_records(self, query: str = "") -> list[dict[str, Any]]:
+        q = query.strip().lower()
+        summaries = [self._record_summary(r) for r in self.records]
+        if not q:
+            return summaries
+        return [s for s in summaries if q in s["record_id"].lower() or q in s.get("source", "").lower()]
+
+    def get_record(self, record_id: str) -> Optional[dict[str, Any]]:
+        return self.record_map.get(record_id)
+
+    def _build_record(self, item: dict[str, Any], idx: int, fmt: str) -> dict[str, Any]:
+        source = str(item.get("source", "unknown"))
+        duration = safe_float(item.get("duration", 0))
+
+        if fmt == "timelens":
+            video_id = str(item.get("video_path", f"record_{idx}"))
+            record_id = f"{idx:05d}_{video_id.replace('/', '_')}"
+            events = self._parse_timelens_events(item)
+        elif fmt == "et_instruct":
+            video_id = str(item.get("video", f"record_{idx}"))
+            record_id = f"{idx:05d}_{video_id.replace('/', '_')}"
+            events = self._parse_et_instruct_events(item)
+        else:
+            video_id = str(item.get("video_path") or item.get("video") or f"record_{idx}")
+            record_id = f"{idx:05d}_{video_id.replace('/', '_')}"
+            events = []
+
+        task = str(item.get("task", ""))
+
+        return {
+            "record_id": record_id,
+            "idx": idx,
+            "source": source,
+            "video_id": video_id,
+            "duration": duration,
+            "task": task,
+            "n_events": len(events),
+            "events": events,
+            "format_type": fmt,
+        }
+
+    @staticmethod
+    def _parse_timelens_events(item: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_events = item.get("events", [])
+        parsed = []
+        for ev in raw_events:
+            desc = ev.get("query", "")
+            spans = ev.get("span", [])
+            if spans and len(spans[0]) == 2:
+                start, end = float(spans[0][0]), float(spans[0][1])
+            else:
+                continue
+            parsed.append({"start": start, "end": end, "description": desc})
+        return parsed
+
+    @staticmethod
+    def _parse_et_instruct_events(item: dict[str, Any]) -> list[dict[str, Any]]:
+        tgt = item.get("tgt", [])
+        n_events = len(tgt) // 2
+
+        # Try extracting descriptions from GPT response
+        gpt_text = ""
+        for turn in item.get("conversations", []):
+            if turn.get("from") == "gpt":
+                gpt_text = turn.get("value", "")
+                break
+
+        pattern = re.compile(
+            r'([\d.]+)\s*-\s*([\d.]+)\s*seconds?,\s*(.+?)(?=\d+\.?\d*\s*-\s*\d+\.?\d*\s*seconds?|$)',
+            re.DOTALL,
+        )
+        matches = pattern.findall(gpt_text)
+
+        events: list[dict[str, Any]] = []
+        if matches and len(matches) >= n_events:
+            for start_s, end_s, desc in matches:
+                events.append({
+                    "start": float(start_s),
+                    "end": float(end_s),
+                    "description": desc.strip().rstrip(".").strip(),
+                })
+        else:
+            for i in range(n_events):
+                events.append({
+                    "start": float(tgt[i * 2]),
+                    "end": float(tgt[i * 2 + 1]),
+                    "description": f"(event {i + 1})",
+                })
+        return events
+
+    @staticmethod
+    def _record_summary(r: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "record_id": r["record_id"],
+            "idx": r["idx"],
+            "source": r["source"],
+            "video_id": r["video_id"],
+            "duration": r["duration"],
+            "task": r.get("task", ""),
+            "n_events": r["n_events"],
+        }
+
+
 class AoTMCQStore:
     """Load any AoT MCQ JSONL (aot_v2t / aot_t2v / aot_4way_v2t / aot_4way_t2v).
 
@@ -1205,6 +1406,10 @@ class UnifiedHandler(BaseHTTPRequestHandler):
         return self.server.mcq_store  # type: ignore[attr-defined]
 
     @property
+    def candidate_store(self) -> CandidateStore:
+        return self.server.candidate_store  # type: ignore[attr-defined]
+
+    @property
     def static_dir(self) -> Path:
         return self.server.static_dir  # type: ignore[attr-defined]
 
@@ -1331,6 +1536,34 @@ class UnifiedHandler(BaseHTTPRequestHandler):
                 self._json(record)
                 return
 
+            # ---- Candidate Preview ----
+            if path == "/api/candidate/load-data":
+                data_path = (query.get("data_path") or [""])[0]
+                if not data_path:
+                    self._json({"ok": False, "error": "data_path is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                summary = self.candidate_store.load(data_path)
+                self._json({"ok": True, "summary": summary})
+                return
+
+            if path == "/api/candidate/state":
+                self._json(self.candidate_store.summary())
+                return
+
+            if path == "/api/candidate/records":
+                search = (query.get("search") or [""])[0]
+                self._json({"records": self.candidate_store.list_records(search)})
+                return
+
+            if path.startswith("/api/candidate/record/"):
+                record_id = unquote(path[len("/api/candidate/record/"):])
+                record = self.candidate_store.get_record(record_id)
+                if record is None:
+                    self._json({"error": f"record not found: {record_id}"}, HTTPStatus.NOT_FOUND)
+                    return
+                self._json(record)
+                return
+
             self._json({"error": f"unknown api path: {path}"}, HTTPStatus.NOT_FOUND)
 
         except FileNotFoundError as exc:
@@ -1395,6 +1628,7 @@ def main() -> None:
     parser.add_argument("--caption-pairs", default=None, help="Pre-load AoT caption_pairs.jsonl")
     parser.add_argument("--manifest", default=None, help="aot_event_manifest.jsonl (optional, paired with --caption-pairs)")
     parser.add_argument("--mcq-data", default=None, help="Pre-load AoT MCQ JSONL")
+    parser.add_argument("--candidate-data", default=None, help="Pre-load candidate preview JSONL (ET-Instruct or TimeLens filter output)")
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--prefer-complete", action="store_true")
     parser.add_argument("--build-workers", type=int, default=4, help="Parallel threads for frame extraction at startup")
@@ -1407,6 +1641,7 @@ def main() -> None:
     seg_store = SegmentationStore(static_dir.parents[1])
     caption_store = AoTCaptionStore()
     mcq_store = AoTMCQStore()
+    candidate_store = CandidateStore()
 
     preloaded_html: Optional[bytes] = None
     preload_data: dict[str, Any] = {}
@@ -1494,6 +1729,25 @@ def main() -> None:
         except Exception as exc:
             print(f"[warn] mcq pre-load failed: {exc}")
 
+    # Pre-load candidate data
+    if args.candidate_data:
+        try:
+            summary = candidate_store.load(args.candidate_data)
+            total_cand = summary["total"]
+            fmt = summary["format_type"]
+            print(f"[candidate] Loaded {total_cand} records ({fmt}) from: {args.candidate_data}")
+            all_cand_records: dict[str, Any] = {}
+            for r in candidate_store.records:
+                all_cand_records[r["record_id"]] = r
+            preload_data["candidate"] = {
+                "summary": summary,
+                "all_records": all_cand_records,
+                "data_path": args.candidate_data,
+            }
+            print(f"  [candidate] Done. {len(all_cand_records)} records embedded.")
+        except Exception as exc:
+            print(f"[warn] candidate pre-load failed: {exc}")
+
     if preload_data:
         preloaded_html = (
             b"<script>window.__PRELOADED__="
@@ -1507,6 +1761,7 @@ def main() -> None:
     server.seg_store = seg_store  # type: ignore[attr-defined]
     server.caption_store = caption_store  # type: ignore[attr-defined]
     server.mcq_store = mcq_store  # type: ignore[attr-defined]
+    server.candidate_store = candidate_store  # type: ignore[attr-defined]
     server.preloaded_html = preloaded_html  # type: ignore[attr-defined]
 
     print(f"\nData visualization server running at http://{args.host}:{args.port}/")

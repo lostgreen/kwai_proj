@@ -70,3 +70,61 @@
 - [ ] 视频可用性验证（解压 + decord 检查）
 - [ ] 领域均衡采样
 - [ ] 人工审查
+
+## 运行指令
+
+### Step 1: 文本筛选
+
+```bash
+# 在服务器上执行，数据路径根据实际修改
+cd proxy_data/data_curation/sources/et_instruct_164k
+
+# Dry run（仅看统计，不写文件）
+python text_filter.py \
+    --json_path /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/et_instruct_164k_txt.json \
+    --config ../../configs/et_instruct_164k.yaml \
+    --dry_run
+
+# 正式筛选
+python text_filter.py \
+    --json_path /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/et_instruct_164k_txt.json \
+    --output_dir results \
+    --config ../../configs/et_instruct_164k.yaml
+```
+
+**产出**：
+- `results/passed.jsonl` — 通过筛选的样本（含 `_origin` 溯源元数据）
+- `results/rejected.jsonl` — 被拒样本
+- `results/filter_summary.json` — 筛选统计摘要
+
+### Step 2: LLM 层次潜力评估
+
+```bash
+# 抽样评估（默认 200 条）
+python assess_hierarchy.py \
+    --input results/passed.jsonl \
+    --output results/assessed.jsonl \
+    --sample-n 200 \
+    --api-base https://api.novita.ai/v3/openai \
+    --model pa/gmn-2.5-pr
+
+# 全量评估（断点续评）
+python assess_hierarchy.py \
+    --input results/passed.jsonl \
+    --output results/assessed.jsonl \
+    --no-sample --resume \
+    --workers 16
+```
+
+### Step 3: 可视化验证
+
+```bash
+# 回到项目根目录
+cd ../../../../
+
+# 启动可视化（candidate 模式）
+python data_visualization/server.py \
+    --candidate-data proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl
+
+# 浏览器打开 http://127.0.0.1:8787/#candidate
+```

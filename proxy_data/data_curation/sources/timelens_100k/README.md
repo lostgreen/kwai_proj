@@ -77,3 +77,60 @@
 - [ ] LLM 层次潜力评估
 - [ ] 领域均衡采样
 - [ ] 与 ET-Instruct candidates 合并
+
+## 运行指令
+
+### Step 1: 文本筛选
+
+```bash
+# 在服务器上执行，数据路径根据实际修改
+cd proxy_data/data_curation/sources/timelens_100k
+
+# Dry run（仅看统计，不写文件）
+python text_filter.py \
+    --input /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/timelens-100k.jsonl \
+    --config ../../configs/timelens_100k.yaml \
+    --dry-run
+
+# 正式筛选
+python text_filter.py \
+    --input /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/timelens-100k.jsonl \
+    --output results/passed_timelens.jsonl \
+    --config ../../configs/timelens_100k.yaml
+```
+
+**产出**：
+- `results/passed_timelens.jsonl` — 通过筛选的样本（含 `_origin` 溯源元数据）
+- `results/filter_summary.json` — 筛选统计摘要
+
+### Step 2: LLM 层次潜力评估
+
+```bash
+# 抽样评估（默认 200 条）
+python assess_hierarchy.py \
+    --input results/passed_timelens.jsonl \
+    --output results/assessed.jsonl \
+    --sample-n 200 \
+    --api-base https://api.novita.ai/v3/openai \
+    --model pa/gmn-2.5-pr
+
+# 全量评估（断点续评）
+python assess_hierarchy.py \
+    --input results/passed_timelens.jsonl \
+    --output results/assessed.jsonl \
+    --no-sample --resume \
+    --workers 16
+```
+
+### Step 3: 可视化验证
+
+```bash
+# 回到项目根目录
+cd ../../../../
+
+# 启动可视化（candidate 模式）
+python data_visualization/server.py \
+    --candidate-data proxy_data/data_curation/sources/timelens_100k/results/passed_timelens.jsonl
+
+# 浏览器打开 http://127.0.0.1:8787/#candidate
+```
