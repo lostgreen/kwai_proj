@@ -65,66 +65,88 @@
 ## 筛选进度
 
 - [x] 数据格式探索
-- [ ] task × source 分布分析
-- [ ] 文本筛选规则确定 & 执行
-- [ ] 视频可用性验证（解压 + decord 检查）
+- [x] 文本筛选规则确定 & 执行
+- [ ] Stage A: L2 粒度粗筛
+- [ ] Stage B: 层次潜力精筛
+- [ ] 可视化验证
 - [ ] 领域均衡采样
-- [ ] 人工审查
 
 ## 运行指令
 
-### Step 1: 文本筛选
+> **所有命令均从 `train/` (EasyR1) 目录执行**，使用相对路径。
+
+### Step 0: 文本筛选
 
 ```bash
-# 在服务器上执行，数据路径根据实际修改
-cd proxy_data/data_curation/sources/et_instruct_164k
-
 # Dry run（仅看统计，不写文件）
-python text_filter.py \
+python proxy_data/data_curation/sources/et_instruct_164k/text_filter.py \
     --json_path /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/et_instruct_164k_txt.json \
-    --config ../../configs/et_instruct_164k.yaml \
+    --config proxy_data/data_curation/configs/et_instruct_164k.yaml \
     --dry_run
 
 # 正式筛选
-python text_filter.py \
+python proxy_data/data_curation/sources/et_instruct_164k/text_filter.py \
     --json_path /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/et_instruct_164k_txt.json \
-    --output_dir results \
-    --config ../../configs/et_instruct_164k.yaml
+    --output_dir proxy_data/data_curation/sources/et_instruct_164k/results \
+    --config proxy_data/data_curation/configs/et_instruct_164k.yaml
 ```
 
 **产出**：
-- `results/passed.jsonl` — 通过筛选的样本（含 `_origin` 溯源元数据）
-- `results/rejected.jsonl` — 被拒样本
-- `results/filter_summary.json` — 筛选统计摘要
+- `proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl`
+- `proxy_data/data_curation/sources/et_instruct_164k/results/rejected.jsonl`
+- `proxy_data/data_curation/sources/et_instruct_164k/results/filter_summary.json`
 
-### Step 2: LLM 层次潜力评估
+### Stage A: L2 粒度粗筛
 
 ```bash
-# 抽样评估（默认 200 条）
-python assess_hierarchy.py \
-    --input results/passed.jsonl \
-    --output results/assessed.jsonl \
-    --sample-n 200 \
-    --api-base https://api.novita.ai/v3/openai \
-    --model pa/gmn-2.5-pr
+# 抽样 200 条看分布
+python proxy_data/data_curation/sources/et_instruct_164k/stage_a_coarse_filter.py \
+    --input proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl \
+    --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
+    --sample-n 200
 
 # 全量评估（断点续评）
-python assess_hierarchy.py \
-    --input results/passed.jsonl \
-    --output results/assessed.jsonl \
-    --no-sample --resume \
-    --workers 16
+python proxy_data/data_curation/sources/et_instruct_164k/stage_a_coarse_filter.py \
+    --input proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl \
+    --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
+    --no-sample --resume --workers 16
+
+# 查看 Stage A 分析报告
+python proxy_data/data_curation/sources/shared/analyze_results.py \
+    --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
+    --stage A --review 3 \
+    --html proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_report.html
 ```
 
-### Step 3: 可视化验证
+### Stage B: 层次潜力精筛
 
 ```bash
-# 回到项目根目录
-cd ../../../../
+python proxy_data/data_curation/sources/shared/stage_b_fine_filter.py \
+    --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results_keep.jsonl \
+    --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_b_results.jsonl \
+    --data-source et_instruct --no-sample --resume --workers 16
 
-# 启动可视化（candidate 模式）
-python data_visualization/server.py \
-    --candidate-data proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl
+# 查看 Stage B 分析报告
+python proxy_data/data_curation/sources/shared/analyze_results.py \
+    --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_b_results.jsonl \
+    --stage B --review 3 \
+    --html proxy_data/data_curation/sources/et_instruct_164k/results/stage_b_report.html
+```
 
-# 浏览器打开 http://127.0.0.1:8787/#candidate
+### 可视化验证（帧 + 时间线）
+
+```bash
+# 转换 keep 样本为 segmentation_visualize 格式
+python proxy_data/data_curation/sources/shared/convert_to_viz.py \
+    --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results_keep.jsonl \
+    --output proxy_data/data_curation/sources/et_instruct_164k/results/viz_candidates/ \
+    --data-source et_instruct \
+    --video-root /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos/
+
+# 启动可视化服务器
+python data_visualization/segmentation_visualize/server.py \
+    --annotation-dir proxy_data/data_curation/sources/et_instruct_164k/results/viz_candidates/ \
+    --port 8765
+
+# 浏览器打开 http://127.0.0.1:8765
 ```
