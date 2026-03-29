@@ -1,28 +1,26 @@
 """
-Stage A — L2 粒度粗筛 (TimeLens-100K)
+Stage A — 视频内容潜力评估 (TimeLens-100K)
 
-目的：快速判断 TimeLens 样本的事件标注粒度是否适合作为 L2 事件，
-     不做层次潜力评估，只做粒度匹配判断。
+目的：基于文本标注判断视频是否包含丰富的、适合层次分割的内容。
+     不再判断标注本身的粒度，而是评估视频的动作密度、状态变化和时序连贯性。
 
 核心原则：
-  - 不假设 TimeLens 标注就是合格的 L2
-  - 先判断粒度，再判断是否保留
-  - 保守偏置：拿不准时不给 keep
+  - 标注粒度不重要（L3 细粒度标注反而是好信号）
+  - 关注视频内容本身的丰富度和层次潜力
+  - 只 reject 真正单调/无结构的视频
 
 输入: text_filter.py 产出的 passed_timelens.jsonl
 输出:
   - stage_a_results.jsonl     — 全部评估结果
-  - stage_a_keep.jsonl        — decision=keep 的样本（进入 Stage B）
-  - stage_a_maybe.jsonl       — decision=maybe 的灰区样本
+  - stage_a_keep.jsonl        — decision=keep 的样本
+  - stage_a_maybe.jsonl       — decision=maybe 的边界样本
   - stage_a_reject.jsonl      — decision=reject 的淘汰样本
 
 用法:
     python stage_a_coarse_filter.py \\
         --input results/passed_timelens.jsonl \\
         --output results/stage_a_results.jsonl \\
-        --sample-n 200 \\
-        --api-base https://api.novita.ai/v3/openai \\
-        --model pa/gmn-2.5-pr
+        --sample-n 1000
 
     # 全量评估（断点续评）
     python stage_a_coarse_filter.py \\
@@ -44,43 +42,39 @@ from shared.llm_client import (
     stratified_sample,
     write_results,
 )
-from shared.decision_rules import apply_stage_a_rules
+from shared.decision_rules import apply_richness_rules
 
-# ── Stage A Prompts — identical to ET-Instruct version ───
+# ── Stage A Prompts — 视频内容潜力评估 ─────────────────
 
 STAGE_A_SYSTEM = """\
-You are evaluating whether provided temporal annotations from a video dataset \
-can serve as Level-2 (L2) event annotations in a 3-level hierarchical temporal \
-segmentation framework.
+You are evaluating whether a video, described by its temporal text annotations, \
+has the potential to support a 3-level hierarchical segmentation \
+(macro-phases -> tasks -> atomic actions).
 
-Hierarchy:
-- L1: broad macro phases, each covering multiple related sub-goals
-- L2: goal-directed local task units with meaningful sub-goals
-- L3: short atomic actions or visible state-change steps
+Your goal is to assess the RICHNESS and COMPLEXITY of the underlying video, \
+NOT to judge if the current annotations are perfectly formatted. The text is \
+merely a proxy to understand what happens in the video.
 
-Important:
-Do NOT assume the provided annotations are valid L2 events.
-Judge whether their granularity is mostly L1-like, mostly L2-like, \
-mostly L3-like, or mixed.
-Be conservative: if uncertain whether they are truly L2-like, prefer \
-"mixed" or "reject".
+A highly suitable video for hierarchical analysis should contain:
+1. Multi-step processes (e.g., cooking, assembling, repairing) rather than \
+a single monotonous activity (e.g., just running or talking).
+2. Meaningful state changes or tool usages.
+3. A chronological flow of distinct events.
 
-A good L2 segment:
-- corresponds to one meaningful local sub-goal
-- is larger than a single short action
-- is smaller than a broad multi-subgoal stage
+Do NOT reject a sample just because its text annotations are too fine-grained \
+(atomic actions) or mixed in granularity. Fine-grained annotations are \
+EXCELLENT because they can be easily grouped into higher-level phases later.
 
-Use these criteria for L2 fit:
-- If many segment descriptions are short action phrases like "pick up", \
-"pour", "cut", "place", or similar near-atomic steps, the sample is likely too fine.
-- If many segment descriptions summarize broad processes like "prepare \
-ingredients", "cook the dish", "make the sauce", or similar multi-subgoal \
-stages, the sample is likely too coarse.
-- If uncertain, err on the side of "mixed" or "reject" rather than "keep".
+ONLY REJECT IF:
+- The events are highly repetitive (e.g., "jumping", "jumping again", "jumping").
+- The events are extremely sparse or lack any sub-step structure (e.g., a \
+single broad event "playing football" covering the whole video).
+- The video appears to be a static scene or a non-procedural activity \
+without distinct phases.
 
 ## Examples
 
-### Example 1 — mostly_L2_like (keep)
+### Example 1 — rich multi-step process (keep)
 
 Input:
 Video duration: 180.0s | Domain: coin | Segments: 7
@@ -93,26 +87,22 @@ Video duration: 180.0s | Domain: coin | Segments: 7
   7. [155.0s - 180.0s] Apply final protective coat
 
 Output:
-{"reasoning":"Each segment covers one distinct sub-goal in a woodworking process with 20-30s durations — clearly goal-directed L2 units, not atomic actions nor broad phases.","granularity_label":"mostly_L2_like","l2_fit_score":5,"granularity_issue":"good","mixed_ratio_estimate":"low","decision":"keep"}
+{"richness_analysis":"7 distinct woodworking steps with clear tool usage and state changes (gluing, cutting, sanding, finishing). Strong multi-phase progression.","action_density_score":5,"state_change_score":5,"temporal_flow_score":5,"video_hierarchy_potential":"high","decision":"keep"}
 
-### Example 2 — mostly_L3_like (reject)
+### Example 2 — monotonous talking head (reject)
 
 Input:
-Video duration: 120.0s | Domain: activitynet | Segments: 9
-  1. [0.0s - 5.2s] Pick up the eggs from the counter
-  2. [5.2s - 8.0s] Crack each egg into a bowl
-  3. [8.0s - 12.5s] Add a pinch of salt
-  4. [12.5s - 18.0s] Whisk the mixture
-  5. [18.0s - 23.0s] Pour oil into the pan
-  6. [23.0s - 28.5s] Turn on the stove
-  7. [28.5s - 35.0s] Pour egg mixture into pan
-  8. [35.0s - 42.0s] Stir gently with spatula
-  9. [42.0s - 48.0s] Slide onto a plate
+Video duration: 150.0s | Domain: queryd | Segments: 5
+  1. [10.0s - 35.0s] A person talks about their morning routine
+  2. [40.0s - 65.0s] The same person describes their favorite food
+  3. [70.0s - 95.0s] A different topic about travel plans
+  4. [100.0s - 125.0s] Discussion of weekend hobbies
+  5. [130.0s - 150.0s] Summary and closing remarks
 
 Output:
-{"reasoning":"Segments are very short (3-7s) single atomic actions (pick up, crack, add, whisk). These are L3 fine-grained steps, not L2 goal-directed units.","granularity_label":"mostly_L3_like","l2_fit_score":1,"granularity_issue":"too_fine","mixed_ratio_estimate":"low","decision":"reject"}
+{"richness_analysis":"Talking-head video with no physical actions or state changes. Topics are independent with no procedural flow.","action_density_score":1,"state_change_score":1,"temporal_flow_score":2,"video_hierarchy_potential":"low","decision":"reject"}
 
-Return only valid JSON."""
+Return ONLY valid JSON."""
 
 STAGE_A_USER = """\
 Video duration: {duration:.1f}s
@@ -122,16 +112,16 @@ Number of annotated segments: {n_events}
 Annotated segments:
 {events_text}
 
-Evaluate whether these provided segments are at the right granularity to \
-serve as L2 events.
+Evaluate whether this video has rich enough content to support hierarchical \
+segmentation, based on these text annotations.
 
 Respond with ONLY valid JSON:
 {{
-  "reasoning": "<1-2 short sentences>",
-  "granularity_label": "mostly_L1_like | mostly_L2_like | mostly_L3_like | mixed",
-  "l2_fit_score": <1-5>,
-  "granularity_issue": "too_coarse | good | too_fine | mixed",
-  "mixed_ratio_estimate": "low | medium | high",
+  "richness_analysis": "<1-2 sentences analyzing action diversity and hierarchy potential>",
+  "action_density_score": <1-5>,
+  "state_change_score": <1-5>,
+  "temporal_flow_score": <1-5>,
+  "video_hierarchy_potential": "high | medium | low",
   "decision": "keep | maybe | reject"
 }}"""
 
@@ -186,7 +176,7 @@ def assess_sample(
 
     # Apply programmatic rules to override LLM decision
     llm_decision = result.get("decision", "unknown")
-    rule_decision = apply_stage_a_rules(result)
+    rule_decision = apply_richness_rules(result)
     if llm_decision != rule_decision:
         result["_original_decision"] = llm_decision
         result["decision"] = rule_decision
@@ -215,41 +205,24 @@ def print_stats(results: list[dict]):
     for d, c in sorted(decisions.items(), key=lambda x: -x[1]):
         print(f"    {d}: {c} ({c/len(assessments)*100:.1f}%)")
 
-    # Granularity label distribution
-    labels = {}
-    for a in assessments:
-        lbl = a.get("granularity_label", "unknown")
-        labels[lbl] = labels.get(lbl, 0) + 1
-    print(f"\n  == Granularity Label 分布 ==")
-    for lbl, c in sorted(labels.items(), key=lambda x: -x[1]):
-        print(f"    {lbl}: {c} ({c/len(assessments)*100:.1f}%)")
+    # Score distributions for each dimension
+    for field in ["action_density_score", "state_change_score", "temporal_flow_score"]:
+        scores = [a.get(field, 0) for a in assessments if isinstance(a.get(field), (int, float))]
+        if scores:
+            print(f"\n  == {field} 分布 ==")
+            for threshold in [1, 2, 3, 4, 5]:
+                count = sum(1 for s in scores if s >= threshold)
+                print(f"    >= {threshold}: {count} ({count/len(scores)*100:.1f}%)")
+            print(f"    mean={sum(scores)/len(scores):.2f}")
 
-    # L2 fit score distribution
-    scores = [a.get("l2_fit_score", 0) for a in assessments if isinstance(a.get("l2_fit_score"), (int, float))]
-    if scores:
-        print(f"\n  == L2 Fit Score 分布 ==")
-        for threshold in [1, 2, 3, 4, 5]:
-            count = sum(1 for s in scores if s >= threshold)
-            print(f"    >= {threshold}: {count} ({count/len(scores)*100:.1f}%)")
-        print(f"    mean={sum(scores)/len(scores):.2f}")
-
-    # Granularity issue distribution
-    issues = {}
+    # Hierarchy potential distribution
+    potentials = {}
     for a in assessments:
-        issue = a.get("granularity_issue", "unknown")
-        issues[issue] = issues.get(issue, 0) + 1
-    print(f"\n  == Granularity Issue 分布 ==")
-    for issue, c in sorted(issues.items(), key=lambda x: -x[1]):
-        print(f"    {issue}: {c} ({c/len(assessments)*100:.1f}%)")
-
-    # Mixed ratio estimate distribution
-    mixed_ratios = {}
-    for a in assessments:
-        mr = a.get("mixed_ratio_estimate", "unknown")
-        mixed_ratios[mr] = mixed_ratios.get(mr, 0) + 1
-    print(f"\n  == Mixed Ratio Estimate 分布 ==")
-    for mr, c in sorted(mixed_ratios.items(), key=lambda x: -x[1]):
-        print(f"    {mr}: {c} ({c/len(assessments)*100:.1f}%)")
+        p = a.get("video_hierarchy_potential", "unknown")
+        potentials[p] = potentials.get(p, 0) + 1
+    print(f"\n  == Video Hierarchy Potential 分布 ==")
+    for p, c in sorted(potentials.items(), key=lambda x: -x[1]):
+        print(f"    {p}: {c} ({c/len(assessments)*100:.1f}%)")
 
     # Rule override stats
     overrides = sum(1 for a in assessments if "_original_decision" in a)

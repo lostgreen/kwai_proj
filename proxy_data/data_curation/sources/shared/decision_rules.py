@@ -1,9 +1,15 @@
 """
-Programmatic decision rules for the two-stage curation pipeline.
+Programmatic decision rules for the data curation pipeline.
 
 These rules override or supplement LLM decisions with hard thresholds.
-Designed to catch cases where the LLM is inconsistent (e.g., gives
-l2_fit_score=2 but decision="keep").
+Designed to catch cases where the LLM is inconsistent.
+
+Two rule sets:
+  - apply_richness_rules(): For the video richness assessment (current Stage A)
+  - apply_stage_b_rules(): For the hierarchical potential fine filter (Stage B)
+
+Legacy:
+  - apply_stage_a_rules(): Old L2-granularity rules (deprecated, kept for reference)
 
 Usage:
     # As a standalone post-processing step
@@ -13,7 +19,7 @@ Usage:
         --stage A
 
     # Or import in your pipeline
-    from shared.decision_rules import apply_stage_a_rules, apply_stage_b_rules
+    from shared.decision_rules import apply_richness_rules
 """
 
 import json
@@ -22,10 +28,57 @@ import os
 from pathlib import Path
 
 
-# ── Stage A Decision Rules ───────────────────────────────
+# ── Video Richness Rules (current Stage A) ───────────────
+
+def apply_richness_rules(assessment: dict) -> str:
+    """Apply programmatic rules to video richness assessment.
+
+    Returns the corrected decision: "keep" | "maybe" | "reject"
+
+    Rules:
+    1. Parse error -> reject
+    2. action_density >= 3 AND temporal_flow >= 3 -> keep
+    3. action_density <= 1 -> reject
+    4. video_hierarchy_potential == "low" -> reject
+    5. Any score == 2 with potential == "medium" -> maybe
+    6. Default -> maybe
+    """
+    if assessment.get("_parse_error") or assessment.get("error"):
+        return "reject"
+
+    action = assessment.get("action_density_score", 0)
+    state = assessment.get("state_change_score", 0)
+    temporal = assessment.get("temporal_flow_score", 0)
+    potential = assessment.get("video_hierarchy_potential", "")
+
+    # Ensure numeric
+    for val in [action, state, temporal]:
+        if not isinstance(val, (int, float)):
+            return "maybe"
+
+    # Hard reject: monotonous or structureless
+    if action <= 1:
+        return "reject"
+    if potential == "low":
+        return "reject"
+
+    # Hard keep: rich content with temporal flow
+    if action >= 3 and temporal >= 3:
+        return "keep"
+
+    # Gray zone
+    if potential == "medium":
+        return "maybe"
+    if action == 2 or temporal == 2:
+        return "maybe"
+
+    return "maybe"
+
+
+# ── Stage A Decision Rules (DEPRECATED — kept for reference) ──
 
 def apply_stage_a_rules(assessment: dict) -> str:
-    """Apply programmatic rules to Stage A assessment.
+    """[DEPRECATED] Old L2-granularity rules. Use apply_richness_rules() instead."""
 
     Returns the corrected decision: "keep" | "maybe" | "reject"
 
@@ -149,12 +202,12 @@ def main():
     parser.add_argument("--input", required=True, help="assessed .jsonl")
     parser.add_argument("--output", required=True, help="ruled .jsonl")
     parser.add_argument("--stage", required=True, choices=["A", "B"],
-                        help="Which stage's rules to apply")
+                        help="Which stage's rules to apply (A=richness, B=hierarchy)")
     parser.add_argument("--override", action="store_true",
                         help="Override LLM decision with rule-based decision")
     args = parser.parse_args()
 
-    rule_fn = apply_stage_a_rules if args.stage == "A" else apply_stage_b_rules
+    rule_fn = apply_richness_rules if args.stage == "A" else apply_stage_b_rules
 
     results = []
     overrides = 0

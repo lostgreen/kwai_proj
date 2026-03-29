@@ -50,77 +50,57 @@ ET-Instruct-164K (164K)   TimeLens-100K (19K)
 
 ---
 
-## 3. Stage A：L2 粒度粗筛
+## 3. Stage A：视频内容潜力评估（单阶段筛选）
 
 ### 3.1 设计目标
 
-判断已有标注的粒度是否适合作为 L2 事件，**不假设标注天然就是 L2**。
+基于文本标注评估视频内容的丰富度和层次分割潜力。**不再判断标注粒度**，而是评估：
+- **动作密度** — 视频是否包含多个不同的动作/步骤？
+- **状态变化** — 文本是否暗示了物体或场景的可见变化？
+- **时序连贯性** — 事件是否构成有推进感的任务流？
+
+关键设计变更（v2）：
+- 不再分类 L1/L2/L3，避免因标注格式不匹配而误杀
+- L3 细粒度标注被视为**正面信号**（说明内容丰富，可后续 DVC 聚合）
+- 只 reject 真正单调/无结构的视频
 
 ### 3.2 System Prompt
 
 ```
-You are evaluating whether provided temporal annotations from a video dataset
-can serve as Level-2 (L2) event annotations in a 3-level hierarchical temporal
-segmentation framework.
+You are evaluating whether a video, described by its temporal text annotations,
+has the potential to support a 3-level hierarchical segmentation
+(macro-phases -> tasks -> atomic actions).
 
-Hierarchy:
-- L1: broad macro phases, each covering multiple related sub-goals
-- L2: goal-directed local task units with meaningful sub-goals
-- L3: short atomic actions or visible state-change steps
+Your goal is to assess the RICHNESS and COMPLEXITY of the underlying video,
+NOT to judge if the current annotations are perfectly formatted. The text is
+merely a proxy to understand what happens in the video.
 
-Important:
-Do NOT assume the provided annotations are valid L2 events.
-Judge whether their granularity is mostly L1-like, mostly L2-like,
-mostly L3-like, or mixed.
-Be conservative: if uncertain whether they are truly L2-like, prefer
-"mixed" or "reject".
+A highly suitable video for hierarchical analysis should contain:
+1. Multi-step processes (e.g., cooking, assembling, repairing) rather than
+a single monotonous activity (e.g., just running or talking).
+2. Meaningful state changes or tool usages.
+3. A chronological flow of distinct events.
 
-A good L2 segment:
-- corresponds to one meaningful local sub-goal
-- is larger than a single short action
-- is smaller than a broad multi-subgoal stage
+Do NOT reject a sample just because its text annotations are too fine-grained
+(atomic actions) or mixed in granularity. Fine-grained annotations are
+EXCELLENT because they can be easily grouped into higher-level phases later.
 
-Use these criteria for L2 fit:
-- If many segment descriptions are short action phrases like "pick up",
-"pour", "cut", "place", or similar near-atomic steps, the sample is
-likely too fine.
-- If many segment descriptions summarize broad processes like "prepare
-ingredients", "cook the dish", "make the sauce", or similar multi-subgoal
-stages, the sample is likely too coarse.
-- If uncertain, err on the side of "mixed" or "reject" rather than "keep".
+ONLY REJECT IF:
+- The events are highly repetitive.
+- The events are extremely sparse or lack any sub-step structure.
+- The video appears to be a static scene or a non-procedural activity.
 
-## Examples
+## Few-Shot Examples
 
-### Example 1 — mostly_L2_like (keep)
+### Example 1 — rich multi-step process (keep)
+Input: 7 woodworking segments with tool usage and state changes
+Output: action_density=5, state_change=5, temporal_flow=5 → keep
 
-Input:
-Video duration: 180.0s | Domain: coin | Segments: 7
-  1. [0.0s - 23.5s] Spread glue evenly on the wood surface
-  2. [23.5s - 48.0s] Attach decorative veneer to the glued surface
-  ...
+### Example 2 — monotonous talking head (reject)
+Input: 5 segments of person talking about different topics
+Output: action_density=1, state_change=1, temporal_flow=2 → reject
 
-Output:
-{"reasoning":"Each segment covers one distinct sub-goal in a woodworking
-process with 20-30s durations — clearly goal-directed L2 units, not atomic
-actions nor broad phases.","granularity_label":"mostly_L2_like",
-"l2_fit_score":5,"granularity_issue":"good","mixed_ratio_estimate":"low",
-"decision":"keep"}
-
-### Example 2 — mostly_L3_like (reject)
-
-Input:
-Video duration: 120.0s | Domain: activitynet | Segments: 9
-  1. [0.0s - 5.2s] Pick up the eggs from the counter
-  2. [5.2s - 8.0s] Crack each egg into a bowl
-  ...
-
-Output:
-{"reasoning":"Segments are very short (3-7s) single atomic actions (pick up,
-crack, add, whisk). These are L3 fine-grained steps, not L2 goal-directed
-units.","granularity_label":"mostly_L3_like","l2_fit_score":1,
-"granularity_issue":"too_fine","mixed_ratio_estimate":"low","decision":"reject"}
-
-Return only valid JSON.
+Return ONLY valid JSON.
 ```
 
 ### 3.3 User Prompt（填入具体样本数据）
@@ -135,16 +115,16 @@ Annotated segments:
   2. [36.0s - 44.0s] heat oil in a pan
   ...
 
-Evaluate whether these provided segments are at the right granularity to
-serve as L2 events.
+Evaluate whether this video has rich enough content to support hierarchical
+segmentation, based on these text annotations.
 
 Respond with ONLY valid JSON:
 {
-  "reasoning": "<1-2 short sentences>",
-  "granularity_label": "mostly_L1_like | mostly_L2_like | mostly_L3_like | mixed",
-  "l2_fit_score": <1-5>,
-  "granularity_issue": "too_coarse | good | too_fine | mixed",
-  "mixed_ratio_estimate": "low | medium | high",
+  "richness_analysis": "<1-2 sentences analyzing action diversity and hierarchy potential>",
+  "action_density_score": <1-5>,
+  "state_change_score": <1-5>,
+  "temporal_flow_score": <1-5>,
+  "video_hierarchy_potential": "high | medium | low",
   "decision": "keep | maybe | reject"
 }
 ```
@@ -153,37 +133,36 @@ Respond with ONLY valid JSON:
 
 | 字段 | 类型 | 含义 |
 |------|------|------|
-| `granularity_label` | enum | 粒度标签: mostly_L1_like / mostly_L2_like / mostly_L3_like / mixed |
-| `l2_fit_score` | 1-5 | L2 适配度打分 |
-| `granularity_issue` | enum | 粒度问题: too_coarse / good / too_fine / mixed |
-| `mixed_ratio_estimate` | enum | 混合粒度比例: low / medium / high |
+| `richness_analysis` | str | 1-2 句动作多样性和层次潜力分析 |
+| `action_density_score` | 1-5 | 动作密度（1=单调重复，5=多种不同动作） |
+| `state_change_score` | 1-5 | 状态变化（1=无变化/纯语言，5=丰富的物理变化） |
+| `temporal_flow_score` | 1-5 | 时序连贯性（1=随机无关，5=强因果链） |
+| `video_hierarchy_potential` | enum | high / medium / low |
 | `decision` | enum | keep / maybe / reject |
-| `reasoning` | str | 1-2 句理由 |
 
 ### 3.5 程序化决策规则（实时覆盖 LLM）
 
-规则在 `assess_sample()` 中 **实时** 应用：LLM 返回后立即调用 `apply_stage_a_rules()`，若与 LLM decision 不一致则覆写（原始决定存入 `_original_decision`）。
+规则在 `assess_sample()` 中 **实时** 应用：LLM 返回后立即调用 `apply_richness_rules()`，若与 LLM decision 不一致则覆写（原始决定存入 `_original_decision`）。
 
 ```python
-# 硬 reject:
-if label in ("mostly_L1_like", "mostly_L3_like"):  → reject
-if l2_fit_score <= 2:                               → reject
+# 硬 keep: 动作丰富 + 时序清晰
+if action_density >= 3 and temporal_flow >= 3:      → keep
 
-# 硬 keep:
-if (label == "mostly_L2_like"
-    and score >= 4
-    and issue == "good"
-    and mixed_ratio == "low"):                      → keep
+# 硬 reject: 单调或无结构
+if action_density <= 1:                              → reject
+if video_hierarchy_potential == "low":               → reject
 
 # 灰区:
-if label == "mixed":                                → maybe
-if score == 3:                                      → maybe
-if label == "mostly_L2_like" and score >= 4:        → keep (soft)
+if potential == "medium":                            → maybe
+if action_density == 2 or temporal_flow == 2:        → maybe
 ```
 
 ---
 
-## 4. Stage B：层次潜力精筛
+## 4. Stage B：层次潜力精筛（可选，当前不使用）
+
+> **注意**：v2 设计中 Stage A 已改为视频内容潜力评估（单阶段筛选），通常不再需要 Stage B。
+> Stage B 代码保留供需要时使用（如对 keep 样本做更细致的 L1/L3 分解能力评估）。
 
 ### 4.1 设计目标
 
@@ -457,17 +436,17 @@ proxy_data/data_curation/
 │   │   ├── __init__.py
 │   │   ├── llm_client.py            # API 调用、并发、断点续评
 │   │   ├── decision_rules.py        # 程序化决策规则
-│   │   ├── stage_b_fine_filter.py   # Stage B (数据源无关)
+│   │   ├── stage_b_fine_filter.py   # Stage B (可选，当前不使用)
 │   │   ├── analyze_results.py       # 结果统计分析 + HTML 报告
 │   │   └── convert_to_viz.py        # 转可视化格式 + 抽帧
 │   ├── et_instruct_164k/
 │   │   ├── text_filter.py           # Step 0: 文本规则筛选
-│   │   ├── stage_a_coarse_filter.py # Stage A (ET-Instruct 专用)
+│   │   ├── stage_a_coarse_filter.py # Stage A 内容潜力评估 (ET-Instruct 专用)
 │   │   ├── run_pipeline.sh          # 一键运行
 │   │   └── results/                 # 输出目录
 │   └── timelens_100k/
 │       ├── text_filter.py
-│       ├── stage_a_coarse_filter.py # Stage A (TimeLens 专用)
+│       ├── stage_a_coarse_filter.py # Stage A 内容潜力评估 (TimeLens 专用)
 │       ├── run_pipeline.sh
 │       └── results/
 ```
@@ -476,29 +455,29 @@ proxy_data/data_curation/
 
 ## 9. 运行命令（从 train/ 目录）
 
-### ET-Instruct 全量 Stage A
+### ET-Instruct 1K 抽样测试
 
 ```bash
 python proxy_data/data_curation/sources/et_instruct_164k/stage_a_coarse_filter.py \
     --input proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl \
     --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
-    --no-sample --workers 16
+    --sample-n 1000 --workers 16
 ```
 
-### 查看 Stage A 结果
+### ET-Instruct 全量运行
+
+```bash
+python proxy_data/data_curation/sources/et_instruct_164k/stage_a_coarse_filter.py \
+    --input proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl \
+    --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
+    --no-sample --resume --workers 16
+```
+
+### 查看结果
 
 ```bash
 python proxy_data/data_curation/sources/shared/analyze_results.py \
     --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
     --stage A --review 3 \
     --html proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_report.html
-```
-
-### Stage B（Stage A 完成后）
-
-```bash
-python proxy_data/data_curation/sources/shared/stage_b_fine_filter.py \
-    --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results_keep.jsonl \
-    --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_b_results.jsonl \
-    --data-source et_instruct --no-sample --resume --workers 16
 ```
