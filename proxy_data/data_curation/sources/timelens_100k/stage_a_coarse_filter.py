@@ -269,12 +269,13 @@ def main():
         samples = stratified_sample(samples, args.sample_n)
         print(f"分层抽样 {len(samples)} 条进行评估")
 
-    # Concurrent assessment
+    # Concurrent assessment — stream to output file (crash-safe)
     def _assess(s):
         return assess_sample(s, args.api_base, api_key, args.model)
 
     new_results, failed = run_concurrent_assessment(
         samples, _assess, workers=args.workers, score_field="l2_fit_score",
+        stream_output=args.output,
     )
 
     results = existing + new_results
@@ -294,9 +295,7 @@ def main():
     print(f"    maybe:  {len(maybe)}")
     print(f"    reject: {len(reject)}")
 
-    # Write outputs
-    write_results(results, args.output)
-
+    # Write split files (full rewrite — derived from main output)
     base = args.output.replace(".jsonl", "")
     if keep:
         write_results(keep, f"{base}_keep.jsonl")

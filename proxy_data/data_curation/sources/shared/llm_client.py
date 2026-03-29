@@ -11,6 +11,7 @@ Handles:
 import json
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -107,8 +108,10 @@ def run_concurrent_assessment(
     workers: int = 8,
     log_every: int = 20,
     score_field: str | None = None,
+    stream_output: str | None = None,
+    strip_fields: list[str] | None = None,
 ) -> tuple[list[dict], int]:
-    """Run assess_fn concurrently on samples.
+    """Run assess_fn concurrently on samples with optional streaming output.
 
     Args:
         samples: list of samples to assess
@@ -116,32 +119,57 @@ def run_concurrent_assessment(
         workers: number of concurrent threads
         log_every: log progress every N completions
         score_field: optional field path for progress logging (e.g. "l2_fit_score")
+        stream_output: if set, append each result to this JSONL file immediately
+                       (crash-safe: already-written lines survive interruption)
+        strip_fields: fields to remove before writing to stream_output
 
     Returns:
         (results, failed_count)
     """
     results: list[dict] = []
     failed = 0
+    _write_lock = threading.Lock()
+
+    # Open stream file in append mode if specified
+    stream_f = None
+    if stream_output:
+        os.makedirs(os.path.dirname(stream_output) or ".", exist_ok=True)
+        stream_f = open(stream_output, "a", encoding="utf-8")
 
     print(f"\n开始评估 {len(samples)} 条样本 (workers={workers})...")
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(assess_fn, s): i for i, s in enumerate(samples)
-        }
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(assess_fn, s): i for i, s in enumerate(samples)
+            }
 
-        for i, future in enumerate(as_completed(futures)):
-            try:
-                assessed = future.result()
-                results.append(assessed)
-                if score_field and (i + 1) % log_every == 0:
-                    assessment = assessed.get("_assessment", {})
-                    score = assessment.get(score_field, "?")
-                    decision = assessment.get("decision", "?")
-                    print(f"  [{i+1}/{len(samples)}] {score_field}={score} decision={decision}")
-            except Exception as e:
-                failed += 1
-                print(f"  样本 {futures[future]} 失败: {e}")
+            for i, future in enumerate(as_completed(futures)):
+                try:
+                    assessed = future.result()
+                    results.append(assessed)
+
+                    # Stream write: append immediately per result
+                    if stream_f:
+                        row = dict(assessed)
+                        for field in strip_fields or []:
+                            row.pop(field, None)
+                        line = json.dumps(row, ensure_ascii=False) + "\n"
+                        with _write_lock:
+                            stream_f.write(line)
+                            stream_f.flush()
+
+                    if score_field and (i + 1) % log_every == 0:
+                        assessment = assessed.get("_assessment", {})
+                        score = assessment.get(score_field, "?")
+                        decision = assessment.get("decision", "?")
+                        print(f"  [{i+1}/{len(samples)}] {score_field}={score} decision={decision}")
+                except Exception as e:
+                    failed += 1
+                    print(f"  样本 {futures[future]} 失败: {e}")
+    finally:
+        if stream_f:
+            stream_f.close()
 
     return results, failed
 
