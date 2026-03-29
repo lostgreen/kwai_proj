@@ -16,7 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 EXPS="${EXPS:-R1 R2}"
-MAX_STEPS="${MAX_STEPS:-60}"
+MAX_STEPS="${MAX_STEPS:-30}"
 
 _START=$(date +%s)
 echo "[reward_ablation] Starting: experiments=${EXPS}, max_steps=${MAX_STEPS}"

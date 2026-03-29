@@ -374,65 +374,88 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # quiet
 
-    def _json(self, data: Any, status: int = 200):
+    def _json(self, data: Any, status: HTTPStatus = HTTPStatus.OK):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
-    def _html(self, path: Path):
-        if not path.resolve().is_relative_to(_static_dir):
+    def _serve_static(self, path_text: str) -> None:
+        clean_path = path_text or "/"
+        if clean_path == "/":
+            clean_path = "/index.html"
+        target = (_static_dir / clean_path.lstrip("/")).resolve()
+        if _static_dir not in target.parents and target != _static_dir:
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        try:
-            data = path.read_bytes()
-        except FileNotFoundError:
+        if not target.exists() or not target.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        ct = "text/html; charset=utf-8"
-        if path.suffix == ".css":
-            ct = "text/css; charset=utf-8"
-        elif path.suffix == ".js":
+        if target.suffix == ".html":
+            ct = "text/html; charset=utf-8"
+        elif target.suffix == ".js":
             ct = "application/javascript; charset=utf-8"
+        elif target.suffix == ".css":
+            ct = "text/css; charset=utf-8"
+        else:
+            ct = "application/octet-stream"
+        payload = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", ct)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(payload)
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
+        if parsed.path.startswith("/api/"):
+            self._handle_api(parsed)
+            return
+        self._serve_static(parsed.path)
+
+    def _handle_api(self, parsed) -> None:
+        path = parsed.path
         qs = parse_qs(parsed.query)
 
-        if path in ("", "/", "/index.html"):
-            self._html(_static_dir / "index.html")
-        elif path == "/api/summary":
-            self._json(store.summary())
-        elif path == "/api/samples":
-            offset = int(qs.get("offset", ["0"])[0])
-            limit = int(qs.get("limit", ["50"])[0])
-            level = qs.get("level", [""])[0]
-            self._json(store.list_samples(offset, limit, level))
-        elif path.startswith("/api/sample/"):
-            vk = unquote(path[len("/api/sample/"):])
-            step_str = qs.get("step", [None])[0]
-            step = int(step_str) if step_str else None
-            data = store.get_sample(vk, step)
-            if data:
-                self._json(data)
-            else:
-                self._json({"error": "not found"}, 404)
-        elif path.startswith("/api/frames/"):
-            vk = unquote(path[len("/api/frames/"):])
-            fps = _safe_float(qs.get("fps", ["1"])[0], 1.0)
-            frames = store.get_frames(vk, fps)
-            self._json({"video_key": vk, "frames": frames})
-        else:
-            self.send_error(HTTPStatus.NOT_FOUND)
+        try:
+            if path == "/api/summary":
+                self._json(store.summary())
+                return
+
+            if path == "/api/samples":
+                offset = int(qs.get("offset", ["0"])[0])
+                limit = int(qs.get("limit", ["50"])[0])
+                level = qs.get("level", [""])[0]
+                self._json(store.list_samples(offset, limit, level))
+                return
+
+            if path.startswith("/api/sample/"):
+                vk = unquote(path[len("/api/sample/"):])
+                step_str = qs.get("step", [None])[0]
+                step = int(step_str) if step_str else None
+                data = store.get_sample(vk, step)
+                if data:
+                    self._json(data)
+                else:
+                    self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+
+            if path.startswith("/api/frames/"):
+                vk = unquote(path[len("/api/frames/"):])
+                fps = _safe_float(qs.get("fps", ["1"])[0], 1.0)
+                frames = store.get_frames(vk, fps)
+                self._json({"video_key": vk, "frames": frames})
+                return
+
+            self._json({"error": f"unknown api path: {path}"}, HTTPStatus.NOT_FOUND)
+        except FileNotFoundError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
 def main():
