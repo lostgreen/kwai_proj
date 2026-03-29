@@ -96,12 +96,23 @@ for pt in sorted(by_level):
 random.shuffle(all_train)
 random.shuffle(all_val)
 
+def _norm(r):
+    m = r.get('metadata')
+    if isinstance(m, dict):
+        r = dict(r)
+        m = dict(m)
+        if 'level' in m: m['level'] = str(m['level'])
+        for k in ('duration','n_events','n_segments','window_start','window_end','n_warped_frames','original_duration'):
+            if k in m and m[k] is not None: m[k] = float(m[k])
+        r['metadata'] = m
+    return r
+
 with open('${TRAIN_FILE}', 'w') as f:
     for r in all_train:
-        f.write(json.dumps(r, ensure_ascii=False) + '\n')
+        f.write(json.dumps(_norm(r), ensure_ascii=False) + '\n')
 with open('${TEST_FILE}', 'w') as f:
     for r in all_val:
-        f.write(json.dumps(r, ensure_ascii=False) + '\n')
+        f.write(json.dumps(_norm(r), ensure_ascii=False) + '\n')
 
 print(f'Total: {len(all_train)} train + {len(all_val)} val')
 "

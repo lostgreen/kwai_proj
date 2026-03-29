@@ -46,11 +46,30 @@ def load_jsonl(path):
     return records
 
 
+def _normalize_metadata(record: dict) -> dict:
+    """确保 metadata 字段类型一致（pyarrow 不允许混合类型）。"""
+    meta = record.get("metadata")
+    if not isinstance(meta, dict):
+        return record
+    record = dict(record)
+    meta = dict(meta)
+    # level: 统一为字符串
+    if "level" in meta:
+        meta["level"] = str(meta["level"])
+    # 数值字段统一为 float
+    for k in ("duration", "n_events", "n_segments", "window_start", "window_end",
+              "n_warped_frames", "original_duration"):
+        if k in meta and meta[k] is not None:
+            meta[k] = float(meta[k])
+    record["metadata"] = meta
+    return record
+
+
 def write_jsonl(records, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            f.write(json.dumps(_normalize_metadata(r), ensure_ascii=False) + "\n")
 
 
 def extract_duration_from_prompt(prompt_text: str) -> int:
