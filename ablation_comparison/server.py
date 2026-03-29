@@ -100,7 +100,7 @@ def _image_to_data_url(image: Image.Image, max_w: int = 180) -> str:
     return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
 
-def _extract_frames_from_video(video_path: str, fps: float = 1.0, max_frames: int = 64) -> list[dict]:
+def _extract_frames_from_video(video_path: str, fps: float = 1.0, max_frames: int = 300) -> list[dict]:
     """Try to extract frames using decord. Returns list of {second, src}."""
     try:
         import decord

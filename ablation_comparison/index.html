@@ -120,6 +120,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .frame-thumb.highlight{border-color:var(--accent);box-shadow:0 0 0 2px rgba(45,108,223,.25)}
 .frame-label{position:absolute;top:50px;left:0;width:64px;text-align:center;
   font-size:9px;color:var(--muted);font-family:"SF Mono",monospace}
+
+/* ── Expand toggle ── */
+.expand-btn{padding:2px 0 4px 108px;font-size:10px;color:var(--accent);cursor:pointer;user-select:none}
+.expand-btn:hover{text-decoration:underline}
+.extra-lanes .segment{opacity:.55}
+.extra-lanes .lane-track{height:34px}
 </style>
 </head>
 <body>
@@ -292,14 +298,23 @@ async function loadFrames(videoKey) {
   try {
     var data = await api('/api/frames/' + encodeURIComponent(videoKey) + '?fps=1');
     var frames = data.frames || [];
+    var strip = document.getElementById('frameStrip');
+    var meta = document.getElementById('framesMeta');
+    if (!strip) return;
+    var html = '';
     for (var i = 0; i < frames.length; i++) {
-      var el = document.getElementById('f-' + frames[i].second);
-      if (el && frames[i].src) {
-        el.innerHTML = '<img loading="lazy" src="' + frames[i].src + '"/>';
-      }
+      var sec = frames[i].second;
+      var fLeft = sec * STRIDE;
+      html += '<div class="frame-thumb" id="f-' + sec + '" style="left:' + fLeft + 'px">'
+        + (frames[i].src ? '<img loading="lazy" src="' + frames[i].src + '"/>' : '')
+        + '</div>'
+        + '<div class="frame-label" style="left:' + fLeft + 'px">' + sec + 's</div>';
     }
+    strip.innerHTML = html;
+    if (meta) meta.textContent = frames.length + ' frames';
   } catch (e) {
-    // Frames are optional enhancement — ignore errors silently
+    var meta = document.getElementById('framesMeta');
+    if (meta) meta.textContent = 'unavailable';
   }
 }
 
@@ -315,6 +330,19 @@ function highlightFrames(startSec, endSec) {
 function clearFrameHighlight() {
   var els = document.querySelectorAll('.frame-thumb.highlight');
   for (var i = 0; i < els.length; i++) els[i].classList.remove('highlight');
+}
+
+/* ── Expand/Collapse All Records ── */
+function toggleExtra(idx, btn, count) {
+  var el = document.getElementById('extra-' + idx);
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = '';
+    btn.textContent = '\u25bc \u6536\u8d77';
+  } else {
+    el.style.display = 'none';
+    btn.textContent = '\u25b6 \u5c55\u5f00 ' + count + ' \u4e2a response';
+  }
 }
 
 /* ── Render Comparison (reuses lane-track pattern from segmentation_visualize) ── */
@@ -344,16 +372,9 @@ function renderComparison(data) {
   html += '<div class="sync-shell" id="scrollShell"><div class="sync-inner" style="width:' + totalWidth + 'px">';
 
   /* ── Frame strip (1fps thumbnails, loaded async) ── */
-  var nFrames = Math.ceil(dur);
   html += '<div class="lane-block"><div class="lane-head"><div class="lane-title">Frames</div>'
-    + '<div class="lane-meta">1 fps</div></div>'
-    + '<div class="frame-strip" style="width:' + totalWidth + 'px">';
-  for (var fi = 0; fi < nFrames; fi++) {
-    var fLeft = fi * STRIDE;
-    html += '<div class="frame-thumb" id="f-' + fi + '" style="left:' + fLeft + 'px"></div>'
-      + '<div class="frame-label" style="left:' + fLeft + 'px">' + fi + 's</div>';
-  }
-  html += '</div></div>';
+    + '<div class="lane-meta" id="framesMeta">loading...</div></div>'
+    + '<div class="frame-strip" id="frameStrip" style="width:' + totalWidth + 'px"></div></div>';
 
   html += renderRuler(dur, totalWidth);
   html += renderLane('GT', gtSegs, totalWidth, dur, 'seg-gt', gtSegs.length + ' segments');
@@ -361,8 +382,20 @@ function renderComparison(data) {
     var n = names[i], s = settings[n];
     var meta = s.is_training_data
       ? '\u8bad\u7ec3\u6570\u636e'
-      : 'step ' + s.step + ' \u00b7 r=' + s.reward.toFixed(3);
+      : 'best \u00b7 r=' + s.reward.toFixed(3);
     html += renderLane(n, s.predicted || [], totalWidth, dur, settingSegClass(n), meta);
+    /* ── Expandable all-records lanes ── */
+    var recs = (s.all_records || []).slice().sort(function (a, b) { return b.reward - a.reward; });
+    if (recs.length > 1) {
+      html += '<div class="extra-lanes" id="extra-' + i + '" style="display:none">';
+      for (var j = 0; j < recs.length; j++) {
+        html += renderLane(n + ' #' + (j + 1), recs[j].predicted || [], totalWidth, dur,
+          settingSegClass(n), 'r=' + recs[j].reward.toFixed(3));
+      }
+      html += '</div>';
+      html += '<div class="expand-btn" onclick="toggleExtra(' + i + ',this,' + recs.length + ')">'
+        + '\u25b6 \u5c55\u5f00 ' + recs.length + ' \u4e2a response</div>';
+    }
   }
   html += '</div></div>';
 
