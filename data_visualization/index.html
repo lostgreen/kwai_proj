@@ -239,6 +239,10 @@ button,input,textarea{font:inherit}
    ============================================================ */
 .caption-trio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;min-width:0}
 .caption-col{padding:14px 16px;display:grid;gap:10px;min-width:0}
+/* Lazy frame loading spinner */
+.frames-lazy-bar{font-size:11px;color:var(--muted);padding:6px 2px;display:flex;align-items:center;gap:6px}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .direction-badge{
   display:inline-flex;align-items:center;gap:7px;
   padding:5px 11px;border-radius:999px;font-size:12px;font-weight:700;
@@ -597,6 +601,8 @@ button,input,textarea{font:inherit}
      ============================================================ -->
 <script>
 /* ---- Shared helpers ---- */
+/* Base path prefix: handles reverse-proxy deployments (e.g. /proxy/PORT/). */
+const BASE = window.location.pathname.replace(/\/[^/]*$/, '');
 function esc(v){
   return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -605,8 +611,10 @@ function mmss(t){
   return String(Math.floor(n/60)).padStart(2,'0')+':'+String(Math.floor(n%60)).padStart(2,'0');
 }
 async function fetchJson(url){
-  const r=await fetch(url);
-  const d=await r.json();
+  const r=await fetch(BASE+url);
+  const text=await r.text();
+  let d=null;
+  try{ d=text?JSON.parse(text):{}; }catch(_){ throw new Error(`HTTP ${r.status}: ${(text||'').slice(0,180)}`); }
   if(!r.ok) throw new Error(d.error||`Request failed: ${r.status}`);
   return d;
 }
@@ -1360,17 +1368,54 @@ function candSelectRecord(recordId){
   CAND.activeRecordId=recordId;
   CAND.activeRecord=null;
   candRenderRecordList();
-  document.getElementById('cand-header').innerHTML=`<div class="clip-title">加载中（抽取视频帧）...</div>`;
-  // Always fetch from API to get on-demand frame extraction
-  const cached=CAND.allRecords[recordId];
-  if(cached && cached.video_frames && cached.video_frames.length>0){
-    CAND.activeRecord=cached;
+  document.getElementById('cand-header').innerHTML=`<div class="clip-title">加载中...</div>`;
+  const r=CAND.allRecords[recordId];
+  if(r){
+    CAND.activeRecord=r;
     candRenderActive();
+    // Lazy-load frames if not yet loaded
+    if(!r.video_frames || r.video_frames.length===0){
+      candLazyLoadFrames(recordId);
+    }
   }else{
+    // Fetch full record (metadata + events), then lazy-load frames
     fetchJson('/api/candidate/record/'+encodeURIComponent(recordId))
-      .then(rec=>{CAND.allRecords[recordId]=rec;CAND.activeRecord=rec;candRenderActive();})
+      .then(rec=>{
+        CAND.allRecords[recordId]=rec;
+        CAND.activeRecord=rec;
+        candRenderActive();
+        if(!rec.video_frames || rec.video_frames.length===0){
+          candLazyLoadFrames(recordId);
+        }
+      })
       .catch(e=>candSetStatus(e.message,true));
   }
+}
+function candLazyLoadFrames(recordId){
+  fetch(BASE+'/api/candidate/record/'+encodeURIComponent(recordId))
+    .then(r=>r.json())
+    .then(data=>{
+      const frames=data.video_frames||[];
+      if(frames.length>0){
+        const rec=CAND.allRecords[recordId];
+        if(rec) rec.video_frames=frames;
+        // Re-render if still viewing this record
+        if(CAND.activeRecordId===recordId){
+          CAND.activeRecord=rec;
+          candRenderActive();
+        }
+      }else{
+        // No frames — update UI to show diagnostic
+        const container=document.getElementById('cand-timeline');
+        const existing=container?.querySelector('.frames-lazy-bar');
+        if(existing) existing.innerHTML='<span style="color:var(--danger);font-size:11px">视频帧不可用（视频文件不存在或 decord/ffmpeg 不可用）</span>';
+      }
+    })
+    .catch(()=>{
+      const container=document.getElementById('cand-timeline');
+      const existing=container?.querySelector('.frames-lazy-bar');
+      if(existing) existing.innerHTML='<span style="color:var(--danger);font-size:11px">网络错误 — 无法加载帧</span>';
+    });
 }
 function candRenderActive(){
   const r=CAND.activeRecord;
@@ -1387,6 +1432,7 @@ function candRenderSyncTimeline(r){
   const events=r.events||[];
   const dur=r.duration||1;
   const nFrames=frames.length;
+  const isLazyLoading=!nFrames && events.length>0;
 
   if(!nFrames && !events.length){
     container.innerHTML='<div class="section-title">Synced Frames & Events</div><div class="detail-empty">无视频帧且无事件数据。</div>';
@@ -1394,7 +1440,8 @@ function candRenderSyncTimeline(r){
   }
 
   // Use STRIDE-based layout: totalWidth maps to full duration
-  const totalWidth=Math.max(nFrames*STRIDE, 600);
+  // When no frames yet, use events to determine scale
+  const totalWidth=nFrames>0 ? Math.max(nFrames*STRIDE, 600) : Math.max(Math.round(dur)*10, 600);
   const pxPerSec=totalWidth/dur;
 
   // Frame row: each frame positioned by its approximate timestamp
@@ -1428,9 +1475,10 @@ function candRenderSyncTimeline(r){
 
   container.innerHTML=`
     <div class="section-title">Synced Frames & Events · coverage ${coverPct}%</div>
+    ${isLazyLoading?'<div class="frames-lazy-bar"><span class="spin"></span> 视频帧加载中…</div>':''}
     <div class="legend">
       <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div>Events (${events.length})</div>
-      <div class="legend-item" style="margin-left:auto;font-size:11px">Duration: ${mmss(dur)} · ${nFrames} frames</div>
+      <div class="legend-item" style="margin-left:auto;font-size:11px">Duration: ${mmss(dur)} · ${nFrames||'…'} frames</div>
     </div>
     <div class="sync-shell" id="cand-timelineShell">
       <div class="sync-inner" style="width:${totalWidth}px">
@@ -1595,7 +1643,7 @@ function candBootPreloaded(){
   if(srcLabel) srcLabel.textContent=c.data_path||'（预加载）';
   CAND.allRecords=c.all_records||{};
   candApplySummary(c.summary);
-  candSetStatus(`已加载 ${c.summary.total} 个 ${c.summary.format_type} 候选记录（视频帧按需提取）`);
+  candSetStatus(`已加载 ${c.summary.total} 个 ${c.summary.format_type} 候选记录（帧按需加载）`);
   if(CAND.filteredRecords.length>0) candSelectRecord(CAND.filteredRecords[0].record_id);
 }
 
