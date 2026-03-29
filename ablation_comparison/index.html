@@ -111,6 +111,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .spin{display:inline-block;width:20px;height:20px;border:2px solid rgba(0,0,0,.1);
   border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Frame strip (adapted from segmentation_visualize) ── */
+.frame-strip{position:relative;height:66px}
+.frame-thumb{position:absolute;top:0;width:64px;height:48px;border-radius:6px;overflow:hidden;
+  border:1px solid rgba(71,85,105,.1);background:linear-gradient(135deg,rgba(45,108,223,.04),rgba(21,154,140,.04))}
+.frame-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.frame-label{position:absolute;top:50px;left:0;width:64px;text-align:center;
+  font-size:9px;color:var(--muted);font-family:"SF Mono",monospace}
 </style>
 </head>
 <body>
@@ -144,7 +152,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 
 <script>
 /* ── Constants ── */
-const STRIDE = 10;
+const FRAME_W = 64;
+const FRAME_GAP = 6;
+const STRIDE = FRAME_W + FRAME_GAP; /* 70px per second — aligns with frame thumbnails */
 const MIN_WIDTH = 800;
 const GT_COLOR = '#ef4444';
 const COLORS = ['#2d6cdf','#e49d1c','#d4577c','#059669','#7c3aed','#0891b2','#eab308','#f87171'];
@@ -269,8 +279,26 @@ async function selectSample(videoKey) {
     var data = await api('/api/sample/' + encodeURIComponent(videoKey));
     if (data.error) { content.innerHTML = '<div class="empty">\u672a\u627e\u5230</div>'; return; }
     renderComparison(data);
+    // Async load frame thumbnails (non-blocking, optional)
+    loadFrames(videoKey);
   } catch (e) {
     content.innerHTML = '<div class="empty">\u52a0\u8f7d\u5931\u8d25: ' + esc(e.message) + '</div>';
+  }
+}
+
+/* ── Async Frame Loading ── */
+async function loadFrames(videoKey) {
+  try {
+    var data = await api('/api/frames/' + encodeURIComponent(videoKey) + '?fps=1');
+    var frames = data.frames || [];
+    for (var i = 0; i < frames.length; i++) {
+      var el = document.getElementById('f-' + frames[i].second);
+      if (el && frames[i].src) {
+        el.innerHTML = '<img loading="lazy" src="' + frames[i].src + '"/>';
+      }
+    }
+  } catch (e) {
+    // Frames are optional enhancement — ignore errors silently
   }
 }
 
@@ -298,6 +326,19 @@ function renderComparison(data) {
 
   /* ── Timeline (lane-track per setting, reused from segmentation_visualize) ── */
   html += '<div class="sync-shell" id="scrollShell"><div class="sync-inner" style="width:' + totalWidth + 'px">';
+
+  /* ── Frame strip (1fps thumbnails, loaded async) ── */
+  var nFrames = Math.ceil(dur);
+  html += '<div class="lane-block"><div class="lane-head"><div class="lane-title">Frames</div>'
+    + '<div class="lane-meta">1 fps</div></div>'
+    + '<div class="frame-strip" style="width:' + totalWidth + 'px">';
+  for (var fi = 0; fi < nFrames; fi++) {
+    var fLeft = fi * STRIDE;
+    html += '<div class="frame-thumb" id="f-' + fi + '" style="left:' + fLeft + 'px"></div>'
+      + '<div class="frame-label" style="left:' + fLeft + 'px">' + fi + 's</div>';
+  }
+  html += '</div></div>';
+
   html += renderRuler(dur, totalWidth);
   html += renderLane('GT', gtSegs, totalWidth, dur, 'seg-gt', gtSegs.length + ' segments');
   for (var i = 0; i < names.length; i++) {
