@@ -17,7 +17,7 @@ set -x
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 _EXP_DIR="${SCRIPT_DIR}"
-source "${_EXP_DIR}/../../common.sh"
+source "${_EXP_DIR}/../common.sh"
 
 # ---- 实验命名 ----
 EXP_NAME="${EXP_NAME:-prompt_ablation_PA2_v3boundary}"
@@ -40,7 +40,7 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
     echo "[prompt_ablation] Step 1: Building base data from annotations ..."
     BUILD_LEVELS="${LEVELS//L3/L3_seg}"
     # shellcheck disable=SC2086
-    python3 "${_EXP_DIR}/../../build_hier_data.py" \
+    python3 "${_EXP_DIR}/../build_hier_data.py" \
       --annotation-dir "${ANNOTATION_DIR}" \
       --clip-dir-l2 "${CLIP_DIR_L2}" \
       --clip-dir-l3 "${CLIP_DIR_L3}" \
@@ -64,4 +64,4 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
 fi
 
 # ---- 启动训练 ----
-source "${_EXP_DIR}/../../launch_train.sh"
+source "${_EXP_DIR}/../launch_train.sh"
