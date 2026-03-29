@@ -227,13 +227,17 @@ function renderComparison(data){
   let html = '';
 
   // ── Legend ──
+  const isTrainingMode = names.every(n => settings[n].is_training_data);
   html += `<div class="legend">
     <div class="legend-item"><div class="legend-dot" style="background:${GT_COLOR}"></div>Ground Truth</div>
-    ${names.map(n =>
-      `<div class="legend-item"><div class="legend-dot" style="background:${settingColor(n)}"></div>${esc(n)}
-        <span style="color:var(--muted);font-size:10px">(r=${settings[n].reward.toFixed(3)})</span>
-      </div>`
-    ).join('')}
+    ${names.map(n => {
+      const s = settings[n];
+      const rewardText = s.is_training_data ? '' : ` (r=${s.reward.toFixed(3)})`;
+      return `<div class="legend-item"><div class="legend-dot" style="background:${settingColor(n)}"></div>${esc(n)}
+        <span style="color:var(--muted);font-size:10px">${rewardText}</span>
+      </div>`;
+    }).join('')}
+    ${isTrainingMode ? '<div class="badge" style="background:rgba(251,191,36,.15);color:var(--yellow);margin-left:auto">📋 训练数据模式 — 对比 Prompt 差异</div>' : ''}
   </div>`;
 
   // ── Timeline Card ──
@@ -257,19 +261,22 @@ function renderComparison(data){
 
   // ── Reward Comparison ──
   html += `<div class="card">
-    <div class="card-head">📊 Reward 对比</div>
+    <div class="card-head">📊 Reward / 数据对比</div>
     <div class="card-body">
       <table class="reward-table">
-        <tr><th>Setting</th><th>Step</th><th>Level</th><th>Reward</th><th>预测段数</th><th>GT段数</th></tr>
+        <tr><th>Setting</th><th>Step</th><th>Level</th><th>Type</th><th>Reward</th><th>预测段数</th><th>GT段数</th></tr>
         ${names.map(n => {
           const s = settings[n];
           const rc = settingColor(n);
           const nPred = s.predicted.length;
+          const isTraining = s.is_training_data;
+          const typeLabel = isTraining ? '<span style="color:var(--yellow)">训练数据</span>' : 'Rollout';
           return `<tr>
             <td><span style="color:${rc};font-weight:700">${esc(n)}</span></td>
             <td>${s.step}</td>
             <td>${esc(s.level)}</td>
-            <td><div class="reward-bar" style="width:${Math.max(2,s.reward*80)}px;background:${rc}"></div>${s.reward.toFixed(4)}</td>
+            <td>${typeLabel}</td>
+            <td>${isTraining ? '—' : `<div class="reward-bar" style="width:${Math.max(2,s.reward*80)}px;background:${rc}"></div>${s.reward.toFixed(4)}`}</td>
             <td>${nPred}</td>
             <td>${gtSegs.length}</td>
           </tr>`;

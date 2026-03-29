@@ -59,6 +59,37 @@ def _video_key(paths: list[str]) -> str:
     return ""
 
 
+def _derive_duration(metadata: dict) -> float:
+    """Derive clip duration from metadata fields."""
+    # L2: window-based
+    ws = _safe_float(metadata.get("window_start_sec"), -1)
+    we = _safe_float(metadata.get("window_end_sec"), -1)
+    if ws >= 0 and we > ws:
+        return we - ws
+    # L3: clip-based
+    cs = _safe_float(metadata.get("clip_start_sec"), -1)
+    ce = _safe_float(metadata.get("clip_end_sec"), -1)
+    if cs >= 0 and ce > cs:
+        return ce - cs
+    # Fallback: explicit duration
+    d = _safe_float(metadata.get("duration"), 0)
+    if d > 0:
+        return d
+    d = _safe_float(metadata.get("clip_duration_sec"), 0)
+    return d
+
+
+def _normalize_level(raw_level) -> str:
+    """Normalize level from various formats to 'L1', 'L2', 'L3', etc."""
+    s = str(raw_level).strip()
+    if s.startswith("L") or s.startswith("l"):
+        return s.upper()
+    try:
+        return f"L{int(float(s))}"
+    except (ValueError, TypeError):
+        return s
+
+
 def _image_to_data_url(image: Image.Image, max_w: int = 180) -> str:
     image = image.convert("RGB")
     if image.width > max_w:
@@ -136,28 +167,37 @@ class ComparisonStore:
         self.video_index.clear()
         for setting_name, info in self.settings.items():
             for rec in info["records"]:
+                # ── Video paths: support both `videos` and `video_paths` ──
                 vpaths = rec.get("video_paths") or rec.get("videos") or []
                 if isinstance(vpaths, str):
                     vpaths = [vpaths]
-                # Also check multi_modal_source
                 mms = rec.get("multi_modal_source") or {}
                 if not vpaths:
                     vpaths = mms.get("videos") or []
 
                 vk = _video_key(vpaths)
                 if not vk:
-                    # fallback: use uid
                     vk = str(rec.get("uid") or rec.get("problem_id") or id(rec))
 
-                if vk not in self.video_index:
-                    # Determine GT & duration from any available record
-                    gt_text = str(rec.get("ground_truth") or rec.get("answer") or "")
-                    ts = rec.get("temporal_segments")
-                    gt_segs = (ts or {}).get("ground_truth", []) if isinstance(ts, dict) else []
-                    if not gt_segs:
-                        gt_segs = _extract_segments(gt_text)
+                # ── Metadata ──
+                metadata = rec.get("metadata") or {}
+                raw_level = metadata.get("level", "")
+                level = _normalize_level(raw_level)
+                problem_type = str(rec.get("problem_type") or "")
 
-                    dur = _safe_float(rec.get("duration") or (rec.get("metadata") or {}).get("duration"), 0)
+                # ── Duration: derive from metadata ──
+                dur = _derive_duration(metadata)
+                if dur <= 0:
+                    dur = _safe_float(rec.get("duration"), 0)
+
+                # ── GT segments: support `answer`, `ground_truth`, `temporal_segments` ──
+                gt_text = str(rec.get("ground_truth") or rec.get("answer") or "")
+                ts = rec.get("temporal_segments")
+                gt_segs = (ts or {}).get("ground_truth", []) if isinstance(ts, dict) else []
+                if not gt_segs:
+                    gt_segs = _extract_segments(gt_text)
+
+                if vk not in self.video_index:
                     if dur <= 0 and gt_segs:
                         dur = max(e for _, e in gt_segs) * 1.1
 
@@ -171,51 +211,48 @@ class ComparisonStore:
                     }
 
                 entry = self.video_index[vk]
-                # Update GT from any setting that has it
-                if not entry["gt_segments"]:
-                    gt_text = str(rec.get("ground_truth") or rec.get("answer") or "")
-                    ts = rec.get("temporal_segments")
-                    gt_segs = (ts or {}).get("ground_truth", []) if isinstance(ts, dict) else []
-                    if not gt_segs:
-                        gt_segs = _extract_segments(gt_text)
-                    if gt_segs:
-                        entry["gt_segments"] = gt_segs
 
-                # Parse predicted segments
+                # Update GT if missing
+                if not entry["gt_segments"] and gt_segs:
+                    entry["gt_segments"] = gt_segs
+
+                # Update duration if missing
+                if entry["duration"] <= 0 and dur > 0:
+                    entry["duration"] = dur
+
+                # ── Predicted segments ──
+                # Rollout data: `response` field + `temporal_segments.predicted`
+                # Training data: no predictions — use `answer` as GT only
                 response = str(rec.get("response") or "")
-                ts = rec.get("temporal_segments")
                 pred_segs = (ts or {}).get("predicted", []) if isinstance(ts, dict) else []
-                if not pred_segs:
+                if not pred_segs and response:
                     pred_segs = _extract_segments(response)
+
+                # For training data (no response), show GT as "expected output"
+                is_training_data = not response and not rec.get("temporal_segments")
+                if is_training_data:
+                    pred_segs = gt_segs  # Show what the GT expects
 
                 reward = _safe_float(rec.get("reward"), 0.0)
                 step = int(rec.get("step", 0))
                 phase = str(rec.get("phase") or "train")
                 prompt = str(rec.get("prompt") or "")
-                problem_type = str(rec.get("problem_type") or "")
-                level = str((rec.get("metadata") or {}).get("level", ""))
 
                 record_info = {
                     "predicted": pred_segs,
                     "reward": reward,
                     "step": step,
                     "phase": phase,
-                    "response": response,
+                    "response": response if response else gt_text,
                     "prompt": prompt,
                     "problem_type": problem_type,
                     "level": level,
+                    "is_training_data": is_training_data,
                 }
 
                 entry["settings"].setdefault(setting_name, []).append(record_info)
-                # Store prompt per setting (use first seen)
                 if setting_name not in entry["prompt"]:
                     entry["prompt"][setting_name] = prompt
-
-                # Update duration
-                if entry["duration"] <= 0:
-                    dur = _safe_float(rec.get("duration") or (rec.get("metadata") or {}).get("duration"), 0)
-                    if dur > 0:
-                        entry["duration"] = dur
 
         # Sort by video key
         self.video_keys = sorted(self.video_index.keys())
@@ -312,6 +349,7 @@ class ComparisonStore:
                 "response": best["response"],
                 "prompt": best["prompt"],
                 "level": best["level"],
+                "is_training_data": best.get("is_training_data", False),
                 "all_records": [
                     {
                         "predicted": r["predicted"],

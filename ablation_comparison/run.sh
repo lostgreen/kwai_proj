@@ -22,7 +22,7 @@ PORT="${PORT:-8790}"
 
 # Default data roots (adjust for your server)
 ABLATION_DATA_ROOT="${ABLATION_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/youcook2_seg_annotation/ablation_data}"
-ROLLOUT_ROOT="${ROLLOUT_ROOT:-/m2v_intern/xuboshen/zgw/hier_seg/ablations}"
+ROLLOUT_ROOT="${ROLLOUT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/hier_seg/ablations}"
 
 if [[ "${1:-}" == "--data" ]]; then
     echo "=== Comparing training data ==="
@@ -34,12 +34,11 @@ if [[ "${1:-}" == "--data" ]]; then
         --port "$PORT"
 elif [[ "${1:-}" == "--rollout" ]]; then
     echo "=== Comparing rollout outputs ==="
-    # Rollout dirs are inside each experiment's checkpoint directory
     python3 server.py \
-        --setting "PA1:${ROLLOUT_ROOT}/prompt_ablation_PA1_original/rollout" \
-        --setting "PA2:${ROLLOUT_ROOT}/prompt_ablation_PA2_v3boundary/rollout" \
-        --setting "R1:${ROLLOUT_ROOT}/reward_ablation_R1_f1iou/rollout" \
-        --setting "R2:${ROLLOUT_ROOT}/reward_ablation_R2_boundary/rollout" \
+        --setting "PA1:${ROLLOUT_ROOT}/prompt_ablation_PA1_original/rollouts" \
+        --setting "PA2:${ROLLOUT_ROOT}/prompt_ablation_PA2_v3boundary/rollouts" \
+        --setting "R1:${ROLLOUT_ROOT}/reward_ablation_R1_f1iou/rollouts" \
+        --setting "R2:${ROLLOUT_ROOT}/reward_ablation_R2_boundary/rollouts" \
         --port "$PORT"
 else
     # Pass through all arguments
