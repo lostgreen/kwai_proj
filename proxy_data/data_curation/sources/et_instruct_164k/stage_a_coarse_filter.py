@@ -1,32 +1,21 @@
 """
-Stage A — 视频内容潜力评估 (ET-Instruct-164K)
+Stage A — 视频内容潜力评估 (ET-Instruct-164K) — Source Routing 版
 
-目的：基于文本标注判断视频是否包含丰富的、适合层次分割的内容。
-     不再判断标注本身的粒度，而是评估视频的动作密度、状态变化和时序连贯性。
+基于 source 字段将样本分为三组，使用不同的 Prompt 策略：
+  - Group A (Dense Manual): coin, activitynet_captions, tacos, didemo, charades_sta
+    → 考核边界清晰度 + 篇章多样性
+  - Group B (Coarse Manual): activitynet, hacs, thumos14
+    → 只考核物理丰富度（粗标签场景）
+  - Group C (ASR/Auto): how_to_step, how_to_caption, queryd, ego4d_naq
+    → 忽略时间戳，只看文本是否描述多步骤物理操作
 
-核心原则：
-  - 标注粒度不重要（L3 细粒度标注反而是好信号）
-  - 关注视频内容本身的丰富度和层次潜力
-  - 只 reject 真正单调/无结构的视频
+未匹配的 source 默认走 Group A。
 
 输入: text_filter.py 产出的 passed.jsonl
 输出:
   - stage_a_results.jsonl     — 全部评估结果
-  - stage_a_keep.jsonl        — decision=keep 的样本
-  - stage_a_maybe.jsonl       — decision=maybe 的边界样本
-  - stage_a_reject.jsonl      — decision=reject 的淘汰样本
-
-用法:
-    python stage_a_coarse_filter.py \\
-        --input results/passed.jsonl \\
-        --output results/stage_a_results.jsonl \\
-        --sample-n 1000
-
-    # 全量评估（断点续评）
-    python stage_a_coarse_filter.py \\
-        --input results/passed.jsonl \\
-        --output results/stage_a_results.jsonl \\
-        --no-sample --resume --workers 16
+  - stage_a_results_keep.jsonl
+  - stage_a_results_reject.jsonl
 """
 
 import json
@@ -35,7 +24,6 @@ import os
 import re
 import sys
 
-# Ensure shared module is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.llm_client import (
     call_llm,
@@ -44,11 +32,28 @@ from shared.llm_client import (
     stratified_sample,
     write_results,
 )
-from shared.decision_rules import apply_richness_rules
 
-# ── Stage A Prompts — 视频内容潜力评估 ─────────────────
+# ── Source → Group Mapping ────────────────────────────────
 
-STAGE_A_SYSTEM = """\
+GROUP_A_SOURCES = {"coin", "activitynet_captions", "tacos", "didemo", "charades_sta"}
+GROUP_B_SOURCES = {"activitynet", "hacs", "thumos14"}
+GROUP_C_SOURCES = {"how_to_step", "how_to_caption", "queryd", "ego4d_naq", "naq"}
+
+
+def get_source_group(source: str) -> str:
+    s = source.lower().strip()
+    if s in GROUP_A_SOURCES:
+        return "A"
+    if s in GROUP_B_SOURCES:
+        return "B"
+    if s in GROUP_C_SOURCES:
+        return "C"
+    return "A"  # default
+
+
+# ── Group A: Dense Manual — 边界清晰度 + 篇章多样性 ──────
+
+SYSTEM_A = """\
 You are a data curator selecting videos for a 3-level Hierarchical Temporal \
 Segmentation task (Macro-phases L1 -> Local events L2 -> Atomic actions L3).
 
@@ -67,48 +72,23 @@ or a cooking video with "prep -> cook -> serve").
 
 Criteria for REJECTION:
 1. Flat Repetition (Looping): The exact same type of action is repeated \
-over and over (e.g., "Person A jumps, Person B jumps, Person C jumps" OR \
-"applying cream 1, cream 2, cream 3..."). These cannot be grouped into \
-meaningful L1 macro-phases.
+over and over. These cannot be grouped into meaningful L1 macro-phases.
 2. Monolithic Activity: The entire video is essentially one continuous \
-state with no clear event boundaries (e.g., "kids dancing for 2 minutes" \
-or "a person talking to the camera the whole time").
+state with no clear event boundaries.
 
 ## Examples
 
 ### Example 1 — diverse phases (keep)
-
-Input:
-Video duration: 180.0s | Domain: coin | Segments: 7
-  1. [0.0s - 23.5s] Spread glue evenly on the wood surface
-  2. [23.5s - 48.0s] Attach decorative veneer to the glued surface
-  3. [48.0s - 72.0s] Trim excess veneer with a utility knife
-  4. [72.0s - 98.0s] Sand the edges smooth with fine sandpaper
-  5. [98.0s - 125.0s] Apply first coat of lacquer finish
-  6. [125.0s - 155.0s] Let dry and sand lightly between coats
-  7. [155.0s - 180.0s] Apply final protective coat
-
-Output:
-{"structural_analysis":"3 clear chapters: surface prep (1-2), shaping (3-4), finishing (5-7). Each event has distinct tools and observable state changes.","boundary_clarity_score":5,"phase_diversity_score":5,"decision":"keep"}
+Input: 7 woodworking segments (glue, veneer, trim, sand, lacquer, dry, coat)
+Output: {"structural_analysis":"3 chapters: prep(1-2), shaping(3-4), finishing(5-7).","boundary_clarity_score":5,"phase_diversity_score":5,"decision":"keep"}
 
 ### Example 2 — flat repetition (reject)
+Input: 6 tennis rally segments (serve, return, hit, hit, serve, return)
+Output: {"structural_analysis":"Same hitting action repeated. No phase transitions.","boundary_clarity_score":3,"phase_diversity_score":1,"decision":"reject"}
 
-Input:
-Video duration: 150.0s | Domain: hacs | Segments: 6
-  1. [0.0s - 25.0s] Player A serves the ball
-  2. [25.0s - 50.0s] Player B returns the serve
-  3. [50.0s - 75.0s] Player A hits a backhand
-  4. [75.0s - 100.0s] Player B hits a forehand
-  5. [100.0s - 125.0s] Player A serves again
-  6. [125.0s - 150.0s] Player B returns another serve
-
-Output:
-{"structural_analysis":"All 6 events are the same type of action (hitting a ball back and forth). No phase transitions — just repetitive rallying with no macro-structure.","boundary_clarity_score":3,"phase_diversity_score":1,"decision":"reject"}
-
-Focus on finding videos with distinct "chapters" and clear event transitions. \
 Return ONLY valid JSON."""
 
-STAGE_A_USER = """\
+USER_A = """\
 Video duration: {duration:.1f}s
 Domain: {source}
 Number of annotated segments: {n_events}
@@ -116,16 +96,152 @@ Number of annotated segments: {n_events}
 Annotated segments:
 {events_text}
 
-Evaluate whether this video has clear action boundaries and structural \
-diversity suitable for hierarchical temporal segmentation.
-
 Respond with ONLY valid JSON:
 {{
-  "structural_analysis": "<1-2 sentences: can this video be divided into 2+ distinct chapters/phases? Any flat repetition?>",
+  "structural_analysis": "<1-2 sentences>",
   "boundary_clarity_score": <1-5>,
   "phase_diversity_score": <1-5>,
   "decision": "keep | reject"
 }}"""
+
+
+# ── Group B: Coarse Manual — 物理丰富度 ──────────────────
+
+SYSTEM_B = """\
+You are a data curator selecting videos for a fine-grained action segmentation \
+task. The videos in this batch typically have only 1-3 coarse activity labels \
+(e.g., "playing basketball", "washing car").
+
+Your job is to assess whether the UNDERLYING ACTIVITY is physically rich \
+enough to support decomposition into many sub-steps and atomic actions.
+
+Criteria for KEEP:
+- The activity involves multiple distinct physical tools, objects, or body \
+movements (e.g., "cooking" → chop, stir, fry, plate).
+- The scene changes or evolves over time (e.g., "car repair" → open hood, \
+inspect, replace part, close hood).
+
+Criteria for REJECT:
+- The activity is inherently monotonous with no phase changes (e.g., \
+"running on a track" — the same motion for the entire duration).
+- The activity is static or purely verbal (e.g., "giving a speech", \
+"watching TV").
+
+## Examples
+
+### Example 1 — rich physical activity (keep)
+Input: 1 segment "washing a car" covering 120s
+Output: {"physical_analysis":"Car washing involves multiple sub-phases: rinse, soap, scrub different parts, rinse again, dry. Rich tool/state changes.","physical_richness_score":4,"decision":"keep"}
+
+### Example 2 — monotonous activity (reject)
+Input: 1 segment "jogging in the park" covering 180s
+Output: {"physical_analysis":"Single repetitive motion throughout. No tool usage, no scene change, no distinct phases.","physical_richness_score":1,"decision":"reject"}
+
+Return ONLY valid JSON."""
+
+USER_B = """\
+Video duration: {duration:.1f}s
+Domain: {source}
+Number of annotated segments: {n_events}
+
+Annotated segments:
+{events_text}
+
+Respond with ONLY valid JSON:
+{{
+  "physical_analysis": "<1-2 sentences>",
+  "physical_richness_score": <1-5>,
+  "decision": "keep | reject"
+}}"""
+
+
+# ── Group C: ASR/Auto — 多步骤物理操作 ───────────────────
+
+SYSTEM_C = """\
+You are a data curator selecting videos for a fine-grained action segmentation \
+task. The text annotations in this batch are auto-generated from ASR or \
+machine inference — timestamps are unreliable and should be IGNORED.
+
+Focus ONLY on the TEXT CONTENT of the annotations. Determine whether the \
+text describes a multi-step PHYSICAL DEMONSTRATION (hands-on procedural \
+activity with real objects).
+
+Criteria for KEEP:
+- Text describes hands-on procedures (cooking, crafting, repairing, \
+assembling, makeup application, etc.).
+- Multiple distinct physical steps are mentioned.
+
+Criteria for REJECT:
+- Vlog / lifestyle commentary without physical tasks.
+- Gaming, software tutorials, or screen recordings.
+- Pure theory / lectures / reviews with no physical demonstration.
+- Chat, Q&A, or interview formats.
+
+## Examples
+
+### Example 1 — physical demonstration (keep)
+Input: Segments describe "apply primer to wall", "use roller for even coat", "tape edges", "paint second layer"
+Output: {"text_analysis":"Multi-step painting process with distinct tools and physical actions.","action_density_score":5,"is_physical_demo":true,"decision":"keep"}
+
+### Example 2 — talking / vlog (reject)
+Input: Segments describe "talks about best places to visit", "recommends restaurants", "shares travel tips"
+Output: {"text_analysis":"Travel vlog / commentary. No physical demonstration or hands-on procedure.","action_density_score":1,"is_physical_demo":false,"decision":"reject"}
+
+Return ONLY valid JSON."""
+
+USER_C = """\
+Video duration: {duration:.1f}s
+Domain: {source}
+Number of annotated segments: {n_events}
+
+Annotated segments (IGNORE timestamps, focus on TEXT ONLY):
+{events_text}
+
+Respond with ONLY valid JSON:
+{{
+  "text_analysis": "<1-2 sentences>",
+  "action_density_score": <1-5>,
+  "is_physical_demo": true | false,
+  "decision": "keep | reject"
+}}"""
+
+
+# ── Prompt Registry ──────────────────────────────────────
+
+PROMPTS = {
+    "A": (SYSTEM_A, USER_A),
+    "B": (SYSTEM_B, USER_B),
+    "C": (SYSTEM_C, USER_C),
+}
+
+
+# ── Decision Rules (per group) ───────────────────────────
+
+def apply_rules(assessment: dict, group: str) -> str:
+    """Apply group-specific decision rules."""
+    if assessment.get("_parse_error") or assessment.get("error"):
+        return "reject"
+
+    if group == "A":
+        boundary = assessment.get("boundary_clarity_score", 0)
+        diversity = assessment.get("phase_diversity_score", 0)
+        if not (isinstance(boundary, (int, float)) and isinstance(diversity, (int, float))):
+            return "reject"
+        return "keep" if diversity >= 3 else "reject"
+
+    elif group == "B":
+        richness = assessment.get("physical_richness_score", 0)
+        if not isinstance(richness, (int, float)):
+            return "reject"
+        return "keep" if richness >= 3 else "reject"
+
+    elif group == "C":
+        density = assessment.get("action_density_score", 0)
+        if not isinstance(density, (int, float)):
+            return "reject"
+        return "keep" if density >= 4 else "reject"
+
+    return "reject"
 
 
 # ── Event Parsing (ET-Instruct specific) ─────────────────
@@ -142,7 +258,6 @@ def parse_events(sample: dict) -> list[dict]:
     events = []
     n_events = len(tgt) // 2
 
-    # Try extracting "36.0 - 44.0 seconds, description." from GPT text
     pattern = r'([\d.]+)\s*-\s*([\d.]+)\s*seconds?,\s*(.+?)(?=\d+\.?\d*\s*-\s*\d+\.?\d*\s*seconds?|$)'
     matches = re.findall(pattern, gpt_text, re.DOTALL)
 
@@ -179,15 +294,18 @@ def assess_sample(
     api_key: str,
     model: str,
 ) -> dict:
-    """Run Stage A assessment on a single ET-Instruct sample."""
+    """Run Stage A assessment with source-based routing."""
     events = parse_events(sample)
     events_text = format_events_text(events)
+    source = sample.get("source", "unknown")
+    group = get_source_group(source)
+    system_prompt, user_prompt = PROMPTS[group]
 
     messages = [
-        {"role": "system", "content": STAGE_A_SYSTEM},
-        {"role": "user", "content": STAGE_A_USER.format(
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt.format(
             duration=sample.get("duration", 0),
-            source=sample.get("source", "unknown"),
+            source=source,
             n_events=len(events),
             events_text=events_text,
         )},
@@ -195,9 +313,9 @@ def assess_sample(
 
     result = call_llm(messages, api_base, api_key, model)
 
-    # Apply programmatic rules to override LLM decision
+    # Apply group-specific rules
     llm_decision = result.get("decision", "unknown")
-    rule_decision = apply_richness_rules(result)
+    rule_decision = apply_rules(result, group)
     if llm_decision != rule_decision:
         result["_original_decision"] = llm_decision
         result["decision"] = rule_decision
@@ -205,13 +323,14 @@ def assess_sample(
     assessed = dict(sample)
     assessed["_assessment"] = result
     assessed["_stage"] = "A"
+    assessed["_group"] = group
     assessed["_n_events"] = len(events)
     return assessed
 
 
 def print_stats(results: list[dict]):
     """Print Stage A assessment statistics."""
-    assessments = [r["_assessment"] for r in results if "_assessment" in r and not r["_assessment"].get("_parse_error")]
+    assessments = [r for r in results if "_assessment" in r and not r["_assessment"].get("_parse_error")]
 
     if not assessments:
         print("  无有效评估结果")
@@ -219,45 +338,61 @@ def print_stats(results: list[dict]):
 
     # Decision distribution
     decisions = {}
-    for a in assessments:
-        d = a.get("decision", "unknown")
+    for r in assessments:
+        d = r["_assessment"].get("decision", "unknown")
         decisions[d] = decisions.get(d, 0) + 1
     print(f"\n  == Decision 分布 ==")
     for d, c in sorted(decisions.items(), key=lambda x: -x[1]):
         print(f"    {d}: {c} ({c/len(assessments)*100:.1f}%)")
 
-    # Score distributions for each dimension
-    for field in ["boundary_clarity_score", "phase_diversity_score"]:
-        scores = [a.get(field, 0) for a in assessments if isinstance(a.get(field), (int, float))]
+    # Per-group stats
+    group_stats: dict[str, dict] = {}
+    for r in assessments:
+        g = r.get("_group", "?")
+        d = r["_assessment"].get("decision", "unknown")
+        group_stats.setdefault(g, {"total": 0, "keep": 0, "reject": 0})
+        group_stats[g]["total"] += 1
+        group_stats[g][d] = group_stats[g].get(d, 0) + 1
+    print(f"\n  == 各 Group 统计 ==")
+    for g in sorted(group_stats):
+        gs = group_stats[g]
+        total = gs["total"]
+        keep = gs.get("keep", 0)
+        print(f"    Group {g}: keep={keep}/{total} ({keep/total*100:.1f}%)")
+
+    # Group-specific scores
+    for g, score_field in [("A", "phase_diversity_score"), ("B", "physical_richness_score"), ("C", "action_density_score")]:
+        group_items = [r["_assessment"] for r in assessments if r.get("_group") == g]
+        scores = [a.get(score_field, 0) for a in group_items if isinstance(a.get(score_field), (int, float))]
         if scores:
-            print(f"\n  == {field} 分布 ==")
+            print(f"\n  == Group {g}: {score_field} 分布 ==")
             for threshold in [1, 2, 3, 4, 5]:
                 count = sum(1 for s in scores if s >= threshold)
                 print(f"    >= {threshold}: {count} ({count/len(scores)*100:.1f}%)")
             print(f"    mean={sum(scores)/len(scores):.2f}")
 
     # Rule override stats
-    overrides = sum(1 for a in assessments if "_original_decision" in a)
+    overrides = [r for r in assessments if "_original_decision" in r["_assessment"]]
     if overrides:
         print(f"\n  == 规则覆盖 ==")
-        print(f"    覆盖总数: {overrides}/{len(assessments)} ({overrides/len(assessments)*100:.1f}%)")
+        print(f"    覆盖总数: {len(overrides)}/{len(assessments)} ({len(overrides)/len(assessments)*100:.1f}%)")
         override_details: dict[str, int] = {}
-        for a in assessments:
-            if "_original_decision" in a:
-                key = f"{a['_original_decision']} → {a['decision']}"
-                override_details[key] = override_details.get(key, 0) + 1
+        for r in overrides:
+            a = r["_assessment"]
+            key = f"[{r.get('_group','?')}] {a['_original_decision']} → {a['decision']}"
+            override_details[key] = override_details.get(key, 0) + 1
         for key, c in sorted(override_details.items(), key=lambda x: -x[1]):
             print(f"    {key}: {c}")
 
     # Per-domain stats
     domain_decisions: dict[str, dict] = {}
-    for r in results:
-        if "_assessment" not in r or r["_assessment"].get("_parse_error"):
-            continue
+    for r in assessments:
         domain = r.get("source", "unknown")
         decision = r["_assessment"].get("decision", "unknown")
-        domain_decisions.setdefault(domain, {})
-        domain_decisions[domain][decision] = domain_decisions[domain].get(decision, 0) + 1
+        group = r.get("_group", "?")
+        key = f"{domain} [{group}]"
+        domain_decisions.setdefault(key, {})
+        domain_decisions[key][decision] = domain_decisions[key].get(decision, 0) + 1
     if domain_decisions:
         print(f"\n  == 各 Domain Decision 分布 ==")
         for domain in sorted(domain_decisions.keys()):
@@ -271,7 +406,7 @@ def print_stats(results: list[dict]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Stage A: L2 粒度粗筛 (ET-Instruct-164K)",
+        description="Stage A: 视频内容潜力评估 (ET-Instruct-164K, Source Routing)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--input", required=True, help="text_filter passed.jsonl")
@@ -297,6 +432,13 @@ def main():
     print(f"加载 {len(samples)} 条 passed 样本")
     print(f"API: {args.api_base}  model: {args.model}")
 
+    # Show source group distribution
+    group_counts: dict[str, int] = {}
+    for s in samples:
+        g = get_source_group(s.get("source", "unknown"))
+        group_counts[g] = group_counts.get(g, 0) + 1
+    print(f"Source Group 分布: {', '.join(f'{g}={c}' for g, c in sorted(group_counts.items()))}")
+
     # Resume
     existing: list[dict] = []
     if args.resume:
@@ -309,12 +451,12 @@ def main():
         samples = stratified_sample(samples, args.sample_n)
         print(f"分层抽样 {len(samples)} 条进行评估")
 
-    # Concurrent assessment — stream to output file (crash-safe)
+    # Concurrent assessment
     def _assess(s):
         return assess_sample(s, args.api_base, api_key, args.model)
 
     new_results, failed = run_concurrent_assessment(
-        samples, _assess, workers=args.workers, score_field="l2_fit_score",
+        samples, _assess, workers=args.workers,
         stream_output=args.output, strip_fields=["_events_parsed"],
     )
 
@@ -327,24 +469,20 @@ def main():
 
     # Split by decision
     keep = [r for r in results if r.get("_assessment", {}).get("decision") == "keep"]
-    maybe = [r for r in results if r.get("_assessment", {}).get("decision") == "maybe"]
-    reject = [r for r in results if r.get("_assessment", {}).get("decision") not in ("keep", "maybe")]
+    reject = [r for r in results if r.get("_assessment", {}).get("decision") != "keep"]
 
     print(f"\n  == 筛选结果 ==")
     print(f"    keep:   {len(keep)}")
-    print(f"    maybe:  {len(maybe)}")
     print(f"    reject: {len(reject)}")
 
-    # Write split files (full rewrite — these are derived from the main output)
+    # Write split files
     base = args.output.replace(".jsonl", "")
     if keep:
         write_results(keep, f"{base}_keep.jsonl", strip_fields=["_events_parsed"])
-    if maybe:
-        write_results(maybe, f"{base}_maybe.jsonl", strip_fields=["_events_parsed"])
     if reject:
         write_results(reject, f"{base}_reject.jsonl", strip_fields=["_events_parsed"])
 
-    print(f"\nStage A 完成。keep 样本可直接进入 Stage B 精筛。")
+    print(f"\nStage A 完成。keep 样本可进入视觉校验阶段。")
 
 
 if __name__ == "__main__":

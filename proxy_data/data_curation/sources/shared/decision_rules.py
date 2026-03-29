@@ -4,12 +4,16 @@ Programmatic decision rules for the data curation pipeline.
 These rules override or supplement LLM decisions with hard thresholds.
 Designed to catch cases where the LLM is inconsistent.
 
-Two rule sets:
-  - apply_richness_rules(): For the video richness assessment (current Stage A)
+Rule sets:
+  - apply_richness_rules(): For TimeLens Stage A (boundary clarity + phase diversity)
   - apply_stage_b_rules(): For the hierarchical potential fine filter (Stage B)
+
+Note: ET-Instruct Stage A uses source-based routing with per-group inline rules
+      defined in et_instruct_164k/stage_a_coarse_filter.py (not in this file).
 
 Legacy:
   - apply_stage_a_rules(): Old L2-granularity rules (deprecated, kept for reference)
+  - final_decision(): Old two-stage combination (deprecated)
 
 Usage:
     # As a standalone post-processing step
@@ -159,12 +163,14 @@ def apply_stage_b_rules(assessment: dict) -> str:
     return "maybe"
 
 
-# ── Combined Final Decision ──────────────────────────────
+# ── Combined Final Decision (DEPRECATED) ─────────────────
 
 def final_decision(stage_a_assessment: dict, stage_b_assessment: dict) -> str:
-    """Combine Stage A and Stage B into a final decision.
+    """[DEPRECATED] Combine Stage A and Stage B into a final decision.
 
-    Both stages must agree on "keep" for final keep.
+    Uses old apply_stage_a_rules(). For current pipeline, Stage A decisions
+    are made by source-specific rules (ET-Instruct) or apply_richness_rules()
+    (TimeLens), followed by optional VLM vision verification.
     """
     a_decision = apply_stage_a_rules(stage_a_assessment)
     b_decision = apply_stage_b_rules(stage_b_assessment)
