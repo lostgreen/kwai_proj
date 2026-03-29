@@ -1360,10 +1360,11 @@ function candSelectRecord(recordId){
   CAND.activeRecordId=recordId;
   CAND.activeRecord=null;
   candRenderRecordList();
-  document.getElementById('cand-header').innerHTML=`<div class="clip-title">加载中...</div>`;
-  const r=CAND.allRecords[recordId];
-  if(r){
-    CAND.activeRecord=r;
+  document.getElementById('cand-header').innerHTML=`<div class="clip-title">加载中（抽取视频帧）...</div>`;
+  // Always fetch from API to get on-demand frame extraction
+  const cached=CAND.allRecords[recordId];
+  if(cached && cached.video_frames && cached.video_frames.length>0){
+    CAND.activeRecord=cached;
     candRenderActive();
   }else{
     fetchJson('/api/candidate/record/'+encodeURIComponent(recordId))
@@ -1594,7 +1595,7 @@ function candBootPreloaded(){
   if(srcLabel) srcLabel.textContent=c.data_path||'（预加载）';
   CAND.allRecords=c.all_records||{};
   candApplySummary(c.summary);
-  candSetStatus(`已预加载 ${c.summary.total} 个 ${c.summary.format_type} 候选记录`);
+  candSetStatus(`已加载 ${c.summary.total} 个 ${c.summary.format_type} 候选记录（视频帧按需提取）`);
   if(CAND.filteredRecords.length>0) candSelectRecord(CAND.filteredRecords[0].record_id);
 }
 

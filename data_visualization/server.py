@@ -1755,31 +1755,19 @@ def main() -> None:
         except Exception as exc:
             print(f"[warn] mcq pre-load failed: {exc}")
 
-    # Pre-load candidate data
+    # Pre-load candidate data (metadata only — frames extracted on-demand via API)
     if args.candidate_data:
         try:
             summary = candidate_store.load(args.candidate_data)
             total_cand = summary["total"]
             fmt = summary["format_type"]
             print(f"[candidate] Loaded {total_cand} records ({fmt}) from: {args.candidate_data}")
-            all_cand_records: dict[str, Any] = {}
-            record_ids = [r["record_id"] for r in candidate_store.records]
-            with ThreadPoolExecutor(max_workers=max(1, args.build_workers)) as _pool:
-                def _extract_cand(rid: str) -> tuple[str, dict]:
-                    r = candidate_store.get_record(rid)
-                    return rid, {kk: vv for kk, vv in r.items() if kk != "_frames_loaded"}
-
-                _futures = {_pool.submit(_extract_cand, rid): rid for rid in record_ids}
-                for i, fut in enumerate(as_completed(_futures), 1):
-                    rid, rec = fut.result()
-                    all_cand_records[rid] = rec
-                    print_progress("  [candidate] Extracting frames", i, len(record_ids))
+            # Only embed lightweight metadata; frames are extracted lazily via /api/candidate/record/<id>
             preload_data["candidate"] = {
                 "summary": summary,
-                "all_records": all_cand_records,
                 "data_path": args.candidate_data,
             }
-            print(f"  [candidate] Done. {len(all_cand_records)} records with frames embedded.")
+            print(f"  [candidate] Done. {total_cand} records (frames on-demand).")
         except Exception as exc:
             print(f"[warn] candidate pre-load failed: {exc}")
 
