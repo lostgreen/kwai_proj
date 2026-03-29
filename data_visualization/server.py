@@ -1042,8 +1042,9 @@ class CandidateStore:
 
     MAX_RECORDS = 5000
 
-    def __init__(self) -> None:
+    def __init__(self, video_root: str = "") -> None:
         self._lock = threading.RLock()
+        self.video_root = video_root
         self.clear()
 
     def clear(self) -> None:
@@ -1151,8 +1152,12 @@ class CandidateStore:
         if not video_id:
             record["video_frames"] = []
             return
+        # Resolve relative paths using video_root
+        video_path = video_id
+        if self.video_root and not Path(video_id).is_absolute():
+            video_path = str(Path(self.video_root) / video_id)
         record["video_frames"] = _FRAME_EXTRACTOR.extract(
-            video_id, max_frames=self.MAX_FRAMES_PER_VIDEO, max_width=200
+            video_path, max_frames=self.MAX_FRAMES_PER_VIDEO, max_width=200
         )
 
     def _build_record(self, item: dict[str, Any], idx: int, fmt: str) -> dict[str, Any]:
@@ -1648,6 +1653,7 @@ def main() -> None:
     parser.add_argument("--manifest", default=None, help="aot_event_manifest.jsonl (optional, paired with --caption-pairs)")
     parser.add_argument("--mcq-data", default=None, help="Pre-load AoT MCQ JSONL")
     parser.add_argument("--candidate-data", default=None, help="Pre-load candidate preview JSONL (ET-Instruct or TimeLens filter output)")
+    parser.add_argument("--video-root", default="", help="Root directory prefix for resolving relative video paths in candidate data")
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--prefer-complete", action="store_true")
     parser.add_argument("--build-workers", type=int, default=4, help="Parallel threads for frame extraction at startup")
@@ -1660,7 +1666,7 @@ def main() -> None:
     seg_store = SegmentationStore(static_dir.parents[1])
     caption_store = AoTCaptionStore()
     mcq_store = AoTMCQStore()
-    candidate_store = CandidateStore()
+    candidate_store = CandidateStore(video_root=args.video_root)
 
     preloaded_html: Optional[bytes] = None
     preload_data: dict[str, Any] = {}
