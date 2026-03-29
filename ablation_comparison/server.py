@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from PIL import Image
 
@@ -418,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
             level = qs.get("level", [""])[0]
             self._json(store.list_samples(offset, limit, level))
         elif path.startswith("/api/sample/"):
-            vk = path[len("/api/sample/"):]
+            vk = unquote(path[len("/api/sample/"):])
             step_str = qs.get("step", [None])[0]
             step = int(step_str) if step_str else None
             data = store.get_sample(vk, step)
@@ -427,7 +427,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         elif path.startswith("/api/frames/"):
-            vk = path[len("/api/frames/"):]
+            vk = unquote(path[len("/api/frames/"):])
             fps = _safe_float(qs.get("fps", ["1"])[0], 1.0)
             frames = store.get_frames(vk, fps)
             self._json({"video_key": vk, "frames": frames})

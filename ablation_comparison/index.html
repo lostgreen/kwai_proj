@@ -3,426 +3,413 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Ablation Comparison</title>
+<title>Ablation Comparison – 分割消融对比</title>
 <style>
-:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;
-  --blue:#60a5fa;--green:#34d399;--orange:#fb923c;--pink:#f472b6;--purple:#a78bfa;--red:#f87171;--cyan:#22d3ee;--yellow:#fbbf24}
+/* ── White theme (reused from segmentation_visualize) ── */
+:root{--bg:#eef2f6;--panel:rgba(255,255,255,.92);--card-border:rgba(0,0,0,.06);
+  --text:#1e293b;--muted:#64748b;--accent:#2d6cdf;--red:#ef4444;--teal:#0d9488}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:var(--bg);color:var(--text);font-size:13px;line-height:1.5}
-.header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--border);
-  background:linear-gradient(135deg,#1e293b,#0f172a)}
-.header h1{font-size:18px;font-weight:700;letter-spacing:-.3px}
+
+/* ── Header ── */
+.header{display:flex;align-items:center;gap:14px;padding:12px 20px;
+  background:var(--panel);border-bottom:1px solid var(--card-border);backdrop-filter:blur(12px)}
+.header h1{font-size:17px;font-weight:700;letter-spacing:-.3px}
 .header .meta{font-size:11px;color:var(--muted)}
-.main{display:flex;height:calc(100vh - 54px)}
-.sidebar{width:320px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
-.sidebar-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px}
-.sidebar-head input{background:var(--card);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;width:100%}
-.sidebar-head select{background:var(--card);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:11px}
+
+/* ── Layout ── */
+.main{display:flex;height:calc(100vh - 46px)}
+
+/* ── Sidebar ── */
+.sidebar{width:300px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--card-border);
+  display:flex;flex-direction:column;overflow:hidden}
+.sidebar-head{padding:10px 12px;border-bottom:1px solid var(--card-border);display:flex;flex-direction:column;gap:6px}
+.sidebar-head input{background:#fff;border:1px solid rgba(0,0,0,.1);color:var(--text);
+  padding:6px 10px;border-radius:6px;font-size:12px;width:100%;outline:none}
+.sidebar-head input:focus{border-color:var(--accent)}
+.sidebar-head select{background:#fff;border:1px solid rgba(0,0,0,.1);color:var(--text);
+  padding:4px 8px;border-radius:6px;font-size:11px;outline:none}
 .sidebar-list{flex:1;overflow-y:auto}
-.sidebar-item{padding:10px 14px;border-bottom:1px solid rgba(51,65,85,.3);cursor:pointer;transition:background .15s}
-.sidebar-item:hover{background:rgba(96,165,250,.06)}
-.sidebar-item.active{background:rgba(96,165,250,.12);border-left:3px solid var(--blue)}
-.sidebar-item .name{font-size:12px;font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-item{padding:8px 12px;border-bottom:1px solid rgba(0,0,0,.04);border-left:3px solid transparent;
+  cursor:pointer;transition:background .15s}
+.sidebar-item:hover{background:rgba(45,108,223,.04)}
+.sidebar-item.active{background:rgba(45,108,223,.08);border-left-color:var(--accent)}
+.sidebar-item .name{font-size:12px;font-weight:600;margin-bottom:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sidebar-item .info{font-size:10px;color:var(--muted)}
-.content{flex:1;overflow-y:auto;padding:20px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden}
-.card-head{padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px}
-.card-body{padding:14px 16px}
+
+/* ── Content ── */
+.content{flex:1;overflow-y:auto;padding:16px 20px}
+
+/* ── Card (reused from segmentation_visualize) ── */
+.card{background:var(--panel);border:1px solid var(--card-border);border-radius:14px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:14px;overflow:hidden}
+.section-title{font-size:12px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;
+  color:var(--muted);margin-bottom:10px;padding:14px 16px 0}
+
+/* ── Legend ── */
+.legend{display:flex;gap:14px;flex-wrap:wrap;padding:12px 16px 8px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:500}
+.legend-dot{width:10px;height:10px;border-radius:50%}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600}
 
-/* ── Timeline ── */
-.timeline-container{position:relative;overflow-x:auto;overflow-y:hidden;padding-bottom:8px}
-.timeline-inner{position:relative;min-width:100%}
-.tl-row{position:relative;height:24px;margin-bottom:3px;display:flex;align-items:center}
-.tl-row-label{width:90px;flex-shrink:0;font-size:11px;font-weight:600;display:flex;align-items:center;gap:5px}
-.tl-row-track{flex:1;position:relative;height:100%;background:rgba(100,116,139,.05);border-radius:4px}
-.tl-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;opacity:.85;cursor:pointer;transition:opacity .15s}
-.tl-seg:hover{opacity:1;z-index:10}
-.tl-seg .tip{display:none;position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
-  background:#000;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;white-space:nowrap;z-index:100}
-.tl-seg:hover .tip{display:block}
+/* ── Timeline: lane-track (reused from segmentation_visualize) ── */
+.sync-shell{overflow-x:auto;overflow-y:hidden;padding:0 16px 8px}
+.sync-inner{position:relative}
+.lane-block{display:flex;align-items:stretch;margin-bottom:6px}
+.lane-head{width:100px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;padding:0 8px 0 0}
+.lane-title{font-size:11px;font-weight:700;white-space:nowrap}
+.lane-meta{font-size:10px;color:var(--muted)}
+.lane-track{position:relative;height:42px;background:rgba(100,116,139,.04);
+  border-radius:8px;border:1px solid rgba(0,0,0,.03)}
+
+/* ── Segment (reused from segmentation_visualize) ── */
+.segment{position:absolute;top:3px;bottom:3px;border-radius:6px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  overflow:hidden;cursor:default;transition:opacity .15s,transform .1s;
+  font-size:10px;color:#fff;padding:0 4px}
+.segment:hover{opacity:1!important;transform:scaleY(1.08);z-index:10}
+.segment-label{font-size:9px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+
+/* Segment colors — GT + up to 8 settings */
+.seg-gt{background:linear-gradient(135deg,rgba(239,68,68,.88),rgba(220,38,38,.72))}
+.seg-s0{background:linear-gradient(135deg,rgba(45,108,223,.88),rgba(37,99,235,.72))}
+.seg-s1{background:linear-gradient(135deg,rgba(228,157,28,.88),rgba(217,119,6,.72))}
+.seg-s2{background:linear-gradient(135deg,rgba(212,87,124,.88),rgba(190,18,60,.72))}
+.seg-s3{background:linear-gradient(135deg,rgba(5,150,105,.88),rgba(4,120,87,.72))}
+.seg-s4{background:linear-gradient(135deg,rgba(124,58,237,.88),rgba(109,40,217,.72))}
+.seg-s5{background:linear-gradient(135deg,rgba(8,145,178,.88),rgba(14,116,144,.72))}
+.seg-s6{background:linear-gradient(135deg,rgba(251,191,36,.88),rgba(245,158,11,.72))}
+.seg-s7{background:linear-gradient(135deg,rgba(248,113,113,.88),rgba(239,68,68,.72))}
 
 /* ── Ruler ── */
-.tl-ruler{position:relative;height:20px;margin-bottom:6px}
-.tl-ruler-track{flex:1;position:relative;height:100%}
-.tl-tick{position:absolute;bottom:0;font-size:9px;color:var(--muted);transform:translateX(-50%)}
-.tl-tick::before{content:'';position:absolute;left:50%;bottom:100%;width:1px;height:6px;background:var(--border)}
+.ruler{position:relative;height:18px;margin-bottom:4px}
+.ruler-tick{position:absolute;bottom:0;font-size:9px;color:var(--muted);transform:translateX(-50%)}
+.ruler-tick::before{content:'';position:absolute;left:50%;bottom:100%;width:1px;height:5px;background:rgba(0,0,0,.12)}
 
-/* ── Frame strip ── */
-.frame-strip{display:flex;gap:4px;margin-bottom:8px;overflow-x:auto;padding-bottom:4px}
-.frame-strip::-webkit-scrollbar{height:4px}
-.frame-strip::-webkit-scrollbar-track{background:transparent}
-.frame-strip::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
-.frame-item{flex:0 0 auto;width:80px;text-align:center}
-.frame-item img{width:80px;height:45px;object-fit:cover;border-radius:4px;border:1px solid var(--border)}
-.frame-item .ts{font-size:9px;color:var(--muted);margin-top:2px}
+/* ── Scroll control (reused from segmentation_visualize) ── */
+.scroll-control{display:flex;align-items:center;gap:10px;padding:6px 16px 12px}
+.scroll-control .meta{font-size:10px;color:var(--muted);min-width:50px}
+.scroll-slider{flex:1;appearance:none;height:4px;background:rgba(0,0,0,.08);border-radius:2px;outline:none;cursor:pointer}
+.scroll-slider::-webkit-slider-thumb{appearance:none;width:14px;height:14px;background:var(--accent);border-radius:50%;cursor:pointer}
 
-/* ── Prompt comparison ── */
+/* ── Comparison table ── */
+.cmp-table{width:100%;border-collapse:collapse;font-size:12px}
+.cmp-table th,.cmp-table td{padding:6px 10px;text-align:left;border-bottom:1px solid rgba(0,0,0,.05)}
+.cmp-table th{color:var(--muted);font-weight:600;font-size:11px}
+
+/* ── Prompt / Response grid ── */
 .prompt-grid{display:grid;gap:10px}
-.prompt-card{background:rgba(15,23,42,.5);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.prompt-card{background:rgba(0,0,0,.02);border:1px solid rgba(0,0,0,.06);border-radius:8px;padding:10px 12px}
 .prompt-card .label{font-size:11px;font-weight:700;margin-bottom:6px}
-.prompt-card pre{font-size:11px;color:var(--muted);white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;line-height:1.5}
+.prompt-card pre{font-size:11px;color:var(--muted);white-space:pre-wrap;word-break:break-word;
+  max-height:200px;overflow-y:auto;line-height:1.5}
 
-/* ── Reward table ── */
-.reward-table{width:100%;border-collapse:collapse;font-size:12px}
-.reward-table th,.reward-table td{padding:6px 10px;text-align:left;border-bottom:1px solid rgba(51,65,85,.3)}
-.reward-table th{color:var(--muted);font-weight:600;font-size:11px}
-.reward-bar{display:inline-block;height:8px;border-radius:4px;vertical-align:middle;margin-right:6px}
-
-/* ── Settings legend ── */
-.legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px}
-.legend-item{display:flex;align-items:center;gap:5px;font-size:11px}
-.legend-dot{width:10px;height:10px;border-radius:50%}
-
-/* ── Empty state ── */
-.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;color:var(--muted);font-size:14px}
-
-/* ── Scroll sync ── */
-.scroll-sync-bar{display:flex;align-items:center;gap:8px;margin-top:6px;padding:0 90px 0 0}
-.scroll-sync-bar input[type=range]{flex:1;appearance:none;height:4px;background:var(--border);border-radius:2px;outline:none;cursor:pointer}
-.scroll-sync-bar input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:14px;background:var(--blue);border-radius:50%;cursor:pointer}
-.scroll-sync-bar .label{font-size:10px;color:var(--muted);min-width:40px}
-
-/* ── Loading ── */
-.spin{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .6s linear infinite}
+/* ── States ── */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;color:var(--muted)}
+.spin{display:inline-block;width:20px;height:20px;border:2px solid rgba(0,0,0,.1);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>🔬 Ablation Comparison</h1>
-  <div class="meta" id="header-info">Loading...</div>
+  <h1>Ablation Comparison</h1>
+  <div class="meta" id="headerInfo">加载中...</div>
 </div>
 
 <div class="main">
   <div class="sidebar">
     <div class="sidebar-head">
-      <input type="text" id="search" placeholder="🔍 搜索视频..." oninput="filterSamples()"/>
+      <input type="text" id="searchInput" placeholder="搜索视频..." oninput="filterSamples()"/>
       <div style="display:flex;gap:8px;align-items:center">
-        <select id="level-filter" onchange="loadSamples()">
-          <option value="">All Levels</option>
+        <select id="levelFilter" onchange="loadSamples()">
+          <option value="">全部 Level</option>
           <option value="L2">L2</option>
           <option value="L3">L3</option>
         </select>
-        <span class="meta" id="sample-count"></span>
+        <span class="meta" id="sampleCount"></span>
       </div>
     </div>
-    <div class="sidebar-list" id="sample-list"></div>
+    <div class="sidebar-list" id="sampleList"></div>
   </div>
   <div class="content" id="content">
     <div class="empty">
-      <div style="font-size:28px;margin-bottom:10px">🎬</div>
-      <div>选择左侧样本查看对比</div>
+      <div style="font-size:14px">选择左侧样本查看 Ablation 对比</div>
     </div>
   </div>
 </div>
 
 <script>
-const SETTING_COLORS = ['#60a5fa','#34d399','#fb923c','#f472b6','#a78bfa','#22d3ee','#fbbf24','#f87171'];
-const GT_COLOR = '#f87171';
-const BASE = '';
-let allSamples = [];
+/* ── Constants ── */
+const STRIDE = 10;
+const MIN_WIDTH = 800;
+const GT_COLOR = '#ef4444';
+const COLORS = ['#2d6cdf','#e49d1c','#d4577c','#059669','#7c3aed','#0891b2','#eab308','#f87171'];
+
 let settingNames = [];
+let allSamples = [];
 let currentVideoKey = null;
 
-// ─── API ───
-async function api(path){ const r = await fetch(BASE+path); return r.json(); }
-
-function settingColor(name){
-  const idx = settingNames.indexOf(name);
-  return SETTING_COLORS[idx >= 0 ? idx % SETTING_COLORS.length : 0];
+/* ── Utilities ── */
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function mmss(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+function settingColor(name) {
+  const i = settingNames.indexOf(name);
+  return COLORS[i >= 0 ? i % COLORS.length : 0];
+}
+function settingSegClass(name) {
+  const i = settingNames.indexOf(name);
+  return 'seg-s' + (i >= 0 ? i % 8 : 0);
+}
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
 }
 
-// ─── Init ───
-async function init(){
-  const summary = await api('/api/summary');
-  settingNames = summary.setting_names || [];
-  const info = settingNames.map(n => `${n}: ${summary.settings[n].count}`).join(' · ');
-  document.getElementById('header-info').textContent =
-    `${summary.total_videos} videos · ${info}`;
-  await loadSamples();
+/* ── Init ── */
+async function init() {
+  try {
+    const summary = await api('/api/summary');
+    settingNames = summary.setting_names || [];
+    const info = settingNames.map(function (n) {
+      return n + ': ' + summary.settings[n].count;
+    }).join(' \u00b7 ');
+    document.getElementById('headerInfo').textContent =
+      summary.total_videos + ' \u4e2a\u89c6\u9891 \u00b7 ' + info;
+    await loadSamples();
+  } catch (e) {
+    document.getElementById('headerInfo').textContent = '\u52a0\u8f7d\u5931\u8d25: ' + e.message;
+  }
 }
 
-async function loadSamples(){
-  const level = document.getElementById('level-filter').value;
-  const data = await api(`/api/samples?limit=500&level=${level}`);
-  allSamples = data.items || [];
-  document.getElementById('sample-count').textContent = `${data.total} 个样本`;
-  renderSampleList(allSamples);
+async function loadSamples() {
+  try {
+    var level = document.getElementById('levelFilter').value;
+    var data = await api('/api/samples?limit=2000&level=' + encodeURIComponent(level));
+    allSamples = data.items || [];
+    document.getElementById('sampleCount').textContent = data.total + ' \u4e2a';
+    renderSampleList(allSamples);
+  } catch (e) {
+    document.getElementById('sampleList').innerHTML =
+      '<div style="padding:12px;color:var(--muted)">\u52a0\u8f7d\u5931\u8d25</div>';
+  }
 }
 
-function filterSamples(){
-  const q = document.getElementById('search').value.toLowerCase();
-  const filtered = q ? allSamples.filter(s => s.video_key.toLowerCase().includes(q)) : allSamples;
+function filterSamples() {
+  var q = (document.getElementById('searchInput').value || '').toLowerCase();
+  var filtered = q ? allSamples.filter(function (s) {
+    return s.video_key.toLowerCase().indexOf(q) >= 0;
+  }) : allSamples;
   renderSampleList(filtered);
 }
 
-function renderSampleList(items){
-  const el = document.getElementById('sample-list');
-  el.innerHTML = items.map(s => {
-    const active = s.video_key === currentVideoKey ? ' active' : '';
-    const levels = (s.levels||[]).join('/');
-    return `<div class="sidebar-item${active}" onclick="selectSample('${esc(s.video_key)}')">
-      <div class="name">${esc(s.video_key)}</div>
-      <div class="info">${s.duration.toFixed(0)}s · GT:${s.n_gt_segments}段 · ${s.n_settings}个setting${levels ? ' · '+levels : ''}</div>
-    </div>`;
+function renderSampleList(items) {
+  var el = document.getElementById('sampleList');
+  el.innerHTML = items.map(function (s) {
+    var active = s.video_key === currentVideoKey ? ' active' : '';
+    var levels = (s.levels || []).join('/');
+    return '<div class="sidebar-item' + active + '" data-vk="' + esc(s.video_key)
+      + '" onclick="selectFromEl(this)">'
+      + '<div class="name">' + esc(s.video_key) + '</div>'
+      + '<div class="info">' + (s.duration > 0 ? s.duration.toFixed(0) + 's' : '?s')
+      + ' \u00b7 GT ' + s.n_gt_segments + ' \u6bb5 \u00b7 ' + s.n_settings + ' setting'
+      + (levels ? ' \u00b7 ' + levels : '') + '</div></div>';
   }).join('');
 }
 
-// ─── Select Sample ───
-async function selectSample(videoKey){
+function selectFromEl(el) { selectSample(el.getAttribute('data-vk')); }
+
+/* ── Select Sample ── */
+async function selectSample(videoKey) {
   currentVideoKey = videoKey;
-  renderSampleList(allSamples.filter(s => {
-    const q = document.getElementById('search').value.toLowerCase();
-    return !q || s.video_key.toLowerCase().includes(q);
-  }));
-
-  const content = document.getElementById('content');
-  content.innerHTML = '<div class="empty"><span class="spin"></span><div style="margin-top:10px">加载中...</div></div>';
-
-  const data = await api(`/api/sample/${encodeURIComponent(videoKey)}`);
-  if(data.error){ content.innerHTML = `<div class="empty">Not found</div>`; return; }
-
-  renderComparison(data);
-
-  // Load frames async
-  loadFramesAsync(videoKey, data.duration);
+  filterSamples();
+  var content = document.getElementById('content');
+  content.innerHTML = '<div class="empty"><span class="spin"></span></div>';
+  try {
+    var data = await api('/api/sample/' + encodeURIComponent(videoKey));
+    if (data.error) { content.innerHTML = '<div class="empty">\u672a\u627e\u5230</div>'; return; }
+    renderComparison(data);
+  } catch (e) {
+    content.innerHTML = '<div class="empty">\u52a0\u8f7d\u5931\u8d25: ' + esc(e.message) + '</div>';
+  }
 }
 
-async function loadFramesAsync(videoKey, duration){
-  try{
-    const frameData = await api(`/api/frames/${encodeURIComponent(videoKey)}?fps=1`);
-    const frames = frameData.frames || [];
-    if(frames.length > 0){
-      renderFrameStrip(videoKey, frames, duration);
+/* ── Render Comparison (reuses lane-track pattern from segmentation_visualize) ── */
+function renderComparison(data) {
+  var content = document.getElementById('content');
+  var dur = Math.max(1, data.duration || 60);
+  var gtSegs = data.gt_segments || [];
+  var settings = data.settings || {};
+  var prompts = data.prompts || {};
+  var names = settingNames.filter(function (n) { return n in settings; });
+  var totalWidth = Math.max(MIN_WIDTH, Math.ceil(dur * STRIDE));
+  var html = '';
+
+  /* ── Legend card ── */
+  html += '<div class="card"><div class="legend">'
+    + '<div class="legend-item"><div class="legend-dot" style="background:' + GT_COLOR + '"></div>Ground Truth</div>';
+  for (var i = 0; i < names.length; i++) {
+    var n = names[i], s = settings[n], rc = settingColor(n);
+    html += '<div class="legend-item"><div class="legend-dot" style="background:' + rc + '"></div>'
+      + esc(n) + (s.is_training_data ? '' : ' <span style="color:var(--muted);font-size:10px">(r=' + s.reward.toFixed(3) + ')</span>')
+      + '</div>';
+  }
+  html += '</div>';
+
+  /* ── Timeline (lane-track per setting, reused from segmentation_visualize) ── */
+  html += '<div class="sync-shell" id="scrollShell"><div class="sync-inner" style="width:' + totalWidth + 'px">';
+  html += renderRuler(dur, totalWidth);
+  html += renderLane('GT', gtSegs, totalWidth, dur, 'seg-gt', gtSegs.length + ' segments');
+  for (var i = 0; i < names.length; i++) {
+    var n = names[i], s = settings[n];
+    var meta = s.is_training_data
+      ? '\u8bad\u7ec3\u6570\u636e'
+      : 'step ' + s.step + ' \u00b7 r=' + s.reward.toFixed(3);
+    html += renderLane(n, s.predicted || [], totalWidth, dur, settingSegClass(n), meta);
+  }
+  html += '</div></div>';
+
+  /* ── Scroll control ── */
+  html += '<div class="scroll-control"><div class="meta">0s</div>'
+    + '<input id="scrollBar" class="scroll-slider" type="range" min="0" max="1000" value="0"/>'
+    + '<div class="meta">' + mmss(dur) + '</div></div>';
+  html += '</div>'; /* close card */
+
+  /* ── Reward / Info Table ── */
+  html += '<div class="card"><div class="section-title">\u6570\u636e\u5bf9\u6bd4</div>'
+    + '<div style="padding:0 16px 14px"><table class="cmp-table">'
+    + '<tr><th>Setting</th><th>Level</th><th>Step</th><th>\u7c7b\u578b</th><th>Reward</th><th>\u9884\u6d4b\u6bb5\u6570</th><th>GT\u6bb5\u6570</th></tr>';
+  for (var i = 0; i < names.length; i++) {
+    var n = names[i], s = settings[n], rc = settingColor(n);
+    html += '<tr><td style="color:' + rc + ';font-weight:700">' + esc(n) + '</td>'
+      + '<td>' + esc(s.level) + '</td><td>' + s.step + '</td>'
+      + '<td>' + (s.is_training_data ? '<span style="color:var(--muted)">\u8bad\u7ec3\u6570\u636e</span>' : 'Rollout') + '</td>'
+      + '<td>' + (s.is_training_data ? '\u2014' : s.reward.toFixed(4)) + '</td>'
+      + '<td>' + (s.predicted || []).length + '</td>'
+      + '<td>' + gtSegs.length + '</td></tr>';
+  }
+  html += '</table></div></div>';
+
+  /* ── Segment Detail Table ── */
+  html += '<div class="card"><div class="section-title">\u5206\u5272\u65f6\u95f4\u6233</div>'
+    + '<div style="padding:0 16px 14px"><table class="cmp-table">'
+    + '<tr><th>Setting</th><th>Segments</th></tr>'
+    + '<tr><td style="color:' + GT_COLOR + ';font-weight:700">GT</td>'
+    + '<td style="font-family:monospace;font-size:11px">'
+    + gtSegs.map(function (p) { return '[' + p[0] + ', ' + p[1] + ']'; }).join('  ')
+    + '</td></tr>';
+  for (var i = 0; i < names.length; i++) {
+    var n = names[i], s = settings[n], rc = settingColor(n);
+    html += '<tr><td style="color:' + rc + ';font-weight:700">' + esc(n) + '</td>'
+      + '<td style="font-family:monospace;font-size:11px">'
+      + (s.predicted || []).map(function (p) { return '[' + p[0] + ', ' + p[1] + ']'; }).join('  ')
+      + '</td></tr>';
+  }
+  html += '</table></div></div>';
+
+  /* ── Prompt Comparison (only if prompts differ) ── */
+  var uniquePrompts = {};
+  for (var i = 0; i < names.length; i++) {
+    var n = names[i];
+    uniquePrompts[n] = prompts[n] || settings[n].prompt || '';
+  }
+  var promptVals = Object.keys(uniquePrompts).map(function (k) { return uniquePrompts[k]; });
+  var allSame = new Set(promptVals).size <= 1;
+  if (!allSame) {
+    var cols = Math.min(names.length, 2);
+    html += '<div class="card"><div class="section-title">Prompt \u5bf9\u6bd4</div>'
+      + '<div style="padding:0 16px 14px"><div class="prompt-grid" style="grid-template-columns:repeat(' + cols + ',1fr)">';
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i], rc = settingColor(n);
+      html += '<div class="prompt-card"><div class="label" style="color:' + rc + '">' + esc(n) + '</div>'
+        + '<pre>' + esc(uniquePrompts[n]) + '</pre></div>';
     }
-  } catch(e){
-    // frames not available, ok
-  }
-}
-
-function renderFrameStrip(videoKey, frames, duration){
-  const el = document.getElementById('frame-strip-' + CSS.escape(videoKey));
-  if(!el) return;
-  el.innerHTML = frames.map(f =>
-    `<div class="frame-item">
-      <img src="${f.src}" alt="${f.second}s"/>
-      <div class="ts">${formatMMSS(f.second)}</div>
-    </div>`
-  ).join('');
-}
-
-// ─── Render Comparison ───
-function renderComparison(data){
-  const content = document.getElementById('content');
-  const vk = data.video_key;
-  const dur = Math.max(1, Math.ceil(data.duration || 60));
-  const gtSegs = data.gt_segments || [];
-  const settings = data.settings || {};
-  const prompts = data.prompts || {};
-  const names = settingNames.filter(n => n in settings);
-
-  let html = '';
-
-  // ── Legend ──
-  const isTrainingMode = names.every(n => settings[n].is_training_data);
-  html += `<div class="legend">
-    <div class="legend-item"><div class="legend-dot" style="background:${GT_COLOR}"></div>Ground Truth</div>
-    ${names.map(n => {
-      const s = settings[n];
-      const rewardText = s.is_training_data ? '' : ` (r=${s.reward.toFixed(3)})`;
-      return `<div class="legend-item"><div class="legend-dot" style="background:${settingColor(n)}"></div>${esc(n)}
-        <span style="color:var(--muted);font-size:10px">${rewardText}</span>
-      </div>`;
-    }).join('')}
-    ${isTrainingMode ? '<div class="badge" style="background:rgba(251,191,36,.15);color:var(--yellow);margin-left:auto">📋 训练数据模式 — 对比 Prompt 差异</div>' : ''}
-  </div>`;
-
-  // ── Timeline Card ──
-  html += `<div class="card">
-    <div class="card-head">⏱ 时间轴对比 <span style="color:var(--muted);font-size:11px;font-weight:400">${dur}s</span></div>
-    <div class="card-body">
-      <div class="frame-strip" id="frame-strip-${esc(vk)}">
-        <div style="color:var(--muted);font-size:11px;padding:10px">帧加载中...</div>
-      </div>
-      <div class="timeline-container" id="tl-container-${esc(vk)}">
-        ${buildTimeline(vk, dur, gtSegs, settings, names)}
-      </div>
-      <div class="scroll-sync-bar">
-        <div class="label">0s</div>
-        <input type="range" min="0" max="1000" value="0"
-          oninput="syncScroll('${esc(vk)}',this.value)"/>
-        <div class="label">${dur}s</div>
-      </div>
-    </div>
-  </div>`;
-
-  // ── Reward Comparison ──
-  html += `<div class="card">
-    <div class="card-head">📊 Reward / 数据对比</div>
-    <div class="card-body">
-      <table class="reward-table">
-        <tr><th>Setting</th><th>Step</th><th>Level</th><th>Type</th><th>Reward</th><th>预测段数</th><th>GT段数</th></tr>
-        ${names.map(n => {
-          const s = settings[n];
-          const rc = settingColor(n);
-          const nPred = s.predicted.length;
-          const isTraining = s.is_training_data;
-          const typeLabel = isTraining ? '<span style="color:var(--yellow)">训练数据</span>' : 'Rollout';
-          return `<tr>
-            <td><span style="color:${rc};font-weight:700">${esc(n)}</span></td>
-            <td>${s.step}</td>
-            <td>${esc(s.level)}</td>
-            <td>${typeLabel}</td>
-            <td>${isTraining ? '—' : `<div class="reward-bar" style="width:${Math.max(2,s.reward*80)}px;background:${rc}"></div>${s.reward.toFixed(4)}`}</td>
-            <td>${nPred}</td>
-            <td>${gtSegs.length}</td>
-          </tr>`;
-        }).join('')}
-      </table>
-    </div>
-  </div>`;
-
-  // ── Prompt Comparison ──
-  const uniquePrompts = {};
-  for(const n of names){
-    const p = prompts[n] || settings[n].prompt || '';
-    uniquePrompts[n] = p;
-  }
-  const allSamePrompt = new Set(Object.values(uniquePrompts)).size <= 1;
-
-  if(!allSamePrompt){
-    const cols = Math.min(names.length, 2);
-    html += `<div class="card">
-      <div class="card-head">📝 Prompt 对比</div>
-      <div class="card-body">
-        <div class="prompt-grid" style="grid-template-columns:repeat(${cols},1fr)">
-          ${names.map(n => {
-            const rc = settingColor(n);
-            return `<div class="prompt-card">
-              <div class="label" style="color:${rc}">${esc(n)}</div>
-              <pre>${esc(uniquePrompts[n])}</pre>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-    </div>`;
+    html += '</div></div></div>';
   }
 
-  // ── Response Comparison ──
-  html += `<div class="card">
-    <div class="card-head">💬 Response 对比</div>
-    <div class="card-body">
-      <div class="prompt-grid" style="grid-template-columns:repeat(${Math.min(names.length,2)},1fr)">
-        ${names.map(n => {
-          const rc = settingColor(n);
-          const s = settings[n];
-          return `<div class="prompt-card">
-            <div class="label" style="color:${rc}">${esc(n)} <span style="color:var(--muted);font-weight:400">(r=${s.reward.toFixed(3)})</span></div>
-            <pre>${esc(s.response || '(no response)')}</pre>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>
-  </div>`;
-
-  // ── Segment Detail Table ──
-  html += `<div class="card">
-    <div class="card-head">📐 分割时间戳详情</div>
-    <div class="card-body">
-      <table class="reward-table">
-        <tr><th>Setting</th><th>Segments</th></tr>
-        <tr><td style="color:${GT_COLOR};font-weight:700">GT</td>
-            <td style="font-family:monospace;font-size:11px">${gtSegs.map(([s,e])=>`[${s}, ${e}]`).join(' ')}</td></tr>
-        ${names.map(n => {
-          const s = settings[n];
-          const rc = settingColor(n);
-          return `<tr>
-            <td style="color:${rc};font-weight:700">${esc(n)}</td>
-            <td style="font-family:monospace;font-size:11px">${s.predicted.map(([s2,e2])=>`[${s2}, ${e2}]`).join(' ')}</td>
-          </tr>`;
-        }).join('')}
-      </table>
-    </div>
-  </div>`;
+  /* ── Response Comparison ── */
+  var hasResp = names.some(function (n) { return settings[n].response && !settings[n].is_training_data; });
+  if (hasResp) {
+    var cols = Math.min(names.length, 2);
+    html += '<div class="card"><div class="section-title">Response \u5bf9\u6bd4</div>'
+      + '<div style="padding:0 16px 14px"><div class="prompt-grid" style="grid-template-columns:repeat(' + cols + ',1fr)">';
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i], s = settings[n], rc = settingColor(n);
+      html += '<div class="prompt-card"><div class="label" style="color:' + rc + '">' + esc(n)
+        + (s.is_training_data ? '' : ' (r=' + s.reward.toFixed(3) + ')')
+        + '</div><pre>' + esc(s.response || '(\u65e0 response)') + '</pre></div>';
+    }
+    html += '</div></div></div>';
+  }
 
   content.innerHTML = html;
+  initScrollSync();
 }
 
-// ─── Build Timeline ───
-function buildTimeline(vk, dur, gtSegs, settings, names){
-  // Use percentage-based positioning for responsive layout
-  const toLeft = t => (Math.max(0, t) / dur * 100).toFixed(2) + '%';
-  const toWidth = (s, e) => (Math.max(0.5, (e - s) / dur * 100)).toFixed(2) + '%';
-
-  // Ruler ticks
-  const tickStep = Math.max(1, Math.ceil(dur / 12));
-  let ruler = '';
-  for(let t = 0; t <= dur; t += tickStep){
-    ruler += `<span class="tl-tick" style="left:${toLeft(t)}">${t}s</span>`;
+/* ── Ruler (adapted from segmentation_visualize) ── */
+function renderRuler(duration, totalWidth) {
+  var step = Math.max(1, Math.ceil(duration / 15));
+  var ticks = '';
+  for (var t = 0; t <= duration; t += step) {
+    var left = (t / duration) * totalWidth;
+    ticks += '<span class="ruler-tick" style="left:' + left + 'px">' + t + 's</span>';
   }
-  if(dur % tickStep !== 0){
-    ruler += `<span class="tl-tick" style="left:${toLeft(dur)}">${dur}s</span>`;
+  if (Math.ceil(duration) % step !== 0) {
+    ticks += '<span class="ruler-tick" style="left:' + totalWidth + 'px">' + Math.ceil(duration) + 's</span>';
   }
-
-  // GT row
-  const gtHTML = gtSegs.map(([s,e]) =>
-    `<div class="tl-seg" style="left:${toLeft(s)};width:${toWidth(s,e)};background:${GT_COLOR}">
-      <div class="tip">[${s}, ${e}]</div>
-    </div>`
-  ).join('');
-
-  // Setting rows
-  const settingRows = names.map(n => {
-    const rc = settingColor(n);
-    const segs = settings[n].predicted || [];
-    const segsHTML = segs.map(([s,e]) =>
-      `<div class="tl-seg" style="left:${toLeft(s)};width:${toWidth(s,e)};background:${rc}">
-        <div class="tip">${n}: [${s}, ${e}]</div>
-      </div>`
-    ).join('');
-    return `<div class="tl-row">
-      <div class="tl-row-label" style="color:${rc}">${esc(n)}</div>
-      <div class="tl-row-track">${segsHTML}</div>
-    </div>`;
-  }).join('');
-
-  return `
-    <div class="tl-ruler">
-      <div style="display:flex;align-items:stretch">
-        <div class="tl-row-label"></div>
-        <div class="tl-ruler-track" style="position:relative">${ruler}</div>
-      </div>
-    </div>
-    <div class="tl-row">
-      <div class="tl-row-label" style="color:${GT_COLOR}">GT</div>
-      <div class="tl-row-track">${gtHTML}</div>
-    </div>
-    <div style="height:1px;background:var(--border);margin:4px 0 4px 90px;opacity:.3"></div>
-    ${settingRows}
-  `;
+  return '<div class="lane-block"><div class="lane-head"></div>'
+    + '<div class="ruler" style="width:' + totalWidth + 'px">' + ticks + '</div></div>';
 }
 
-// ─── Scroll sync ───
-function syncScroll(vk, val){
-  const container = document.getElementById('tl-container-' + CSS.escape(vk));
-  if(!container) return;
-  const max = Math.max(0, container.scrollWidth - container.clientWidth);
-  container.scrollLeft = (Number(val) / 1000) * max;
-
-  // Also sync frame strip
-  const fstrip = document.getElementById('frame-strip-' + CSS.escape(vk));
-  if(fstrip){
-    const fmax = Math.max(0, fstrip.scrollWidth - fstrip.clientWidth);
-    fstrip.scrollLeft = (Number(val) / 1000) * fmax;
+/* ── Lane rendering (reused from segmentation_visualize renderLane) ── */
+function renderLane(label, segments, totalWidth, duration, segClass, meta) {
+  var segsHtml = '';
+  for (var i = 0; i < segments.length; i++) {
+    var seg = segments[i];
+    var s = Array.isArray(seg) ? seg[0] : seg.start;
+    var e = Array.isArray(seg) ? seg[1] : seg.end;
+    var left = Math.max(0, (s / duration) * totalWidth);
+    var width = Math.max(6, ((e - s) / duration) * totalWidth - 4);
+    segsHtml += '<div class="segment ' + segClass + '" style="left:' + left + 'px;width:' + width + 'px"'
+      + ' title="[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']">'
+      + '<div class="segment-label">[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']</div></div>';
   }
+  return '<div class="lane-block">'
+    + '<div class="lane-head"><div class="lane-title">' + esc(label) + '</div>'
+    + '<div class="lane-meta">' + esc(String(meta || '')) + '</div></div>'
+    + '<div class="lane-track" style="width:' + totalWidth + 'px">' + segsHtml + '</div></div>';
 }
 
-// ─── Utils ───
-function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function formatMMSS(sec){ const m=Math.floor(sec/60),s=Math.floor(sec%60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+/* ── Scroll sync (reused from segmentation_visualize initTimelineScroll) ── */
+function initScrollSync() {
+  var shell = document.getElementById('scrollShell');
+  var slider = document.getElementById('scrollBar');
+  if (!shell || !slider) return;
+
+  function sync() {
+    var max = Math.max(0, shell.scrollWidth - shell.clientWidth);
+    slider.disabled = max <= 0;
+    slider.value = max > 0 ? String(Math.round((shell.scrollLeft / max) * 1000)) : '0';
+  }
+
+  slider.addEventListener('input', function () {
+    var max = Math.max(0, shell.scrollWidth - shell.clientWidth);
+    if (max > 0) shell.scrollLeft = (Number(slider.value) / 1000) * max;
+  });
+
+  shell.addEventListener('scroll', sync, { passive: true });
+  sync();
+}
 
 init();
 </script>
