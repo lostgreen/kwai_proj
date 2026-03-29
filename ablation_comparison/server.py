@@ -321,6 +321,78 @@ class ComparisonStore:
             })
         return {"total": total, "offset": offset, "items": items}
 
+    def step_stats(self) -> list[dict]:
+        """Per-step, per-setting aggregate stats for reward curves."""
+        # Collect rewards: step -> setting -> [rewards]
+        step_setting_rewards: dict[int, dict[str, list[float]]] = {}
+        for vk, entry in self.video_index.items():
+            for setting_name, records in entry["settings"].items():
+                for r in records:
+                    if r.get("is_training_data"):
+                        continue
+                    step = r["step"]
+                    step_setting_rewards.setdefault(step, {}).setdefault(setting_name, []).append(r["reward"])
+
+        result = []
+        for step in sorted(step_setting_rewards.keys()):
+            setting_stats = {}
+            for sname, rewards in step_setting_rewards[step].items():
+                setting_stats[sname] = {
+                    "mean_reward": sum(rewards) / len(rewards) if rewards else 0,
+                    "n_samples": len(rewards),
+                }
+            result.append({"step": step, "settings": setting_stats})
+        return result
+
+    def list_samples_for_step(self, step: int, offset: int = 0, limit: int = 50, level_filter: str = "") -> dict:
+        """List samples that have data at a specific step."""
+        keys = []
+        for vk in self.video_keys:
+            entry = self.video_index[vk]
+            has_step = False
+            for recs in entry["settings"].values():
+                if any(r["step"] == step for r in recs):
+                    has_step = True
+                    break
+            if not has_step:
+                continue
+            if level_filter:
+                has_level = False
+                for recs in entry["settings"].values():
+                    if any(r.get("level") == level_filter and r["step"] == step for r in recs):
+                        has_level = True
+                        break
+                if not has_level:
+                    continue
+            keys.append(vk)
+
+        total = len(keys)
+        page = keys[offset:offset + limit]
+        items = []
+        for vk in page:
+            entry = self.video_index[vk]
+            n_settings = 0
+            levels = set()
+            rewards = {}
+            for sname, recs in entry["settings"].items():
+                step_recs = [r for r in recs if r["step"] == step]
+                if step_recs:
+                    n_settings += 1
+                    best = max(step_recs, key=lambda r: r["reward"])
+                    rewards[sname] = best["reward"]
+                    for r in step_recs:
+                        if r.get("level"):
+                            levels.add(r["level"])
+            items.append({
+                "video_key": vk,
+                "n_settings": n_settings,
+                "n_gt_segments": len(entry["gt_segments"]),
+                "duration": entry["duration"],
+                "levels": sorted(levels),
+                "rewards": rewards,
+            })
+        return {"total": total, "offset": offset, "step": step, "items": items}
+
     def get_sample(self, video_key: str, step: Optional[int] = None) -> Optional[dict]:
         entry = self.video_index.get(video_key)
         if not entry:
@@ -439,11 +511,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(store.summary())
                 return
 
+            if path == "/api/step_stats":
+                self._json(store.step_stats())
+                return
+
             if path == "/api/samples":
                 offset = int(qs.get("offset", ["0"])[0])
                 limit = int(qs.get("limit", ["50"])[0])
                 level = qs.get("level", [""])[0]
-                self._json(store.list_samples(offset, limit, level))
+                step_str = qs.get("step", [None])[0]
+                if step_str:
+                    self._json(store.list_samples_for_step(int(step_str), offset, limit, level))
+                else:
+                    self._json(store.list_samples(offset, limit, level))
                 return
 
             if path.startswith("/api/sample/"):
@@ -498,9 +578,11 @@ def main():
     global _preloaded_html
     try:
         samples = store.list_samples(offset=0, limit=5000)
+        step_stats = store.step_stats()
         preload = {
             "summary": summary,
             "samples": samples,
+            "step_stats": step_stats,
         }
         _preloaded_html = (
             b'<script>window.__PRELOADED__='

@@ -3,60 +3,71 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Ablation Comparison – 分割消融对比</title>
+<title>Ablation Comparison</title>
 <style>
-/* ── White theme (reused from segmentation_visualize) ── */
-:root{--bg:#eef2f6;--panel:rgba(255,255,255,.92);--card-border:rgba(0,0,0,.06);
-  --text:#1e293b;--muted:#64748b;--accent:#2d6cdf;--red:#ef4444;--teal:#0d9488}
+:root{--bg:#f8fafc;--panel:rgba(255,255,255,0.92);--border:rgba(100,116,139,0.18);
+  --text:#1e293b;--muted:#64748b;--accent:#2d6cdf;--ok:#059669;--warn:#d97706;
+  --danger:#e11d48;--r:14px}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  background:var(--bg);color:var(--text);font-size:13px;line-height:1.5}
+body{color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  background:radial-gradient(1200px 500px at 8% -10%,rgba(37,99,235,.08),transparent 70%),
+    radial-gradient(900px 450px at 92% 0%,rgba(16,185,129,.06),transparent 65%),var(--bg);
+  min-height:100vh}
+.page{display:none;padding:20px;max-width:1440px;margin:0 auto}.page.active{display:block}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);
+  backdrop-filter:blur(8px);box-shadow:0 2px 12px rgba(0,0,0,.06)}
+h1{font-size:24px;font-weight:700}h2{font-size:17px;font-weight:700}
+h3{font-size:13px;font-weight:600;color:#374151}
+.muted{color:var(--muted);font-size:12px}
+.badge{font-size:11px;display:inline-block;border-radius:999px;padding:3px 9px;
+  border:1px solid rgba(100,116,139,.25);color:#334155;white-space:nowrap}
+.chip{font-size:11px;display:inline-block;border-radius:6px;padding:2px 7px;
+  background:rgba(100,116,139,.1);color:#475569}
 
-/* ── Header ── */
-.header{display:flex;align-items:center;gap:14px;padding:12px 20px;
-  background:var(--panel);border-bottom:1px solid var(--card-border);backdrop-filter:blur(12px)}
-.header h1{font-size:17px;font-weight:700;letter-spacing:-.3px}
-.header .meta{font-size:11px;color:var(--muted)}
+/* ── Overview ── */
+.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:12px}
+.stat{padding:12px 14px}.stat .k{color:var(--muted);font-size:11px;margin-bottom:5px}
+.stat .v{font-size:22px;font-weight:700}
+.chart-section{padding:16px 18px;margin-bottom:12px}
+.chart-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px}
+.chart-legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;user-select:none;transition:opacity .2s}
+.legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.chart-svg{display:block;background:rgba(241,245,249,.8);border:1px solid rgba(100,116,139,.15);border-radius:10px}
+.smooth-control{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.smooth-control input[type=range]{accent-color:#34d399;width:130px;cursor:pointer}
 
-/* ── Layout ── */
-.main{display:flex;height:calc(100vh - 46px)}
+/* ── Step grid ── */
+.step-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:20px}
+.step-card{padding:14px 16px;cursor:pointer;display:grid;gap:8px;transition:border-color .2s}
+.step-card:hover{border-color:rgba(96,165,250,.5)}
+.step-minibar{width:100%;height:5px;border-radius:999px;background:rgba(100,116,139,.12);overflow:hidden;display:flex;gap:1px}
 
-/* ── Sidebar ── */
-.sidebar{width:300px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--card-border);
-  display:flex;flex-direction:column;overflow:hidden}
-.sidebar-head{padding:10px 12px;border-bottom:1px solid var(--card-border);display:flex;flex-direction:column;gap:6px}
-.sidebar-head input{background:#fff;border:1px solid rgba(0,0,0,.1);color:var(--text);
-  padding:6px 10px;border-radius:6px;font-size:12px;width:100%;outline:none}
+/* ── Detail page ── */
+.detail-header{display:flex;align-items:center;gap:12px;padding:14px 18px;margin-bottom:12px;flex-wrap:wrap}
+.back-btn{background:rgba(100,116,139,.08);border:1px solid rgba(100,116,139,.2);
+  color:var(--text);border-radius:10px;padding:6px 14px;font-size:13px;cursor:pointer}
+.back-btn:hover{background:rgba(100,116,139,.15)}
+.detail-layout{display:grid;grid-template-columns:290px minmax(0,1fr);gap:12px}
+.sidebar{padding:14px;display:grid;gap:8px;align-content:start;max-height:calc(100vh - 160px);overflow-y:auto}
+.sidebar-head{display:flex;flex-direction:column;gap:6px;margin-bottom:4px}
+.sidebar-head input{background:rgba(255,255,255,.8);border:1px solid rgba(100,116,139,.25);color:var(--text);
+  padding:6px 10px;border-radius:8px;font-size:12px;width:100%;outline:none}
 .sidebar-head input:focus{border-color:var(--accent)}
-.sidebar-head select{background:#fff;border:1px solid rgba(0,0,0,.1);color:var(--text);
-  padding:4px 8px;border-radius:6px;font-size:11px;outline:none}
-.sidebar-list{flex:1;overflow-y:auto}
-.sidebar-item{padding:8px 12px;border-bottom:1px solid rgba(0,0,0,.04);border-left:3px solid transparent;
-  cursor:pointer;transition:background .15s}
-.sidebar-item:hover{background:rgba(45,108,223,.04)}
-.sidebar-item.active{background:rgba(45,108,223,.08);border-left-color:var(--accent)}
-.sidebar-item .name{font-size:12px;font-weight:600;margin-bottom:2px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sidebar-item .info{font-size:10px;color:var(--muted)}
+.sidebar-head select{background:rgba(255,255,255,.8);border:1px solid rgba(100,116,139,.25);color:var(--text);
+  padding:4px 8px;border-radius:8px;font-size:11px;outline:none}
+.sample-list{overflow-y:auto;border:1px solid rgba(100,116,139,.15);border-radius:10px;max-height:560px}
+.sample-row{padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(100,116,139,.1);display:grid;gap:3px}
+.sample-row:hover{background:rgba(37,99,235,.06)}.sample-row.active{background:rgba(5,150,105,.08)}
+.sample-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sample-info{font-size:10px;color:var(--muted)}
+.sample-rewards{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px}
+.sample-reward-chip{font-size:9px;padding:1px 5px;border-radius:4px;font-weight:600}
+.group-main{display:grid;gap:12px;align-content:start;overflow-y:auto;overflow-x:hidden;max-height:calc(100vh - 160px);min-width:0}
 
-/* ── Content ── */
-.content{flex:1;overflow-y:auto;padding:16px 20px}
-
-/* ── Card (reused from segmentation_visualize) ── */
-.card{background:var(--panel);border:1px solid var(--card-border);border-radius:14px;
-  box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:14px;overflow:hidden}
-.section-title{font-size:12px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;
-  color:var(--muted);margin-bottom:10px;padding:14px 16px 0}
-
-/* ── Legend ── */
-.legend{display:flex;gap:14px;flex-wrap:wrap;padding:12px 16px 8px}
-.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:500}
-.legend-dot{width:10px;height:10px;border-radius:50%}
-.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600}
-
-/* ── Timeline: lane-track (reused from segmentation_visualize) ── */
-.sync-shell{overflow-x:auto;overflow-y:hidden;padding:0 16px 8px}
-.sync-inner{position:relative}
+/* ── Frame + timeline sync ── */
+.sync-shell{overflow-x:auto;overflow-y:hidden;padding:0 16px 8px;scrollbar-width:thin}
+.sync-inner{position:relative;display:inline-block;min-width:max-content}
 .lane-block{display:flex;align-items:stretch;margin-bottom:6px}
 .lane-head{width:100px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;padding:0 8px 0 0}
 .lane-title{font-size:11px;font-weight:700;white-space:nowrap}
@@ -64,15 +75,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .lane-track{position:relative;height:42px;background:rgba(100,116,139,.04);
   border-radius:8px;border:1px solid rgba(0,0,0,.03)}
 
-/* ── Segment (reused from segmentation_visualize) ── */
+/* ── Segment ── */
 .segment{position:absolute;top:3px;bottom:3px;border-radius:6px;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   overflow:hidden;cursor:default;transition:opacity .15s,transform .1s;
   font-size:10px;color:#fff;padding:0 4px}
 .segment:hover{opacity:1!important;transform:scaleY(1.08);z-index:10}
 .segment-label{font-size:9px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-
-/* Segment colors — GT + up to 8 settings */
 .seg-gt{background:linear-gradient(135deg,rgba(239,68,68,.88),rgba(220,38,38,.72))}
 .seg-s0{background:linear-gradient(135deg,rgba(45,108,223,.88),rgba(37,99,235,.72))}
 .seg-s1{background:linear-gradient(135deg,rgba(228,157,28,.88),rgba(217,119,6,.72))}
@@ -88,31 +97,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .ruler-tick{position:absolute;bottom:0;font-size:9px;color:var(--muted);transform:translateX(-50%)}
 .ruler-tick::before{content:'';position:absolute;left:50%;bottom:100%;width:1px;height:5px;background:rgba(0,0,0,.12)}
 
-/* ── Scroll control (reused from segmentation_visualize) ── */
+/* ── Scroll control ── */
 .scroll-control{display:flex;align-items:center;gap:10px;padding:6px 16px 12px}
 .scroll-control .meta{font-size:10px;color:var(--muted);min-width:50px}
 .scroll-slider{flex:1;appearance:none;height:4px;background:rgba(0,0,0,.08);border-radius:2px;outline:none;cursor:pointer}
 .scroll-slider::-webkit-slider-thumb{appearance:none;width:14px;height:14px;background:var(--accent);border-radius:50%;cursor:pointer}
 
-/* ── Comparison table ── */
-.cmp-table{width:100%;border-collapse:collapse;font-size:12px}
-.cmp-table th,.cmp-table td{padding:6px 10px;text-align:left;border-bottom:1px solid rgba(0,0,0,.05)}
-.cmp-table th{color:var(--muted);font-weight:600;font-size:11px}
-
-/* ── Prompt / Response grid ── */
-.prompt-grid{display:grid;gap:10px}
-.prompt-card{background:rgba(0,0,0,.02);border:1px solid rgba(0,0,0,.06);border-radius:8px;padding:10px 12px}
-.prompt-card .label{font-size:11px;font-weight:700;margin-bottom:6px}
-.prompt-card pre{font-size:11px;color:var(--muted);white-space:pre-wrap;word-break:break-word;
-  max-height:200px;overflow-y:auto;line-height:1.5}
-
-/* ── States ── */
-.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;color:var(--muted)}
-.spin{display:inline-block;width:20px;height:20px;border:2px solid rgba(0,0,0,.1);
-  border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-
-/* ── Frame strip (adapted from segmentation_visualize) ── */
+/* ── Frame strip ── */
 .frame-strip{position:relative;height:66px}
 .frame-thumb{position:absolute;top:0;width:64px;height:48px;border-radius:6px;overflow:hidden;
   border:1px solid rgba(71,85,105,.1);background:linear-gradient(135deg,rgba(45,108,223,.04),rgba(21,154,140,.04))}
@@ -121,155 +112,409 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .frame-label{position:absolute;top:50px;left:0;width:64px;text-align:center;
   font-size:9px;color:var(--muted);font-family:"SF Mono",monospace}
 
+/* ── Tables ── */
+.cmp-table{width:100%;border-collapse:collapse;font-size:12px}
+.cmp-table th,.cmp-table td{padding:6px 10px;text-align:left;border-bottom:1px solid rgba(0,0,0,.05)}
+.cmp-table th{color:var(--muted);font-weight:600;font-size:11px}
+.section-title{font-size:12px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;
+  color:var(--muted);margin-bottom:10px;padding:14px 16px 0}
+.prompt-grid{display:grid;gap:10px}
+.prompt-card{background:rgba(0,0,0,.02);border:1px solid rgba(0,0,0,.06);border-radius:8px;padding:10px 12px}
+.prompt-card .label{font-size:11px;font-weight:700;margin-bottom:6px}
+.prompt-card pre{font-size:11px;color:var(--muted);white-space:pre-wrap;word-break:break-word;
+  max-height:200px;overflow-y:auto;line-height:1.5}
+
 /* ── Expand toggle ── */
 .expand-btn{padding:2px 0 4px 108px;font-size:10px;color:var(--accent);cursor:pointer;user-select:none}
 .expand-btn:hover{text-decoration:underline}
 .extra-lanes .segment{opacity:.55}
 .extra-lanes .lane-track{height:34px}
+
+/* ── States ── */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;color:var(--muted)}
+.spin{display:inline-block;width:20px;height:20px;border:2px solid rgba(0,0,0,.1);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+::-webkit-scrollbar{width:4px;height:6px}
+::-webkit-scrollbar-thumb{background:rgba(100,116,139,.25);border-radius:999px}
+::-webkit-scrollbar-track{background:transparent}
+input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:20px}
 </style>
 </head>
 <body>
 
-<div class="header">
-  <h1>Ablation Comparison</h1>
-  <div class="meta" id="headerInfo">加载中...</div>
-</div>
-
-<div class="main">
-  <div class="sidebar">
-    <div class="sidebar-head">
-      <input type="text" id="searchInput" placeholder="搜索视频..." oninput="filterSamples()"/>
-      <div style="display:flex;gap:8px;align-items:center">
-        <select id="levelFilter" onchange="loadSamples()">
-          <option value="">全部 Level</option>
-          <option value="L2">L2</option>
-          <option value="L3">L3</option>
-        </select>
-        <select id="stepFilter" onchange="onStepChange()">
-          <option value="">最佳 reward</option>
-        </select>
-        <span class="meta" id="sampleCount"></span>
+<!-- ═══════ PAGE 1: OVERVIEW ═══════ -->
+<div id="pg-overview" class="page active">
+  <div class="card" style="padding:16px 18px;margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px">
+      <div>
+        <h1>Ablation Comparison</h1>
+        <p class="muted" style="margin-top:4px" id="headerInfo">加载中...</p>
       </div>
     </div>
-    <div class="sidebar-list" id="sampleList"></div>
   </div>
-  <div class="content" id="content">
-    <div class="empty">
-      <div style="font-size:14px">选择左侧样本查看 Ablation 对比</div>
+
+  <div class="stats-row" id="statsRow"></div>
+
+  <!-- Reward curve chart -->
+  <div class="card chart-section" id="chartSection" style="display:none">
+    <div class="chart-header">
+      <span style="font-size:13px;font-weight:600;color:#374151">Reward 曲线</span>
+      <div class="smooth-control">
+        <span>Smooth</span>
+        <input type="range" id="smoothSlider" min="0" max="98" value="60" oninput="onSmooth(this.value)"/>
+        <span id="smoothVal" style="min-width:28px;text-align:right">0.60</span>
+      </div>
+    </div>
+    <div class="chart-legend" id="chartLegend"></div>
+    <svg id="rewardChart" class="chart-svg" viewBox="0 0 820 200" style="width:100%;height:200px"></svg>
+  </div>
+
+  <!-- Step grid -->
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <h2 style="color:#374151;font-size:14px;font-weight:600">按 Step 浏览 <span class="muted">— 点击进入详情</span></h2>
+    <span id="stepCountLabel" class="muted"></span>
+  </div>
+  <div class="step-grid" id="stepGrid">
+    <div class="card" style="padding:20px;text-align:center;color:var(--muted);grid-column:1/-1">
+      加载中...
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ PAGE 2: STEP DETAIL ═══════ -->
+<div id="pg-detail" class="page">
+  <div class="detail-header card">
+    <button class="back-btn" onclick="showOverview()">← 返回总览</button>
+    <h2 style="margin:0" id="detailTitle">Step —</h2>
+    <div id="detailBadges" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+  </div>
+  <div class="detail-layout">
+    <aside class="card sidebar">
+      <div class="sidebar-head">
+        <input type="text" id="searchInput" placeholder="搜索视频..." oninput="filterSamples()"/>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="levelFilter" onchange="loadStepSamples()">
+            <option value="">全部 Level</option>
+            <option value="L1">L1</option>
+            <option value="L2">L2</option>
+            <option value="L3">L3</option>
+          </select>
+          <span class="muted" id="sampleCount"></span>
+        </div>
+      </div>
+      <div class="sample-list" id="sampleList"></div>
+    </aside>
+    <div class="group-main" id="groupMain">
+      <div class="card" style="padding:40px;text-align:center;color:var(--muted)">← 从左侧选择一条样本</div>
     </div>
   </div>
 </div>
 
 <script>
-/* ── Constants ── */
-const FRAME_W = 64;
-const FRAME_GAP = 6;
-const STRIDE = FRAME_W + FRAME_GAP; /* 70px per second — aligns with frame thumbnails */
-const MIN_WIDTH = 800;
-const GT_COLOR = '#ef4444';
-const COLORS = ['#2d6cdf','#e49d1c','#d4577c','#059669','#7c3aed','#0891b2','#eab308','#f87171'];
+/* ═══════════════ CONSTANTS ═══════════════ */
+var FRAME_W = 64, FRAME_GAP = 6, STRIDE = FRAME_W + FRAME_GAP;
+var MIN_WIDTH = 800;
+var GT_COLOR = '#ef4444';
+var COLORS = ['#2d6cdf','#e49d1c','#d4577c','#059669','#7c3aed','#0891b2','#eab308','#f87171'];
+var BASE = window.location.pathname.replace(/\/[^/]*$/, '');
 
-/* Base path prefix: handles reverse-proxy deployments.
-   e.g. http://localhost:8790/  → BASE=''
-        https://proxy.corp.com/proxy/8790/  → BASE='/proxy/8790' */
-const BASE = window.location.pathname.replace(/\/[^/]*$/, '');
+/* ═══════════════ STATE ═══════════════ */
+var settingNames = [];
+var allStepStats = [];  // [{step, settings: {name: {mean_reward, n_samples}}}]
+var allSamples = [];    // samples for current step
+var currentStep = null;
+var currentVideoKey = null;
+var hiddenCurves = {};
 
-let settingNames = [];
-let allSamples = [];
-let currentVideoKey = null;
-let currentStep = null; /* null = best reward, number = specific step */
-
-/* ── Utilities ── */
+/* ═══════════════ UTIL ═══════════════ */
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function mmss(sec) {
-  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
   return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
 function settingColor(name) {
-  const i = settingNames.indexOf(name);
+  var i = settingNames.indexOf(name);
   return COLORS[i >= 0 ? i % COLORS.length : 0];
 }
 function settingSegClass(name) {
-  const i = settingNames.indexOf(name);
+  var i = settingNames.indexOf(name);
   return 'seg-s' + (i >= 0 ? i % 8 : 0);
 }
+function rewColor(r) { return r >= 0.7 ? '#059669' : r >= 0.4 ? '#d97706' : '#e11d48'; }
 async function api(path) {
   var r = await fetch(BASE + path);
-  if (!r.ok) throw new Error(r.statusText);
+  if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
   return r.json();
 }
 
-function populateStepFilter(steps) {
-  var sel = document.getElementById('stepFilter');
-  // Keep the default "最佳 reward" option, remove old step options
-  sel.innerHTML = '<option value="">\u6700\u4f73 reward</option>';
-  for (var i = 0; i < steps.length; i++) {
-    sel.innerHTML += '<option value="' + steps[i] + '">step ' + steps[i] + '</option>';
-  }
+/* ═══════════════ PAGE NAV ═══════════════ */
+function showPage(id) {
+  var pages = document.querySelectorAll('.page');
+  for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+  document.getElementById(id).classList.add('active');
+}
+function showOverview() {
+  currentStep = null;
+  currentVideoKey = null;
+  showPage('pg-overview');
 }
 
-function onStepChange() {
-  var val = document.getElementById('stepFilter').value;
-  currentStep = val ? parseInt(val, 10) : null;
-  if (currentVideoKey) selectSample(currentVideoKey);
-}
-
-/* ── Init ── */
+/* ═══════════════ INIT ═══════════════ */
 async function init() {
-  // Use server-injected pre-loaded data if available (no API call needed)
   var pre = window.__PRELOADED__;
   if (pre && pre.summary) {
     try {
-      var summary = pre.summary;
-      settingNames = summary.setting_names || [];
-      populateStepFilter(summary.steps || []);
-      var info = settingNames.map(function (n) {
-        return n + ': ' + summary.settings[n].count;
-      }).join(' \u00b7 ');
-      document.getElementById('headerInfo').textContent =
-        summary.total_videos + ' \u4e2a\u89c6\u9891 \u00b7 ' + info;
-      // Use preloaded samples
-      if (pre.samples) {
-        allSamples = pre.samples.items || [];
-        document.getElementById('sampleCount').textContent = pre.samples.total + ' \u4e2a';
-        renderSampleList(allSamples);
-      } else {
-        await loadSamples();
+      applySummary(pre.summary);
+      if (pre.step_stats) {
+        allStepStats = pre.step_stats;
+        buildChart();
+        buildStepGrid();
       }
       return;
     } catch (e) {
-      console.warn('[ablation] preloaded data error, falling back to API:', e);
+      console.warn('[ablation] preloaded error, falling back to API:', e);
     }
   }
-  // Fallback: fetch from API
   try {
     var summary = await api('/api/summary');
-    settingNames = summary.setting_names || [];
-    populateStepFilter(summary.steps || []);
-    var info = settingNames.map(function (n) {
-      return n + ': ' + summary.settings[n].count;
-    }).join(' \u00b7 ');
-    document.getElementById('headerInfo').textContent =
-      summary.total_videos + ' \u4e2a\u89c6\u9891 \u00b7 ' + info;
-    await loadSamples();
+    applySummary(summary);
+    var stats = await api('/api/step_stats');
+    allStepStats = stats;
+    buildChart();
+    buildStepGrid();
   } catch (e) {
-    document.getElementById('headerInfo').textContent = '\u52a0\u8f7d\u5931\u8d25: ' + e.message;
+    document.getElementById('headerInfo').textContent = '加载失败: ' + e.message;
   }
 }
 
-async function loadSamples() {
+function applySummary(summary) {
+  settingNames = summary.setting_names || [];
+  var info = settingNames.map(function (n) {
+    return n + ': ' + summary.settings[n].count;
+  }).join(' · ');
+  document.getElementById('headerInfo').textContent =
+    summary.total_videos + ' 个视频 · ' + (summary.steps || []).length + ' 个 step · ' + info;
+
+  // Stats row
+  var statsHtml = '<article class="stat card"><div class="k">Videos</div><div class="v" style="color:var(--accent)">'
+    + summary.total_videos + '</div></article>'
+    + '<article class="stat card"><div class="k">Steps</div><div class="v">'
+    + (summary.steps || []).length + '</div></article>';
+  for (var i = 0; i < settingNames.length; i++) {
+    var n = settingNames[i], c = settingColor(n);
+    statsHtml += '<article class="stat card"><div class="k" style="color:' + c + '">' + esc(n) + '</div>'
+      + '<div class="v">' + summary.settings[n].count + '</div></article>';
+  }
+  document.getElementById('statsRow').innerHTML = statsHtml;
+}
+
+/* ═══════════════ CHART ═══════════════ */
+function ema(data, a) {
+  if (a < 0.01) return data.slice();
+  var s = [data[0]];
+  for (var i = 1; i < data.length; i++) s.push(a * s[i-1] + (1-a) * data[i]);
+  return s;
+}
+
+function buildChart() {
+  if (!allStepStats.length) return;
+  document.getElementById('chartSection').style.display = '';
+  buildLegend();
+  drawChart(+document.getElementById('smoothSlider').value / 100);
+}
+
+function buildLegend() {
+  var html = '';
+  for (var i = 0; i < settingNames.length; i++) {
+    var n = settingNames[i], c = settingColor(n);
+    html += '<div class="legend-item" id="leg-' + n + '" onclick="toggleCurve(\'' + n + '\')">'
+      + '<div class="legend-dot" style="background:' + c + '"></div>'
+      + '<span style="color:' + c + '">' + esc(n) + '</span></div>';
+  }
+  document.getElementById('chartLegend').innerHTML = html;
+}
+
+function drawChart(a) {
+  var svg = document.getElementById('rewardChart');
+  var W = 820, H = 200, PL = 38, PR = 10, PT = 12, PB = 28;
+  var pw = W - PL - PR, ph = H - PT - PB;
+  if (!allStepStats.length) { svg.innerHTML = ''; return; }
+
+  // Collect all values to find y range
+  var allVals = [];
+  for (var si = 0; si < settingNames.length; si++) {
+    var n = settingNames[si];
+    if (hiddenCurves[n]) continue;
+    for (var j = 0; j < allStepStats.length; j++) {
+      var ss = allStepStats[j].settings[n];
+      if (ss) allVals.push(ss.mean_reward);
+    }
+  }
+  var yMin = allVals.length ? Math.min.apply(null, allVals) : 0;
+  var yMax = allVals.length ? Math.max.apply(null, allVals) : 1;
+  var yPad = (yMax - yMin) * 0.1 || 0.05;
+  yMin = Math.max(0, yMin - yPad);
+  yMax = yMax + yPad;
+
+  var steps = allStepStats.map(function(s) { return s.step; });
+  var minS = steps[0], maxS = steps[steps.length - 1];
+  var xs = function(s) { return PL + ((s - minS) / Math.max(1, maxS - minS)) * pw; };
+  var ys = function(v) { return PT + (1 - (v - yMin) / Math.max(0.001, yMax - yMin)) * ph; };
+
+  var d = '';
+  // Grid lines
+  var nGrid = 5;
+  for (var gi = 0; gi <= nGrid; gi++) {
+    var gv = yMin + (yMax - yMin) * gi / nGrid;
+    var gy = ys(gv);
+    d += '<line x1="' + PL + '" y1="' + gy + '" x2="' + (PL+pw) + '" y2="' + gy + '" stroke="rgba(100,116,139,.08)" stroke-width="1"/>';
+    d += '<text x="' + (PL-4) + '" y="' + (gy+4) + '" text-anchor="end" font-size="9" fill="#6b7280">' + gv.toFixed(2) + '</text>';
+  }
+  // X axis labels
+  var xLabelStep = Math.max(1, Math.floor(steps.length / 8));
+  for (var xi = 0; xi < steps.length; xi += xLabelStep) {
+    var xv = xs(steps[xi]);
+    d += '<text x="' + xv + '" y="' + (H-8) + '" text-anchor="middle" font-size="9" fill="#6b7280">' + steps[xi] + '</text>';
+    d += '<line x1="' + xv + '" y1="' + PT + '" x2="' + xv + '" y2="' + (H-PB) + '" stroke="rgba(100,116,139,.05)" stroke-width="1"/>';
+  }
+  // Axes
+  d += '<line x1="' + PL + '" y1="' + PT + '" x2="' + PL + '" y2="' + (H-PB) + '" stroke="rgba(100,116,139,.2)" stroke-width="1"/>';
+  d += '<line x1="' + PL + '" y1="' + (H-PB) + '" x2="' + (PL+pw) + '" y2="' + (H-PB) + '" stroke="rgba(100,116,139,.2)" stroke-width="1"/>';
+
+  // Curves per setting
+  for (var si = 0; si < settingNames.length; si++) {
+    var n = settingNames[si];
+    if (hiddenCurves[n]) continue;
+    var c = settingColor(n);
+    var pts = [];
+    for (var j = 0; j < allStepStats.length; j++) {
+      var ss = allStepStats[j].settings[n];
+      if (ss) pts.push({ step: allStepStats[j].step, v: ss.mean_reward });
+    }
+    if (!pts.length) continue;
+    var vs = pts.map(function(p) { return p.v; });
+    var sm = ema(vs, a);
+    var path = pts.map(function(p, i) { return xs(p.step) + ',' + ys(sm[i]); }).join(' ');
+    d += '<polyline points="' + path + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-opacity=".85"/>';
+    // End dot
+    var lastPt = pts[pts.length - 1];
+    d += '<circle cx="' + xs(lastPt.step) + '" cy="' + ys(sm[sm.length-1]) + '" r="3" fill="' + c + '"/>';
+  }
+
+  // Click areas for steps
+  for (var j = 0; j < allStepStats.length; j++) {
+    var sx = xs(allStepStats[j].step);
+    d += '<rect x="' + (sx-8) + '" y="' + PT + '" width="16" height="' + ph + '" fill="transparent" '
+      + 'style="cursor:pointer" onclick="enterStep(' + allStepStats[j].step + ')"/>';
+  }
+
+  svg.innerHTML = d;
+}
+
+function toggleCurve(n) {
+  hiddenCurves[n] = !hiddenCurves[n];
+  var el = document.getElementById('leg-' + n);
+  if (el) el.style.opacity = hiddenCurves[n] ? 0.3 : 1;
+  drawChart(+document.getElementById('smoothSlider').value / 100);
+}
+function onSmooth(v) {
+  document.getElementById('smoothVal').textContent = (v / 100).toFixed(2);
+  drawChart(v / 100);
+}
+
+/* ═══════════════ STEP GRID ═══════════════ */
+function buildStepGrid() {
+  var grid = document.getElementById('stepGrid');
+  if (!allStepStats.length) {
+    grid.innerHTML = '<div class="card" style="padding:20px;text-align:center;color:var(--muted);grid-column:1/-1">无 step 数据（可能是训练数据）</div>';
+    document.getElementById('stepCountLabel').textContent = '';
+    return;
+  }
+  document.getElementById('stepCountLabel').textContent = allStepStats.length + ' steps';
+  var html = '';
+  for (var i = 0; i < allStepStats.length; i++) {
+    var s = allStepStats[i];
+    // Compute average reward across settings
+    var rewards = [], totalSamples = 0;
+    var barHtml = '';
+    for (var j = 0; j < settingNames.length; j++) {
+      var n = settingNames[j], ss = s.settings[n];
+      if (ss) {
+        rewards.push(ss.mean_reward);
+        totalSamples += ss.n_samples;
+        barHtml += '<div style="flex:1;height:100%;background:' + settingColor(n) + ';opacity:.7"></div>';
+      }
+    }
+    var avgReward = rewards.length ? (rewards.reduce(function(a,b){return a+b;},0) / rewards.length) : 0;
+    var rc = rewColor(avgReward);
+
+    // Setting reward chips
+    var chipsHtml = '';
+    for (var j = 0; j < settingNames.length; j++) {
+      var n = settingNames[j], ss = s.settings[n];
+      if (ss) {
+        var sc = settingColor(n);
+        chipsHtml += '<span class="badge" style="border-color:' + sc + '66;font-size:10px;color:' + sc + '">'
+          + esc(n) + ': ' + ss.mean_reward.toFixed(3) + '</span>';
+      }
+    }
+
+    html += '<div class="card step-card" onclick="enterStep(' + s.step + ')">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center">'
+      + '<span style="font-size:20px;font-weight:700;color:var(--accent)">Step ' + s.step + '</span>'
+      + '<span style="font-size:15px;font-weight:700;color:' + rc + '">' + avgReward.toFixed(3) + '</span></div>'
+      + '<div style="display:flex;gap:4px;flex-wrap:wrap">' + chipsHtml + '</div>'
+      + '<div class="step-minibar">' + barHtml + '</div>'
+      + '<div class="muted" style="font-size:11px">' + totalSamples + ' samples</div></div>';
+  }
+  grid.innerHTML = html;
+}
+
+/* ═══════════════ ENTER STEP ═══════════════ */
+async function enterStep(step) {
+  currentStep = step;
+  currentVideoKey = null;
+  document.getElementById('detailTitle').textContent = 'Step ' + step;
+
+  // Show reward badges
+  var ss = null;
+  for (var i = 0; i < allStepStats.length; i++) {
+    if (allStepStats[i].step === step) { ss = allStepStats[i]; break; }
+  }
+  var badgesHtml = '';
+  if (ss) {
+    for (var j = 0; j < settingNames.length; j++) {
+      var n = settingNames[j], d = ss.settings[n];
+      if (d) {
+        var c = settingColor(n);
+        badgesHtml += '<span class="badge" style="border-color:' + c + '66;color:' + c + '">'
+          + esc(n) + ': ' + d.mean_reward.toFixed(3) + ' (' + d.n_samples + ')</span>';
+      }
+    }
+  }
+  document.getElementById('detailBadges').innerHTML = badgesHtml;
+
+  showPage('pg-detail');
+  document.getElementById('groupMain').innerHTML = '<div class="card" style="padding:40px;text-align:center;color:var(--muted)">← 从左侧选择一条样本</div>';
+  await loadStepSamples();
+}
+
+/* ═══════════════ STEP SAMPLES ═══════════════ */
+async function loadStepSamples() {
+  var level = document.getElementById('levelFilter').value;
   try {
-    var level = document.getElementById('levelFilter').value;
-    var data = await api('/api/samples?limit=2000&level=' + encodeURIComponent(level));
+    var data = await api('/api/samples?limit=2000&step=' + currentStep + '&level=' + encodeURIComponent(level));
     allSamples = data.items || [];
-    document.getElementById('sampleCount').textContent = data.total + ' \u4e2a';
+    document.getElementById('sampleCount').textContent = data.total + ' 个';
     renderSampleList(allSamples);
   } catch (e) {
     document.getElementById('sampleList').innerHTML =
-      '<div style="padding:12px;color:var(--muted)">\u52a0\u8f7d\u5931\u8d25</div>';
+      '<div style="padding:12px;color:var(--muted)">加载失败: ' + esc(e.message) + '</div>';
   }
 }
 
@@ -283,40 +528,53 @@ function filterSamples() {
 
 function renderSampleList(items) {
   var el = document.getElementById('sampleList');
-  el.innerHTML = items.map(function (s) {
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    var s = items[i];
     var active = s.video_key === currentVideoKey ? ' active' : '';
     var levels = (s.levels || []).join('/');
-    return '<div class="sidebar-item' + active + '" data-vk="' + esc(s.video_key)
-      + '" onclick="selectFromEl(this)">'
-      + '<div class="name">' + esc(s.video_key) + '</div>'
-      + '<div class="info">' + (s.duration > 0 ? s.duration.toFixed(0) + 's' : '?s')
-      + ' \u00b7 GT ' + s.n_gt_segments + ' \u6bb5 \u00b7 ' + s.n_settings + ' setting'
-      + (levels ? ' \u00b7 ' + levels : '') + '</div></div>';
-  }).join('');
+    var rewardChips = '';
+    if (s.rewards) {
+      for (var j = 0; j < settingNames.length; j++) {
+        var n = settingNames[j];
+        if (s.rewards[n] !== undefined) {
+          var c = settingColor(n);
+          var rv = s.rewards[n];
+          rewardChips += '<span class="sample-reward-chip" style="background:' + c + '22;color:' + c + '">'
+            + esc(n) + ' ' + rv.toFixed(2) + '</span>';
+        }
+      }
+    }
+    html += '<div class="sample-row' + active + '" data-vk="' + esc(s.video_key)
+      + '" onclick="selectSample(this.getAttribute(\'data-vk\'))">'
+      + '<div class="sample-name">' + esc(s.video_key) + '</div>'
+      + '<div class="sample-info">' + (s.duration > 0 ? s.duration.toFixed(0) + 's' : '?s')
+      + ' · GT ' + s.n_gt_segments + ' 段 · ' + s.n_settings + ' setting'
+      + (levels ? ' · ' + levels : '') + '</div>'
+      + (rewardChips ? '<div class="sample-rewards">' + rewardChips + '</div>' : '')
+      + '</div>';
+  }
+  el.innerHTML = html || '<div style="padding:12px;color:var(--muted)">无匹配样本</div>';
 }
 
-function selectFromEl(el) { selectSample(el.getAttribute('data-vk')); }
-
-/* ── Select Sample ── */
+/* ═══════════════ SELECT SAMPLE ═══════════════ */
 async function selectSample(videoKey) {
   currentVideoKey = videoKey;
-  filterSamples();
-  var content = document.getElementById('content');
-  content.innerHTML = '<div class="empty"><span class="spin"></span></div>';
+  filterSamples(); // update active state
+  var main = document.getElementById('groupMain');
+  main.innerHTML = '<div class="card" style="padding:40px;text-align:center"><span class="spin"></span></div>';
   try {
-    var apiUrl = '/api/sample/' + encodeURIComponent(videoKey);
-    if (currentStep !== null) apiUrl += '?step=' + currentStep;
+    var apiUrl = '/api/sample/' + encodeURIComponent(videoKey) + '?step=' + currentStep;
     var data = await api(apiUrl);
-    if (data.error) { content.innerHTML = '<div class="empty">\u672a\u627e\u5230</div>'; return; }
+    if (data.error) { main.innerHTML = '<div class="card" style="padding:40px;text-align:center;color:var(--muted)">未找到</div>'; return; }
     renderComparison(data);
-    // Async load frame thumbnails (non-blocking, optional)
     loadFrames(videoKey);
   } catch (e) {
-    content.innerHTML = '<div class="empty">\u52a0\u8f7d\u5931\u8d25: ' + esc(e.message) + '</div>';
+    main.innerHTML = '<div class="card" style="padding:40px;text-align:center;color:var(--muted)">加载失败: ' + esc(e.message) + '</div>';
   }
 }
 
-/* ── Async Frame Loading ── */
+/* ═══════════════ ASYNC FRAMES ═══════════════ */
 async function loadFrames(videoKey) {
   try {
     var data = await api('/api/frames/' + encodeURIComponent(videoKey) + '?fps=1');
@@ -341,7 +599,6 @@ async function loadFrames(videoKey) {
   }
 }
 
-/* ── Frame Highlight on Segment Hover ── */
 function highlightFrames(startSec, endSec) {
   clearFrameHighlight();
   var s = Math.floor(startSec), e = Math.ceil(endSec);
@@ -355,22 +612,22 @@ function clearFrameHighlight() {
   for (var i = 0; i < els.length; i++) els[i].classList.remove('highlight');
 }
 
-/* ── Expand/Collapse All Records ── */
+/* ═══════════════ TOGGLE EXTRA ═══════════════ */
 function toggleExtra(idx, btn, count) {
   var el = document.getElementById('extra-' + idx);
   if (!el) return;
   if (el.style.display === 'none') {
     el.style.display = '';
-    btn.textContent = '\u25bc \u6536\u8d77';
+    btn.textContent = '\u25bc 收起';
   } else {
     el.style.display = 'none';
-    btn.textContent = '\u25b6 \u5c55\u5f00 ' + count + ' \u4e2a response';
+    btn.textContent = '\u25b6 展开 ' + count + ' 个 response';
   }
 }
 
-/* ── Render Comparison (reuses lane-track pattern from segmentation_visualize) ── */
+/* ═══════════════ RENDER COMPARISON ═══════════════ */
 function renderComparison(data) {
-  var content = document.getElementById('content');
+  var main = document.getElementById('groupMain');
   var dur = Math.max(1, data.duration || 60);
   var gtSegs = data.gt_segments || [];
   var settings = data.settings || {};
@@ -380,8 +637,8 @@ function renderComparison(data) {
   var totalWidth = Math.max(MIN_WIDTH, nFrames * STRIDE);
   var html = '';
 
-  /* ── Legend card ── */
-  html += '<div class="card"><div class="legend">'
+  /* ── Legend ── */
+  html += '<div class="card"><div style="padding:12px 16px 8px;display:flex;gap:14px;flex-wrap:wrap">'
     + '<div class="legend-item"><div class="legend-dot" style="background:' + GT_COLOR + '"></div>Ground Truth</div>';
   for (var i = 0; i < names.length; i++) {
     var n = names[i], s = settings[n], rc = settingColor(n);
@@ -391,10 +648,10 @@ function renderComparison(data) {
   }
   html += '</div>';
 
-  /* ── Timeline (lane-track per setting, reused from segmentation_visualize) ── */
+  /* ── Timeline ── */
   html += '<div class="sync-shell" id="scrollShell"><div class="sync-inner" style="width:' + totalWidth + 'px">';
 
-  /* ── Frame strip (1fps thumbnails, loaded async) ── */
+  /* Frame strip */
   html += '<div class="lane-block"><div class="lane-head"><div class="lane-title">Frames</div>'
     + '<div class="lane-meta" id="framesMeta">loading...</div></div>'
     + '<div class="frame-strip" id="frameStrip" style="width:' + totalWidth + 'px"></div></div>';
@@ -403,11 +660,9 @@ function renderComparison(data) {
   html += renderLane('GT', gtSegs, totalWidth, dur, 'seg-gt', gtSegs.length + ' segments');
   for (var i = 0; i < names.length; i++) {
     var n = names[i], s = settings[n];
-    var meta = s.is_training_data
-      ? '\u8bad\u7ec3\u6570\u636e'
-      : 'best \u00b7 r=' + s.reward.toFixed(3);
+    var meta = s.is_training_data ? '训练数据' : 'best · r=' + s.reward.toFixed(3);
     html += renderLane(n, s.predicted || [], totalWidth, dur, settingSegClass(n), meta);
-    /* ── Expandable all-records lanes ── */
+    /* Expandable */
     var recs = (s.all_records || []).slice().sort(function (a, b) { return b.reward - a.reward; });
     if (recs.length > 1) {
       html += '<div class="extra-lanes" id="extra-' + i + '" style="display:none">';
@@ -417,34 +672,34 @@ function renderComparison(data) {
       }
       html += '</div>';
       html += '<div class="expand-btn" onclick="toggleExtra(' + i + ',this,' + recs.length + ')">'
-        + '\u25b6 \u5c55\u5f00 ' + recs.length + ' \u4e2a response</div>';
+        + '\u25b6 展开 ' + recs.length + ' 个 response</div>';
     }
   }
   html += '</div></div>';
 
-  /* ── Scroll control ── */
+  /* Scroll control */
   html += '<div class="scroll-control"><div class="meta">0s</div>'
     + '<input id="scrollBar" class="scroll-slider" type="range" min="0" max="1000" value="0"/>'
     + '<div class="meta">' + mmss(dur) + '</div></div>';
-  html += '</div>'; /* close card */
+  html += '</div>';
 
-  /* ── Reward / Info Table ── */
-  html += '<div class="card"><div class="section-title">\u6570\u636e\u5bf9\u6bd4</div>'
+  /* ── Reward Table ── */
+  html += '<div class="card"><div class="section-title">数据对比</div>'
     + '<div style="padding:0 16px 14px"><table class="cmp-table">'
-    + '<tr><th>Setting</th><th>Level</th><th>Step</th><th>\u7c7b\u578b</th><th>Reward</th><th>\u9884\u6d4b\u6bb5\u6570</th><th>GT\u6bb5\u6570</th></tr>';
+    + '<tr><th>Setting</th><th>Level</th><th>Step</th><th>类型</th><th>Reward</th><th>预测段数</th><th>GT段数</th></tr>';
   for (var i = 0; i < names.length; i++) {
     var n = names[i], s = settings[n], rc = settingColor(n);
     html += '<tr><td style="color:' + rc + ';font-weight:700">' + esc(n) + '</td>'
       + '<td>' + esc(s.level) + '</td><td>' + s.step + '</td>'
-      + '<td>' + (s.is_training_data ? '<span style="color:var(--muted)">\u8bad\u7ec3\u6570\u636e</span>' : 'Rollout') + '</td>'
-      + '<td>' + (s.is_training_data ? '\u2014' : s.reward.toFixed(4)) + '</td>'
+      + '<td>' + (s.is_training_data ? '<span style="color:var(--muted)">训练数据</span>' : 'Rollout') + '</td>'
+      + '<td>' + (s.is_training_data ? '—' : s.reward.toFixed(4)) + '</td>'
       + '<td>' + (s.predicted || []).length + '</td>'
       + '<td>' + gtSegs.length + '</td></tr>';
   }
   html += '</table></div></div>';
 
-  /* ── Segment Detail Table ── */
-  html += '<div class="card"><div class="section-title">\u5206\u5272\u65f6\u95f4\u6233</div>'
+  /* ── Segment timestamps ── */
+  html += '<div class="card"><div class="section-title">分割时间戳</div>'
     + '<div style="padding:0 16px 14px"><table class="cmp-table">'
     + '<tr><th>Setting</th><th>Segments</th></tr>'
     + '<tr><td style="color:' + GT_COLOR + ';font-weight:700">GT</td>'
@@ -460,7 +715,7 @@ function renderComparison(data) {
   }
   html += '</table></div></div>';
 
-  /* ── Prompt Comparison (only if prompts differ) ── */
+  /* ── Prompt Comparison ── */
   var uniquePrompts = {};
   for (var i = 0; i < names.length; i++) {
     var n = names[i];
@@ -470,7 +725,7 @@ function renderComparison(data) {
   var allSame = new Set(promptVals).size <= 1;
   if (!allSame) {
     var cols = Math.min(names.length, 2);
-    html += '<div class="card"><div class="section-title">Prompt \u5bf9\u6bd4</div>'
+    html += '<div class="card"><div class="section-title">Prompt 对比</div>'
       + '<div style="padding:0 16px 14px"><div class="prompt-grid" style="grid-template-columns:repeat(' + cols + ',1fr)">';
     for (var i = 0; i < names.length; i++) {
       var n = names[i], rc = settingColor(n);
@@ -484,22 +739,22 @@ function renderComparison(data) {
   var hasResp = names.some(function (n) { return settings[n].response && !settings[n].is_training_data; });
   if (hasResp) {
     var cols = Math.min(names.length, 2);
-    html += '<div class="card"><div class="section-title">Response \u5bf9\u6bd4</div>'
+    html += '<div class="card"><div class="section-title">Response 对比</div>'
       + '<div style="padding:0 16px 14px"><div class="prompt-grid" style="grid-template-columns:repeat(' + cols + ',1fr)">';
     for (var i = 0; i < names.length; i++) {
       var n = names[i], s = settings[n], rc = settingColor(n);
       html += '<div class="prompt-card"><div class="label" style="color:' + rc + '">' + esc(n)
         + (s.is_training_data ? '' : ' (r=' + s.reward.toFixed(3) + ')')
-        + '</div><pre>' + esc(s.response || '(\u65e0 response)') + '</pre></div>';
+        + '</div><pre>' + esc(s.response || '(无 response)') + '</pre></div>';
     }
     html += '</div></div></div>';
   }
 
-  content.innerHTML = html;
+  main.innerHTML = html;
   initScrollSync();
 }
 
-/* ── Ruler (adapted from segmentation_visualize) ── */
+/* ═══════════════ RULER ═══════════════ */
 function renderRuler(duration, totalWidth) {
   var step = Math.max(1, Math.ceil(duration / 15));
   var ticks = '';
@@ -515,7 +770,7 @@ function renderRuler(duration, totalWidth) {
     + '<div class="ruler" style="width:' + totalWidth + 'px">' + ticks + '</div></div>';
 }
 
-/* ── Lane rendering (reused from segmentation_visualize renderLane) ── */
+/* ═══════════════ LANE ═══════════════ */
 function renderLane(label, segments, totalWidth, duration, segClass, meta) {
   var segsHtml = '';
   for (var i = 0; i < segments.length; i++) {
@@ -535,23 +790,20 @@ function renderLane(label, segments, totalWidth, duration, segClass, meta) {
     + '<div class="lane-track" style="width:' + totalWidth + 'px">' + segsHtml + '</div></div>';
 }
 
-/* ── Scroll sync (reused from segmentation_visualize initTimelineScroll) ── */
+/* ═══════════════ SCROLL SYNC ═══════════════ */
 function initScrollSync() {
   var shell = document.getElementById('scrollShell');
   var slider = document.getElementById('scrollBar');
   if (!shell || !slider) return;
-
   function sync() {
     var max = Math.max(0, shell.scrollWidth - shell.clientWidth);
     slider.disabled = max <= 0;
     slider.value = max > 0 ? String(Math.round((shell.scrollLeft / max) * 1000)) : '0';
   }
-
   slider.addEventListener('input', function () {
     var max = Math.max(0, shell.scrollWidth - shell.clientWidth);
     if (max > 0) shell.scrollLeft = (Number(slider.value) / 1000) * max;
   });
-
   shell.addEventListener('scroll', sync, { passive: true });
   sync();
 }
