@@ -153,6 +153,15 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
         <h1>Ablation Comparison</h1>
         <p class="muted" style="margin-top:4px" id="headerInfo">加载中...</p>
       </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span class="muted" style="font-size:12px">Phase:</span>
+        <select id="phaseFilter" onchange="onPhaseChange()" style="border-radius:8px;padding:5px 10px;font-size:12px;
+          border:1px solid rgba(100,116,139,.25);background:rgba(255,255,255,.8);color:var(--text)">
+          <option value="val" selected>Val</option>
+          <option value="">All</option>
+          <option value="train">Train</option>
+        </select>
+      </div>
     </div>
   </div>
 
@@ -224,8 +233,11 @@ var BASE = window.location.pathname.replace(/\/[^/]*$/, '');
 /* ═══════════════ STATE ═══════════════ */
 var settingNames = [];
 var allStepStats = [];  // [{step, settings: {name: {mean_reward, n_samples}}}]
+var preloadedStepStatsAll = null;  // cached preloaded all-phase stats
+var preloadedStepStatsVal = null;  // cached preloaded val-phase stats
 var allSamples = [];    // samples for current step
 var currentStep = null;
+var currentPhase = 'val'; // default to val
 var currentVideoKey = null;
 var hiddenCurves = {};
 
@@ -265,17 +277,38 @@ function showOverview() {
   showPage('pg-overview');
 }
 
+/* ═══════════════ PHASE FILTER ═══════════════ */
+async function onPhaseChange() {
+  currentPhase = document.getElementById('phaseFilter').value;
+  // Try cached preloaded data first
+  if (currentPhase === 'val' && preloadedStepStatsVal) {
+    allStepStats = preloadedStepStatsVal;
+  } else if (currentPhase === '' && preloadedStepStatsAll) {
+    allStepStats = preloadedStepStatsAll;
+  } else {
+    try {
+      allStepStats = await api('/api/step_stats?phase=' + encodeURIComponent(currentPhase));
+    } catch (e) {
+      console.warn('Failed to fetch step_stats:', e);
+      return;
+    }
+  }
+  buildChart();
+  buildStepGrid();
+}
+
 /* ═══════════════ INIT ═══════════════ */
 async function init() {
   var pre = window.__PRELOADED__;
   if (pre && pre.summary) {
     try {
       applySummary(pre.summary);
-      if (pre.step_stats) {
-        allStepStats = pre.step_stats;
-        buildChart();
-        buildStepGrid();
-      }
+      if (pre.step_stats) preloadedStepStatsAll = pre.step_stats;
+      if (pre.step_stats_val) preloadedStepStatsVal = pre.step_stats_val;
+      // Default to val
+      allStepStats = preloadedStepStatsVal || preloadedStepStatsAll || [];
+      buildChart();
+      buildStepGrid();
       return;
     } catch (e) {
       console.warn('[ablation] preloaded error, falling back to API:', e);
@@ -284,7 +317,7 @@ async function init() {
   try {
     var summary = await api('/api/summary');
     applySummary(summary);
-    var stats = await api('/api/step_stats');
+    var stats = await api('/api/step_stats?phase=val');
     allStepStats = stats;
     buildChart();
     buildStepGrid();
@@ -509,7 +542,10 @@ async function enterStep(step) {
 async function loadStepSamples() {
   var level = document.getElementById('levelFilter').value;
   try {
-    var data = await api('/api/samples?limit=2000&step=' + currentStep + '&level=' + encodeURIComponent(level));
+    var url = '/api/samples?limit=2000&step=' + currentStep
+      + '&level=' + encodeURIComponent(level)
+      + '&phase=' + encodeURIComponent(currentPhase);
+    var data = await api(url);
     allSamples = data.items || [];
     document.getElementById('sampleCount').textContent = data.total + ' 个';
     renderSampleList(allSamples);

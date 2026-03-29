@@ -272,11 +272,14 @@ class ComparisonStore:
         return frames
 
     def summary(self) -> dict:
-        # Collect all unique steps across all settings
+        # Collect all unique steps and phases across all settings
         all_steps: set[int] = set()
+        all_phases: set[str] = set()
         for info in self.settings.values():
             for rec in info["records"]:
                 all_steps.add(int(rec.get("step", 0)))
+                phase = str(rec.get("phase") or "train")
+                all_phases.add(phase)
         return {
             "settings": {
                 name: {"dir": info["dir"], "count": info["count"]}
@@ -285,6 +288,7 @@ class ComparisonStore:
             "total_videos": len(self.video_keys),
             "setting_names": list(self.settings.keys()),
             "steps": sorted(all_steps),
+            "phases": sorted(all_phases),
         }
 
     def list_samples(self, offset: int = 0, limit: int = 50, level_filter: str = "") -> dict:
@@ -321,7 +325,7 @@ class ComparisonStore:
             })
         return {"total": total, "offset": offset, "items": items}
 
-    def step_stats(self) -> list[dict]:
+    def step_stats(self, phase_filter: str = "") -> list[dict]:
         """Per-step, per-setting aggregate stats for reward curves."""
         # Collect rewards: step -> setting -> [rewards]
         step_setting_rewards: dict[int, dict[str, list[float]]] = {}
@@ -329,6 +333,8 @@ class ComparisonStore:
             for setting_name, records in entry["settings"].items():
                 for r in records:
                     if r.get("is_training_data"):
+                        continue
+                    if phase_filter and r.get("phase") != phase_filter:
                         continue
                     step = r["step"]
                     step_setting_rewards.setdefault(step, {}).setdefault(setting_name, []).append(r["reward"])
@@ -344,14 +350,17 @@ class ComparisonStore:
             result.append({"step": step, "settings": setting_stats})
         return result
 
-    def list_samples_for_step(self, step: int, offset: int = 0, limit: int = 50, level_filter: str = "") -> dict:
+    def list_samples_for_step(self, step: int, offset: int = 0, limit: int = 50,
+                              level_filter: str = "", phase_filter: str = "") -> dict:
         """List samples that have data at a specific step."""
         keys = []
         for vk in self.video_keys:
             entry = self.video_index[vk]
             has_step = False
             for recs in entry["settings"].values():
-                if any(r["step"] == step for r in recs):
+                if any(r["step"] == step
+                       and (not phase_filter or r.get("phase") == phase_filter)
+                       for r in recs):
                     has_step = True
                     break
             if not has_step:
@@ -359,7 +368,9 @@ class ComparisonStore:
             if level_filter:
                 has_level = False
                 for recs in entry["settings"].values():
-                    if any(r.get("level") == level_filter and r["step"] == step for r in recs):
+                    if any(r.get("level") == level_filter and r["step"] == step
+                           and (not phase_filter or r.get("phase") == phase_filter)
+                           for r in recs):
                         has_level = True
                         break
                 if not has_level:
@@ -375,7 +386,9 @@ class ComparisonStore:
             levels = set()
             rewards = {}
             for sname, recs in entry["settings"].items():
-                step_recs = [r for r in recs if r["step"] == step]
+                step_recs = [r for r in recs
+                             if r["step"] == step
+                             and (not phase_filter or r.get("phase") == phase_filter)]
                 if step_recs:
                     n_settings += 1
                     best = max(step_recs, key=lambda r: r["reward"])
@@ -512,16 +525,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/step_stats":
-                self._json(store.step_stats())
+                phase = qs.get("phase", [""])[0]
+                self._json(store.step_stats(phase_filter=phase))
                 return
 
             if path == "/api/samples":
                 offset = int(qs.get("offset", ["0"])[0])
                 limit = int(qs.get("limit", ["50"])[0])
                 level = qs.get("level", [""])[0]
+                phase = qs.get("phase", [""])[0]
                 step_str = qs.get("step", [None])[0]
                 if step_str:
-                    self._json(store.list_samples_for_step(int(step_str), offset, limit, level))
+                    self._json(store.list_samples_for_step(int(step_str), offset, limit, level, phase))
                 else:
                     self._json(store.list_samples(offset, limit, level))
                 return
@@ -578,11 +593,13 @@ def main():
     global _preloaded_html
     try:
         samples = store.list_samples(offset=0, limit=5000)
-        step_stats = store.step_stats()
+        step_stats_all = store.step_stats()
+        step_stats_val = store.step_stats(phase_filter="val")
         preload = {
             "summary": summary,
             "samples": samples,
-            "step_stats": step_stats,
+            "step_stats": step_stats_all,
+            "step_stats_val": step_stats_val,
         }
         _preloaded_html = (
             b'<script>window.__PRELOADED__='
