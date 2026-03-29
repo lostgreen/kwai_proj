@@ -66,7 +66,8 @@ h3{font-size:13px;font-weight:600;color:#374151}
 .group-main{display:grid;gap:12px;align-content:start;overflow-y:auto;overflow-x:hidden;max-height:calc(100vh - 160px);min-width:0}
 
 /* ── Frame + timeline sync ── */
-.sync-shell{overflow-x:auto;overflow-y:hidden;padding:0 16px 8px;scrollbar-width:thin}
+.sync-shell{overflow-x:auto;overflow-y:hidden;padding:0 16px 8px;scrollbar-width:thin;cursor:grab}
+.sync-shell.dragging{cursor:grabbing;user-select:none}
 .sync-inner{position:relative;display:inline-block;min-width:max-content}
 .lane-block{display:flex;align-items:stretch;margin-bottom:6px}
 .lane-head{width:100px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;padding:0 8px 0 0}
@@ -790,7 +791,7 @@ function renderLane(label, segments, totalWidth, duration, segClass, meta) {
     + '<div class="lane-track" style="width:' + totalWidth + 'px">' + segsHtml + '</div></div>';
 }
 
-/* ═══════════════ SCROLL SYNC ═══════════════ */
+/* ═══════════════ SCROLL SYNC + DRAG ═══════════════ */
 function initScrollSync() {
   var shell = document.getElementById('scrollShell');
   var slider = document.getElementById('scrollBar');
@@ -806,6 +807,44 @@ function initScrollSync() {
   });
   shell.addEventListener('scroll', sync, { passive: true });
   sync();
+
+  // Drag-to-scroll (mouse)
+  var dragging = false, startX = 0, startLeft = 0;
+  var onMove = function(e) {
+    if (!dragging) return;
+    shell.scrollLeft = startLeft - (e.clientX - startX);
+  };
+  var onUp = function() {
+    if (!dragging) return;
+    dragging = false;
+    shell.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+  shell.addEventListener('mousedown', function(e) {
+    if (e.button !== 0) return;
+    dragging = true;
+    startX = e.clientX;
+    startLeft = shell.scrollLeft;
+    shell.classList.add('dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+  // Touch
+  shell.addEventListener('touchstart', function(e) {
+    var touch = e.touches && e.touches[0];
+    if (!touch) return;
+    dragging = true;
+    startX = touch.clientX;
+    startLeft = shell.scrollLeft;
+  }, { passive: true });
+  shell.addEventListener('touchmove', function(e) {
+    if (!dragging) return;
+    var touch = e.touches && e.touches[0];
+    if (!touch) return;
+    shell.scrollLeft = startLeft - (touch.clientX - startX);
+  }, { passive: true });
+  shell.addEventListener('touchend', function() { dragging = false; }, { passive: true });
 }
 
 init();
