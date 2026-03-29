@@ -569,14 +569,9 @@ button,input,textarea{font:inherit}
           <div class="clip-subtitle">左侧选择后会显示事件时间线。</div>
         </section>
 
-        <section class="detail-card card" id="cand-frames">
-          <div class="section-title">Video Frames</div>
-          <div class="detail-empty">选择记录后显示采样帧。</div>
-        </section>
-
         <section class="timeline-card card" id="cand-timeline">
-          <div class="section-title">Event Timeline (L2)</div>
-          <div class="detail-empty">选择记录后显示事件分布时间线。</div>
+          <div class="section-title">Synced Frames & Events</div>
+          <div class="detail-empty">选择记录后显示帧与事件同步时间线。</div>
         </section>
 
         <section class="detail-card card" id="cand-detail">
@@ -1295,6 +1290,9 @@ const CAND={
   activeRecordId:null,
   activeRecord:null,
   sourceFilter:null,
+  hoveredEventIdx:null,
+  selectedEventIdx:null,
+  _frameHoverTime:null,
 };
 const CAND_EVENT_COLORS=[
   '#e49d1c','#2d6cdf','#159a8c','#d4577c','#7c3aed',
@@ -1376,23 +1374,176 @@ function candSelectRecord(recordId){
 function candRenderActive(){
   const r=CAND.activeRecord;
   if(!r) return;
+  CAND.hoveredEventIdx=null;
+  CAND.selectedEventIdx=null;
   candRenderHeader(r);
-  candRenderFrames(r);
-  candRenderTimeline(r);
+  candRenderSyncTimeline(r);
   candRenderDetails(r);
 }
-function candRenderFrames(r){
-  const container=document.getElementById('cand-frames');
+function candRenderSyncTimeline(r){
+  const container=document.getElementById('cand-timeline');
   const frames=r.video_frames||[];
-  if(!frames.length){
-    container.innerHTML='<div class="section-title">Video Frames</div><div class="detail-empty">无视频帧（视频文件不可访问或路径不正确）</div>';
+  const events=r.events||[];
+  const dur=r.duration||1;
+  const nFrames=frames.length;
+
+  if(!nFrames && !events.length){
+    container.innerHTML='<div class="section-title">Synced Frames & Events</div><div class="detail-empty">无视频帧且无事件数据。</div>';
     return;
   }
-  container.innerHTML=`
-    <div class="section-title">Video Frames (${frames.length})</div>
-    <div class="caption-frame-strip">
-      ${frames.map((src,i)=>`<div class="caption-frame-thumb" onclick="openFrameModal('${src}')"><img src="${src}" alt="frame ${i+1}" loading="lazy"/></div>`).join('')}
+
+  // Use STRIDE-based layout: totalWidth maps to full duration
+  const totalWidth=Math.max(nFrames*STRIDE, 600);
+  const pxPerSec=totalWidth/dur;
+
+  // Frame row: each frame positioned by its approximate timestamp
+  const frameHtml=frames.map((src,i)=>{
+    const t=(i/(nFrames||1))*dur;
+    return `<div class="frame-card" style="position:absolute;left:${Math.round(t*pxPerSec)}px;width:${STRIDE-6}px"
+      onclick="candClickFrame(${i})" onmouseenter="candHoverFrame(${i})" onmouseleave="candClearFrameHover()">
+      <div class="frame-thumb" id="cand-frame-${i}">
+        <img loading="lazy" src="${src}" alt="frame ${i+1}" onclick="event.stopPropagation();openFrameModal('${src}')" />
+      </div>
+      <div class="frame-label">${(t).toFixed(0)}s</div>
     </div>`;
+  }).join('');
+
+  // Event segments lane
+  const segHtml=events.map((ev,i)=>{
+    const left=Math.max(0, ev.start*pxPerSec);
+    const width=Math.max(STRIDE-6, (ev.end-ev.start)*pxPerSec-4);
+    const color=CAND_EVENT_COLORS[i%CAND_EVENT_COLORS.length];
+    const desc=esc(ev.description||`event ${i+1}`);
+    return `<div class="segment seg-l2" id="cand-seg-${i}" style="left:${left}px;width:${width}px;background:${color};opacity:0.88"
+      title="${desc} [${ev.start.toFixed(1)}s-${ev.end.toFixed(1)}s]"
+      onmouseenter="candHoverEvent(${i})" onmouseleave="candClearEventHover()" onclick="candClickEvent(${i})">
+      <div class="segment-label">${i+1}. ${desc}</div>
+      <div class="segment-time">${ev.start.toFixed(1)}s - ${ev.end.toFixed(1)}s</div>
+    </div>`;
+  }).join('');
+
+  const covered=events.reduce((s,e)=>s+(e.end-e.start),0);
+  const coverPct=Math.round((covered/dur)*100);
+
+  container.innerHTML=`
+    <div class="section-title">Synced Frames & Events · coverage ${coverPct}%</div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div>Events (${events.length})</div>
+      <div class="legend-item" style="margin-left:auto;font-size:11px">Duration: ${mmss(dur)} · ${nFrames} frames</div>
+    </div>
+    <div class="sync-shell" id="cand-timelineShell">
+      <div class="sync-inner" style="width:${totalWidth}px">
+        <div style="position:relative;height:${nFrames?'80':'0'}px">${frameHtml}</div>
+        <div class="lane-block">
+          <div class="lane-head"><div class="lane-title">L2 Events</div><div class="lane-meta">${events.length} events</div></div>
+          <div class="lane-track" style="width:${totalWidth}px">${segHtml}</div>
+        </div>
+      </div>
+    </div>
+    <div class="scroll-control">
+      <div class="meta">0:00</div>
+      <input id="cand-timelineSlider" class="scroll-slider" type="range" min="0" max="1000" value="0" />
+      <div class="meta">${mmss(dur)}</div>
+    </div>`;
+  candInitScroll();
+}
+function candInitScroll(){
+  const shell=document.getElementById('cand-timelineShell');
+  const slider=document.getElementById('cand-timelineSlider');
+  if(!shell||!slider) return;
+  const sync=()=>{
+    const max=Math.max(0,shell.scrollWidth-shell.clientWidth);
+    if(max<=0){slider.value='0';slider.disabled=true;return;}
+    slider.disabled=false;
+    slider.value=String(Math.round(shell.scrollLeft/max*1000));
+  };
+  slider.addEventListener('input',()=>{
+    const max=Math.max(0,shell.scrollWidth-shell.clientWidth);
+    if(max>0) shell.scrollLeft=Number(slider.value)/1000*max;
+  });
+  shell.addEventListener('scroll',sync,{passive:true});
+  sync();
+}
+function candHoverEvent(idx){
+  CAND.hoveredEventIdx=idx;
+  candApplyHighlight();
+}
+function candClearEventHover(){
+  CAND.hoveredEventIdx=null;
+  candApplyHighlight();
+}
+function candClickEvent(idx){
+  CAND.selectedEventIdx=CAND.selectedEventIdx===idx?null:idx;
+  candApplyHighlight();
+}
+function candHoverFrame(idx){
+  // Highlight events that cover this frame's time
+  const r=CAND.activeRecord;
+  if(!r) return;
+  const nFrames=(r.video_frames||[]).length||1;
+  const dur=r.duration||1;
+  const t=(idx/nFrames)*dur;
+  CAND._frameHoverTime=t;
+  candApplyHighlight();
+}
+function candClearFrameHover(){
+  CAND._frameHoverTime=null;
+  candApplyHighlight();
+}
+function candClickFrame(idx){
+  const r=CAND.activeRecord;
+  if(!r) return;
+  const nFrames=(r.video_frames||[]).length||1;
+  const dur=r.duration||1;
+  const t=(idx/nFrames)*dur;
+  // Select the event covering this time
+  const events=r.events||[];
+  const found=events.findIndex(e=>t>=e.start&&t<=e.end);
+  CAND.selectedEventIdx=found>=0?(CAND.selectedEventIdx===found?null:found):null;
+  candApplyHighlight();
+}
+function candApplyHighlight(){
+  const r=CAND.activeRecord;
+  if(!r) return;
+  const events=r.events||[];
+  const frames=r.video_frames||[];
+  const dur=r.duration||1;
+  const nFrames=frames.length||1;
+  const activeIdx=CAND.selectedEventIdx!=null?CAND.selectedEventIdx:CAND.hoveredEventIdx;
+
+  // Highlight segments
+  events.forEach((_,i)=>{
+    const el=document.getElementById('cand-seg-'+i);
+    if(!el) return;
+    el.classList.remove('active','muted');
+    if(activeIdx!=null){
+      if(i===activeIdx) el.classList.add('active');
+      else el.classList.add('muted');
+    }
+  });
+
+  // Highlight frames in event time range
+  document.querySelectorAll('#cand-timelineShell .frame-thumb').forEach(n=>n.classList.remove('active'));
+  if(activeIdx!=null && activeIdx<events.length){
+    const ev=events[activeIdx];
+    frames.forEach((_,i)=>{
+      const t=(i/nFrames)*dur;
+      if(t>=ev.start && t<=ev.end){
+        const el=document.getElementById('cand-frame-'+i);
+        if(el) el.classList.add('active');
+      }
+    });
+  }
+  // Frame hover → highlight covering events
+  if(CAND._frameHoverTime!=null && activeIdx==null){
+    const t=CAND._frameHoverTime;
+    events.forEach((ev,i)=>{
+      const el=document.getElementById('cand-seg-'+i);
+      if(!el) return;
+      if(t>=ev.start && t<=ev.end) el.classList.add('active');
+      else el.classList.add('muted');
+    });
+  }
 }
 function candRenderHeader(r){
   document.getElementById('cand-header').innerHTML=`
@@ -1407,43 +1558,6 @@ function candRenderHeader(r){
       <div class="meta-box"><div class="meta-k">Events</div><div class="meta-v">${r.n_events}</div></div>
       <div class="meta-box"><div class="meta-k">Source</div><div class="meta-v">${esc(r.source)}</div></div>
       <div class="meta-box"><div class="meta-k">Format</div><div class="meta-v">${esc(r.format_type)}</div></div>
-    </div>`;
-}
-function candRenderTimeline(r){
-  const container=document.getElementById('cand-timeline');
-  const events=r.events||[];
-  if(!events.length){
-    container.innerHTML='<div class="section-title">Event Timeline (L2)</div><div class="detail-empty">No events.</div>';
-    return;
-  }
-  const dur=r.duration||1;
-  const trackWidth=Math.max(600,events.length*100);
-  const segHtml=events.map((ev,i)=>{
-    const left=(ev.start/dur)*100;
-    const width=Math.max(1,((ev.end-ev.start)/dur)*100);
-    const color=CAND_EVENT_COLORS[i%CAND_EVENT_COLORS.length];
-    const desc=esc(ev.description||`event ${i+1}`);
-    return `<div class="segment seg-l2" style="left:${left}%;width:${width}%;background:${color};opacity:0.88" title="${desc} [${ev.start.toFixed(1)}s-${ev.end.toFixed(1)}s]">
-      <div class="segment-label">${i+1}. ${desc}</div>
-      <div class="segment-time">${ev.start.toFixed(1)}s - ${ev.end.toFixed(1)}s</div>
-    </div>`;
-  }).join('');
-
-  // Coverage stats
-  const covered=events.reduce((s,e)=>s+(e.end-e.start),0);
-  const coverPct=Math.round((covered/dur)*100);
-
-  container.innerHTML=`
-    <div class="section-title">Event Timeline (L2) · coverage ${coverPct}%</div>
-    <div class="legend">
-      <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div>Events</div>
-      <div class="legend-item" style="margin-left:auto;font-size:11px">Duration: ${mmss(dur)} · ${events.length} events</div>
-    </div>
-    <div style="position:relative;height:54px;border-radius:16px;border:1px solid rgba(71,85,105,.1);background:linear-gradient(180deg,rgba(255,255,255,.8),rgba(241,245,249,.9));overflow:visible">
-      ${segHtml}
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:4px;padding:0 2px">
-      <span>0:00</span><span>${mmss(dur)}</span>
     </div>`;
 }
 function candRenderDetails(r){
