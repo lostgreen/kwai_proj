@@ -157,6 +157,11 @@ A macro phase is a broad stage of activity organized by overall intent.
 - Do NOT split by camera cuts.
 - It is valid to output only 1 macro phase if the entire video is one continuous routine.
 
+Then explain your phase segmentation logic in one sentence (global_phase_criterion): \
+what criterion distinguishes one phase from the next. Focus on the structural or \
+intentional boundary (e.g., shift of goal, change of activity type, transition between \
+setup and execution), NOT a description of video content.
+
 ## PART 4 — EVENT DETECTION (L2)
 Detect events nested inside each macro phase.
 Apply the event definition STRICTLY based on topology_type:
@@ -190,6 +195,11 @@ General L2 rules:
 - Use absolute integer seconds.
 - It is valid for a phase to contain zero events.
 - Do not force extra events to make the hierarchy deeper.
+- For each macro phase, provide an event_split_criterion: a one-sentence explanation \
+of WHY this phase does or does not contain sub-events. \
+If events exist, explain the boundary logic (e.g., "segmented by logical progression \
+of sub-goals"). If events are empty, explain why (e.g., "single continuous action with \
+no sequential progression"). Focus on segmentation logic, not content description.
 
 Output JSON:
 {{
@@ -200,6 +210,7 @@ Output JSON:
   "topology_reason": "<one sentence>",
   "l2_mode": "workflow | episode | optional | skip",
   "summary": "<one sentence>",
+  "global_phase_criterion": "<one sentence explaining WHY the video is split into these phases>",
   "macro_phases": [
     {{
       "phase_id": 1,
@@ -207,6 +218,7 @@ Output JSON:
       "end_time": 60,
       "phase_name": "Material Preparation",
       "narrative_summary": "Gather and organize all required materials.",
+      "event_split_criterion": "<one sentence explaining WHY this phase does/does not have events>",
       "events": [
         {{
           "event_id": 1,
@@ -342,6 +354,12 @@ clearly visible.
 state change.
 4. Do not force full coverage.
 
+Also explain your micro-action splitting criterion in one sentence (micro_split_criterion): \
+what level of granularity you chose and why. Focus on the splitting logic \
+(e.g., "broke down by individual state-changing operations where material visibly \
+transforms" or "each full repetition cycle from start to return position"), \
+NOT a summary of the actions found.
+
 For each micro-action, provide:
 - action_id: Sequential integer starting from 1.
 - start_time / end_time: Timestamps in integer seconds (absolute within the full video).
@@ -352,6 +370,7 @@ For each micro-action, provide:
 Output JSON:
 {{
   "micro_type": "state_change | repetition_unit",
+  "micro_split_criterion": "<one sentence explaining the granularity logic>",
   "grounding_results": [
     {{
       "action_id": 1,

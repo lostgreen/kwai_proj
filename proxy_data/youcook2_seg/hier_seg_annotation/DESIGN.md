@@ -670,6 +670,56 @@ else:
 - 无 events 的 phase 生成 `_ph{id}` 帧目录和 `parent_phase_id` 标记
 - **训练 builder 暂不改**：`build_l3_records` 仍按 `parent_event_id` 过滤，phase-based L3 数据被静默跳过（Phase 2 再支持）
 
+### 6.10 Split Criterion 字段（三层切分依据）
+
+标注阶段 VLM 在输出分割结果的同时，输出"切分依据"——解释为什么这样切。这些 criterion 未来作为训练数据中的 reasoning hint。
+
+| 字段 | 层级 | 生成阶段 | 存储位置 |
+|------|------|---------|---------|
+| `global_phase_criterion` | L1 | merged 标注 | 顶层 (与 summary 同级) |
+| `event_split_criterion` | L2 (per phase) | merged 标注 | `level1.macro_phases[].event_split_criterion` |
+| `micro_split_criterion` | L3 (per leaf) | L3 标注 | `level3.micro_split_criterion` + `_segment_calls[].micro_split_criterion` |
+
+**设计原则**：
+- criterion 描述**分割逻辑/粒度标准**，不描述视频内容
+- VLM 自主生成，我们只在 prompt 中指导输出格式
+- 向后兼容：旧标注无 criterion → `.get("field", "")` 返回空字符串
+
+**JSON 示例**：
+```json
+{
+  "summary": "A person first goes snow tubing, then builds a snowman.",
+  "global_phase_criterion": "Split by fundamental shift of activity type: unstructured recreation vs. goal-oriented procedural assembly.",
+  "topology_type": "procedural",
+
+  "level1": {
+    "macro_phases": [
+      {
+        "phase_id": 1,
+        "phase_name": "Snow Tubing",
+        "event_split_criterion": "Repetitive recreational activity with no sequential progression; no event segmentation needed.",
+        "events": []
+      },
+      {
+        "phase_id": 2,
+        "phase_name": "Building a Snowman",
+        "event_split_criterion": "Procedural task segmented by logical assembly progression: forming base, stacking body, decorating.",
+        "events": [{"event_id": 1, "instruction": "Roll the snowball to form the base"}, ...]
+      }
+    ]
+  },
+
+  "level3": {
+    "micro_type": "state_change",
+    "micro_split_criterion": "Broke down by individual state-changing operations where material visibly transforms.",
+    "grounding_results": [...],
+    "_segment_calls": [
+      {"parent_event_id": 1, "micro_split_criterion": "Broke down by individual state-changing operations..."}
+    ]
+  }
+}
+```
+
 ---
 
 ## 7. 后续阶段（未实现）

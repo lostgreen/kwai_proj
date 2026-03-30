@@ -530,6 +530,7 @@ def _split_merged_response(
     if domain_l2 not in DOMAIN_L2_ALL:
         domain_l2 = "other"
     summary = parsed.get("summary", "")
+    global_phase_criterion = parsed.get("global_phase_criterion", "")
 
     # ── Topology extraction ──
     topology_type = parsed.get("topology_type", "procedural")
@@ -606,6 +607,7 @@ def _split_merged_response(
         "domain_l1": domain_l1,
         "domain_l2": domain_l2,
         "summary": summary,
+        "global_phase_criterion": global_phase_criterion,
         "topology_type": topology_type,
         "topology_confidence": topology_confidence,
         "topology_reason": topology_reason,
@@ -828,6 +830,7 @@ def _annotate_level3(
             continue
 
         results = parsed.get("grounding_results")
+        source_criterion = parsed.get("micro_split_criterion", "")
         if isinstance(results, list):
             for r in results:
                 if isinstance(r, dict):
@@ -840,6 +843,7 @@ def _annotate_level3(
             "n_sampled_frames": len(sampled),
             "n_grounding_results": len(results) if isinstance(results, list) else 0,
             "frame_source": f"per_{source_type}" if using_dedicated else "full_video_filtered",
+            "micro_split_criterion": source_criterion,
         })
 
     # Sort and re-number
@@ -847,8 +851,17 @@ def _annotate_level3(
     for i, r in enumerate(all_results, 1):
         r["action_id"] = i
 
+    # Pick first non-empty micro_split_criterion from segment calls
+    micro_split_criterion = ""
+    for sc in segment_calls:
+        c = sc.get("micro_split_criterion", "")
+        if c:
+            micro_split_criterion = c
+            break
+
     return "level3", {
         "micro_type": micro_type,
+        "micro_split_criterion": micro_split_criterion,
         "grounding_results": all_results,
         "_segment_calls": segment_calls,
     }
