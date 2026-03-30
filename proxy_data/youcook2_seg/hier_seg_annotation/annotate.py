@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-annotate.py — Hierarchical video annotation pipeline (domain-agnostic).
+annotate.py — Topology-adaptive hierarchical video annotation pipeline.
 
-Three annotation levels with distinct strategies:
-  merged: L1+L2 single-call — full video frames (1fps) → macro phases + events + domain
-  3:      L3 grounding — per-event frames (2fps preferred) → atomic state-change moments
+Annotation levels:
+  merged: L1+L2+Topology single-call — full video frames (1fps)
+          → domain + topology classification + macro phases + events
+  3:      L3 grounding — topology-routed:
+          procedural → per-event frames → state_change micro-actions
+          periodic   → per-phase frames → repetition_unit micro-actions
+          sequence/flat → skipped automatically
   2c/3c:  Quality check & supplement for L2/L3 results respectively
 
 Recommended workflow:
-    # Step 1: L1+L2 merged annotation (1fps full-video frames)
+    # Step 1: L1+L2+Topology merged annotation (1fps full-video frames)
     python annotate.py \\
         --frames-dir frames/ \\
         --output-dir annotations/ \\
@@ -17,13 +21,13 @@ Recommended workflow:
         --model pa/gmn-2.5-pr \\
         --workers 4
 
-    # Step 2: Extract L3 per-event frames (2fps) using extract_frames.py
+    # Step 2: Extract L3 frames (auto-routes by topology: event/phase/skip)
     python extract_frames.py \\
         --annotation-dir annotations/ \\
         --original-video-root /path/to/videos \\
         --output-dir frames_l3/ --fps 2
 
-    # Step 3: L3 annotation using per-event 2fps frames
+    # Step 3: L3 annotation (auto-skips sequence/flat)
     python annotate.py \\
         --frames-dir frames/ \\
         --l3-frames-dir frames_l3/ \\
