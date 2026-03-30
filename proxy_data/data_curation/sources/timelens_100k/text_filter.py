@@ -98,8 +98,19 @@ def main():
         "priority_domains": args.priority_domains,
     }
     if args.config:
-        file_cfg = load_config(args.config)
-        # YAML as base, then CLI overrides (only override if user explicitly set)
+        raw_cfg = load_config(args.config)
+        # Flatten nested YAML: extract text_filter + domain_balance sections
+        file_cfg: dict = {}
+        if "text_filter" in raw_cfg:
+            file_cfg.update(raw_cfg["text_filter"])
+        if "domain_balance" in raw_cfg:
+            db = raw_cfg["domain_balance"]
+            file_cfg["max_per_domain"] = db.get("max_per_domain", 3000)
+            file_cfg["priority_domains"] = db.get("priority_domains", [])
+        # Fall back: if YAML is already flat, use it directly
+        if not file_cfg:
+            file_cfg = raw_cfg
+        # YAML as base, CLI overrides (only override if user explicitly set)
         cli_defaults = {
             "min_duration_sec": 60.0, "max_duration_sec": 240.0,
             "min_events": 5, "min_event_span": 2.0,
