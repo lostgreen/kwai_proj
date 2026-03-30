@@ -53,6 +53,77 @@ def _stat_summary(values: list[float | int], label: str) -> str:
     )
 
 
+def validate_and_clean(anns: list[dict]) -> tuple[list[dict], list[str]]:
+    """Detect and report bad annotations. Returns (clean_anns, issues)."""
+    issues: list[str] = []
+    clean = []
+
+    for ann in anns:
+        key = ann.get("clip_key", "?")
+        bad = False
+
+        # Check phase durations
+        for phase in (ann.get("level1") or {}).get("macro_phases") or []:
+            s, e = phase.get("start_time", 0), phase.get("end_time", 0)
+            if e < s:
+                issues.append(
+                    f"  [NEG_DUR] {key}: phase {phase.get('phase_id')} "
+                    f"start={s} end={e} (dur={e - s}s)"
+                )
+                bad = True
+            if e > ann.get("clip_duration_sec", 999) + 5:
+                issues.append(
+                    f"  [OVERFLOW] {key}: phase {phase.get('phase_id')} "
+                    f"end={e} > clip_duration={ann.get('clip_duration_sec')}"
+                )
+
+        # Check event durations
+        for ev in (ann.get("level2") or {}).get("events") or []:
+            s, e = ev.get("start_time", 0), ev.get("end_time", 0)
+            if e < s:
+                issues.append(
+                    f"  [NEG_DUR] {key}: event {ev.get('event_id')} "
+                    f"start={s} end={e} (dur={e - s}s)"
+                )
+                bad = True
+
+        # Check L3 action durations
+        for act in (ann.get("level3") or {}).get("grounding_results") or []:
+            s, e = act.get("start_time", 0), act.get("end_time", 0)
+            if e < s:
+                issues.append(
+                    f"  [NEG_DUR] {key}: action {act.get('action_id')} "
+                    f"start={s} end={e} (dur={e - s}s)"
+                )
+                bad = True
+            if e - s == 0:
+                issues.append(
+                    f"  [ZERO_DUR] {key}: action {act.get('action_id')} "
+                    f"start={s} end={e}"
+                )
+
+        # Check overlapping phases
+        phases = sorted(
+            ((ann.get("level1") or {}).get("macro_phases") or []),
+            key=lambda p: p.get("start_time", 0),
+        )
+        for i in range(len(phases) - 1):
+            cur_end = phases[i].get("end_time", 0)
+            nxt_start = phases[i + 1].get("start_time", 0)
+            gap = nxt_start - cur_end
+            if gap < -2:  # >2s overlap
+                issues.append(
+                    f"  [OVERLAP] {key}: phase {phases[i].get('phase_id')} "
+                    f"end={cur_end} > phase {phases[i+1].get('phase_id')} "
+                    f"start={nxt_start} (overlap={-gap}s)"
+                )
+
+        if not bad:
+            clean.append(ann)
+
+    return clean, issues
+
+
 def analyze(anns: list[dict]):
     # ── Topology ──
     topo_counter = Counter()
@@ -277,7 +348,26 @@ def main():
         print(f"No annotation files found in {ann_dir}")
         return
 
-    analyze(anns)
+    # ── Data validation ──
+    clean_anns, issues = validate_and_clean(anns)
+
+    print("=" * 70)
+    print("  DATA QUALITY CHECK")
+    print("=" * 70)
+    print(f"\n  Total annotations: {len(anns)}")
+    print(f"  Clean annotations: {len(clean_anns)} "
+          f"({len(clean_anns) / len(anns) * 100:.1f}%)")
+    print(f"  Annotations with issues: {len(anns) - len(clean_anns)}")
+    print(f"  Total issues found: {len(issues)}")
+
+    if issues:
+        print(f"\n  Bad cases:")
+        for issue in issues:
+            print(issue)
+
+    # ── Run analysis on clean data ──
+    print(f"\n  (Running distribution analysis on {len(clean_anns)} clean annotations)\n")
+    analyze(clean_anns)
 
 
 if __name__ == "__main__":

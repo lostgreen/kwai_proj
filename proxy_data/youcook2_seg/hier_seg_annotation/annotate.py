@@ -272,23 +272,40 @@ def call_vlm(
 
 
 def parse_json_from_response(text: str) -> dict[str, Any]:
-    """Extract and parse the first JSON block from the model response."""
+    """Extract and parse the first JSON object from the model response.
+
+    Always returns a dict.  If the VLM produces a JSON array instead of
+    an object, the first dict element is returned (with ``_unwrapped_array``
+    flag); if no dict element exists the response is treated as a parse error.
+    """
+    def _ensure_dict(obj: Any) -> dict[str, Any]:
+        """Unwrap a list → dict if possible, else signal parse error."""
+        if isinstance(obj, dict):
+            return obj
+        if isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, dict):
+                    item["_unwrapped_array"] = True
+                    return item
+            return {"_raw_response": text, "_parse_error": True}
+        return {"_raw_response": text, "_parse_error": True}
+
     text = text.strip()
     try:
-        return json.loads(text)
+        return _ensure_dict(json.loads(text))
     except json.JSONDecodeError:
         pass
     import re
     m = re.search(r"```(?:json)?\s*(\{[\s\S]+?\})\s*```", text)
     if m:
         try:
-            return json.loads(m.group(1))
+            return _ensure_dict(json.loads(m.group(1)))
         except json.JSONDecodeError:
             pass
     m2 = re.search(r"\{[\s\S]+\}", text)
     if m2:
         try:
-            return json.loads(m2.group(0))
+            return _ensure_dict(json.loads(m2.group(0)))
         except json.JSONDecodeError:
             pass
     return {"_raw_response": text, "_parse_error": True}
@@ -1403,7 +1420,14 @@ def main() -> None:
         }
         total = len(futures)
         for i, fut in enumerate(as_completed(futures), 1):
-            res = fut.result()
+            rec = futures[fut]
+            clip_key = (rec.get("videos") or ["?"])[0].rsplit("/", 1)[-1].rsplit(".", 1)[0] if rec.get("videos") else "?"
+            try:
+                res = fut.result()
+            except Exception as exc:
+                error_count += 1
+                print(f"[{i}/{total}] CRASH  {clip_key}: {type(exc).__name__}: {exc}")
+                continue
             if res["skipped"]:
                 skipped_count += 1
                 if i % 50 == 0:

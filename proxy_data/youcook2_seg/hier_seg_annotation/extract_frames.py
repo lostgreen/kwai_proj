@@ -680,7 +680,13 @@ def run_l3_extraction(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_task, t): t for t in tasks}
         for i, fut in enumerate(as_completed(futures), 1):
-            res = fut.result()
+            try:
+                res = fut.result()
+            except Exception as exc:
+                errors += 1
+                t = futures[fut]
+                print(f"[{i}/{len(tasks)}] CRASH  {t.get('key', '?')}: {type(exc).__name__}: {exc}")
+                continue
             if res.get("skipped"):
                 skipped += 1
             elif res.get("error"):
@@ -814,7 +820,14 @@ def main() -> None:
             for rec in records
         }
         for i, fut in enumerate(as_completed(futures), 1):
-            res = fut.result()
+            try:
+                res = fut.result()
+            except Exception as exc:
+                errors += 1
+                rec = futures[fut]
+                ckey = (rec.get("videos") or ["?"])[0].rsplit("/", 1)[-1].rsplit(".", 1)[0] if rec.get("videos") else "?"
+                print(f"[{i}/{len(records)}] CRASH  {ckey}: {type(exc).__name__}: {exc}")
+                continue
             if res.get("filtered"):
                 filtered += 1
                 print(f"[{i}/{len(records)}] FILTER {res['clip_key']}: {res['error']}")
