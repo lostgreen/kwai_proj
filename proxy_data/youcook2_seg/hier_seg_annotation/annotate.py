@@ -55,6 +55,9 @@ from prompts import (
     SYSTEM_PROMPT,
     DOMAIN_TAXONOMY,
     DOMAIN_L2_ALL,
+    TOPOLOGY_TYPES,
+    TOPOLOGY_TO_L2_MODE,
+    TOPOLOGY_TO_L3_MODE,
     get_level2_check_prompt,
     get_level3_prompt,
     get_level3_check_prompt,
@@ -385,17 +388,51 @@ def annotate_clip(
                 max_frames_per_call, resize_max_width, jpeg_quality,
             )
         elif level == "3":
-            l2 = existing.get("level2")
-            if l2 is None:
-                return {"clip_key": key, "ok": False,
-                        "error": "level2 annotation missing; run merged first", "skipped": False}
-            result_key, result_val = _annotate_level3(
-                frame_dir, clip_duration, l2,
-                api_base, api_key, model,
-                max_frames_per_call, resize_max_width, jpeg_quality,
-                l3_base=l3_frames_dir,
-                clip_key_str=key,
-            )
+            # ── Topology-aware L3 routing ──
+            topology_type = existing.get("topology_type", "procedural")
+            topology_confidence = existing.get("topology_confidence", 1.0)
+            l3_mode = existing.get("l3_mode") or TOPOLOGY_TO_L3_MODE.get(topology_type, "state_change")
+
+            # Conservative threshold: low confidence → skip L3
+            if topology_confidence < 0.6:
+                l3_mode = "skip"
+
+            if l3_mode == "skip":
+                result_key, result_val = "level3", {
+                    "micro_type": "skip",
+                    "grounding_results": [],
+                    "_segment_calls": [],
+                    "_skip_reason": f"l3_mode=skip (topology={topology_type}, conf={topology_confidence:.2f})",
+                }
+            elif topology_type == "periodic":
+                # periodic: L3 from phases, not events
+                l1 = existing.get("level1")
+                if l1 is None:
+                    return {"clip_key": key, "ok": False,
+                            "error": "level1 annotation missing; run merged first", "skipped": False}
+                result_key, result_val = _annotate_level3(
+                    frame_dir, clip_duration, existing.get("level2") or {"events": []},
+                    api_base, api_key, model,
+                    max_frames_per_call, resize_max_width, jpeg_quality,
+                    l3_base=l3_frames_dir,
+                    clip_key_str=key,
+                    topology_type=topology_type,
+                    l1_result=l1,
+                )
+            else:
+                # procedural (default): L3 from events
+                l2 = existing.get("level2")
+                if l2 is None:
+                    return {"clip_key": key, "ok": False,
+                            "error": "level2 annotation missing; run merged first", "skipped": False}
+                result_key, result_val = _annotate_level3(
+                    frame_dir, clip_duration, l2,
+                    api_base, api_key, model,
+                    max_frames_per_call, resize_max_width, jpeg_quality,
+                    l3_base=l3_frames_dir,
+                    clip_key_str=key,
+                    topology_type=topology_type,
+                )
         elif level == "2c":
             l1 = existing.get("level1")
             l2 = existing.get("level2")
@@ -468,14 +505,18 @@ def _split_merged_response(
     resize_max_width: int,
     jpeg_quality: int,
     clip_duration: float,
-) -> tuple[dict, dict, str, str, str]:
-    """Split merged VLM response into level1/level2 dicts + domain_l1 + domain_l2 + summary.
+) -> dict[str, Any]:
+    """Split merged VLM response into a flat dict of annotation fields.
 
     The VLM outputs events nested inside phases. This function:
     1. Extracts and validates domain_l1/domain_l2/summary
-    2. Strips nested events out of phases → flat events list
-    3. Tags each event with parent_phase_id
-    4. Re-numbers event_id globally by start_time
+    2. Extracts and validates topology_type/confidence/reason/l2_mode/l3_mode
+    3. Strips nested events out of phases → flat events list
+    4. Tags each event with parent_phase_id
+    5. Re-numbers event_id globally by start_time
+
+    Returns dict with keys: level1, level2, domain_l1, domain_l2, summary,
+        topology_type, topology_confidence, topology_reason, l2_mode, l3_mode.
     """
     domain_l1 = parsed.get("domain_l1", "other")
     if domain_l1 not in DOMAIN_TAXONOMY:
@@ -484,6 +525,27 @@ def _split_merged_response(
     if domain_l2 not in DOMAIN_L2_ALL:
         domain_l2 = "other"
     summary = parsed.get("summary", "")
+
+    # ── Topology extraction ──
+    topology_type = parsed.get("topology_type", "procedural")
+    if topology_type not in TOPOLOGY_TYPES:
+        topology_type = "procedural"
+
+    topology_confidence = parsed.get("topology_confidence")
+    if not isinstance(topology_confidence, (int, float)):
+        topology_confidence = 0.5
+    topology_confidence = max(0.0, min(1.0, float(topology_confidence)))
+
+    topology_reason = str(parsed.get("topology_reason", ""))
+
+    l2_mode = parsed.get("l2_mode") or TOPOLOGY_TO_L2_MODE.get(topology_type, "workflow")
+    l3_mode = TOPOLOGY_TO_L3_MODE.get(topology_type, "state_change")
+
+    # Conservative override: very low confidence → treat as flat
+    if topology_confidence < 0.5:
+        topology_type = "flat"
+        l2_mode = "skip"
+        l3_mode = "skip"
 
     raw_phases = parsed.get("macro_phases", [])
     l1_phases: list[dict] = []
@@ -533,7 +595,18 @@ def _split_merged_response(
         },
     }
     level2 = {"events": all_events}
-    return level1, level2, domain_l1, domain_l2, summary
+    return {
+        "level1": level1,
+        "level2": level2,
+        "domain_l1": domain_l1,
+        "domain_l2": domain_l2,
+        "summary": summary,
+        "topology_type": topology_type,
+        "topology_confidence": topology_confidence,
+        "topology_reason": topology_reason,
+        "l2_mode": l2_mode,
+        "l3_mode": l3_mode,
+    }
 
 
 def _annotate_merged_l1l2(
@@ -543,13 +616,12 @@ def _annotate_merged_l1l2(
     max_frames: int, resize_max_width: int, jpeg_quality: int,
 ) -> dict[str, Any]:
     """
-    Merged L1+L2: Single VLM call for phases, events, domain, and summary.
+    Merged L1+L2+Topology: Single VLM call for topology, phases, events, domain, and summary.
 
     Uses real timestamps (not warped frames). Samples up to max_frames
     from the full video.
 
-    Returns dict of annotation updates:
-      {"level1": ..., "level2": ..., "domain_l1": ..., "domain_l2": ..., "summary": ...}
+    Returns dict of annotation updates including topology_type, l2_mode, l3_mode.
     """
     all_frames = get_all_frame_files(frame_dir)
     if not all_frames:
@@ -570,17 +642,9 @@ def _annotate_merged_l1l2(
     if parsed is None:
         raise RuntimeError("merged L1+L2 JSON parse failed after retry")
 
-    level1, level2, domain_l1, domain_l2, summary = _split_merged_response(
+    return _split_merged_response(
         parsed, len(sampled), resize_max_width, jpeg_quality, clip_duration,
     )
-
-    return {
-        "level1": level1,
-        "level2": level2,
-        "domain_l1": domain_l1,
-        "domain_l2": domain_l2,
-        "summary": summary,
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -595,64 +659,96 @@ def _annotate_level3(
     max_frames: int, resize_max_width: int, jpeg_quality: int,
     l3_base: Path | None = None,
     clip_key_str: str = "",
+    topology_type: str = "procedural",
+    l1_result: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
-    Level 3: Local Temporal Grounding.
+    Level 3: Local Temporal Grounding (topology-aware).
 
-    For each L2 event:
-      1. Prefer per-event frames from {l3_base}/{clip_key}_ev{event_id}/ (high-fps).
-         If not available, fall back to filtering the full-video 1fps frame dir.
-      2. Use the event instruction as the action query.
-      3. Model pinpoints atomic state-change moments with ABSOLUTE timestamps.
+    Source selection by topology:
+      - procedural: iterate L2 events → per-event frames in {l3_base}/{clip_key}_ev{id}/
+      - periodic:   iterate L1 phases → per-phase frames in {l3_base}/{clip_key}_ph{id}/
+    Falls back to filtering the full-video 1fps frame dir when dedicated dir is absent.
     """
-    events = l2_result.get("events", [])
-    events = sorted(
-        [e for e in events if isinstance(e, dict)],
-        key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)),
-    )
-    if not events:
-        raise RuntimeError("level2 events missing or empty")
+    # ── Build source list based on topology ──
+    sources: list[dict[str, Any]] = []
+
+    if topology_type == "periodic" and l1_result is not None:
+        # periodic: L3 sources from L1 phases
+        phases = l1_result.get("macro_phases", [])
+        for phase in phases:
+            if not isinstance(phase, dict):
+                continue
+            sources.append({
+                "source_id": phase.get("phase_id", len(sources) + 1),
+                "start_time": phase.get("start_time"),
+                "end_time": phase.get("end_time"),
+                "instruction": phase.get("narrative_summary") or phase.get("phase_name", ""),
+                "_source_type": "phase",
+            })
+    else:
+        # procedural (default): L3 sources from L2 events
+        events = l2_result.get("events", [])
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            sources.append({
+                "source_id": ev.get("event_id", len(sources) + 1),
+                "start_time": ev.get("start_time"),
+                "end_time": ev.get("end_time"),
+                "instruction": ev.get("instruction", ""),
+                "_source_type": "event",
+            })
+
+    sources.sort(key=lambda s: (s.get("start_time") or 0, s.get("end_time") or 0))
+
+    if not sources:
+        raise RuntimeError("no sources (events/phases) available for L3 grounding")
 
     meta = load_frame_meta(frame_dir)
     fps = float(meta.get("fps", 1.0))
 
+    micro_type = "repetition_unit" if topology_type == "periodic" else "state_change"
     all_results: list[dict[str, Any]] = []
     segment_calls: list[dict[str, Any]] = []
 
-    for event in events:
-        event_id = event.get("event_id", len(segment_calls) + 1)
-        start_time = event.get("start_time")
-        end_time = event.get("end_time")
-        instruction = event.get("instruction", "")
+    for source in sources:
+        source_id = source["source_id"]
+        start_time = source["start_time"]
+        end_time = source["end_time"]
+        instruction = source["instruction"]
+        source_type = source["_source_type"]
+        key_prefix = "ph" if source_type == "phase" else "ev"
 
         if not isinstance(start_time, (int, float)) or not isinstance(end_time, (int, float)):
             segment_calls.append({
-                "event_id": event_id, "instruction": instruction,
+                f"parent_{source_type}_id": source_id, "instruction": instruction,
                 "start_time": start_time, "end_time": end_time,
                 "skipped": True, "skip_reason": "invalid time",
             })
             continue
 
-        # Try per-event frame dir first (high-fps extracted by extract_frames.py L3 mode)
-        ev_dir = (l3_base / f"{clip_key_str}_ev{event_id}") if (l3_base and clip_key_str) else None
-        using_per_event = ev_dir is not None and ev_dir.exists() and len(list(ev_dir.glob("*.jpg"))) > 0
+        # Try per-source frame dir first (high-fps extracted by extract_frames.py L3 mode)
+        src_dir = (l3_base / f"{clip_key_str}_{key_prefix}{source_id}") if (l3_base and clip_key_str) else None
+        using_dedicated = src_dir is not None and src_dir.exists() and len(list(src_dir.glob("*.jpg"))) > 0
 
-        if using_per_event:
-            ev_meta = load_frame_meta(ev_dir)
-            ev_fps = float(ev_meta.get("fps", 2.0))
-            ev_start = float(ev_meta.get("event_start_sec", start_time))
-            ev_frames = get_all_frame_files(ev_dir)
-            # Absolute timestamp: ev_start + (frame_idx - 1) / ev_fps
-            def make_labels(frames: list[Path], _ev_fps: float = ev_fps, _ev_start: float = ev_start) -> list[str]:
+        if using_dedicated:
+            src_meta = load_frame_meta(src_dir)
+            src_fps = float(src_meta.get("fps", 2.0))
+            src_start = float(src_meta.get("event_start_sec", start_time))
+            src_frames = get_all_frame_files(src_dir)
+
+            def make_labels(frames: list[Path], _fps: float = src_fps, _start: float = src_start) -> list[str]:
                 labels = []
                 for fp in frames:
                     idx = frame_stem_to_index(fp, 0)
-                    t_abs = _ev_start + frame_index_to_sec(idx, _ev_fps)
+                    t_abs = _start + frame_index_to_sec(idx, _fps)
                     labels.append(f"[Timestamp {format_mmss(t_abs)} | Frame {idx}]")
                 return labels
         else:
-            ev_fps = fps
-            ev_frames = get_frames_in_time_range(frame_dir, start_time, end_time, fps)
+            src_fps = fps
+            src_frames = get_frames_in_time_range(frame_dir, start_time, end_time, fps)
+
             def make_labels(frames: list[Path], _fps: float = fps) -> list[str]:
                 labels = []
                 for fp in frames:
@@ -661,24 +757,27 @@ def _annotate_level3(
                     labels.append(f"[Timestamp {format_mmss(t)} | Frame {idx}]")
                 return labels
 
-        if not ev_frames:
+        if not src_frames:
             segment_calls.append({
-                "event_id": event_id, "instruction": instruction,
+                f"parent_{source_type}_id": source_id, "instruction": instruction,
                 "start_time": start_time, "end_time": end_time,
                 "skipped": True, "skip_reason": "no frames",
             })
             continue
 
-        sampled = sample_uniform(ev_frames, max_frames)
+        sampled = sample_uniform(src_frames, max_frames)
         frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
         frame_labels = make_labels(sampled)
 
-        prompt_text = get_level3_prompt(int(start_time), int(end_time), instruction)
+        prompt_text = get_level3_prompt(
+            int(start_time), int(end_time), instruction,
+            topology_type=topology_type,
+        )
         parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
 
         if parsed is None:
             segment_calls.append({
-                "event_id": event_id, "instruction": instruction,
+                f"parent_{source_type}_id": source_id, "instruction": instruction,
                 "start_time": start_time, "end_time": end_time,
                 "skipped": True, "skip_reason": "parse failed",
             })
@@ -688,15 +787,15 @@ def _annotate_level3(
         if isinstance(results, list):
             for r in results:
                 if isinstance(r, dict):
-                    r["parent_event_id"] = event_id
+                    r[f"parent_{source_type}_id"] = source_id
                     all_results.append(r)
 
         segment_calls.append({
-            "event_id": event_id, "instruction": instruction,
+            f"parent_{source_type}_id": source_id, "instruction": instruction,
             "start_time": start_time, "end_time": end_time,
             "n_sampled_frames": len(sampled),
             "n_grounding_results": len(results) if isinstance(results, list) else 0,
-            "frame_source": "per_event" if using_per_event else "full_video_filtered",
+            "frame_source": f"per_{source_type}" if using_dedicated else "full_video_filtered",
         })
 
     # Sort and re-number
@@ -705,6 +804,7 @@ def _annotate_level3(
         r["action_id"] = i
 
     return "level3", {
+        "micro_type": micro_type,
         "grounding_results": all_results,
         "_segment_calls": segment_calls,
     }

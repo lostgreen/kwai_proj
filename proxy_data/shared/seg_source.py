@@ -53,13 +53,26 @@ def load_annotations(
 
     Args:
         ann_dir:       Directory containing ``*.json`` annotation files.
-        complete_only: When True, skip any clip whose L1, L2, or L3 block
-                       is missing or has a ``_parse_error`` flag.
+        complete_only: When True, skip any clip whose required annotation
+                       levels are missing or have a ``_parse_error`` flag.
+                       Which levels are required depends on topology:
+                       - L1 and L2 are always required.
+                       - L3 is required only when ``l3_mode != "skip"``
+                         (i.e., procedural and periodic topologies).
+                       Falls back to requiring all three levels if no
+                       topology metadata is present (backward compatible).
 
     Returns:
         List of raw annotation dicts, sorted by filename (clip_key order).
         Files that cannot be parsed are silently skipped.
     """
+    _TOPO_TO_L3 = {
+        "procedural": "state_change",
+        "periodic": "repetition_unit",
+        "sequence": "skip",
+        "flat": "skip",
+    }
+
     ann_dir = Path(ann_dir)
     annotations: list[dict] = []
 
@@ -73,9 +86,21 @@ def load_annotations(
         if complete_only:
             ok_l1 = ann.get("level1") and not ann["level1"].get("_parse_error")
             ok_l2 = ann.get("level2") and not ann["level2"].get("_parse_error")
-            ok_l3 = ann.get("level3") and not ann["level3"].get("_parse_error")
-            if not (ok_l1 and ok_l2 and ok_l3):
+            if not (ok_l1 and ok_l2):
                 continue
+
+            # L3 requirement depends on topology
+            topo = ann.get("topology_type", "")
+            l3_mode = ann.get("l3_mode") or _TOPO_TO_L3.get(topo, "")
+            need_l3 = l3_mode not in ("skip", "")
+            if not l3_mode:
+                # No topology metadata → legacy behavior: require L3
+                need_l3 = True
+
+            if need_l3:
+                ok_l3 = ann.get("level3") and not ann["level3"].get("_parse_error")
+                if not ok_l3:
+                    continue
 
         annotations.append(ann)
 

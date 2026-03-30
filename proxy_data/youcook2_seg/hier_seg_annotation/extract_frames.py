@@ -427,14 +427,15 @@ def extract_l3_event_frames(
     fps: float = 2.0,
     overwrite: bool = False,
     min_frames: int = 2,
+    key_prefix: str = "ev",
 ) -> dict:
-    """Extract frames for one L2 event at higher fps for L3 annotation.
+    """Extract frames for one L2 event / L1 phase at higher fps for L3 annotation.
 
-    Frames are numbered from 0001.jpg onward (relative to event_start).
+    Frames are numbered from 0001.jpg onward (relative to segment start).
     meta.json records event_start_sec so annotate.py can recover absolute timestamps.
-    Output dir: {output_base}/{parent_clip_key}_ev{event_id}/
+    Output dir: {output_base}/{parent_clip_key}_{key_prefix}{event_id}/
     """
-    key = f"{parent_clip_key}_ev{event_id}"
+    key = f"{parent_clip_key}_{key_prefix}{event_id}"
     out_dir = output_base / key
 
     if not overwrite and out_dir.exists() and count_jpg_frames(out_dir) > 0:
@@ -497,12 +498,22 @@ def run_l3_extraction(
     original_video_index: dict[str, str] | None,
     limit: int,
 ) -> None:
-    """Extract per-event L3 frames from merged annotation JSONs.
+    """Extract per-event/per-phase L3 frames from merged annotation JSONs.
 
-    Reads every *.json in annotation_dir, collects all L2 events, and
-    extracts frames at *fps* from the source video for each event.
-    Output layout:  {output_base}/{clip_key}_ev{event_id}/
+    Topology-aware routing:
+      - procedural: extract from L2 events → {clip_key}_ev{id}/
+      - periodic:   extract from L1 phases → {clip_key}_ph{id}/
+      - sequence/flat: skip (L3 not applicable)
+
+    Falls back to procedural (event-based) when topology_type is absent.
     """
+    _TOPO_TO_L3 = {
+        "procedural": "state_change",
+        "periodic": "repetition_unit",
+        "sequence": "skip",
+        "flat": "skip",
+    }
+
     ann_paths = sorted(annotation_dir.glob("*.json"))
     if not ann_paths:
         print(f"ERROR: no annotation JSON files in {annotation_dir}", file=sys.stderr)
@@ -512,6 +523,7 @@ def run_l3_extraction(
         ann_paths = ann_paths[:limit]
 
     tasks: list[dict] = []
+    skipped_topo = 0
     for ann_path in ann_paths:
         try:
             with open(ann_path, encoding="utf-8") as f:
@@ -538,27 +550,60 @@ def run_l3_extraction(
             print(f"WARN: source video not found for {clip_key_str}: {source_video_str}")
             continue
 
-        events = (ann.get("level2") or {}).get("events") or []
-        if not events:
-            print(f"WARN: no L2 events in {ann_path.name}, skipping")
+        # Topology routing
+        topology_type = ann.get("topology_type", "procedural")
+        l3_mode = ann.get("l3_mode") or _TOPO_TO_L3.get(topology_type, "state_change")
+
+        if l3_mode == "skip":
+            skipped_topo += 1
             continue
 
-        for ev in events:
-            ev_id = ev.get("event_id")
-            start = ev.get("start_time")
-            end = ev.get("end_time")
-            if not (isinstance(ev_id, int) and isinstance(start, (int, float))
-                    and isinstance(end, (int, float)) and start < end):
+        if topology_type == "periodic":
+            # periodic: extract from L1 phases
+            phases = (ann.get("level1") or {}).get("macro_phases") or []
+            if not phases:
+                print(f"WARN: no L1 phases in {ann_path.name} (periodic), skipping")
                 continue
-            tasks.append({
-                "source_video": source_video,
-                "event_start_sec": float(start),
-                "event_end_sec": float(end),
-                "event_id": ev_id,
-                "parent_clip_key": clip_key_str,
-            })
+            for phase in phases:
+                ph_id = phase.get("phase_id")
+                start = phase.get("start_time")
+                end = phase.get("end_time")
+                if not (isinstance(ph_id, int) and isinstance(start, (int, float))
+                        and isinstance(end, (int, float)) and start < end):
+                    continue
+                tasks.append({
+                    "source_video": source_video,
+                    "event_start_sec": float(start),
+                    "event_end_sec": float(end),
+                    "event_id": ph_id,
+                    "parent_clip_key": clip_key_str,
+                    "key_prefix": "ph",
+                })
+        else:
+            # procedural (default): extract from L2 events
+            events = (ann.get("level2") or {}).get("events") or []
+            if not events:
+                print(f"WARN: no L2 events in {ann_path.name}, skipping")
+                continue
+            for ev in events:
+                ev_id = ev.get("event_id")
+                start = ev.get("start_time")
+                end = ev.get("end_time")
+                if not (isinstance(ev_id, int) and isinstance(start, (int, float))
+                        and isinstance(end, (int, float)) and start < end):
+                    continue
+                tasks.append({
+                    "source_video": source_video,
+                    "event_start_sec": float(start),
+                    "event_end_sec": float(end),
+                    "event_id": ev_id,
+                    "parent_clip_key": clip_key_str,
+                    "key_prefix": "ev",
+                })
 
-    print(f"L3 per-event extraction: {len(tasks)} events from {len(ann_paths)} clips → {output_base}")
+    print(f"L3 extraction: {len(tasks)} segments from {len(ann_paths)} clips → {output_base}")
+    if skipped_topo:
+        print(f"  ({skipped_topo} clips skipped due to topology: sequence/flat)")
     print(f"FPS={fps}  workers={workers}  min_frames={min_frames}")
     output_base.mkdir(parents=True, exist_ok=True)
 
@@ -575,6 +620,7 @@ def run_l3_extraction(
             fps=fps,
             overwrite=overwrite,
             min_frames=min_frames,
+            key_prefix=t.get("key_prefix", "ev"),
         )
 
     with ThreadPoolExecutor(max_workers=workers) as pool:

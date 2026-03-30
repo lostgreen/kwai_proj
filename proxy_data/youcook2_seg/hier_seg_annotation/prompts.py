@@ -1,15 +1,19 @@
 """
-Hierarchical annotation prompts (domain-agnostic).
+Topology-adaptive hierarchical annotation prompts (domain-agnostic).
 
 Design philosophy:
-  Merged  — Single-call L1+L2: model sees full video (real timestamps),
-             outputs macro phases, nested activity events, domain, and summary.
-  Level 3 — Local Temporal Grounding: given an L2 event clip + text query,
-             model pinpoints start/end of atomic state-change moments.
+  Merged  — Single-call L1+L2+Topology: model sees full video (real timestamps),
+             classifies temporal topology, then outputs macro phases, nested
+             activity events (conditional on topology), domain, and summary.
+  Level 3 — Topology-aware micro grounding: definition adapts per topology_type.
+             procedural → state_change (object state transitions)
+             periodic   → repetition_unit (single rep/cycle/strike)
+             sequence/flat → skipped (no L3)
 
 Usage:
     from prompts import SYSTEM_PROMPT, get_merged_l1l2_prompt, get_level3_prompt
-    from prompts import DOMAIN_TAXONOMY
+    from prompts import DOMAIN_TAXONOMY, TOPOLOGY_TYPES
+    from prompts import TOPOLOGY_TO_L2_MODE, TOPOLOGY_TO_L3_MODE
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -17,7 +21,8 @@ Usage:
 # Injected as the system role message in every API call.
 # ─────────────────────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """\
-You are an expert in structured video analysis, specializing in procedural and activity-based content. \
+You are an expert in structured video analysis, specializing in temporal \
+structure analysis of procedural, periodic, sequential, and general activity content. \
 Your task is to accurately parse temporal actions and visual state transitions.
 
 Core annotation principles:
@@ -64,6 +69,28 @@ DOMAIN_TAXONOMY: dict[str, list[str]] = {
 DOMAIN_L2_ALL: set[str] = {sub for subs in DOMAIN_TAXONOMY.values() for sub in subs}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Topology Classification (four temporal structure types)
+# Determined during merged annotation; drives L2/L3 routing downstream.
+# ─────────────────────────────────────────────────────────────────────────────
+TOPOLOGY_TYPES: set[str] = {"procedural", "periodic", "sequence", "flat"}
+L2_MODES: set[str] = {"workflow", "episode", "optional", "skip"}
+L3_MODES: set[str] = {"state_change", "repetition_unit", "skip"}
+
+TOPOLOGY_TO_L2_MODE: dict[str, str] = {
+    "procedural": "workflow",
+    "sequence": "episode",
+    "periodic": "optional",
+    "flat": "skip",
+}
+TOPOLOGY_TO_L3_MODE: dict[str, str] = {
+    "procedural": "state_change",
+    "periodic": "repetition_unit",
+    "sequence": "skip",
+    "flat": "skip",
+}
+
+
 def _format_taxonomy_for_prompt() -> str:
     """Format DOMAIN_TAXONOMY as indented bullet list for prompt injection."""
     lines = []
@@ -75,50 +102,100 @@ def _format_taxonomy_for_prompt() -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Merged L1+L2: Single-Call Phase Segmentation + Event Detection + Domain
+# Merged L1+L2+Topology: Single-Call Phase + Event + Domain + Topology
 # Input:  full video frames with real timestamps
-# Output: domain, summary, macro_phases (with nested events)
+# Output: domain, topology, summary, macro_phases (with nested events)
 # ─────────────────────────────────────────────────────────────────────────────
 _MERGED_L1L2_BASE = """\
 You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
-Your task has four parts:
+Your task has four parts.
 
 ## PART 1 — DOMAIN CLASSIFICATION
 Classify the video using a two-level taxonomy.
-Choose ONE broad category (L1) and ONE fine-grained subcategory (L2) from the list below:
+Choose ONE broad category (domain_l1) and ONE fine-grained subcategory (domain_l2) \
+from the list below:
 {domain_taxonomy_str}
 
-## PART 2 — VIDEO SUMMARY
-Write ONE sentence summarizing the main activity and its outcome.
+## PART 2 — TOPOLOGY CLASSIFICATION (CRITICAL)
+Analyze the TEMPORAL STRUCTURE of the visible activity and assign exactly ONE topology_type.
 
-## PART 3 — MACRO PHASE SEGMENTATION
-Segment the video into 2–6 high-level macro phases. Each phase is a broad \
-activity stage (e.g., preparation, main execution, finishing).
-- Phases do NOT need to cover the entire video. Skip intros, outros, \
-talking-only spans, beauty shots, or non-activity content.
-- Group by process intent, not by camera cut.
+Topology types:
+- procedural:
+  A step-by-step process with meaningful sub-goals that progress toward an outcome.
+  Typical examples: cooking, assembling, repairing, crafting.
 
-## PART 4 — EVENT DETECTION (nested inside each phase)
-Within EACH macro phase, detect all complete activity events.
-- An event is a multi-second, goal-directed workflow (typically 10–60s) that \
-transforms materials, objects, or the scene state.
-- DO NOT split into isolated momentary actions (< 5 seconds).
-- Skip idle, narration, or non-activity content.
-- If a phase has no qualifying events, set "events": [].
+- periodic:
+  A repeated cycle of the same motion or operation.
+  Typical examples: stretching repetitions, weightlifting reps, repetitive factory motions.
 
-CRITICAL GRANULARITY RULES:
-1. Each event MUST be a complete logical sub-process, NOT an isolated atomic action.
-2. DO NOT fragment: group "pick up tool" + "place part" + "secure part" into \
-one event like "Assemble components by fitting and securing parts".
-3. Exclude: talking without manipulation, showing tools without using them, \
-idle waiting, repositioning.
+- sequence:
+  A continuous traversal, trial, run, or episode with one coherent trajectory or attempt.
+  Typical examples: dog agility runs, parkour runs, skiing descents, obstacle traversals.
 
-All timestamps are integer seconds (absolute, 0-based).
+- flat:
+  A single continuous activity with no stable internal hierarchy, or mixed/unclear \
+structure that should not be over-segmented.
+  Typical examples: idle talking, continuous walking vlog, loosely mixed footage.
+
+Important topology rules:
+1. Topology is about temporal structure, NOT about domain label alone.
+2. Repetition alone does NOT imply procedural structure.
+3. Camera cuts do NOT define topology.
+4. If the structure is weak or unclear, choose flat rather than inventing hierarchy.
+
+Also output:
+- topology_confidence: a float from 0.0 to 1.0
+- topology_reason: one brief sentence explaining the decision
+
+## PART 3 — VIDEO SUMMARY & MACRO PHASES (L1)
+Write ONE sentence summarizing the video.
+
+Then segment the video into 1–6 macro phases.
+A macro phase is a broad stage of activity organized by overall intent.
+- Skip intros, outros, static non-activity spans, and talking-only spans.
+- Phases do NOT need to cover the entire video.
+- Do NOT split by camera cuts.
+- It is valid to output only 1 macro phase if the entire video is one continuous routine.
+
+## PART 4 — EVENT DETECTION (L2)
+Detect events nested inside each macro phase.
+Apply the event definition STRICTLY based on topology_type:
+
+If topology_type = procedural:
+- An event is a multi-second workflow (typically 10–60s) that completes a process sub-goal.
+- Group related manipulations together.
+- Do NOT fragment into atomic tool motions.
+
+If topology_type = sequence:
+- An event is a complete episode, trial, or continuous traversal with one coherent \
+trajectory or objective.
+- Do NOT split by local body motions, individual obstacles, or camera cuts.
+- A whole run/trial should usually be one event.
+
+If topology_type = periodic:
+- Events are optional.
+- You may leave "events": [] for a phase, or output ONE event only if it exactly \
+matches the whole phase as a container for later micro annotation.
+- Do NOT create one event per repetition.
+
+If topology_type = flat:
+- Output "events": [].
+- Do NOT invent L2 structure.
+
+General L2 rules:
+- Events must not overlap.
+- Use absolute integer seconds.
+- It is valid for a phase to contain zero events.
+- Do not force extra events to make the hierarchy deeper.
 
 Output JSON:
 {{
   "domain_l1": "<one broad category>",
   "domain_l2": "<one fine-grained subcategory>",
+  "topology_type": "procedural | periodic | sequence | flat",
+  "topology_confidence": 0.95,
+  "topology_reason": "<one sentence>",
+  "l2_mode": "workflow | episode | optional | skip",
   "summary": "<one sentence>",
   "macro_phases": [
     {{
@@ -217,46 +294,61 @@ def get_level2_train_prompt(duration: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Level 3: Atomic Interaction — Local Temporal Grounding (动作级)
-# Input:  frames within an L2 event clip + action query text
+# Level 3: Topology-Aware Micro Grounding (动作级 / 重复单元级)
+# Input:  frames within a clip + action/phase query + topology_type
 # Output: grounding results with pre/post state descriptions
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_BASE = """\
-You are a temporal grounding model. You are viewing frames from an event \
-clip ({event_start}s to {event_end}s). The event is: "{action_query}"
+You are a temporal grounding model. You are viewing frames from a clip \
+({clip_start}s to {clip_end}s).
+The input query is: "{action_query}"
+The topology_type of the source video is: "{topology_type}".
 
-Your task: pinpoint every atomic state-change moment within this clip.
+Your task is to pinpoint every atomic micro-action in this clip.
 
-LEVEL 3 DEFINITION — KINEMATIC BOUNDARIES:
-1. [Physics over Procedure]: You are NOT writing procedural steps. Focus ENTIRELY on \
-physical, visual changes of objects (deformation, separation, merging, transfer, \
-material state change).
-2. [State Transition Focus]: Only annotate moments where a target object undergoes \
-a VISUAL, IRREVERSIBLE change.
-3. [Boundary Precision]:
-   - start_time = the moment physical contact begins OR the object starts entering \
-the state change (NOT the reaching/approaching motion).
-   - end_time = the moment the transfer/transformation completes and the new visual \
-state is clearly established.
-4. [Typical Duration]: Most atomic moments span 2-6 seconds. Avoid 1-second spans \
-unless the change is truly instantaneous yet visually complete.
-5. [Continuity Rule]: If consecutive frames show one uninterrupted micro-process \
-with the same intent, merge into one annotation rather than splitting.
-6. [Allow Gaps]: Do NOT force timestamps to cover every second. Skip hand \
-repositioning, tool pickup, idle pauses, narration, and any motion that does NOT \
-change the object's state.
-7. [Ignore Empty Motions]: Purely human limb movements (reaching, adjusting posture) \
-without any object state change must be excluded.
+IMPORTANT:
+- If topology_type is "sequence" or "flat", this prompt should not be used.
+- Use absolute integer seconds from the full video timeline.
 
-For each atomic state-change moment, provide:
+LEVEL 3 DEFINITIONS
+
+If topology_type = procedural:
+- micro_type = "state_change"
+- Find brief atomic actions where an object undergoes a clear visible physical change.
+- Valid examples: cutting, pouring into a container, attaching a part, spreading \
+material, separating pieces.
+- start_time = onset of the actual physical interaction or transformation
+- end_time = the moment the new visible state is established
+- Ignore reaching, idle pauses, pure hand repositioning, and narration
+
+If topology_type = periodic:
+- micro_type = "repetition_unit"
+- Find each individual completed repetition, cycle, strike, or stretch.
+- start_time = initiation of one repetition cycle
+- end_time = completion of that same repetition cycle, usually when the body/equipment \
+returns to its resting or starting position
+- Ignore idle pauses between repetitions
+- IMPORTANT: post_state may be similar or identical to pre_state if the repetition \
+returns to the starting posture
+
+General rules:
+1. Typical duration is 2–6 seconds, but use shorter or longer spans if the unit is \
+clearly visible.
+2. Allow gaps between micro-actions.
+3. Merge uninterrupted motion belonging to the same single repetition or same single \
+state change.
+4. Do not force full coverage.
+
+For each micro-action, provide:
 - action_id: Sequential integer starting from 1.
 - start_time / end_time: Timestamps in integer seconds (absolute within the full video).
-- sub_action: Brief description of the specific physical interaction.
-- pre_state: The EXPLICIT visual state of the target object BEFORE the interaction.
-- post_state: The EXPLICIT visual state of the target object AFTER the interaction.
+- sub_action: Brief description of the specific physical interaction or repetition.
+- pre_state: The EXPLICIT visual state BEFORE the interaction.
+- post_state: The EXPLICIT visual state AFTER the interaction.
 
 Output JSON:
 {{
+  "micro_type": "state_change | repetition_unit",
   "grounding_results": [
     {{
       "action_id": 1,
@@ -274,19 +366,22 @@ def get_level3_prompt(
     event_start_sec: int,
     event_end_sec: int,
     action_query: str,
+    topology_type: str = "procedural",
 ) -> str:
     """
-    Build the Level 3 (Local Temporal Grounding) user-turn prompt.
+    Build the Level 3 (Topology-Aware Micro Grounding) user-turn prompt.
 
     Args:
-        event_start_sec: Start of the L2 event clip (seconds).
-        event_end_sec: End of the L2 event clip (seconds).
-        action_query: The L2 event instruction to ground into atomic moments.
+        event_start_sec: Start of the clip (seconds).
+        event_end_sec: End of the clip (seconds).
+        action_query: The event/phase description to ground into micro-actions.
+        topology_type: Temporal topology ("procedural" or "periodic").
     """
     return _LEVEL3_BASE.format(
-        event_start=event_start_sec,
-        event_end=event_end_sec,
+        clip_start=event_start_sec,
+        clip_end=event_end_sec,
         action_query=action_query,
+        topology_type=topology_type,
     )
 
 
