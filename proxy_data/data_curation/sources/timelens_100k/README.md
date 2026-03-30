@@ -106,22 +106,22 @@ python proxy_data/data_curation/sources/timelens_100k/text_filter.py \
 ### Stage A + Vision Filter: 一键 Pipeline
 
 ```bash
-cd proxy_data/data_curation/sources/timelens_100k
-
 # 抽样试跑 (Route D 200 条)
-bash run_pipeline.sh --sample
+bash proxy_data/data_curation/sources/timelens_100k/run_pipeline.sh --sample
 
 # 全量: Stage A (Route D) → Vision Filter → 最终候选
 VIDEO_ROOT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards \
-    bash run_pipeline.sh --full
+    bash proxy_data/data_curation/sources/timelens_100k/run_pipeline.sh --full
 
 # Stage A 已完成，只跑 Vision Filter
-bash run_pipeline.sh --vision-only
+bash proxy_data/data_curation/sources/timelens_100k/run_pipeline.sh --vision-only
 ```
 
-**产出**：
-- `results/stage_a_results_keep.jsonl` — Stage A (Route D) 通过
-- `results/vision_results_keep.jsonl` — **最终候选**（VLM 视觉校验通过）
+> `run_pipeline.sh` 内部会自动 `cd` 到脚本所在目录，因此从 `train/` 直接运行即可。
+
+**产出**（均在 `proxy_data/data_curation/sources/timelens_100k/results/` 下）：
+- `stage_a_results_keep.jsonl` — Stage A (Route D) 通过
+- `vision_results_keep.jsonl` — **最终候选**（VLM 视觉校验通过）
 
 ### 单步运行 Stage A (Route D)
 
