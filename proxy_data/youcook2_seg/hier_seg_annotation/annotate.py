@@ -36,11 +36,13 @@ from PIL import Image
 
 from prompts import (
     SYSTEM_PROMPT,
+    DOMAIN_TAXONOMY,
     get_level1_prompt,
     get_level2_prompt,
     get_level2_check_prompt,
     get_level3_prompt,
     get_level3_check_prompt,
+    get_merged_l1l2_prompt,
 )
 
 
@@ -363,9 +365,12 @@ def annotate_clip(
             existing = {}
 
     # Skip if the requested level is already done and not overwriting
-    level_key = f"level{level}" if level not in ("2c", "3c") else ("level2" if level == "2c" else "level3")
+    level_key = f"level{level}" if level not in ("2c", "3c", "merged") else ("level2" if level == "2c" else "level3" if level == "3c" else None)
     is_check_mode = level in ("2c", "3c")
-    if is_check_mode:
+    if level == "merged":
+        if not overwrite and existing.get("level1") is not None and existing.get("level2") is not None:
+            return {"clip_key": key, "ok": True, "error": None, "skipped": True}
+    elif is_check_mode:
         check_target = "level2" if level == "2c" else "level3"
         # For check mode, skip if the target level doesn't exist yet
         if existing.get(check_target) is None:
@@ -442,6 +447,12 @@ def annotate_clip(
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
             )
+        elif level == "merged":
+            merged_result = _annotate_merged_l1l2(
+                frame_dir, clip_duration,
+                api_base, api_key, model,
+                max_frames_per_call, resize_max_width, jpeg_quality,
+            )
         else:
             return {"clip_key": key, "ok": False, "error": f"unsupported level {level}", "skipped": False}
 
@@ -465,9 +476,13 @@ def annotate_clip(
         "level2": None,
         "level3": None,
         **existing,
-        result_key: result_val,
-        "annotated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if level == "merged":
+        ann.update(merged_result)  # overwrites level1, level2, domain, summary
+    else:
+        ann[result_key] = result_val
+    ann["annotated_at"] = datetime.now(timezone.utc).isoformat()
+
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(ann, f, ensure_ascii=False, indent=2)
 
@@ -528,6 +543,127 @@ def _annotate_level1(
             "resize_max_width": resize_max_width,
             "jpeg_quality": jpeg_quality,
         },
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Merged L1+L2: Single-Call Phase + Event Detection + Domain
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _split_merged_response(
+    parsed: dict,
+    n_sampled_frames: int,
+    resize_max_width: int,
+    jpeg_quality: int,
+    clip_duration: float,
+) -> tuple[dict, dict, str, str]:
+    """Split merged VLM response into level1/level2 dicts + domain + summary.
+
+    The VLM outputs events nested inside phases. This function:
+    1. Extracts and validates domain/summary
+    2. Strips nested events out of phases → flat events list
+    3. Tags each event with parent_phase_id
+    4. Re-numbers event_id globally by start_time
+    """
+    domain = parsed.get("domain", "other")
+    if domain not in DOMAIN_TAXONOMY:
+        domain = "other"
+    summary = parsed.get("summary", "")
+
+    raw_phases = parsed.get("macro_phases", [])
+    l1_phases: list[dict] = []
+    all_events: list[dict] = []
+
+    for phase in raw_phases:
+        if not isinstance(phase, dict):
+            continue
+        phase_id = phase.get("phase_id", len(l1_phases) + 1)
+
+        # Extract nested events, then remove from the phase dict
+        phase_events = phase.pop("events", [])
+
+        # Validate phase timestamps
+        st = phase.get("start_time")
+        et = phase.get("end_time")
+        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
+            continue
+        phase["start_time"] = int(st)
+        phase["end_time"] = min(int(et), int(clip_duration))
+        l1_phases.append(phase)
+
+        # Collect events with parent linkage
+        for ev in phase_events:
+            if not isinstance(ev, dict):
+                continue
+            ev_st = ev.get("start_time")
+            ev_et = ev.get("end_time")
+            if not (isinstance(ev_st, (int, float)) and isinstance(ev_et, (int, float)) and ev_st < ev_et):
+                continue
+            ev["start_time"] = int(ev_st)
+            ev["end_time"] = min(int(ev_et), int(clip_duration))
+            ev["parent_phase_id"] = phase_id
+            all_events.append(ev)
+
+    # Sort events by start_time and re-number globally
+    all_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
+    for i, ev in enumerate(all_events, 1):
+        ev["event_id"] = i
+
+    level1 = {
+        "macro_phases": l1_phases,
+        "_sampling": {
+            "n_sampled_frames": n_sampled_frames,
+            "resize_max_width": resize_max_width,
+            "jpeg_quality": jpeg_quality,
+        },
+    }
+    level2 = {"events": all_events}
+    return level1, level2, domain, summary
+
+
+def _annotate_merged_l1l2(
+    frame_dir: Path,
+    clip_duration: float,
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+) -> dict[str, Any]:
+    """
+    Merged L1+L2: Single VLM call for phases, events, domain, and summary.
+
+    Uses real timestamps (not warped frames). Samples up to max_frames
+    from the full video.
+
+    Returns dict of annotation updates:
+      {"level1": ..., "level2": ..., "domain": ..., "summary": ...}
+    """
+    all_frames = get_all_frame_files(frame_dir)
+    if not all_frames:
+        raise RuntimeError(f"no frames found in {frame_dir}")
+
+    sampled = sample_uniform(all_frames, max_frames)
+    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+    # Real-time labels (same format as L2)
+    frame_labels = []
+    for fp in sampled:
+        idx = frame_stem_to_index(fp, 0)
+        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+
+    duration = int(clip_duration)
+    prompt_text = get_merged_l1l2_prompt(n_frames=len(sampled), duration_sec=duration)
+    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+    if parsed is None:
+        raise RuntimeError("merged L1+L2 JSON parse failed after retry")
+
+    level1, level2, domain, summary = _split_merged_response(
+        parsed, len(sampled), resize_max_width, jpeg_quality, clip_duration,
+    )
+
+    return {
+        "level1": level1,
+        "level2": level2,
+        "domain": domain,
+        "summary": summary,
     }
 
 
@@ -1163,8 +1299,8 @@ def main() -> None:
                         help="Root directory of pre-extracted 1fps frames")
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write per-clip annotation JSON files")
-    parser.add_argument("--level", type=str, choices=["1", "2", "3", "2c", "3c"], default="1",
-                        help="Annotation level (1/2/3=annotate, 2c=check L2, 3c=check L3)")
+    parser.add_argument("--level", type=str, choices=["1", "2", "3", "2c", "3c", "merged"], default="1",
+                        help="Annotation level (1/2/3=annotate, 2c/3c=check, merged=L1+L2+domain in one call)")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -1219,7 +1355,9 @@ def main() -> None:
     print(f"Annotating {len(records)} clips at Level {args.level}")
     print(f"API: {args.api_base}  model: {args.model}  workers: {args.workers}")
     print(f"resize_max_width={args.resize_max_width}  jpeg_quality={args.jpeg_quality}")
-    if level == 2:
+    if level == "merged":
+        print(f"Merged mode: L1 phases + L2 events + domain + summary in one VLM call")
+    elif level == 2:
         print(f"L2 phase-based: events detected per L1 macro phase")
     elif level == "2c":
         print(f"L2 check mode: model-based quality review & supplement for L2 events")

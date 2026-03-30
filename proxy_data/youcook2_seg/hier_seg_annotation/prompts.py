@@ -2,6 +2,8 @@
 3-level hierarchical annotation prompts (domain-agnostic).
 
 Design philosophy:
+  Merged  — Single-call L1+L2: model sees full video (real timestamps),
+             outputs macro phases, nested activity events, domain, and summary.
   Level 1 — Warped-Time Segmentation: model sees uniformly sampled frames
              numbered 1..N (no real timestamps), predicts phase boundaries on
              the warped frame axis.  Engineering maps back to real time.
@@ -13,7 +15,8 @@ Design philosophy:
              model pinpoints start/end of atomic state-change moments.
 
 Usage:
-    from prompts import SYSTEM_PROMPT, get_level1_prompt, get_level2_prompt, get_level3_prompt
+    from prompts import SYSTEM_PROMPT, get_merged_l1l2_prompt, get_level3_prompt
+    from prompts import DOMAIN_TAXONOMY
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -31,6 +34,111 @@ Do NOT force adjacent segments to be contiguous.
 2. [Precise Boundaries]: Boundaries must reflect the exact moment an action begins \
 or the moment a visual state solidifies.
 3. [Formatting]: Output strictly in valid JSON format."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Domain Taxonomy
+# Used by merged L1+L2 annotation; VLM picks exactly one category.
+# ─────────────────────────────────────────────────────────────────────────────
+DOMAIN_TAXONOMY = [
+    "cooking",               # Food preparation, baking, meal assembly
+    "sports",                # Athletic activities, games, competitions
+    "crafting_diy",          # Arts, crafts, handmade projects
+    "repair_maintenance",    # Fixing, servicing mechanical/electronic items
+    "beauty_grooming",       # Hair, makeup, skincare, personal care
+    "cleaning_housework",    # Household chores, organization, laundry
+    "gardening_outdoor",     # Planting, landscaping, outdoor work
+    "music_performance",     # Playing instruments, dance, stage performance
+    "science_experiment",    # Lab work, chemistry, physics demonstrations
+    "fitness_exercise",      # Workout routines, yoga, training
+    "construction_building", # Woodworking, metalwork, structural assembly
+    "vehicle_operation",     # Driving, cycling, vehicle maintenance
+    "other",                 # Catch-all for unmatched domains
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Merged L1+L2: Single-Call Phase Segmentation + Event Detection + Domain
+# Input:  full video frames with real timestamps
+# Output: domain, summary, macro_phases (with nested events)
+# ─────────────────────────────────────────────────────────────────────────────
+_MERGED_L1L2_BASE = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+Your task has four parts:
+
+## PART 1 — DOMAIN CLASSIFICATION
+Classify the video into exactly ONE domain from this list:
+{domain_taxonomy_str}
+
+## PART 2 — VIDEO SUMMARY
+Write ONE sentence summarizing the main activity and its outcome.
+
+## PART 3 — MACRO PHASE SEGMENTATION
+Segment the video into 2–6 high-level macro phases. Each phase is a broad \
+activity stage (e.g., preparation, main execution, finishing).
+- Phases do NOT need to cover the entire video. Skip intros, outros, \
+talking-only spans, beauty shots, or non-activity content.
+- Group by process intent, not by camera cut.
+
+## PART 4 — EVENT DETECTION (nested inside each phase)
+Within EACH macro phase, detect all complete activity events.
+- An event is a multi-second, goal-directed workflow (typically 10–60s) that \
+transforms materials, objects, or the scene state.
+- DO NOT split into isolated momentary actions (< 5 seconds).
+- Skip idle, narration, or non-activity content.
+- If a phase has no qualifying events, set "events": [].
+
+CRITICAL GRANULARITY RULES:
+1. Each event MUST be a complete logical sub-process, NOT an isolated atomic action.
+2. DO NOT fragment: group "pick up tool" + "place part" + "secure part" into \
+one event like "Assemble components by fitting and securing parts".
+3. Exclude: talking without manipulation, showing tools without using them, \
+idle waiting, repositioning.
+
+All timestamps are integer seconds (absolute, 0-based).
+
+Output JSON:
+{{
+  "domain": "<one category from the list>",
+  "summary": "<one sentence>",
+  "macro_phases": [
+    {{
+      "phase_id": 1,
+      "start_time": 5,
+      "end_time": 60,
+      "phase_name": "Material Preparation",
+      "narrative_summary": "Gather and organize all required materials.",
+      "events": [
+        {{
+          "event_id": 1,
+          "start_time": 8,
+          "end_time": 25,
+          "instruction": "Sort and measure the raw materials",
+          "visual_keywords": ["hands", "materials", "measuring tool"]
+        }}
+      ]
+    }}
+  ]
+}}"""
+
+
+def get_merged_l1l2_prompt(n_frames: int, duration_sec: int) -> str:
+    """
+    Build the merged L1+L2 (phase segmentation + event detection + domain) prompt.
+
+    Single VLM call outputs domain, summary, macro_phases with nested events.
+    Uses real timestamps (not warped frames).
+
+    Args:
+        n_frames: Number of frames the model will see.
+        duration_sec: Total video duration in seconds.
+    """
+    taxonomy_str = "\n".join(f"  - {d}" for d in DOMAIN_TAXONOMY)
+    return _MERGED_L1L2_BASE.format(
+        n_frames=n_frames,
+        duration=duration_sec,
+        domain_taxonomy_str=taxonomy_str,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
