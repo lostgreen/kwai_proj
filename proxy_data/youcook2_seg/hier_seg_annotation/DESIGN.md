@@ -280,28 +280,92 @@ else:
 
 ## 5. 使用方式
 
+### 路径约定
+
 ```bash
-# Step 1: 全视频 1fps 抽帧
-python extract_frames.py \
-    --original-video-root /path/to/videos \
-    --output-dir frames/ --fps 1
+# 脚本目录
+SCRIPT_DIR=proxy_data/youcook2_seg/hier_seg_annotation
 
-# Step 2: Merged 标注（L1+L2+Topology）
-python annotate.py \
-    --frames-dir frames/ --output-dir annotations/ \
-    --level merged --api-base $API_BASE --model $MODEL
+# 数据根目录
+DATA_ROOT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation
 
-# Step 3: L3 抽帧（自动按 topology 路由）
-python extract_frames.py \
-    --annotation-dir annotations/ \
-    --original-video-root /path/to/videos \
-    --output-dir frames_l3/ --fps 2
+# 输入 JSONL (dev 100 条 / 正式 1k 条)
+JSONL_DEV=/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampled/dev_100.jsonl
+JSONL_1K=/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampled/sampled_1k.jsonl
 
-# Step 4: L3 标注（自动跳过 sequence/flat）
-python annotate.py \
-    --frames-dir frames/ --l3-frames-dir frames_l3/ \
-    --output-dir annotations/ --level 3 \
-    --api-base $API_BASE --model $MODEL
+# VLM 配置
+MODEL=pa/gemini-3.1-pro-preview
+```
+
+### 完整 4 步流程
+
+```bash
+# Step 1: 全视频 1fps 抽帧 (仅首次需要)
+python $SCRIPT_DIR/extract_frames.py \
+    --jsonl $JSONL_DEV \
+    --output-dir $DATA_ROOT/frames \
+    --fps 1 --workers 4
+
+# Step 2: Merged 标注 (L1+L2+Topology+Criterion)
+python $SCRIPT_DIR/annotate.py \
+    --jsonl $JSONL_DEV \
+    --frames-dir $DATA_ROOT/frames \
+    --output-dir $DATA_ROOT/annotations \
+    --level merged \
+    --model $MODEL --workers 4
+
+# Step 3: L3 帧提取 (leaf-node 路由: events→_ev{id}/, eventless phases→_ph{id}/)
+python $SCRIPT_DIR/extract_frames.py \
+    --annotation-dir $DATA_ROOT/annotations \
+    --output-dir $DATA_ROOT/frames_l3 \
+    --fps 2 --workers 4
+
+# Step 4: L3 标注 (自动跳过 sequence/flat)
+python $SCRIPT_DIR/annotate.py \
+    --jsonl $JSONL_DEV \
+    --frames-dir $DATA_ROOT/frames \
+    --l3-frames-dir $DATA_ROOT/frames_l3 \
+    --output-dir $DATA_ROOT/annotations \
+    --level 3 \
+    --model $MODEL --workers 8
+
+# Step 5 (可选): Criterion → 通用 Training Hint 改写
+python $SCRIPT_DIR/rewrite_criteria_hints.py \
+    --annotation-dir $DATA_ROOT/annotations \
+    --api-base $API_BASE \
+    --model gpt-4o-mini \
+    --workers 4
+```
+
+### 续接 1k 数据集
+
+```bash
+# 将 JSONL 切换为 sampled_1k.jsonl，其余路径不变
+# 已标注的 clip 会被自动跳过 (按 clip_key 去重)
+
+# Merged 标注 (续接)
+python $SCRIPT_DIR/annotate.py \
+    --jsonl $JSONL_1K \
+    --frames-dir $DATA_ROOT/frames \
+    --output-dir $DATA_ROOT/annotations \
+    --level merged \
+    --model $MODEL --workers 4
+
+# L3 帧提取 (续接)
+python $SCRIPT_DIR/extract_frames.py \
+    --annotation-dir $DATA_ROOT/annotations \
+    --output-dir $DATA_ROOT/frames_l3 \
+    --fps 2 --workers 4
+
+# L3 标注 (续接)
+python $SCRIPT_DIR/annotate.py \
+    --jsonl $JSONL_1K \
+    --frames-dir $DATA_ROOT/frames \
+    --l3-frames-dir $DATA_ROOT/frames_l3 \
+    --output-dir $DATA_ROOT/annotations \
+    --level 3 \
+    --model $MODEL --workers 8
+```
 ```
 
 ---
