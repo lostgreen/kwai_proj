@@ -720,6 +720,37 @@ else:
 }
 ```
 
+### 6.11 Criterion → Training Hint 改写
+
+VLM 输出的 criterion 可能包含具体视频内容（对象名、动作细节），直接用于训练会让模型退化为 grounding。`rewrite_criteria_hints.py` 脚本调用 LLM 将 criterion 改写为内容无关的通用分割 hint。
+
+**改写规则**：去除所有具体视频内容引用，仅保留结构性分割逻辑。
+
+| 原始 criterion | 改写后 hint |
+|---|---|
+| "Segmented by removing wires, disconnecting hoses, and unbolting cover." | "Segmented by distinct sequential sub-tasks each completing a specific sub-goal." |
+| "Repetitive recreational activity; no event segmentation needed." | "Single repetitive activity with no sequential progression; no sub-event segmentation needed." |
+
+**新增字段**（写回同一 annotation JSON）：
+
+| 字段 | 来源 |
+|------|------|
+| `global_phase_hint` | 改写自 `global_phase_criterion` |
+| phases[].`event_split_hint` | 改写自 phases[].`event_split_criterion` |
+| level3.`micro_split_hint` | 改写自 level3.`micro_split_criterion` |
+
+**使用方式**：
+```bash
+python rewrite_criteria_hints.py \
+    --annotation-dir annotations/ \
+    --api-base $API_BASE \
+    --model gpt-4o-mini \
+    --workers 4
+
+# Dry run (不调 LLM，只显示哪些字段会被改写):
+python rewrite_criteria_hints.py --annotation-dir annotations/ --dry-run
+```
+
 ---
 
 ## 7. 后续阶段（未实现）
