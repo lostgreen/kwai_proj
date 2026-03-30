@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# ── TimeLens-100K: 两阶段 LLM 筛选 pipeline ──
+# ── TimeLens-100K: Stage A (Route D) + Vision Filter ──
+#
+# 流程: Stage A (Route D) → Vision Filter → 最终候选
 #
 # 前提: 已运行 text_filter.py 产出 results/passed_timelens.jsonl
 #
@@ -7,11 +9,11 @@
 #   # 抽样试跑 (Stage A 200条)
 #   bash run_pipeline.sh --sample
 #
-#   # 全量运行 (Stage A + B, 断点续评)
+#   # 全量运行 (Stage A + Vision Filter, 断点续评)
 #   bash run_pipeline.sh --full
 #
-#   # 仅 Stage B (Stage A 已完成)
-#   bash run_pipeline.sh --stage-b-only
+#   # 仅 Vision Filter (Stage A 已完成)
+#   bash run_pipeline.sh --vision-only
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,17 +25,19 @@ MODEL="${MODEL:-pa/gmn-2.5-pr}"
 WORKERS="${WORKERS:-8}"
 INPUT="${INPUT:-results/passed_timelens.jsonl}"
 RESULTS_DIR="${RESULTS_DIR:-results}"
+VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards}"
 
 # ── 参数解析 ──
 MODE="${1:---sample}"
 
 echo "============================================="
-echo " TimeLens-100K: 两阶段 LLM 筛选"
+echo " TimeLens-100K: Route D + Vision Filter"
 echo " Mode: $MODE"
 echo " API: $API_BASE"
 echo " Model: $MODEL"
 echo " Workers: $WORKERS"
 echo " Input: $INPUT"
+echo " Video root: $VIDEO_ROOT"
 echo "============================================="
 
 if [ ! -f "$INPUT" ]; then
@@ -46,17 +50,17 @@ if [ ! -f "$INPUT" ]; then
     exit 1
 fi
 
-# ── Stage A: L2 粒度粗筛 ──
+# ── Stage A: Route D 物理过程审查 ──
 run_stage_a() {
     local sample_args=""
     if [[ "$MODE" == "--sample" ]]; then
         sample_args="--sample-n 200"
         echo ""
-        echo "[Stage A] 抽样 200 条粗筛..."
+        echo "[Stage A / Route D] 抽样 200 条粗筛..."
     else
         sample_args="--no-sample --resume"
         echo ""
-        echo "[Stage A] 全量粗筛 (断点续评)..."
+        echo "[Stage A / Route D] 全量粗筛 (断点续评)..."
     fi
 
     python stage_a_coarse_filter.py \
@@ -70,7 +74,6 @@ run_stage_a() {
     echo ""
     echo "[Stage A] 完成。查看结果:"
     echo "  keep:   $RESULTS_DIR/stage_a_results_keep.jsonl"
-    echo "  maybe:  $RESULTS_DIR/stage_a_results_maybe.jsonl"
     echo "  reject: $RESULTS_DIR/stage_a_results_reject.jsonl"
 }
 
@@ -86,8 +89,8 @@ run_stage_a_rules() {
     fi
 }
 
-# ── Stage B: 层次潜力精筛 ──
-run_stage_b() {
+# ── Vision Filter: VLM 视觉校验 ──
+run_vision_filter() {
     local stage_a_keep="$RESULTS_DIR/stage_a_results_keep.jsonl"
     if [ ! -f "$stage_a_keep" ]; then
         echo "Error: $stage_a_keep 不存在，请先运行 Stage A"
@@ -97,22 +100,22 @@ run_stage_b() {
     local keep_count
     keep_count=$(wc -l < "$stage_a_keep" | tr -d ' ')
     echo ""
-    echo "[Stage B] 精筛 $keep_count 条 Stage A keep 样本..."
+    echo "[Vision Filter] 对 $keep_count 条 Stage A keep 样本做视觉校验..."
 
-    python ../shared/stage_b_fine_filter.py \
+    python ../shared/stage_a_vision_filter.py \
         --input "$stage_a_keep" \
-        --output "$RESULTS_DIR/stage_b_results.jsonl" \
-        --data-source timelens \
+        --output "$RESULTS_DIR/vision_results.jsonl" \
+        --video-root "$VIDEO_ROOT" \
+        --video-field video_path \
         --api-base "$API_BASE" \
         --model "$MODEL" \
         --workers "$WORKERS" \
-        --no-sample --resume
+        --resume
 
     echo ""
-    echo "[Stage B] 完成。最终结果:"
-    echo "  keep:   $RESULTS_DIR/stage_b_results_keep.jsonl"
-    echo "  maybe:  $RESULTS_DIR/stage_b_results_maybe.jsonl"
-    echo "  reject: $RESULTS_DIR/stage_b_results_reject.jsonl"
+    echo "[Vision Filter] 完成。最终候选:"
+    echo "  keep:   $RESULTS_DIR/vision_results_keep.jsonl"
+    echo "  reject: $RESULTS_DIR/vision_results_reject.jsonl"
 }
 
 # ── 执行 ──
@@ -125,19 +128,19 @@ case "$MODE" in
     --full)
         run_stage_a
         run_stage_a_rules
-        run_stage_b
+        run_vision_filter
         echo ""
         echo "========== Pipeline 完成 =========="
-        if [ -f "$RESULTS_DIR/stage_b_results_keep.jsonl" ]; then
-            final_count=$(wc -l < "$RESULTS_DIR/stage_b_results_keep.jsonl" | tr -d ' ')
-            echo "最终保留: $final_count 条样本"
+        if [ -f "$RESULTS_DIR/vision_results_keep.jsonl" ]; then
+            final_count=$(wc -l < "$RESULTS_DIR/vision_results_keep.jsonl" | tr -d ' ')
+            echo "最终保留: $final_count 条样本 (vision_results_keep.jsonl)"
         fi
         ;;
-    --stage-b-only)
-        run_stage_b
+    --vision-only)
+        run_vision_filter
         ;;
     *)
-        echo "用法: bash run_pipeline.sh [--sample|--full|--stage-b-only]"
+        echo "用法: bash run_pipeline.sh [--sample|--full|--vision-only]"
         exit 1
         ;;
 esac

@@ -1,20 +1,22 @@
 """
-Stage A — 视频内容潜力评估 (TimeLens-100K)
+Stage A — Route D: VLM-Curated 物理过程审查 (TimeLens-100K)
 
-目的：基于文本标注判断视频是否包含丰富的、适合层次分割的内容。
-     不再判断标注本身的粒度，而是评估视频的动作密度、状态变化和时序连贯性。
+目的：TimeLens 的事件标注由 Gemini-2.5-Pro 精准生成，时间戳和事件描述高度可靠。
+     因此不审查标注质量，而审查：这些精准事件拼在一起，是否构成一个
+     "物理层次丰富"的多步骤过程，以剔除"标注得很完美的无聊视频"
+     （新闻联播、监控录像、两人对坐纯聊天等）。
 
-核心原则：
-  - 标注粒度不重要（L3 细粒度标注反而是好信号）
-  - 关注视频内容本身的丰富度和层次潜力
-  - 只 reject 真正单调/无结构的视频
+路由分组: Group D (VLM-Curated) — 专为 VLM 标注数据源设计
+
+预过滤规则:
+  - events < 3 → 直接 reject（跳过 LLM）
+    如果 Gemini 也只能标出 1-2 个事件，说明视频极其单调
 
 输入: text_filter.py 产出的 passed_timelens.jsonl
 输出:
-  - stage_a_results.jsonl     — 全部评估结果
-  - stage_a_keep.jsonl        — decision=keep 的样本
-  - stage_a_maybe.jsonl       — decision=maybe 的边界样本
-  - stage_a_reject.jsonl      — decision=reject 的淘汰样本
+  - stage_a_results.jsonl         — 全部评估结果
+  - stage_a_results_keep.jsonl    — decision=keep
+  - stage_a_results_reject.jsonl  — decision=reject
 
 用法:
     python stage_a_coarse_filter.py \\
@@ -42,86 +44,70 @@ from shared.llm_client import (
     stratified_sample,
     write_results,
 )
-from shared.decision_rules import apply_richness_rules
+from shared.decision_rules import apply_group_d_rules
 
-# ── Stage A Prompts — 视频内容潜力评估 ─────────────────
+# ── Group D Prompts — VLM-Curated 物理过程审查 ──────────
 
-STAGE_A_SYSTEM = """\
-You are a data curator selecting videos for a 3-level Hierarchical Temporal \
-Segmentation task (Macro-phases L1 -> Local events L2 -> Atomic actions L3).
+GROUP_D_SYSTEM = """\
+You are evaluating a video based on highly accurate, VLM-generated event \
+annotations. Since the timestamps and event descriptions are already accurate, \
+your ONLY task is to judge if this video exhibits a "Rich, Multi-step Physical \
+Process" suitable for 3-level hierarchical segmentation \
+(Macro-phases -> Local tasks -> Atomic actions).
 
-We are looking for videos that have BOTH clear action boundaries AND \
-structural diversity. The video does NOT need to be a strict instructional \
-tutorial; sports, daily life, and unstructured events are perfectly fine \
-AS LONG AS they can be naturally grouped into distinct "chapters" or \
-"macro-phases".
+MUST REJECT IF:
+1. News/Interviews/Vlogs: The events describe people just talking, sitting, \
+or alternating camera angles (e.g., "A man speaks to the camera", \
+"The scene changes to a street").
+2. Passive Observation: E.g., "Cars driving on a highway", "A cat sleeping".
+3. Monolithic/Flat: It's just one continuous action with no distinct phases.
 
-Criteria for a GOOD video (Keep):
-1. Clear Boundaries: The annotations describe distinct, observable actions \
-or events.
-2. Phase Diversity (Crucial): The video progresses through different themes \
-or stages (e.g., a sports video with "setup -> gameplay -> celebration", \
-or a cooking video with "prep -> cook -> serve").
-
-Criteria for REJECTION:
-1. Flat Repetition (Looping): The exact same type of action is repeated \
-over and over (e.g., "Person A jumps, Person B jumps, Person C jumps" OR \
-"applying cream 1, cream 2, cream 3..."). These cannot be grouped into \
-meaningful L1 macro-phases.
-2. Monolithic Activity: The entire video is essentially one continuous \
-state with no clear event boundaries (e.g., "kids dancing for 2 minutes" \
-or "a person talking to the camera the whole time").
+MUST KEEP IF:
+- The events clearly outline a progressive physical task, crafting, cooking, \
+repairing, or dynamic sports with distinct phases and tool/object interactions.
 
 ## Examples
 
-### Example 1 — diverse phases (keep)
-
+### Example 1 — progressive crafting task (keep)
 Input:
-Video duration: 180.0s | Domain: coin | Segments: 7
-  1. [0.0s - 23.5s] Spread glue evenly on the wood surface
-  2. [23.5s - 48.0s] Attach decorative veneer to the glued surface
-  3. [48.0s - 72.0s] Trim excess veneer with a utility knife
-  4. [72.0s - 98.0s] Sand the edges smooth with fine sandpaper
-  5. [98.0s - 125.0s] Apply first coat of lacquer finish
-  6. [125.0s - 155.0s] Let dry and sand lightly between coats
-  7. [155.0s - 180.0s] Apply final protective coat
+Video duration: 195.0s | Events: 8
+  1. [0.0s - 22.0s] Measure and mark the wood plank for cutting
+  2. [22.0s - 48.0s] Cut the wood using a circular saw
+  3. [48.0s - 70.0s] Sand the cut edges smooth
+  4. [70.0s - 95.0s] Apply wood glue to join two pieces
+  5. [95.0s - 115.0s] Clamp the pieces together and wait
+  6. [115.0s - 140.0s] Drill pilot holes for screws
+  7. [140.0s - 165.0s] Drive screws to secure the assembly
+  8. [165.0s - 195.0s] Apply a coat of varnish finish
 
-Output:
-{"structural_analysis":"3 clear chapters: surface prep (1-2), shaping (3-4), finishing (5-7). Each event has distinct tools and observable state changes.","boundary_clarity_score":5,"phase_diversity_score":5,"decision":"keep"}
+Output: {"process_analysis":"Clear 3-phase woodworking: preparation (measure+cut+sand), assembly (glue+clamp+drill+screw), finishing (varnish). Progressive task with distinct tools and state changes.","physical_hierarchy_score":5,"decision":"keep"}
 
-### Example 2 — flat repetition (reject)
-
+### Example 2 — news/interview (reject)
 Input:
-Video duration: 150.0s | Domain: hacs | Segments: 6
-  1. [0.0s - 25.0s] Player A serves the ball
-  2. [25.0s - 50.0s] Player B returns the serve
-  3. [50.0s - 75.0s] Player A hits a backhand
-  4. [75.0s - 100.0s] Player B hits a forehand
-  5. [100.0s - 125.0s] Player A serves again
-  6. [125.0s - 150.0s] Player B returns another serve
+Video duration: 180.0s | Events: 6
+  1. [0.0s - 30.0s] The anchor introduces the day's top stories
+  2. [30.0s - 60.0s] A reporter speaks from a street location
+  3. [60.0s - 90.0s] The scene cuts back to the studio
+  4. [90.0s - 120.0s] A guest is interviewed about the economy
+  5. [120.0s - 150.0s] The anchor reads a weather update
+  6. [150.0s - 180.0s] Closing remarks and credits
 
-Output:
-{"structural_analysis":"All 6 events are the same type of action (hitting a ball back and forth). No phase transitions — just repetitive rallying with no macro-structure.","boundary_clarity_score":3,"phase_diversity_score":1,"decision":"reject"}
+Output: {"process_analysis":"News broadcast with alternating camera angles and talking heads. No physical activity or progressive task — just people speaking in different settings.","physical_hierarchy_score":1,"decision":"reject"}
 
-Focus on finding videos with distinct "chapters" and clear event transitions. \
 Return ONLY valid JSON."""
 
-STAGE_A_USER = """\
+GROUP_D_USER = """\
 Video duration: {duration:.1f}s
-Domain: {source}
-Number of annotated segments: {n_events}
+Events: {n_events}
 
-Annotated segments:
 {events_text}
-
-Evaluate whether this video has clear action boundaries and structural \
-diversity suitable for hierarchical temporal segmentation.
 
 Respond with ONLY valid JSON:
 {{
-  "structural_analysis": "<1-2 sentences: can this video be divided into 2+ distinct chapters/phases? Any flat repetition?>",
-  "boundary_clarity_score": <1-5>,
-  "phase_diversity_score": <1-5>,
+  "process_analysis": "<1-2 sentences analyzing if the sequence of events forms \
+a progressive physical task or just static/passive scenes>",
+  "physical_hierarchy_score": <1-5, 5=excellent multi-step physical task, \
+1=news broadcast or pure talking>,
   "decision": "keep | reject"
 }}"""
 
@@ -158,15 +144,29 @@ def assess_sample(
     api_key: str,
     model: str,
 ) -> dict:
-    """Run Stage A assessment on a single TimeLens sample."""
+    """Run Group D assessment on a single TimeLens sample."""
     events = parse_events(sample)
+    assessed = dict(sample)
+    assessed["_stage"] = "A"
+    assessed["_group"] = "D"
+    assessed["_n_events"] = len(events)
+
+    # Pre-filter: events < 3 → direct reject (skip LLM)
+    if len(events) < 3:
+        assessed["_assessment"] = {
+            "decision": "reject",
+            "_prefilter": "events<3",
+            "process_analysis": f"Only {len(events)} events — too few for hierarchical segmentation.",
+            "physical_hierarchy_score": 0,
+        }
+        return assessed
+
     events_text = format_events_text(events)
 
     messages = [
-        {"role": "system", "content": STAGE_A_SYSTEM},
-        {"role": "user", "content": STAGE_A_USER.format(
+        {"role": "system", "content": GROUP_D_SYSTEM},
+        {"role": "user", "content": GROUP_D_USER.format(
             duration=sample.get("duration", 0),
-            source=sample.get("source", "unknown"),
             n_events=len(events),
             events_text=events_text,
         )},
@@ -176,24 +176,32 @@ def assess_sample(
 
     # Apply programmatic rules to override LLM decision
     llm_decision = result.get("decision", "unknown")
-    rule_decision = apply_richness_rules(result)
+    rule_decision = apply_group_d_rules(result)
     if llm_decision != rule_decision:
         result["_original_decision"] = llm_decision
         result["decision"] = rule_decision
 
-    assessed = dict(sample)
     assessed["_assessment"] = result
-    assessed["_stage"] = "A"
-    assessed["_n_events"] = len(events)
     return assessed
 
 
 def print_stats(results: list[dict]):
-    """Print Stage A assessment statistics."""
-    assessments = [r["_assessment"] for r in results if "_assessment" in r and not r["_assessment"].get("_parse_error")]
+    """Print Group D assessment statistics."""
+    total = len(results)
+    prefiltered = sum(1 for r in results if r.get("_assessment", {}).get("_prefilter"))
+    assessments = [
+        r["_assessment"] for r in results
+        if "_assessment" in r
+        and not r["_assessment"].get("_parse_error")
+        and not r["_assessment"].get("_prefilter")
+    ]
+
+    print(f"\n  == 预过滤 ==")
+    print(f"    events<3 直接 reject: {prefiltered}/{total} ({prefiltered/max(total,1)*100:.1f}%)")
+    print(f"    进入 LLM 评估: {len(assessments)}")
 
     if not assessments:
-        print("  无有效评估结果")
+        print("  无有效 LLM 评估结果")
         return
 
     # Decision distribution
@@ -201,19 +209,22 @@ def print_stats(results: list[dict]):
     for a in assessments:
         d = a.get("decision", "unknown")
         decisions[d] = decisions.get(d, 0) + 1
-    print(f"\n  == Decision 分布 ==")
+    print(f"\n  == LLM Decision 分布 ==")
     for d, c in sorted(decisions.items(), key=lambda x: -x[1]):
         print(f"    {d}: {c} ({c/len(assessments)*100:.1f}%)")
 
-    # Score distributions for each dimension
-    for field in ["boundary_clarity_score", "phase_diversity_score"]:
-        scores = [a.get(field, 0) for a in assessments if isinstance(a.get(field), (int, float))]
-        if scores:
-            print(f"\n  == {field} 分布 ==")
-            for threshold in [1, 2, 3, 4, 5]:
-                count = sum(1 for s in scores if s >= threshold)
-                print(f"    >= {threshold}: {count} ({count/len(scores)*100:.1f}%)")
-            print(f"    mean={sum(scores)/len(scores):.2f}")
+    # physical_hierarchy_score distribution
+    scores = [
+        a.get("physical_hierarchy_score", 0)
+        for a in assessments
+        if isinstance(a.get("physical_hierarchy_score"), (int, float))
+    ]
+    if scores:
+        print(f"\n  == physical_hierarchy_score 分布 ==")
+        for threshold in [1, 2, 3, 4, 5]:
+            count = sum(1 for s in scores if s >= threshold)
+            print(f"    >= {threshold}: {count} ({count/len(scores)*100:.1f}%)")
+        print(f"    mean={sum(scores)/len(scores):.2f}")
 
     # Rule override stats
     overrides = sum(1 for a in assessments if "_original_decision" in a)
@@ -241,16 +252,16 @@ def print_stats(results: list[dict]):
         print(f"\n  == 各 Domain Decision 分布 ==")
         for domain in sorted(domain_decisions.keys()):
             dd = domain_decisions[domain]
-            total = sum(dd.values())
+            total_d = sum(dd.values())
             parts = ", ".join(f"{k}={v}" for k, v in sorted(dd.items()))
-            print(f"    {domain}: {parts} (total={total})")
+            print(f"    {domain}: {parts} (total={total_d})")
 
 
 # ── Main ─────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Stage A: L2 粒度粗筛 (TimeLens-100K)",
+        description="Stage A Route D: VLM-Curated 物理过程审查 (TimeLens-100K)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--input", required=True, help="text_filter passed.jsonl")
@@ -276,6 +287,10 @@ def main():
     print(f"加载 {len(samples)} 条 passed 样本")
     print(f"API: {args.api_base}  model: {args.model}")
 
+    # Pre-filter stats preview
+    prefilter_count = sum(1 for s in samples if len(s.get("events", [])) < 3)
+    print(f"预过滤 (events<3): {prefilter_count} 条将直接 reject")
+
     # Resume (TimeLens uses video_path as unique ID)
     existing: list[dict] = []
     if args.resume:
@@ -293,37 +308,33 @@ def main():
         return assess_sample(s, args.api_base, api_key, args.model)
 
     new_results, failed = run_concurrent_assessment(
-        samples, _assess, workers=args.workers, score_field="l2_fit_score",
+        samples, _assess, workers=args.workers, score_field="physical_hierarchy_score",
         stream_output=args.output,
     )
 
     results = existing + new_results
-    print(f"\n== Stage A 评估完成 ==")
+    print(f"\n== Stage A (Route D) 评估完成 ==")
     print(f"  成功: {len(new_results) - failed}, 失败: {failed}, 总计: {len(results)}")
 
     # Stats
     print_stats(results)
 
-    # Split by decision
+    # Split by decision (Group D: keep / reject only, no maybe)
     keep = [r for r in results if r.get("_assessment", {}).get("decision") == "keep"]
-    maybe = [r for r in results if r.get("_assessment", {}).get("decision") == "maybe"]
-    reject = [r for r in results if r.get("_assessment", {}).get("decision") not in ("keep", "maybe")]
+    reject = [r for r in results if r.get("_assessment", {}).get("decision") != "keep"]
 
     print(f"\n  == 筛选结果 ==")
     print(f"    keep:   {len(keep)}")
-    print(f"    maybe:  {len(maybe)}")
     print(f"    reject: {len(reject)}")
 
-    # Write split files (full rewrite — derived from main output)
+    # Write split files
     base = args.output.replace(".jsonl", "")
     if keep:
         write_results(keep, f"{base}_keep.jsonl")
-    if maybe:
-        write_results(maybe, f"{base}_maybe.jsonl")
     if reject:
         write_results(reject, f"{base}_reject.jsonl")
 
-    print(f"\nStage A 完成。keep 样本可直接进入 Stage B 精筛。")
+    print(f"\nStage A (Route D) 完成。keep 样本进入 Vision Filter → Stage B。")
 
 
 if __name__ == "__main__":

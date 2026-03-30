@@ -1,7 +1,7 @@
 # LLM + VLM 数据筛选 Pipeline 汇报
 
 > 文档目的：供 check 筛选流程、提示词设计、决策逻辑是否合理。
-> 版本: v4 — Source Routing + VLM Vision Filter
+> 版本: v5 — Source Routing (4 Groups) + VLM Vision Filter
 
 ---
 
@@ -13,6 +13,7 @@
 - **Dense Manual**（coin, activitynet_captions 等）：有 5-20 个精细文本标注 → 可以判断边界清晰度和阶段多样性
 - **Coarse Manual**（activitynet, hacs 等）：只有 1-3 个粗标签 → 只能判断活动本身是否物理丰富
 - **ASR/Auto**（how_to_step, queryd 等）：时间戳不可靠 → 忽略时间戳，只看文本是否描述多步骤操作
+- **VLM-Curated**（timelens 等）：标注由 VLM 精准生成，时间戳可靠 → 不审查标注质量，审查内容是否为多步骤物理过程
 
 用同一个 prompt 评估所有源会导致**评估维度不匹配**，特别是 Group B/C 的样本会因标注稀疏而被误杀。
 
@@ -39,23 +40,25 @@ ET-Instruct-164K (164K)              TimeLens-100K (19K)
          │                                    │
   ┌──────┴──────┐                     ┌──────┴──────┐
   │  Stage A    │                     │  Stage A    │
-  │ Source      │                     │ Boundary +  │
-  │ Routing     │                     │ Phase       │
-  │ (3 Groups)  │                     │ Diversity   │
+  │ Source      │                     │ Route D     │
+  │ Routing     │                     │ (VLM-       │
+  │ (A/B/C)    │                     │  Curated)   │
   └──────┬──────┘                     └──────┬──────┘
    keep │ reject                       keep │ reject
-         │                                    │
-  ┌──────┴──────┐                     ┌──────┴──────┐
-  │ VLM Vision  │                     │ VLM Vision  │
-  │ Filter      │                     │ Filter      │
-  │ (6 frames)  │                     │ (6 frames)  │
-  └──────┬──────┘                     └──────┬──────┘
-   keep │ reject                       keep │ reject
-         │                                    │
-    最终候选池                           最终候选池
+         │                              (pre-filter:
+  ┌──────┴──────┐                      events<3→reject)
+  │ VLM Vision  │                            │
+  │ Filter      │                     ┌──────┴──────┐
+  │ (6 frames)  │                     │ VLM Vision  │
+  └──────┬──────┘                     │ Filter      │
+   keep │ reject                      │ (6 frames)  │
+         │                            └──────┬──────┘
+    最终候选池                           keep │ reject
+                                             │
+                                        最终候选池
 ```
 
-> **Stage B（层次潜力精筛）** 保留但当前不使用。可后续对 VLM keep 样本做更精细评估。
+> **Stage B（层次潜力精筛）** 已移除。Route D + Vision Filter 已覆盖所需审查维度。
 
 ---
 
@@ -117,20 +120,31 @@ ET-Instruct-164K (164K)              TimeLens-100K (19K)
 
 核心判断：文本是否描述 hands-on 操作（cooking, crafting, repairing），而非 vlog/gaming/lecture/interview。阈值更严（>=4）因为 ASR 文本噪声大。
 
-### 3.2 TimeLens — 统一评估
+### 3.2 TimeLens — Route D (VLM-Curated)
 
-TimeLens 7 个 domain（cosmo_cap, internvid_vtime, didemo, queryd, hirest_step, hirest_grounding, hirest）的标注格式统一，使用**边界清晰度 + 阶段多样性**统一评估：
+TimeLens 的事件标注由 Gemini-2.5-Pro 精准生成，时间戳和事件描述高度可靠。因此 **不审查标注质量**，而审查：这些精准事件拼在一起，是否构成一个"物理层次丰富"的多步骤过程。
+
+**Pre-filter（硬规则，跳过 LLM）**：
+- `events < 3` → 直接 reject。如果 Gemini 也只能标出 1-2 个事件，说明视频极其单调。
+
+**Group D Prompt**：
 
 ```json
 {
-  "structural_analysis": "<1-2 sentences>",
-  "boundary_clarity_score": 1-5,
-  "phase_diversity_score": 1-5,
+  "process_analysis": "<1-2 sentences>",
+  "physical_hierarchy_score": 1-5,
   "decision": "keep | reject"
 }
 ```
 
-决策规则：`boundary_clarity >= 3 AND phase_diversity >= 3 → keep`，否则 `reject`。
+核心判断：事件序列是否描述一个 **渐进式物理任务**（crafting, cooking, repairing, dynamic sports），而非新闻/采访/被动观察/单调重复。
+
+**Reject 场景**：
+- 新闻/采访/Vlog：人们坐着说话、切换镜头角度
+- 被动观察：高速公路上的车流、睡觉的猫
+- 单调/扁平：一个连续动作，无阶段划分
+
+决策规则：`physical_hierarchy_score >= 3 → keep`，否则 `reject`。
 
 ### 3.3 程序化决策规则
 
@@ -144,10 +158,11 @@ Group C: action_density_score >= 4           → keep
 其余 / parse error                            → reject
 ```
 
-**TimeLens**（`decision_rules.py:apply_richness_rules()`）：
+**TimeLens Route D**（`decision_rules.py:apply_group_d_rules()`）：
 ```python
-boundary_clarity >= 3 AND phase_diversity >= 3  → keep
-其余 / parse error                                → reject
+events < 3 (pre-filter)                             → reject（跳过 LLM）
+physical_hierarchy_score >= 3                        → keep
+其余 / parse error                                    → reject
 ```
 
 ---
@@ -187,184 +202,52 @@ boundary_clarity >= 3 AND phase_diversity >= 3  → keep
 
 ---
 
-## 4. Stage B：层次潜力精筛（可选，当前不使用）
+## 4. 设计演化记录
 
-> **注意**：v2 设计中 Stage A 已改为视频内容潜力评估（单阶段筛选），通常不再需要 Stage B。
-> Stage B 代码保留供需要时使用（如对 keep 样本做更细致的 L1/L3 分解能力评估）。
-
-### 4.1 设计目标
-
-对 Stage A keep 的样本评估是否能支撑完整的三层标注：
-- **L1 聚合潜力**：事件能否分组为 2-4 个宏观阶段？
-- **L3 分解潜力**：事件描述是否暗示可分解的子动作？
-- **时序结构**：事件间是否有清晰的时序逻辑？
-
-### 4.2 System Prompt
-
-```
-You are evaluating whether a set of temporal annotations that are already
-roughly L2-like can support a full 3-level hierarchical segmentation setup.
-
-Hierarchy:
-- L1: macro phases grouping multiple events
-- L2: provided event-like segments (candidate L2 annotations)
-- L3: atomic actions inside each event
-
-Assume the provided segments are candidate L2 annotations, but still judge
-strictly. Focus on whether they support meaningful L1 grouping AND L3
-decomposition.
-
-Evaluation criteria:
-- L1 Potential: Can these events be naturally grouped into 2-4 macro phases
-with distinct themes? (5=clear phases, 1=events are all independent)
-- L3 Potential: Do event descriptions suggest decomposable sub-actions?
-(5=rich detail implying multiple steps, 1=events are already near-atomic)
-- Temporal Structure: Are events well-ordered with clear temporal flow?
-(5=strong narrative arc, 1=random/overlapping/unclear progression)
-- Overall: Combined suitability for a production-quality 3-level annotation
-
-Be strict: only give overall_score >= 4 if ALL three dimensions score >= 3.
-
-## Examples
-
-### Example 1 — strong hierarchical potential (keep)
-
-Input:
-Video duration: 200.0s | Domain: coin | Segments: 6
-  1. [0.0s - 28.0s] Measure and mark the wood pieces for cutting
-  2. [28.0s - 58.0s] Cut the wood along marked lines with a saw
-  ...
-
-Output:
-{"reasoning":"Clear 3 macro phases emerge (Preparation: 1-2, Assembly: 3-5,
-Finishing: 6). Each event implies multiple sub-actions. Strong temporal
-flow.","l1_potential":5,"l3_potential":4,"temporal_structure":5,
-"overall_score":5,"phase_sketch":["Preparation: 1,2","Assembly: 3,4,5",
-"Finishing: 6"],"decision":"keep"}
-
-### Example 2 — poor hierarchical potential (reject)
-
-Input:
-Video duration: 150.0s | Domain: queryd | Segments: 5
-  1. [10.0s - 35.0s] A person talks about their morning routine
-  2. [40.0s - 65.0s] The same person describes their favorite food
-  ...
-
-Output:
-{"reasoning":"Talking-head video with no physical actions. L3 decomposition
-impossible — each segment is just continuous speech. No meaningful temporal
-structure.","l1_potential":2,"l3_potential":1,"temporal_structure":2,
-"overall_score":1,"phase_sketch":["Monologue: 1,2,3,4,5"],"decision":"reject"}
-
-Return only valid JSON.
-```
-
-### 4.3 User Prompt
-
-```
-Video duration: {duration}s
-Domain: {source}
-Number of candidate L2 segments: {n_events}
-
-Candidate L2 segments:
-  1. [12.0s - 36.0s] clean the bananas and cut them into pieces
-  2. [36.0s - 44.0s] heat oil in a pan
-  ...
-
-Evaluate this sample for hierarchical segmentation suitability.
-
-Respond with ONLY valid JSON:
-{
-  "reasoning": "<1-2 short sentences>",
-  "l1_potential": <1-5>,
-  "l3_potential": <1-5>,
-  "temporal_structure": <1-5>,
-  "overall_score": <1-5>,
-  "phase_sketch": ["phase_name: event_indices", ...],
-  "decision": "keep | maybe | reject"
-}
-```
-
-### 4.4 输出字段说明
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `l1_potential` | 1-5 | L1 聚合潜力（事件能否分组为宏观阶段） |
-| `l3_potential` | 1-5 | L3 分解潜力（事件是否可分解子动作） |
-| `temporal_structure` | 1-5 | 时序结构（事件间先后逻辑是否清晰） |
-| `overall_score` | 1-5 | 综合评分 |
-| `phase_sketch` | list[str] | L1 阶段草图，如 `["Preparation: 1-3", "Cooking: 4-7"]` |
-| `decision` | enum | keep / maybe / reject |
-| `reasoning` | str | 1-2 句理由 |
-
-### 4.5 程序化决策规则（实时覆盖 LLM）
-
-与 Stage A 相同，规则在 `assess_sample()` 中实时应用（`apply_stage_b_rules()`），不一致时覆写并记录 `_original_decision`。
-
-```python
-# 硬 reject:
-if overall_score <= 2:                              → reject
-if any(dim <= 1 for dim in [l1, l3, temporal]):     → reject
-
-# 硬 keep:
-if overall_score >= 4 and all(dim >= 3):            → keep
-
-# 灰区:
-if overall_score == 3:                              → maybe
-if overall_score >= 4 but some dim < 3:             → maybe
-```
-
----
-
-## 5. 设计演化记录
-
-Pipeline 经历了 4 个主要版本：
+Pipeline 经历了 5 个主要版本：
 
 | 版本 | 设计 | 问题 |
 |------|------|------|
 | v1 | L2 粒度分类 (granularity_label) | 96% reject — 问错了问题 |
 | v2 | 视频内容丰富度评估 (3 维 scores) | >90% keep — 太宽松 |
 | v3 | 边界清晰度 + 阶段多样性 (2 维) | 留存率合理但不区分数据源特点 |
-| **v4 (当前)** | Source Routing + VLM Vision Filter | 按数据源特点评估 + 视觉安全网 |
+| v4 | Source Routing (ET-Instruct 3 组) + VLM Vision Filter | 按数据源特点评估 + 视觉安全网 |
+| **v5 (当前)** | 4 组 Source Routing + Route D (VLM-Curated) | TimeLens 专属物理过程审查 + 预过滤 |
 
-**v4 核心改进**：
-- 认识到不同数据源标注质量差异巨大，不能用同一把尺子衡量
-- 文本 LLM 有系统性盲区，VLM 视觉校验必不可少
-- 二值决策（keep/reject），不再有 maybe 灰区
+**v5 核心改进**：
+- 新增 Group D (VLM-Curated)：TimeLens 标注由 Gemini 精准生成，无需审查标注质量，只审查物理内容丰富度
+- Pre-filter：events < 3 直接 reject，连 LLM 都不用调（省钱省时间）
+- TimeLens pipeline 集成 Vision Filter：`Stage A → Vision Filter → 最终候选`
+- 二值决策（keep/reject）贯穿全流程
 
 ---
 
-## 6. 开销估算
+## 5. 开销估算
 
 ### ET-Instruct-164K
 
 | 阶段 | 样本数 | 输入 tokens | 输出 tokens | 预估费用 | 时间(16w) |
 |------|--------|-------------|-------------|----------|-----------|
 | Stage A | ~10K | ~4.5M | ~1.2M | **~$17** | ~10min |
-| Stage B (est. 40% keep) | ~4K | ~1.8M | ~0.5M | **~$8** | ~4min |
-| **合计** | - | ~6.3M | ~1.7M | **~$25** | ~14min |
 
 ### TimeLens-100K
 
 | 阶段 | 样本数 | 输入 tokens | 输出 tokens | 预估费用 | 时间(16w) |
 |------|--------|-------------|-------------|----------|-----------|
-| Stage A | ~12K | ~5.4M | ~1.4M | **~$20** | ~12min |
-| Stage B (est. 40% keep) | ~5K | ~2.3M | ~0.6M | **~$10** | ~5min |
-| **合计** | - | ~7.7M | ~2.0M | **~$30** | ~17min |
+| Stage A (Route D) | ~12K | ~5.4M | ~1.4M | **~$20** | ~12min |
 
 ### 总计
 
 | | 样本数 | 费用 | 时间 |
 |---|---|---|---|
 | **Stage A 全量** | ~22K | ~$37 | ~22min |
-| **Stage B** | ~9K | ~$18 | ~9min |
-| **Pipeline 合计** | ~22K | ~$55 | ~31min |
 
 *假设 Novita Gemini 2.5 Pro: ~$2/M input, ~$12/M output。实际可能偏差 ±30%。*
+*VLM Vision Filter 费用另计（依赖 VLM 模型定价和样本数量）。*
 
 ---
 
-## 7. 漏筛分析与后续规划
+## 6. 漏筛分析与后续规划
 
 ### 7.1 v4 改善的部分
 
@@ -401,14 +284,13 @@ text_filter → Stage A          被 reject 的子集
 
 | 数据源 | 规则位置 | 说明 |
 |--------|---------|------|
-| ET-Instruct | `et_instruct_164k/stage_a_coarse_filter.py` 内联 `apply_rules()` | per-group 阈值 |
-| TimeLens | `shared/decision_rules.py:apply_richness_rules()` | 统一 boundary+diversity |
+| ET-Instruct | `et_instruct_164k/stage_a_coarse_filter.py` 内联 `apply_rules()` | per-group 阈值 (A/B/C) |
+| TimeLens | `shared/decision_rules.py:apply_group_d_rules()` | physical_hierarchy_score >= 3 |
 | VLM Vision | `shared/stage_a_vision_filter.py` 内联 `apply_vision_rules()` | score >= 3 + is_physical |
-| Stage B | `shared/decision_rules.py:apply_stage_b_rules()` | overall + 3 维 |
 
 ---
 
-## 8. 文件清单
+## 7. 文件清单
 
 ```
 proxy_data/data_curation/
@@ -421,11 +303,11 @@ proxy_data/data_curation/
 │   ├── shared/
 │   │   ├── __init__.py
 │   │   ├── llm_client.py            # API 调用、并发、断点续评
-│   │   ├── decision_rules.py        # 程序化决策规则 (TimeLens + Stage B)
+│   │   ├── decision_rules.py        # 程序化决策规则 (Group D)
 │   │   ├── video_sampler.py         # 视频抽帧 (6帧, base64, 512px)
 │   │   ├── stage_a_vision_filter.py # VLM 视觉校验 (通用)
-│   │   ├── stage_b_fine_filter.py   # Stage B 层次潜力 (可选，当前不使用)
 │   │   ├── analyze_results.py       # 结果统计分析 + HTML 报告
+│   │   ├── visualize_distribution.py # Source/Duration 分布可视化
 │   │   └── convert_to_viz.py        # 转可视化格式 + 抽帧
 │   ├── et_instruct_164k/
 │   │   ├── text_filter.py           # Step 0: 文本规则筛选
@@ -434,14 +316,14 @@ proxy_data/data_curation/
 │   │   └── results/                 # 输出目录
 │   └── timelens_100k/
 │       ├── text_filter.py
-│       ├── stage_a_coarse_filter.py # Stage A: 边界清晰度 + 阶段多样性
-│       ├── run_pipeline.sh
+│       ├── stage_a_coarse_filter.py # Stage A: Route D (VLM-Curated 物理过程审查)
+│       ├── run_pipeline.sh          # Stage A → Vision Filter → 最终候选
 │       └── results/
 ```
 
 ---
 
-## 9. 运行命令（从 train/ 目录）
+## 8. 运行命令（从 train/ 目录）
 
 ### ET-Instruct Stage A（1K 抽样）
 
@@ -467,12 +349,14 @@ python proxy_data/data_curation/sources/et_instruct_164k/stage_a_coarse_filter.p
 python proxy_data/data_curation/sources/shared/stage_a_vision_filter.py \
     --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results_keep.jsonl \
     --output proxy_data/data_curation/sources/et_instruct_164k/results/vision_results.jsonl \
-    --video-root /path/to/et_instruct/videos \
+    --video-root /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos \
     --video-field video \
     --workers 4
 ```
 
-### TimeLens Stage A
+> `--video-field video`：ET-Instruct 样本中 `"video": "coin/xxx.mp4"` 字段，与 `--video-root` 拼接成完整路径。
+
+### TimeLens Stage A (Route D)
 
 ```bash
 python proxy_data/data_curation/sources/timelens_100k/stage_a_coarse_filter.py \
@@ -481,16 +365,37 @@ python proxy_data/data_curation/sources/timelens_100k/stage_a_coarse_filter.py \
     --sample-n 1000 --workers 16
 ```
 
+> Route D 内置 pre-filter：events < 3 直接 reject，不调用 LLM。
+
 ### TimeLens VLM 视觉校验
 
 ```bash
 python proxy_data/data_curation/sources/shared/stage_a_vision_filter.py \
     --input proxy_data/data_curation/sources/timelens_100k/results/stage_a_results_keep.jsonl \
     --output proxy_data/data_curation/sources/timelens_100k/results/vision_results.jsonl \
-    --video-root /path/to/timelens/videos \
+    --video-root /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards \
     --video-field video_path \
     --workers 4
 ```
+
+> `--video-field video_path`：TimeLens 样本中 `"video_path": "cosmo_cap/xxx.mp4"` 字段。
+
+### TimeLens 一键 Pipeline
+
+```bash
+cd proxy_data/data_curation/sources/timelens_100k
+
+# 抽样试跑 (Route D 抽 200 条)
+bash run_pipeline.sh --sample
+
+# 全量: Stage A (Route D) → Vision Filter → 最终候选
+bash run_pipeline.sh --full
+
+# Stage A 已完成，只跑 Vision Filter
+bash run_pipeline.sh --vision-only
+```
+
+> TimeLens 不使用 Stage B。Route D + Vision Filter 已覆盖物理过程审查和视觉质量两个维度。
 
 ### 查看结果
 

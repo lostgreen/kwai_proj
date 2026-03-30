@@ -5,15 +5,14 @@ These rules override or supplement LLM decisions with hard thresholds.
 Designed to catch cases where the LLM is inconsistent.
 
 Rule sets:
-  - apply_richness_rules(): For TimeLens Stage A (boundary clarity + phase diversity)
-  - apply_stage_b_rules(): For the hierarchical potential fine filter (Stage B)
+  - apply_richness_rules(): For Stage A (boundary clarity + phase diversity)
+  - apply_group_d_rules(): For Group D / VLM-Curated sources (physical hierarchy score)
 
 Note: ET-Instruct Stage A uses source-based routing with per-group inline rules
       defined in et_instruct_164k/stage_a_coarse_filter.py (not in this file).
 
 Legacy:
   - apply_stage_a_rules(): Old L2-granularity rules (deprecated, kept for reference)
-  - final_decision(): Old two-stage combination (deprecated)
 
 Usage:
     # As a standalone post-processing step
@@ -59,6 +58,32 @@ def apply_richness_rules(assessment: dict) -> str:
     if boundary >= 3 and diversity >= 3:
         return "keep"
 
+    return "reject"
+
+
+# ── Group D Rules (VLM-Curated sources) ──────────────────
+
+def apply_group_d_rules(assessment: dict) -> str:
+    """Apply rules for Group D (VLM-Curated sources like TimeLens).
+
+    Returns the corrected decision: "keep" | "reject"
+
+    Rules:
+    1. Parse error or pre-filter -> reject
+    2. physical_hierarchy_score >= 3 -> keep
+    3. Otherwise -> reject
+    """
+    if assessment.get("_parse_error") or assessment.get("error"):
+        return "reject"
+    if assessment.get("_prefilter"):
+        return "reject"
+
+    score = assessment.get("physical_hierarchy_score", 0)
+    if not isinstance(score, (int, float)):
+        return "reject"
+
+    if score >= 3:
+        return "keep"
     return "reject"
 
 
@@ -114,74 +139,6 @@ def apply_stage_a_rules(assessment: dict) -> str:
     return "maybe"
 
 
-# ── Stage B Decision Rules ───────────────────────────────
-
-def apply_stage_b_rules(assessment: dict) -> str:
-    """Apply programmatic rules to Stage B assessment.
-
-    Returns the corrected decision: "keep" | "maybe" | "reject"
-
-    Rules:
-    1. Parse error -> reject
-    2. overall_score <= 2 -> reject
-    3. Any dimension (l1/l3/temporal) <= 1 -> reject
-    4. overall_score >= 4 AND all dimensions >= 3 -> keep
-    5. overall_score == 3 -> maybe
-    6. Default -> maybe
-    """
-    if assessment.get("_parse_error") or assessment.get("error"):
-        return "reject"
-
-    overall = assessment.get("overall_score", 0)
-    l1 = assessment.get("l1_potential", 0)
-    l3 = assessment.get("l3_potential", 0)
-    temporal = assessment.get("temporal_structure", 0)
-
-    # Ensure numeric
-    for val in [overall, l1, l3, temporal]:
-        if not isinstance(val, (int, float)):
-            return "maybe"
-
-    # Hard reject
-    if overall <= 2:
-        return "reject"
-    if any(v <= 1 for v in [l1, l3, temporal]):
-        return "reject"
-
-    # Hard keep
-    if overall >= 4 and all(v >= 3 for v in [l1, l3, temporal]):
-        return "keep"
-
-    # Gray zone
-    if overall == 3:
-        return "maybe"
-
-    # overall >= 4 but some dimension weak
-    if overall >= 4:
-        return "maybe"
-
-    return "maybe"
-
-
-# ── Combined Final Decision (DEPRECATED) ─────────────────
-
-def final_decision(stage_a_assessment: dict, stage_b_assessment: dict) -> str:
-    """[DEPRECATED] Combine Stage A and Stage B into a final decision.
-
-    Uses old apply_stage_a_rules(). For current pipeline, Stage A decisions
-    are made by source-specific rules (ET-Instruct) or apply_richness_rules()
-    (TimeLens), followed by optional VLM vision verification.
-    """
-    a_decision = apply_stage_a_rules(stage_a_assessment)
-    b_decision = apply_stage_b_rules(stage_b_assessment)
-
-    if a_decision == "reject" or b_decision == "reject":
-        return "reject"
-    if a_decision == "keep" and b_decision == "keep":
-        return "keep"
-    return "maybe"
-
-
 # ── CLI for post-processing ──────────────────────────────
 
 def main():
@@ -190,13 +147,13 @@ def main():
     )
     parser.add_argument("--input", required=True, help="assessed .jsonl")
     parser.add_argument("--output", required=True, help="ruled .jsonl")
-    parser.add_argument("--stage", required=True, choices=["A", "B"],
-                        help="Which stage's rules to apply (A=richness, B=hierarchy)")
+    parser.add_argument("--stage", required=True, choices=["A"],
+                        help="Which stage's rules to apply (A=richness/group_d)")
     parser.add_argument("--override", action="store_true",
                         help="Override LLM decision with rule-based decision")
     args = parser.parse_args()
 
-    rule_fn = apply_richness_rules if args.stage == "A" else apply_stage_b_rules
+    rule_fn = apply_richness_rules
 
     results = []
     overrides = 0
@@ -207,7 +164,12 @@ def main():
                 continue
             sample = json.loads(line)
             assessment = sample.get("_assessment", {})
-            rule_decision = rule_fn(assessment)
+
+            # For Stage A, auto-detect Group D vs default richness rules
+            if args.stage == "A" and sample.get("_group") == "D":
+                rule_decision = apply_group_d_rules(assessment)
+            else:
+                rule_decision = rule_fn(assessment)
             llm_decision = assessment.get("decision", "unknown")
 
             sample["_rule_decision"] = rule_decision

@@ -74,8 +74,8 @@
 
 - [x] 数据格式探索
 - [ ] text_filter.py 运行
-- [ ] Stage A: L2 粒度粗筛
-- [ ] Stage B: 层次潜力精筛
+- [ ] Stage A: Route D (VLM-Curated 物理过程审查)
+- [ ] VLM Vision Filter (6 帧视觉校验)
 - [ ] 可视化验证
 - [ ] 与 ET-Instruct candidates 合并
 
@@ -103,7 +103,27 @@ python proxy_data/data_curation/sources/timelens_100k/text_filter.py \
 - `proxy_data/data_curation/sources/timelens_100k/results/passed_timelens.jsonl`
 - `proxy_data/data_curation/sources/timelens_100k/results/filter_summary.json`
 
-### Stage A: L2 粒度粗筛
+### Stage A + Vision Filter: 一键 Pipeline
+
+```bash
+cd proxy_data/data_curation/sources/timelens_100k
+
+# 抽样试跑 (Route D 200 条)
+bash run_pipeline.sh --sample
+
+# 全量: Stage A (Route D) → Vision Filter → 最终候选
+VIDEO_ROOT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards \
+    bash run_pipeline.sh --full
+
+# Stage A 已完成，只跑 Vision Filter
+bash run_pipeline.sh --vision-only
+```
+
+**产出**：
+- `results/stage_a_results_keep.jsonl` — Stage A (Route D) 通过
+- `results/vision_results_keep.jsonl` — **最终候选**（VLM 视觉校验通过）
+
+### 单步运行 Stage A (Route D)
 
 ```bash
 # 抽样 200 条看分布
@@ -117,27 +137,17 @@ python proxy_data/data_curation/sources/timelens_100k/stage_a_coarse_filter.py \
     --input proxy_data/data_curation/sources/timelens_100k/results/passed_timelens.jsonl \
     --output proxy_data/data_curation/sources/timelens_100k/results/stage_a_results.jsonl \
     --no-sample --resume --workers 16
-
-# 查看 Stage A 分析报告
-python proxy_data/data_curation/sources/shared/analyze_results.py \
-    --input proxy_data/data_curation/sources/timelens_100k/results/stage_a_results.jsonl \
-    --stage A --review 3 \
-    --html proxy_data/data_curation/sources/timelens_100k/results/stage_a_report.html
 ```
 
-### Stage B: 层次潜力精筛
+### 单步运行 VLM Vision Filter
 
 ```bash
-python proxy_data/data_curation/sources/shared/stage_b_fine_filter.py \
+python proxy_data/data_curation/sources/shared/stage_a_vision_filter.py \
     --input proxy_data/data_curation/sources/timelens_100k/results/stage_a_results_keep.jsonl \
-    --output proxy_data/data_curation/sources/timelens_100k/results/stage_b_results.jsonl \
-    --data-source timelens --no-sample --resume --workers 16
-
-# 查看 Stage B 分析报告
-python proxy_data/data_curation/sources/shared/analyze_results.py \
-    --input proxy_data/data_curation/sources/timelens_100k/results/stage_b_results.jsonl \
-    --stage B --review 3 \
-    --html proxy_data/data_curation/sources/timelens_100k/results/stage_b_report.html
+    --output proxy_data/data_curation/sources/timelens_100k/results/vision_results.jsonl \
+    --video-root /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards \
+    --video-field video_path \
+    --workers 4
 ```
 
 ### 可视化验证（帧 + 时间线）
