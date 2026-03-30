@@ -580,26 +580,80 @@ def run_l3_extraction(
                     "key_prefix": "ph",
                 })
         else:
-            # procedural (default): extract from L2 events
+            # Leaf-node collection: phases without events become leaf nodes,
+            # phases with events contribute their events as leaf nodes.
             events = (ann.get("level2") or {}).get("events") or []
-            if not events:
-                print(f"WARN: no L2 events in {ann_path.name}, skipping")
+            phases = (ann.get("level1") or {}).get("macro_phases") or []
+
+            leaf_tasks: list[dict] = []
+
+            if phases:
+                # Build phase_id → set of phase_ids that have events
+                phase_ids_with_events: set[int] = set()
+                for ev in events:
+                    pid = ev.get("parent_phase_id")
+                    if isinstance(pid, int):
+                        phase_ids_with_events.add(pid)
+
+                for phase in phases:
+                    pid = phase.get("phase_id")
+                    if pid in phase_ids_with_events:
+                        # Phase has events → events are leaf nodes
+                        for ev in events:
+                            if ev.get("parent_phase_id") != pid:
+                                continue
+                            ev_id = ev.get("event_id")
+                            start = ev.get("start_time")
+                            end = ev.get("end_time")
+                            if not (isinstance(ev_id, int) and isinstance(start, (int, float))
+                                    and isinstance(end, (int, float)) and start < end):
+                                continue
+                            leaf_tasks.append({
+                                "source_video": source_video,
+                                "event_start_sec": float(start),
+                                "event_end_sec": float(end),
+                                "event_id": ev_id,
+                                "parent_clip_key": clip_key_str,
+                                "key_prefix": "ev",
+                            })
+                    else:
+                        # Phase has no events → phase itself is leaf node
+                        ph_id = phase.get("phase_id")
+                        start = phase.get("start_time")
+                        end = phase.get("end_time")
+                        if not (isinstance(ph_id, int) and isinstance(start, (int, float))
+                                and isinstance(end, (int, float)) and start < end):
+                            continue
+                        leaf_tasks.append({
+                            "source_video": source_video,
+                            "event_start_sec": float(start),
+                            "event_end_sec": float(end),
+                            "event_id": ph_id,
+                            "parent_clip_key": clip_key_str,
+                            "key_prefix": "ph",
+                        })
+            else:
+                # Fallback: no L1 data, use events directly (backward-compat)
+                for ev in events:
+                    ev_id = ev.get("event_id")
+                    start = ev.get("start_time")
+                    end = ev.get("end_time")
+                    if not (isinstance(ev_id, int) and isinstance(start, (int, float))
+                            and isinstance(end, (int, float)) and start < end):
+                        continue
+                    leaf_tasks.append({
+                        "source_video": source_video,
+                        "event_start_sec": float(start),
+                        "event_end_sec": float(end),
+                        "event_id": ev_id,
+                        "parent_clip_key": clip_key_str,
+                        "key_prefix": "ev",
+                    })
+
+            if not leaf_tasks:
+                print(f"WARN: no leaf nodes in {ann_path.name}, skipping")
                 continue
-            for ev in events:
-                ev_id = ev.get("event_id")
-                start = ev.get("start_time")
-                end = ev.get("end_time")
-                if not (isinstance(ev_id, int) and isinstance(start, (int, float))
-                        and isinstance(end, (int, float)) and start < end):
-                    continue
-                tasks.append({
-                    "source_video": source_video,
-                    "event_start_sec": float(start),
-                    "event_end_sec": float(end),
-                    "event_id": ev_id,
-                    "parent_clip_key": clip_key_str,
-                    "key_prefix": "ev",
-                })
+            tasks.extend(leaf_tasks)
 
     print(f"L3 extraction: {len(tasks)} segments from {len(ann_paths)} clips → {output_base}")
     if skipped_topo:

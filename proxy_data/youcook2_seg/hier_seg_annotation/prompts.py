@@ -165,6 +165,9 @@ If topology_type = procedural:
 - An event is a multi-second workflow (typically 10–60s) that completes a process sub-goal.
 - Group related manipulations together.
 - Do NOT fragment into atomic tool motions.
+- If a macro phase consists of a single continuous operation or a simple repetitive action \
+(e.g., "hammering nails for 60 seconds", "stirring continuously"), leave its "events": [].
+- ONLY create events when the phase contains distinct sequential sub-steps.
 
 If topology_type = sequence:
 - An event is a complete episode, trial, or continuous traversal with one coherent \

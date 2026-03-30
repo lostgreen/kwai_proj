@@ -1,6 +1,6 @@
 # Topology-Adaptive 分层标注 Pipeline
 
-> 实现状态：**Phase 1 已完成** (2026-03-30)
+> 实现状态：**Phase 1.5 已完成** (2026-03-30) — Leaf-node L3 路由
 
 ---
 
@@ -306,10 +306,378 @@ python annotate.py \
 
 ---
 
-## 6. 后续阶段（未实现）
+## 6. Phase 1.5: Leaf-Node L3 路由 (已实现)
+
+### 6.1 问题
+`procedural` 视频中，某些 phase 只包含单一连续/循环动作（如"一直钉钉子 60 秒"），VLM 被迫造出与 phase 几乎一样的 event → L1 ≈ L2 冗余。
+
+### 6.2 核心设计：变长层级
+
+放弃死板的 L1→L2→L3 固定三层，改为 **"父节点 → 子节点"** 的相对概念：
+
+| 角色 | 定义 | 对应原层级 |
+|------|------|-----------|
+| **Macro (宏观阶段)** | 视频的必然组成部分 | L1 |
+| **Meso (中观事件)** | 完全可选。仅当 Macro 包含多个截然不同的子动作时才存在 | L2 |
+| **Micro (微观动作)** | 永远只挂载在**叶子节点**上 | L3 |
+
+**核心规则**: L3 标注目标 = 树的叶子节点（Leaf Nodes）
+
+```
+情况 A: Phase 有 events → events 是叶子 → L3 从 events 下钻
+         Phase ─┬─ Event 1 (leaf) ─── L3 micro
+                └─ Event 2 (leaf) ─── L3 micro
+
+情况 B: Phase 无 events → phase 自身是叶子 → L3 从 phase 直接下钻
+         Phase (leaf) ─── L3 micro
+
+情况 C: 混合 → 同一视频中两种情况并存
+         Phase 1 ─┬─ Event 1 (leaf) ─── L3 micro
+                  └─ Event 2 (leaf) ─── L3 micro
+         Phase 2 (leaf, 单一连续动作) ─── L3 micro
+```
+
+### 6.3 完整 Prompt：Merged (L1+L2+Topology)
+
+> 对应 `prompts.py` 中 `_MERGED_L1L2_BASE` 模板。`{duration}`, `{n_frames}`, `{domain_taxonomy_str}` 为运行时填充。
+
+```
+You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+Your task has four parts.
+
+## PART 1 — DOMAIN CLASSIFICATION
+Classify the video using a two-level taxonomy.
+Choose ONE broad category (domain_l1) and ONE fine-grained subcategory (domain_l2)
+from the list below:
+{domain_taxonomy_str}
+
+## PART 2 — TOPOLOGY CLASSIFICATION (CRITICAL)
+Analyze the TEMPORAL STRUCTURE of the visible activity and assign exactly ONE topology_type.
+
+Topology types:
+- procedural:
+  A step-by-step process with meaningful sub-goals that progress toward an outcome.
+  Typical examples: cooking, assembling, repairing, crafting.
+
+- periodic:
+  A repeated cycle of the same motion or operation.
+  Typical examples: stretching repetitions, weightlifting reps, repetitive factory motions.
+
+- sequence:
+  A continuous traversal, trial, run, or episode with one coherent trajectory or attempt.
+  Typical examples: dog agility runs, parkour runs, skiing descents, obstacle traversals.
+
+- flat:
+  A single continuous activity with no stable internal hierarchy, or mixed/unclear
+  structure that should not be over-segmented.
+  Typical examples: idle talking, continuous walking vlog, loosely mixed footage.
+
+Important topology rules:
+1. Topology is about temporal structure, NOT about domain label alone.
+2. Repetition alone does NOT imply procedural structure.
+3. Camera cuts do NOT define topology.
+4. If the structure is weak or unclear, choose flat rather than inventing hierarchy.
+
+Also output:
+- topology_confidence: a float from 0.0 to 1.0
+- topology_reason: one brief sentence explaining the decision
+
+## PART 3 — VIDEO SUMMARY & MACRO PHASES (L1)
+Write ONE sentence summarizing the video.
+
+Then segment the video into 1–6 macro phases.
+A macro phase is a broad stage of activity organized by overall intent.
+- Skip intros, outros, static non-activity spans, and talking-only spans.
+- Phases do NOT need to cover the entire video.
+- Do NOT split by camera cuts.
+- It is valid to output only 1 macro phase if the entire video is one continuous routine.
+
+## PART 4 — EVENT DETECTION (L2)
+Detect events nested inside each macro phase.
+Apply the event definition STRICTLY based on topology_type:
+
+If topology_type = procedural:
+- An event is a multi-second workflow (typically 10–60s) that completes a process sub-goal.
+- Group related manipulations together.
+- Do NOT fragment into atomic tool motions.
+- **If a macro phase consists of a single continuous operation or a simple repetitive action
+  (e.g., "hammering nails for 60 seconds", "stirring continuously"), leave its "events": [].**
+- **ONLY create events when the phase contains distinct sequential sub-steps.**
+
+If topology_type = sequence:
+- An event is a complete episode, trial, or continuous traversal with one coherent
+  trajectory or objective.
+- Do NOT split by local body motions, individual obstacles, or camera cuts.
+- A whole run/trial should usually be one event.
+
+If topology_type = periodic:
+- Events are optional.
+- You may leave "events": [] for a phase, or output ONE event only if it exactly
+  matches the whole phase as a container for later micro annotation.
+- Do NOT create one event per repetition.
+
+If topology_type = flat:
+- Output "events": [].
+- Do NOT invent L2 structure.
+
+General L2 rules:
+- Events must not overlap.
+- Use absolute integer seconds.
+- **It is valid for a phase to contain zero events.**
+- **Do not force extra events to make the hierarchy deeper.**
+
+Output JSON:
+{
+  "domain_l1": "<one broad category>",
+  "domain_l2": "<one fine-grained subcategory>",
+  "topology_type": "procedural | periodic | sequence | flat",
+  "topology_confidence": 0.95,
+  "topology_reason": "<one sentence>",
+  "l2_mode": "workflow | episode | optional | skip",
+  "summary": "<one sentence>",
+  "macro_phases": [
+    {
+      "phase_id": 1,
+      "start_time": 5,
+      "end_time": 60,
+      "phase_name": "Material Preparation",
+      "narrative_summary": "Gather and organize all required materials.",
+      "events": [
+        {
+          "event_id": 1,
+          "start_time": 8,
+          "end_time": 25,
+          "instruction": "Sort and measure the raw materials",
+          "visual_keywords": ["hands", "materials", "measuring tool"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Phase 1.5 关键约束（加粗部分）**:
+- **procedural events 按需留空**: 单一连续动作/简单循环动作的 phase → `"events": []`
+- **不强行加深层级**: 只有包含截然不同子步骤的 phase 才创建 events
+- **零 events 合法**: 任何 topology 下 phase 都允许 `events: []`
+
+### 6.4 完整 Prompt：L3 (Topology-Aware Micro Grounding)
+
+> 对应 `prompts.py` 中 `_LEVEL3_BASE` 模板。`{clip_start}`, `{clip_end}`, `{action_query}`, `{topology_type}` 为运行时填充。
+
+```
+You are a temporal grounding model. You are viewing frames from a clip
+({clip_start}s to {clip_end}s).
+The input query is: "{action_query}"
+The topology_type of the source video is: "{topology_type}".
+
+Your task is to pinpoint every atomic micro-action in this clip.
+
+IMPORTANT:
+- If topology_type is "sequence" or "flat", this prompt should not be used.
+- Use absolute integer seconds from the full video timeline.
+
+LEVEL 3 DEFINITIONS
+
+If topology_type = procedural:
+- micro_type = "state_change"
+- **Find brief atomic actions where an object undergoes a clear visible physical change.**
+- Valid examples: cutting, pouring into a container, attaching a part, spreading
+  material, separating pieces.
+- start_time = onset of the actual physical interaction or transformation
+- end_time = the moment the new visible state is established
+- **Ignore reaching, idle pauses, pure hand repositioning, and narration**
+
+If topology_type = periodic:
+- micro_type = "repetition_unit"
+- **Find each individual completed repetition, cycle, strike, or stretch.**
+- start_time = initiation of one repetition cycle
+- end_time = completion of that same repetition cycle, usually when the body/equipment
+  returns to its resting or starting position
+- **Ignore idle pauses between repetitions**
+- IMPORTANT: post_state may be similar or identical to pre_state if the repetition
+  returns to the starting posture
+
+General rules:
+1. Typical duration is 2–6 seconds, but use shorter or longer spans if the unit is
+   clearly visible.
+2. Allow gaps between micro-actions.
+3. Merge uninterrupted motion belonging to the same single repetition or same single
+   state change.
+4. Do not force full coverage.
+
+For each micro-action, provide:
+- action_id: Sequential integer starting from 1.
+- start_time / end_time: Timestamps in integer seconds (absolute within the full video).
+- sub_action: Brief description of the specific physical interaction or repetition.
+- pre_state: The EXPLICIT visual state BEFORE the interaction.
+- post_state: The EXPLICIT visual state AFTER the interaction.
+
+Output JSON:
+{
+  "micro_type": "state_change | repetition_unit",
+  "grounding_results": [
+    {
+      "action_id": 1,
+      "start_time": 42,
+      "end_time": 47,
+      "sub_action": "Transfer material A into container B",
+      "pre_state": "Empty container with prepared surface",
+      "post_state": "Material A distributed across the container surface"
+    }
+  ]
+}
+```
+
+**L3 Prompt 关键约束**:
+- **state_change**: 仅找可见物理变化的原子动作，忽略纯手部调整
+- **repetition_unit**: 找每个完整重复周期，post_state ≈ pre_state 是合法的
+- **不强制全覆盖**: 允许 micro-action 之间有间隔
+
+### 6.5 JSON 输出示例（含可选 L2）
+
+**屋顶维修视频**：Phase 1 有递进子步骤 → 产生 events；Phase 2 是单一循环动作 → events 为空
+
+```json
+{
+  "topology_type": "procedural",
+  "topology_confidence": 0.88,
+  "macro_phases": [
+    {
+      "phase_id": 1,
+      "start_time": 0,
+      "end_time": 51,
+      "phase_name": "Removing the Damaged Shingle",
+      "events": [
+        {"event_id": 1, "start_time": 0, "end_time": 30,
+         "instruction": "Pry up surrounding shingles with flat bar"},
+        {"event_id": 2, "start_time": 31, "end_time": 51,
+         "instruction": "Pull out the damaged shingle"}
+      ]
+    },
+    {
+      "phase_id": 2,
+      "start_time": 52,
+      "end_time": 157,
+      "phase_name": "Securing the New Shingle",
+      "events": []
+    }
+  ]
+}
+```
+
+→ Phase 1 的叶子: Event 1, Event 2（标注细粒度 state_change）
+→ Phase 2 的叶子: Phase 2 自身（直接标注 52s-157s 内的重复钉钉动作）
+
+### 6.6 运行流程图
+
+```
+                        ┌─────────────────────────────┐
+                        │  Step 1: extract_frames.py   │
+                        │  全视频 1fps 抽帧             │
+                        └──────────────┬──────────────┘
+                                       │
+                        ┌──────────────▼──────────────┐
+                        │  Step 2: annotate.py         │
+                        │  --level merged              │
+                        │  L1 + L2(可选) + Topology    │
+                        └──────────────┬──────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────┐
+                    │     _split_merged_response()         │
+                    │  拆分为 level1 + level2 (可能为空)    │
+                    └──────────────────┬──────────────────┘
+                                       │
+                        ┌──────────────▼──────────────┐
+                        │  Step 3: extract_frames.py   │
+                        │  L3 帧提取 (leaf-node 路由)  │
+                        └──────────────┬──────────────┘
+                                       │
+                    ┌─────────────────▼─────────────────┐
+                    │          Leaf-Node 收集              │
+                    │                                      │
+                    │  for phase in macro_phases:           │
+                    │    if phase has events:               │
+                    │      → events 各自抽帧 (_ev{id}/)    │
+                    │    else:                              │
+                    │      → phase 整体抽帧 (_ph{id}/)     │
+                    └─────────────────┬─────────────────┘
+                                       │
+                        ┌──────────────▼──────────────┐
+                        │  Step 4: annotate.py         │
+                        │  --level 3                   │
+                        │  L3 标注 (leaf-node 路由)    │
+                        └──────────────┬──────────────┘
+                                       │
+                    ┌─────────────────▼─────────────────┐
+                    │    _annotate_level3() 内部路由       │
+                    │                                      │
+                    │  periodic?                           │
+                    │    → 所有 phases 作为 sources         │
+                    │  else (procedural/sequence):          │
+                    │    → leaf-node 收集:                  │
+                    │      有 events 的 phase → events      │
+                    │      无 events 的 phase → phase 自身  │
+                    │      无 L1 数据 → events fallback     │
+                    │                                      │
+                    │  每个 source 独立调用 VLM:            │
+                    │    event source → parent_event_id     │
+                    │    phase source → parent_phase_id     │
+                    └──────────────────────────────────┘
+```
+
+### 6.7 代码路由逻辑（更新后）
+
+**`_annotate_level3()` — leaf-node 收集**:
+
+```python
+# 1. periodic: 所有 phases 作为 sources (不变)
+if topology_type == "periodic" and l1_result is not None:
+    sources = [phase → source_type="phase" for phase in l1_result]
+
+# 2. 其他: leaf-node 收集
+else:
+    phase_events = {phase_id: [events...]} mapping
+    for phase in l1_phases:
+        if phase has events:
+            sources += [event → source_type="event" for event in phase_events[pid]]
+        else:
+            sources += [phase → source_type="phase"]
+
+    # 3. Fallback: 无 L1 数据时用 events (向后兼容旧标注)
+    if not l1_phases:
+        sources = [event → source_type="event" for event in events]
+```
+
+**`annotate_clip()` — level "3" 分支变更**:
+
+```python
+# 新增: procedural 分支也传入 l1_result
+else:
+    l1_result=existing.get("level1")  # ← 之前不传，现在传
+```
+
+### 6.8 改动文件
+| 文件 | 改动 |
+|------|------|
+| `prompts.py` | PART 4 procedural 规则：单一动作 phase → events=[] |
+| `annotate.py` | `_annotate_level3()` source 构建改为 leaf-node 收集 |
+| `annotate.py` | `annotate_clip()` procedural 分支传入 `l1_result` |
+| `extract_frames.py` | `run_l3_extraction()` 非 periodic 分支改为 leaf-node 路由 |
+
+### 6.9 向后兼容
+- 旧标注（所有 phase 都有 events）走原路径，行为不变
+- 无 events 的 phase 生成 `_ph{id}` 帧目录和 `parent_phase_id` 标记
+- **训练 builder 暂不改**：`build_l3_records` 仍按 `parent_event_id` 过滤，phase-based L3 数据被静默跳过（Phase 2 再支持）
+
+---
+
+## 7. 后续阶段（未实现）
 
 ### Phase 2: Schema + 训练样本改造
-- training builder 按 topology 生成不同粒度样本
+- training builder 支持 `parent_phase_id`，构建 phase-based L3 训练数据
+- `seg_source.py` 的 `get_l3_clip_path()` 和 `prepare_clips.py` 支持 `_L3_ph{id}_` 命名
+- 可选：统一训练 prompt 为 "parent → child" 通用模板
 - 加入控制 token: `<granularity=macro/meso/micro>`, `<micro_type=...>`
 
 ### Phase 3: 筛选规则 + QC 联动

@@ -424,7 +424,7 @@ def annotate_clip(
                     l1_result=l1,
                 )
             else:
-                # procedural (default): L3 from events
+                # default: leaf-node routing (events + eventless phases)
                 l2 = existing.get("level2")
                 if l2 is None:
                     return {"clip_key": key, "ok": False,
@@ -436,6 +436,7 @@ def annotate_clip(
                     l3_base=l3_frames_dir,
                     clip_key_str=key,
                     topology_type=topology_type,
+                    l1_result=existing.get("level1"),
                 )
         elif level == "2c":
             l1 = existing.get("level1")
@@ -674,7 +675,7 @@ def _annotate_level3(
       - periodic:   iterate L1 phases → per-phase frames in {l3_base}/{clip_key}_ph{id}/
     Falls back to filtering the full-video 1fps frame dir when dedicated dir is absent.
     """
-    # ── Build source list based on topology ──
+    # ── Build source list based on topology (leaf-node collection) ──
     sources: list[dict[str, Any]] = []
 
     if topology_type == "periodic" and l1_result is not None:
@@ -691,18 +692,57 @@ def _annotate_level3(
                 "_source_type": "phase",
             })
     else:
-        # procedural (default): L3 sources from L2 events
+        # Leaf-node collection: phases without events become leaf nodes,
+        # phases with events contribute their events as leaf nodes.
         events = l2_result.get("events", [])
-        for ev in events:
-            if not isinstance(ev, dict):
-                continue
-            sources.append({
-                "source_id": ev.get("event_id", len(sources) + 1),
-                "start_time": ev.get("start_time"),
-                "end_time": ev.get("end_time"),
-                "instruction": ev.get("instruction", ""),
-                "_source_type": "event",
-            })
+        l1_phases = (l1_result or {}).get("macro_phases", []) if l1_result else []
+
+        if l1_phases:
+            # Build phase_id → events mapping
+            phase_events: dict[int, list[dict]] = {}
+            for ev in events:
+                if not isinstance(ev, dict):
+                    continue
+                pid = ev.get("parent_phase_id")
+                if pid is not None:
+                    phase_events.setdefault(pid, []).append(ev)
+
+            for phase in l1_phases:
+                if not isinstance(phase, dict):
+                    continue
+                pid = phase.get("phase_id")
+                children = phase_events.get(pid, [])
+                if children:
+                    # Phase has events → events are leaf nodes
+                    for ev in children:
+                        sources.append({
+                            "source_id": ev.get("event_id", len(sources) + 1),
+                            "start_time": ev.get("start_time"),
+                            "end_time": ev.get("end_time"),
+                            "instruction": ev.get("instruction", ""),
+                            "_source_type": "event",
+                        })
+                else:
+                    # Phase has no events → phase itself is leaf node
+                    sources.append({
+                        "source_id": phase.get("phase_id", len(sources) + 1),
+                        "start_time": phase.get("start_time"),
+                        "end_time": phase.get("end_time"),
+                        "instruction": phase.get("narrative_summary") or phase.get("phase_name", ""),
+                        "_source_type": "phase",
+                    })
+        else:
+            # Fallback: no L1 data available, use events directly (backward-compat)
+            for ev in events:
+                if not isinstance(ev, dict):
+                    continue
+                sources.append({
+                    "source_id": ev.get("event_id", len(sources) + 1),
+                    "start_time": ev.get("start_time"),
+                    "end_time": ev.get("end_time"),
+                    "instruction": ev.get("instruction", ""),
+                    "_source_type": "event",
+                })
 
     sources.sort(key=lambda s: (s.get("start_time") or 0, s.get("end_time") or 0))
 
