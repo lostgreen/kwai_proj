@@ -1658,6 +1658,7 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--prefer-complete", action="store_true")
     parser.add_argument("--build-workers", type=int, default=4, help="Parallel threads for frame extraction at startup")
+    parser.add_argument("--lazy", action="store_true", help="Skip frame preloading at startup; load clip details on demand via /api/clip/<key>")
     args = parser.parse_args()
 
     static_dir = Path(args.static_dir).expanduser().resolve()
@@ -1682,11 +1683,14 @@ def main() -> None:
                 max_samples=args.max_samples, prefer_complete=args.prefer_complete
             )
             all_details = {}
-            for i, key in enumerate(selected_keys, 1):
-                clip = seg_store.get_clip(key)
-                if clip is not None:
-                    all_details[key] = clip
-                print_progress("  [seg] Preloading", i, len(selected_keys))
+            if not args.lazy:
+                for i, key in enumerate(selected_keys, 1):
+                    clip = seg_store.get_clip(key)
+                    if clip is not None:
+                        all_details[key] = clip
+                    print_progress("  [seg] Preloading", i, len(selected_keys))
+            else:
+                print(f"  [seg] Lazy mode: skipping frame preload, clips served on demand.")
             selected_summaries = [seg_store.clips[k]["summary"] for k in selected_keys if k in seg_store.clips]
             preload_data["seg"] = {
                 "summary": build_subset_summary(summary, selected_summaries),
