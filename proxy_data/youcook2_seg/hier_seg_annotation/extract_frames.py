@@ -1,33 +1,48 @@
 #!/usr/bin/env python3
 """
-extract_frames.py — Extract 1fps frames for YouCook2 segmentation annotation.
+extract_frames.py — Extract frames from video clips for hierarchical annotation.
 
-默认兼容旧模式：直接从 JSONL 里的 windowed clip 抽帧。
+Two operating modes:
 
-推荐新模式：直接传入 `--original-video-root`，脚本会扫描原始 YouCook2
-视频目录，对每个原视频从 00:00 开始抽完整视频帧，用于“从原视频开始重新标注”。
+Mode 1 — Full-clip extraction (L1+L2 annotation, default):
+  Extracts 1fps JPEG frames from each clip. Supports:
+    - windowed_clip:       directly use JSONL video paths
+    - full_video_prefix:   scan original video dir, extract 0→clip_end
+    - full_video:          scan original video dir, extract entire video
 
-如果同时提供 JSONL，则会读取 JSONL 中的 `metadata.clip_end`，从原视频 00:00
-抽到该样本对应的 `clip_end`，作为兼容过渡模式。
+  Output layout:
+    frames/{clip_key}/
+        0001.jpg   ← frame at t=1s relative to clip start
+        0002.jpg
+        ...
+        meta.json
 
-同时会自动过滤：
-1. 不可读 / 缺失的视频
-2. 抽帧后帧数低于阈值的视频
+Mode 2 — L3 per-event extraction (--annotation-dir):
+  After running `annotate.py --level merged`, use this mode to extract
+  per-event frames at higher fps (default 2fps) for L3 annotation.
+  Reads merged annotation JSONs, extracts frames for each L2 event
+  from the original video at the event's absolute time range.
+
+  Output layout:
+    frames_l3/{clip_key}_ev{event_id}/
+        0001.jpg   ← frame 1 within the event (0-based relative)
+        0002.jpg
+        ...
+        meta.json  ← includes event_start_sec for absolute timestamp recovery
 
 Usage:
-    python /home/xuboshen/zgw/EasyR1/proxy_data/hier_seg_annotation/extract_frames.py \
-        --original-video-root /m2v_intern/xuboshen/zgw/data/YouCook2_mp4 \
-        --output-dir /m2v_intern/xuboshen/zgw/data/hier_seg_annotation/frames \
-        --workers 8 \
-        --limit 1000
+    # Mode 1: Full-clip
+    python extract_frames.py \\
+        --original-video-root /path/to/videos \\
+        --output-dir frames/ \\
+        --fps 1 --workers 8
 
-Output layout:
-    frames/
-        {clip_key}/
-            0001.jpg   ← frame at t=1s relative to clip start
-            0002.jpg
-            ...
-            meta.json
+    # Mode 2: L3 per-event (run after annotate.py --level merged)
+    python extract_frames.py \\
+        --annotation-dir annotations/ \\
+        --original-video-root /path/to/videos \\
+        --output-dir frames_l3/ \\
+        --fps 2 --workers 8
 """
 
 import argparse
@@ -89,7 +104,7 @@ def parse_record_temporal_info(record: dict) -> dict[str, float | str | None]:
 
 
 def build_original_video_index(original_video_root: str) -> dict[str, str]:
-    """递归索引原始 YouCook2 视频，key 为 video_id（文件 stem）。"""
+    """递归索引原始视频目录，key 为 video_id（文件 stem）。"""
     root = Path(original_video_root)
     if not root.exists():
         raise FileNotFoundError(f"original video root not found: {root}")
@@ -402,28 +417,208 @@ def process_record(
         }
 
 
+def extract_l3_event_frames(
+    source_video: Path,
+    event_start_sec: float,
+    event_end_sec: float,
+    event_id: int,
+    parent_clip_key: str,
+    output_base: Path,
+    fps: float = 2.0,
+    overwrite: bool = False,
+    min_frames: int = 2,
+) -> dict:
+    """Extract frames for one L2 event at higher fps for L3 annotation.
+
+    Frames are numbered from 0001.jpg onward (relative to event_start).
+    meta.json records event_start_sec so annotate.py can recover absolute timestamps.
+    Output dir: {output_base}/{parent_clip_key}_ev{event_id}/
+    """
+    key = f"{parent_clip_key}_ev{event_id}"
+    out_dir = output_base / key
+
+    if not overwrite and out_dir.exists() and count_jpg_frames(out_dir) > 0:
+        n = count_jpg_frames(out_dir)
+        if min_frames <= 0 or n >= min_frames:
+            return {"key": key, "n_frames": n, "skipped": True, "error": None}
+
+    if out_dir.exists() and overwrite:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    duration = event_end_sec - event_start_sec
+    if duration <= 0:
+        return {"key": key, "n_frames": 0, "skipped": False, "error": "zero-duration event"}
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pattern = str(out_dir / "%04d.jpg")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{event_start_sec:.3f}",
+        "-t", f"{duration:.3f}",
+        "-i", str(source_video),
+        "-vf", f"fps={fps}",
+        "-q:v", "2",
+        pattern,
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return {"key": key, "n_frames": 0, "skipped": False, "error": result.stderr[-300:]}
+
+    frames = sorted(out_dir.glob("*.jpg"))
+    n = len(frames)
+    if min_frames > 0 and n < min_frames:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return {"key": key, "n_frames": n, "skipped": False,
+                "error": f"too few frames: {n} < min_frames({min_frames})"}
+
+    write_meta(out_dir, {
+        "key": key,
+        "parent_clip_key": parent_clip_key,
+        "event_id": event_id,
+        "event_start_sec": event_start_sec,
+        "event_end_sec": event_end_sec,
+        "fps": fps,
+        "n_frames": n,
+        "source_video_path": str(source_video),
+    })
+    return {"key": key, "n_frames": n, "skipped": False, "error": None}
+
+
+def run_l3_extraction(
+    annotation_dir: Path,
+    output_base: Path,
+    fps: float,
+    workers: int,
+    overwrite: bool,
+    min_frames: int,
+    video_dir: str | None,
+    original_video_index: dict[str, str] | None,
+    limit: int,
+) -> None:
+    """Extract per-event L3 frames from merged annotation JSONs.
+
+    Reads every *.json in annotation_dir, collects all L2 events, and
+    extracts frames at *fps* from the source video for each event.
+    Output layout:  {output_base}/{clip_key}_ev{event_id}/
+    """
+    ann_paths = sorted(annotation_dir.glob("*.json"))
+    if not ann_paths:
+        print(f"ERROR: no annotation JSON files in {annotation_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    if limit > 0:
+        ann_paths = ann_paths[:limit]
+
+    tasks: list[dict] = []
+    for ann_path in ann_paths:
+        try:
+            with open(ann_path, encoding="utf-8") as f:
+                ann = json.load(f)
+        except Exception as e:
+            print(f"WARN: skip {ann_path.name}: {e}")
+            continue
+
+        clip_key_str = ann.get("clip_key") or ann_path.stem
+        source_video_str = ann.get("source_video_path") or ""
+
+        # Resolve source video path
+        if original_video_index:
+            resolved = original_video_index.get(clip_key_str)
+            if resolved:
+                source_video_str = resolved
+        if video_dir and source_video_str:
+            candidate = Path(video_dir) / Path(source_video_str).name
+            if candidate.exists():
+                source_video_str = str(candidate)
+
+        source_video = Path(source_video_str)
+        if not source_video.exists():
+            print(f"WARN: source video not found for {clip_key_str}: {source_video_str}")
+            continue
+
+        events = (ann.get("level2") or {}).get("events") or []
+        if not events:
+            print(f"WARN: no L2 events in {ann_path.name}, skipping")
+            continue
+
+        for ev in events:
+            ev_id = ev.get("event_id")
+            start = ev.get("start_time")
+            end = ev.get("end_time")
+            if not (isinstance(ev_id, int) and isinstance(start, (int, float))
+                    and isinstance(end, (int, float)) and start < end):
+                continue
+            tasks.append({
+                "source_video": source_video,
+                "event_start_sec": float(start),
+                "event_end_sec": float(end),
+                "event_id": ev_id,
+                "parent_clip_key": clip_key_str,
+            })
+
+    print(f"L3 per-event extraction: {len(tasks)} events from {len(ann_paths)} clips → {output_base}")
+    print(f"FPS={fps}  workers={workers}  min_frames={min_frames}")
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    done = skipped = errors = 0
+
+    def _task(t: dict) -> dict:
+        return extract_l3_event_frames(
+            source_video=t["source_video"],
+            event_start_sec=t["event_start_sec"],
+            event_end_sec=t["event_end_sec"],
+            event_id=t["event_id"],
+            parent_clip_key=t["parent_clip_key"],
+            output_base=output_base,
+            fps=fps,
+            overwrite=overwrite,
+            min_frames=min_frames,
+        )
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_task, t): t for t in tasks}
+        for i, fut in enumerate(as_completed(futures), 1):
+            res = fut.result()
+            if res.get("skipped"):
+                skipped += 1
+            elif res.get("error"):
+                errors += 1
+                print(f"[{i}/{len(tasks)}] ERROR  {res['key']}: {res['error']}")
+            else:
+                done += 1
+                if i % 100 == 0 or i == len(tasks):
+                    print(f"[{i}/{len(tasks)}] done={done} skipped={skipped} errors={errors}")
+
+    print(f"\nDone: {done} extracted, {skipped} skipped, {errors} errors")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Extract 1fps frames from YC2 windowed clips")
+    parser = argparse.ArgumentParser(description="Extract frames from video clips for annotation")
     parser.add_argument("--jsonl", default=None,
                         help="可选：输入 JSONL。若不提供，则直接扫描 --original-video-root 下的原视频。")
     parser.add_argument("--video-dir", default=None,
                         help="兼容旧模式：覆盖 JSONL 中的视频目录。"
                              "如果设置了 --original-video-root，则该参数会被忽略。")
     parser.add_argument("--original-video-root", default=None,
-                        help="原始 YouCook2 视频根目录，例如 /m2v_intern/.../YouCook2_mp4。"
-                             "设置后会从原视频 00:00 抽到 metadata.clip_end。")
+                        help="原始视频根目录。设置后会从原视频 00:00 抽到 metadata.clip_end。")
+    parser.add_argument("--annotation-dir", default=None,
+                        help="L3 per-event 模式：merged annotation JSON 目录（来自 annotate.py --level merged）。"
+                             "设置后为每个 L2 event 独立抽帧，输出到 {output-dir}/{clip_key}_ev{N}/。"
+                             "FPS 默认为 2.0，建议配合 --fps 2 使用。")
     parser.add_argument("--output-dir", required=True,
                         help="Root directory to write frame folders under")
     parser.add_argument("--fps", type=float, default=1.0,
-                        help="Frames per second to extract (default: 1.0)")
+                        help="Frames per second to extract (default: 1.0; use 2.0 for L3 per-event mode)")
     parser.add_argument("--max-frames", type=int, default=0,
-                        help="Max frames per clip (0 = no limit)")
+                        help="Max frames per clip (0 = no limit, ignored in L3 mode)")
     parser.add_argument("--workers", type=int, default=4,
                         help="Parallel ffmpeg workers (default: 4)")
     parser.add_argument("--limit", type=int, default=0,
-                        help="Process at most N clips (0 = all)")
+                        help="Process at most N clips/annotations (0 = all)")
     parser.add_argument("--min-frames", type=int, default=16,
-                        help="过滤低于该阈值的样本；<=0 表示不过滤")
+                        help="过滤低于该阈值的样本；<=0 表示不过滤 (L3 mode default: 2)")
     parser.add_argument("--overwrite", action="store_true",
                         help="Re-extract even if output dir already has frames")
     args = parser.parse_args()
@@ -431,6 +626,36 @@ def main() -> None:
     output_base = Path(args.output_dir)
     output_base.mkdir(parents=True, exist_ok=True)
 
+    # ── L3 per-event mode ──────────────────────────────────────────────────
+    if args.annotation_dir:
+        annotation_dir = Path(args.annotation_dir)
+        if not annotation_dir.exists():
+            print(f"ERROR: annotation-dir not found: {annotation_dir}", file=sys.stderr)
+            sys.exit(1)
+
+        fps = args.fps if args.fps != 1.0 else 2.0  # default 2fps for L3
+        min_frames = args.min_frames if args.min_frames != 16 else 2
+
+        original_video_index = None
+        if args.original_video_root:
+            print(f"Indexing original videos under {args.original_video_root} ...")
+            original_video_index = build_original_video_index(args.original_video_root)
+            print(f"Found {len(original_video_index)} original videos")
+
+        run_l3_extraction(
+            annotation_dir=annotation_dir,
+            output_base=output_base,
+            fps=fps,
+            workers=args.workers,
+            overwrite=args.overwrite,
+            min_frames=min_frames,
+            video_dir=args.video_dir,
+            original_video_index=original_video_index,
+            limit=args.limit,
+        )
+        return
+
+    # ── Standard per-clip mode ─────────────────────────────────────────────
     original_video_index = None
     if args.original_video_root:
         print(f"Indexing original videos under {args.original_video_root} ...")

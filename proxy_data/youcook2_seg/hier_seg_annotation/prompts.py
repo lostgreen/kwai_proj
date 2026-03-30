@@ -1,16 +1,9 @@
 """
-3-level hierarchical annotation prompts (domain-agnostic).
+Hierarchical annotation prompts (domain-agnostic).
 
 Design philosophy:
   Merged  — Single-call L1+L2: model sees full video (real timestamps),
              outputs macro phases, nested activity events, domain, and summary.
-  Level 1 — Warped-Time Segmentation: model sees uniformly sampled frames
-             numbered 1..N (no real timestamps), predicts phase boundaries on
-             the warped frame axis.  Engineering maps back to real time.
-  Level 2 — Phase-Based Event Detection: for each L1 macro phase, model
-             detects activity events within that phase scope.  Depends on L1.
-             (128s sliding windows are only used at training-data construction
-             time in build_dataset.py, NOT during annotation.)
   Level 3 — Local Temporal Grounding: given an L2 event clip + text query,
              model pinpoints start/end of atomic state-change moments.
 
@@ -37,24 +30,48 @@ or the moment a visual state solidifies.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Domain Taxonomy
-# Used by merged L1+L2 annotation; VLM picks exactly one category.
+# Domain Taxonomy (two-level hierarchy)
+# L1 = broad activity category; L2 = fine-grained subcategory.
+# Used by merged L1+L2 annotation; VLM picks one L1 and one L2 label.
 # ─────────────────────────────────────────────────────────────────────────────
-DOMAIN_TAXONOMY = [
-    "cooking",               # Food preparation, baking, meal assembly
-    "sports",                # Athletic activities, games, competitions
-    "crafting_diy",          # Arts, crafts, handmade projects
-    "repair_maintenance",    # Fixing, servicing mechanical/electronic items
-    "beauty_grooming",       # Hair, makeup, skincare, personal care
-    "cleaning_housework",    # Household chores, organization, laundry
-    "gardening_outdoor",     # Planting, landscaping, outdoor work
-    "music_performance",     # Playing instruments, dance, stage performance
-    "science_experiment",    # Lab work, chemistry, physics demonstrations
-    "fitness_exercise",      # Workout routines, yoga, training
-    "construction_building", # Woodworking, metalwork, structural assembly
-    "vehicle_operation",     # Driving, cycling, vehicle maintenance
-    "other",                 # Catch-all for unmatched domains
-]
+DOMAIN_TAXONOMY: dict[str, list[str]] = {
+    "procedural": [
+        "cooking",               # Food preparation, baking, meal assembly
+        "construction_building", # Woodworking, metalwork, structural assembly
+        "crafting_diy",          # Arts, crafts, handmade projects
+        "repair_maintenance",    # Fixing, servicing mechanical/electronic items
+    ],
+    "physical": [
+        "sports",                # Athletic activities, games, competitions
+        "fitness_exercise",      # Workout routines, yoga, training
+        "music_performance",     # Playing instruments, dance, stage performance
+    ],
+    "lifestyle": [
+        "beauty_grooming",       # Hair, makeup, skincare, personal care
+        "cleaning_housework",    # Household chores, organization, laundry
+        "gardening_outdoor",     # Planting, landscaping, outdoor work
+        "vehicle_operation",     # Driving, cycling, vehicle maintenance
+    ],
+    "educational": [
+        "science_experiment",    # Lab work, chemistry, physics demonstrations
+    ],
+    "other": [
+        "other",                 # Catch-all for unmatched domains
+    ],
+}
+
+# Flat set of all valid L2 subcategory values (for validation)
+DOMAIN_L2_ALL: set[str] = {sub for subs in DOMAIN_TAXONOMY.values() for sub in subs}
+
+
+def _format_taxonomy_for_prompt() -> str:
+    """Format DOMAIN_TAXONOMY as indented bullet list for prompt injection."""
+    lines = []
+    for l1, l2_list in DOMAIN_TAXONOMY.items():
+        lines.append(f"  {l1}:")
+        for l2 in l2_list:
+            lines.append(f"    - {l2}")
+    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,7 +84,8 @@ You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_fram
 Your task has four parts:
 
 ## PART 1 — DOMAIN CLASSIFICATION
-Classify the video into exactly ONE domain from this list:
+Classify the video using a two-level taxonomy.
+Choose ONE broad category (L1) and ONE fine-grained subcategory (L2) from the list below:
 {domain_taxonomy_str}
 
 ## PART 2 — VIDEO SUMMARY
@@ -99,7 +117,8 @@ All timestamps are integer seconds (absolute, 0-based).
 
 Output JSON:
 {{
-  "domain": "<one category from the list>",
+  "domain_l1": "<one broad category>",
+  "domain_l2": "<one fine-grained subcategory>",
   "summary": "<one sentence>",
   "macro_phases": [
     {{
@@ -126,162 +145,23 @@ def get_merged_l1l2_prompt(n_frames: int, duration_sec: int) -> str:
     """
     Build the merged L1+L2 (phase segmentation + event detection + domain) prompt.
 
-    Single VLM call outputs domain, summary, macro_phases with nested events.
+    Single VLM call outputs domain_l1, domain_l2, summary, macro_phases with nested events.
     Uses real timestamps (not warped frames).
 
     Args:
         n_frames: Number of frames the model will see.
         duration_sec: Total video duration in seconds.
     """
-    taxonomy_str = "\n".join(f"  - {d}" for d in DOMAIN_TAXONOMY)
     return _MERGED_L1L2_BASE.format(
         n_frames=n_frames,
         duration=duration_sec,
-        domain_taxonomy_str=taxonomy_str,
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Level 1: Macro Phase — Warped-Time Segmentation (阶段级)
-# Input:  N uniformly sampled frames labelled [Frame 1] .. [Frame N]
-# Output: JSON with macro_phases, boundaries in warped frame indices
-# ─────────────────────────────────────────────────────────────────────────────
-_LEVEL1_BASE = """\
-You are given {n_frames} frames uniformly sampled from a video. \
-The frames are numbered 1 to {n_frames}. These numbers are ordinal positions, \
-NOT real-world timestamps. Your task is to segment the frame sequence into \
-high-level macro phases (typically 3 to 5).
-
-LEVEL 1 DEFINITION:
-- A macro phase is a broad activity stage such as preparation, setup, \
-main execution, finishing, or cleanup.
-- A macro phase may span many frames and contain multiple fine-grained actions.
-- Macro phases do NOT need to cover all {n_frames} frames. Skip intros, outros, \
-talking-only spans, beauty shots, or any content not advancing the main activity.
-- Group by process intent, not by camera cut or tiny motion change.
-
-ACTIVITY RELEVANCE FILTER — exclude frames/spans that show:
-- Pure narration or face-to-camera talking with no physical manipulation
-- Non-activity content, reactions, idle waiting
-- Unrelated setup/cleanup, tool-only motions not affecting the task object
-
-For each phase, provide:
-- phase_id: Sequential integer starting from 1.
-- start_frame / end_frame: Boundary frame numbers (1-indexed, within 1..{n_frames}).
-- phase_name: A concise noun phrase (e.g., "Material Preparation").
-- narrative_summary: One sentence describing the phase's core objective.
-
-Output JSON:
-{{
-  "macro_phases": [
-    {{
-      "phase_id": 1,
-      "start_frame": 3,
-      "end_frame": 12,
-      "phase_name": "Material Preparation",
-      "narrative_summary": "Gather and organize all required materials."
-    }}
-  ]
-}}"""
-
-
-def get_level1_prompt(n_frames: int) -> str:
-    """
-    Build the Level 1 (Warped-Time Macro Phase) user-turn prompt.
-
-    Args:
-        n_frames: Number of uniformly sampled frames the model will see.
-    """
-    return _LEVEL1_BASE.format(n_frames=n_frames)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Level 2: Activity Event — Phase-Based Event Detection (活动级)
-# Input:  frames within an L1 macro phase (real timestamps) + phase context
-# Output: events detected in this phase
-# ─────────────────────────────────────────────────────────────────────────────
-_LEVEL2_BASE = """\
-You are an event detector. You are viewing frames from an activity phase \
-({phase_start}s to {phase_end}s, duration {phase_duration}s). \
-{phase_context}\
-Identify all complete activity events that occur within this phase.
-
-LEVEL 2 DEFINITION:
-- An activity event is a multi-second, goal-directed workflow that transforms \
-materials, objects, or the scene state, OR completes a meaningful process subgoal.
-- It is larger than a single atomic motion but smaller than a full activity stage.
-
-CRITICAL GRANULARITY RULES:
-1. [Aggregation Constraint]: Each event MUST be a complete logical sub-process, \
-NOT an isolated atomic action.
-2. [Anti-Fragmentation]: DO NOT split into single momentary actions (e.g., \
-"pick up tool", "place part", "fold corner"). Group them into one coherent event.
-3. [Good vs. Bad]:
-   - BAD (too granular): "Place a component onto the surface" (~1s)
-   - GOOD (correct): "Assemble the components by fitting and securing the parts" (~15-20s)
-4. [Activity Filter]: Exclude:
-   - talking/explaining without physical manipulation
-   - showing materials/tools without using them
-   - idle motions, repositioning, tool pickup without progress
-   - waiting/resting with no visible progress
-   - non-activity content, reactions, or result display
-5. [Boundary Events]: If an event extends slightly beyond phase boundaries, \
-still annotate it with accurate timestamps.
-6. [Empty Is Valid]: If no activity event occurs in this phase, return: {{"events": []}}
-
-For each event, provide:
-- event_id: Sequential integer starting from 1.
-- start_time / end_time: Timestamps in integer seconds (absolute, not phase-relative).
-- instruction: High-level description of the complete activity event.
-- visual_keywords: 3-5 key visual elements observed during this event.
-
-Output JSON:
-{{
-  "events": [
-    {{
-      "event_id": 1,
-      "start_time": 32,
-      "end_time": 55,
-      "instruction": "Assemble the components by fitting and securing the parts",
-      "visual_keywords": ["component A", "component B", "hands assembling"]
-    }}
-  ]
-}}"""
-
-
-def get_level2_prompt(
-    phase_start_sec: int,
-    phase_end_sec: int,
-    phase_name: str = "",
-    narrative_summary: str = "",
-) -> str:
-    """
-    Build the Level 2 (Phase-Based Event Detection) user-turn prompt.
-
-    Args:
-        phase_start_sec: Start of the L1 macro phase (seconds).
-        phase_end_sec: End of the L1 macro phase (seconds).
-        phase_name: Name of the macro phase from L1 (optional).
-        narrative_summary: L1 narrative summary for context (optional).
-    """
-    phase_duration = phase_end_sec - phase_start_sec
-    context_parts = []
-    if phase_name:
-        context_parts.append(f'Phase: "{phase_name}".')
-    if narrative_summary:
-        context_parts.append(f'Phase summary: "{narrative_summary}".')
-    phase_context = " ".join(context_parts) + "\n" if context_parts else ""
-    return _LEVEL2_BASE.format(
-        phase_duration=phase_duration,
-        phase_start=phase_start_sec,
-        phase_end=phase_end_sec,
-        phase_context=phase_context,
+        domain_taxonomy_str=_format_taxonomy_for_prompt(),
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Training Prompts — simplified <events> output format
-# Used by build_dataset.py (NOT annotate.py).  The model outputs segments as:
+# Used by build_hier_data.py (NOT annotate.py). The model outputs segments as:
 #   <events>[[start, end], [start, end], ...]</events>
 # ─────────────────────────────────────────────────────────────────────────────
 

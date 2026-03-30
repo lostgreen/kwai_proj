@@ -286,7 +286,7 @@ text_filter → Stage A          被 reject 的子集
 |--------|---------|------|
 | ET-Instruct | `et_instruct_164k/stage_a_coarse_filter.py` 内联 `apply_rules()` | per-group 阈值 (A/B/C) |
 | TimeLens | `shared/decision_rules.py:apply_group_d_rules()` | physical_hierarchy_score >= 3 |
-| VLM Vision | `shared/stage_a_vision_filter.py` 内联 `apply_vision_rules()` | score >= 3 + is_physical |
+| VLM Vision | `shared/vision_filter.py` 内联 `apply_vision_rules()` | score >= 3 + is_physical |
 
 ---
 
@@ -299,13 +299,13 @@ proxy_data/data_curation/
 ├── configs/
 │   ├── et_instruct_164k.yaml        # 筛选参数配置
 │   └── timelens_100k.yaml
-├── sources/
+├── shared/
 │   ├── shared/
 │   │   ├── __init__.py
 │   │   ├── llm_client.py            # API 调用、并发、断点续评
 │   │   ├── decision_rules.py        # 程序化决策规则 (Group D)
 │   │   ├── video_sampler.py         # 视频抽帧 (6帧, base64, 512px)
-│   │   ├── stage_a_vision_filter.py # VLM 视觉校验 (通用)
+│   │   ├── vision_filter.py # VLM 视觉校验 (通用)
 │   │   ├── analyze_results.py       # 结果统计分析 + HTML 报告
 │   │   ├── visualize_distribution.py # Source/Duration 分布可视化
 │   │   └── convert_to_viz.py        # 转可视化格式 + 抽帧
@@ -328,27 +328,27 @@ proxy_data/data_curation/
 ### ET-Instruct Stage A（1K 抽样）
 
 ```bash
-python proxy_data/data_curation/sources/et_instruct_164k/stage_a_coarse_filter.py \
-    --input proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl \
-    --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
+python proxy_data/data_curation/et_instruct_164k/stage_a_coarse_filter.py \
+    --input proxy_data/data_curation/results/et_instruct_164k/passed.jsonl \
+    --output proxy_data/data_curation/results/et_instruct_164k/stage_a_results.jsonl \
     --sample-n 1000 --workers 16
 ```
 
 ### ET-Instruct Stage A（全量）
 
 ```bash
-python proxy_data/data_curation/sources/et_instruct_164k/stage_a_coarse_filter.py \
-    --input proxy_data/data_curation/sources/et_instruct_164k/results/passed.jsonl \
-    --output proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
+python proxy_data/data_curation/et_instruct_164k/stage_a_coarse_filter.py \
+    --input proxy_data/data_curation/results/et_instruct_164k/passed.jsonl \
+    --output proxy_data/data_curation/results/et_instruct_164k/stage_a_results.jsonl \
     --no-sample --resume --workers 16
 ```
 
 ### VLM 视觉校验
 
 ```bash
-python proxy_data/data_curation/sources/shared/stage_a_vision_filter.py \
-    --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results_keep.jsonl \
-    --output proxy_data/data_curation/sources/et_instruct_164k/results/vision_results.jsonl \
+python proxy_data/data_curation/shared/vision_filter.py \
+    --input proxy_data/data_curation/results/et_instruct_164k/stage_a_results_keep.jsonl \
+    --output proxy_data/data_curation/results/et_instruct_164k/vision_results.jsonl \
     --video-root /m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos \
     --video-field video \
     --workers 4
@@ -359,9 +359,9 @@ python proxy_data/data_curation/sources/shared/stage_a_vision_filter.py \
 ### TimeLens Stage A (Route D)
 
 ```bash
-python proxy_data/data_curation/sources/timelens_100k/stage_a_coarse_filter.py \
-    --input proxy_data/data_curation/sources/timelens_100k/results/passed_timelens.jsonl \
-    --output proxy_data/data_curation/sources/timelens_100k/results/stage_a_results.jsonl \
+python proxy_data/data_curation/timelens_100k/stage_a_coarse_filter.py \
+    --input proxy_data/data_curation/results/timelens_100k/passed_timelens.jsonl \
+    --output proxy_data/data_curation/results/timelens_100k/stage_a_results.jsonl \
     --sample-n 1000 --workers 16
 ```
 
@@ -370,9 +370,9 @@ python proxy_data/data_curation/sources/timelens_100k/stage_a_coarse_filter.py \
 ### TimeLens VLM 视觉校验
 
 ```bash
-python proxy_data/data_curation/sources/shared/stage_a_vision_filter.py \
-    --input proxy_data/data_curation/sources/timelens_100k/results/stage_a_results_keep.jsonl \
-    --output proxy_data/data_curation/sources/timelens_100k/results/vision_results.jsonl \
+python proxy_data/data_curation/shared/vision_filter.py \
+    --input proxy_data/data_curation/results/timelens_100k/stage_a_results_keep.jsonl \
+    --output proxy_data/data_curation/results/timelens_100k/vision_results.jsonl \
     --video-root /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards \
     --video-field video_path \
     --workers 4
@@ -383,7 +383,7 @@ python proxy_data/data_curation/sources/shared/stage_a_vision_filter.py \
 ### TimeLens 一键 Pipeline
 
 ```bash
-cd proxy_data/data_curation/sources/timelens_100k
+cd proxy_data/data_curation/timelens_100k
 
 # 抽样试跑 (Route D 抽 200 条)
 bash run_pipeline.sh --sample
@@ -400,8 +400,8 @@ bash run_pipeline.sh --vision-only
 ### 查看结果
 
 ```bash
-python proxy_data/data_curation/sources/shared/analyze_results.py \
-    --input proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_results.jsonl \
+python proxy_data/data_curation/shared/analyze_results.py \
+    --input proxy_data/data_curation/results/et_instruct_164k/stage_a_results.jsonl \
     --stage A --review 3 \
-    --html proxy_data/data_curation/sources/et_instruct_164k/results/stage_a_report.html
+    --html proxy_data/data_curation/results/et_instruct_164k/stage_a_report.html
 ```

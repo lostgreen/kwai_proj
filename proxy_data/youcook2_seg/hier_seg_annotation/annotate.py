@@ -1,20 +1,37 @@
 #!/usr/bin/env python3
 """
-annotate.py — Hierarchical DVC annotation pipeline for YouCook2 segmentation data.
+annotate.py — Hierarchical video annotation pipeline (domain-agnostic).
 
 Three annotation levels with distinct strategies:
-  Level 1: Warped-Time Segmentation — uniform sampling → virtual frame index → map back
-  Level 2: Phase-Based Event Detection — uses L1 phases as scope, detects events per phase
-  Level 3: Local Temporal Grounding — given L2 event + text query → pinpoint atomic moments
+  merged: L1+L2 single-call — full video frames (1fps) → macro phases + events + domain
+  3:      L3 grounding — per-event frames (2fps preferred) → atomic state-change moments
+  2c/3c:  Quality check & supplement for L2/L3 results respectively
 
-Usage:
-    python annotate.py \
-        --frames-dir proxy_data/hier_seg_annotation/frames \
-        --output-dir proxy_data/hier_seg_annotation/annotations \
-        --level 1 \
-        --api-base https://api.novita.ai/v3/openai \
-        --model pa/gmn-2.5-pr \
-        --workers 4 --limit 50
+Recommended workflow:
+    # Step 1: L1+L2 merged annotation (1fps full-video frames)
+    python annotate.py \\
+        --frames-dir frames/ \\
+        --output-dir annotations/ \\
+        --level merged \\
+        --api-base https://api.novita.ai/v3/openai \\
+        --model pa/gmn-2.5-pr \\
+        --workers 4
+
+    # Step 2: Extract L3 per-event frames (2fps) using extract_frames.py
+    python extract_frames.py \\
+        --annotation-dir annotations/ \\
+        --original-video-root /path/to/videos \\
+        --output-dir frames_l3/ --fps 2
+
+    # Step 3: L3 annotation using per-event 2fps frames
+    python annotate.py \\
+        --frames-dir frames/ \\
+        --l3-frames-dir frames_l3/ \\
+        --output-dir annotations/ \\
+        --level 3 \\
+        --api-base https://api.novita.ai/v3/openai \\
+        --model pa/gmn-2.5-pr \\
+        --workers 4
 
 Output:
     annotations/{clip_key}.json
@@ -37,8 +54,7 @@ from PIL import Image
 from prompts import (
     SYSTEM_PROMPT,
     DOMAIN_TAXONOMY,
-    get_level1_prompt,
-    get_level2_prompt,
+    DOMAIN_L2_ALL,
     get_level2_check_prompt,
     get_level3_prompt,
     get_level3_check_prompt,
@@ -50,7 +66,7 @@ from prompts import (
 # Frame helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def format_mmss(total_seconds: int) -> str:
+def format_mmss(total_seconds: float) -> str:
     minutes, seconds = divmod(max(0, int(total_seconds)), 60)
     return f"{minutes:02d}:{seconds:02d}"
 
@@ -73,6 +89,11 @@ def frame_stem_to_index(frame_path: Path, fallback_index: int) -> int:
         return int(frame_path.stem)
     except ValueError:
         return fallback_index
+
+
+def frame_index_to_sec(frame_index: int, fps: float = 1.0) -> float:
+    """Convert 1-based ffmpeg frame index to real timestamp in seconds."""
+    return (frame_index - 1) / fps
 
 
 def get_all_frame_files(frame_dir: Path) -> list[Path]:
@@ -104,62 +125,18 @@ def encode_frame_files(
 
 def get_frames_in_time_range(
     frame_dir: Path,
-    start_sec: int,
-    end_sec: int,
+    start_sec: float,
+    end_sec: float,
+    fps: float = 1.0,
 ) -> list[Path]:
-    """Return frame files whose stem index falls within [start_sec, end_sec]."""
+    """Return frame files whose timestamp (derived from stem index and fps) falls within [start_sec, end_sec]."""
     result = []
     for fp in get_all_frame_files(frame_dir):
         idx = frame_stem_to_index(fp, -1)
-        if start_sec <= idx <= end_sec:
+        time_sec = frame_index_to_sec(idx, fps)
+        if start_sec <= time_sec <= end_sec:
             result.append(fp)
     return result
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Level 1: Warped-Time mapping
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_warped_frame_mapping(
-    frame_files: list[Path],
-    n_sample: int = 32,
-) -> tuple[list[Path], list[dict[str, int]]]:
-    """
-    Uniformly sample n_sample frames and build a warped_idx → real_sec mapping.
-
-    Returns:
-        sampled_files: Frame paths in warped order.
-        mapping: List of {"warped_idx": 1..N, "real_sec": <original second>}.
-    """
-    sampled = sample_uniform(frame_files, n_sample)
-    mapping = []
-    for warped_idx, fp in enumerate(sampled, 1):
-        real_sec = frame_stem_to_index(fp, warped_idx)
-        mapping.append({"warped_idx": warped_idx, "real_sec": real_sec})
-    return sampled, mapping
-
-
-def warped_to_real_sec(warped_idx: int, mapping: list[dict[str, int]]) -> int | None:
-    """Look up the real-second timestamp for a warped frame index."""
-    for entry in mapping:
-        if entry["warped_idx"] == warped_idx:
-            return entry["real_sec"]
-    # Clamp to nearest if exact match not found
-    if not mapping:
-        return None
-    if warped_idx <= mapping[0]["warped_idx"]:
-        return mapping[0]["real_sec"]
-    if warped_idx >= mapping[-1]["warped_idx"]:
-        return mapping[-1]["real_sec"]
-    # Linear interpolation between surrounding entries
-    for i in range(len(mapping) - 1):
-        if mapping[i]["warped_idx"] <= warped_idx <= mapping[i + 1]["warped_idx"]:
-            # Snap to closest
-            left, right = mapping[i], mapping[i + 1]
-            frac = (warped_idx - left["warped_idx"]) / (right["warped_idx"] - left["warped_idx"])
-            return round(left["real_sec"] + frac * (right["real_sec"] - left["real_sec"]))
-    return None
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -332,7 +309,7 @@ def annotate_clip(
     record: dict,
     frames_base: Path,
     output_dir: Path,
-    level: int | str,
+    level: str,
     api_base: str,
     api_key: str,
     model: str,
@@ -340,6 +317,7 @@ def annotate_clip(
     resize_max_width: int,
     jpeg_quality: int,
     overwrite: bool,
+    l3_frames_dir: Path | None = None,
 ) -> dict:
     """
     Run the annotation pipeline for a single clip record.
@@ -365,23 +343,20 @@ def annotate_clip(
             existing = {}
 
     # Skip if the requested level is already done and not overwriting
-    level_key = f"level{level}" if level not in ("2c", "3c", "merged") else ("level2" if level == "2c" else "level3" if level == "3c" else None)
     is_check_mode = level in ("2c", "3c")
     if level == "merged":
         if not overwrite and existing.get("level1") is not None and existing.get("level2") is not None:
             return {"clip_key": key, "ok": True, "error": None, "skipped": True}
+    elif level == "3":
+        if not overwrite and existing.get("level3") is not None:
+            return {"clip_key": key, "ok": True, "error": None, "skipped": True}
     elif is_check_mode:
         check_target = "level2" if level == "2c" else "level3"
-        # For check mode, skip if the target level doesn't exist yet
         if existing.get(check_target) is None:
             return {"clip_key": key, "ok": False,
                     "error": f"{check_target} annotation missing; run that level first before check",
                     "skipped": False}
-        # Also skip if already checked and not overwriting
         if not overwrite and existing.get(check_target, {}).get("_check_stats") is not None:
-            return {"clip_key": key, "ok": True, "error": None, "skipped": True}
-    else:
-        if not overwrite and existing.get(level_key) is not None:
             return {"clip_key": key, "ok": True, "error": None, "skipped": True}
 
     # Load frames metadata
@@ -396,39 +371,35 @@ def annotate_clip(
     )
     n_total_frames = count_extracted_frames(frame_dir)
 
+    # For L3/3c, l3_frames_dir is the base dir for per-event subfolders:
+    #   {l3_frames_dir}/{clip_key}_ev{event_id}/
+    # frame_dir (full-video 1fps) is used as fallback when per-event dir is absent.
+
     try:
-        if level == 1:
-            result_key, result_val = _annotate_level1(
+        if level == "merged":
+            merged_result = _annotate_merged_l1l2(
                 frame_dir, clip_duration,
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
             )
-        elif level == 2:
-            l1 = existing.get("level1")
-            if l1 is None:
-                return {"clip_key": key, "ok": False,
-                        "error": "level1 annotation missing; run level 1 first", "skipped": False}
-            result_key, result_val = _annotate_level2(
-                frame_dir, clip_duration, l1,
-                api_base, api_key, model,
-                max_frames_per_call, resize_max_width, jpeg_quality,
-            )
-        elif level == 3:
+        elif level == "3":
             l2 = existing.get("level2")
             if l2 is None:
                 return {"clip_key": key, "ok": False,
-                        "error": "level2 annotation missing; run level 2 first", "skipped": False}
+                        "error": "level2 annotation missing; run merged first", "skipped": False}
             result_key, result_val = _annotate_level3(
                 frame_dir, clip_duration, l2,
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
+                l3_base=l3_frames_dir,
+                clip_key_str=key,
             )
         elif level == "2c":
             l1 = existing.get("level1")
             l2 = existing.get("level2")
             if l1 is None or l2 is None:
                 return {"clip_key": key, "ok": False,
-                        "error": "level1+level2 annotations required for L2 check; run level 1 & 2 first",
+                        "error": "level1+level2 annotations required for L2 check; run merged first",
                         "skipped": False}
             result_key, result_val = _check_level2(
                 frame_dir, clip_duration, l1, l2,
@@ -440,18 +411,14 @@ def annotate_clip(
             l3 = existing.get("level3")
             if l2 is None or l3 is None:
                 return {"clip_key": key, "ok": False,
-                        "error": "level2+level3 annotations required for check; run level 2 & 3 first",
+                        "error": "level2+level3 annotations required for check; run merged & level 3 first",
                         "skipped": False}
             result_key, result_val = _check_level3(
                 frame_dir, clip_duration, l2, l3,
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
-            )
-        elif level == "merged":
-            merged_result = _annotate_merged_l1l2(
-                frame_dir, clip_duration,
-                api_base, api_key, model,
-                max_frames_per_call, resize_max_width, jpeg_quality,
+                l3_base=l3_frames_dir,
+                clip_key_str=key,
             )
         else:
             return {"clip_key": key, "ok": False, "error": f"unsupported level {level}", "skipped": False}
@@ -478,7 +445,7 @@ def annotate_clip(
         **existing,
     }
     if level == "merged":
-        ann.update(merged_result)  # overwrites level1, level2, domain, summary
+        ann.update(merged_result)  # overwrites level1, level2, domain_l1, domain_l2, summary
     else:
         ann[result_key] = result_val
     ann["annotated_at"] = datetime.now(timezone.utc).isoformat()
@@ -487,63 +454,6 @@ def annotate_clip(
         json.dump(ann, f, ensure_ascii=False, indent=2)
 
     return {"clip_key": key, "ok": True, "error": None, "skipped": False}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Level 1: Warped-Time Macro Phase Segmentation
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _annotate_level1(
-    frame_dir: Path,
-    clip_duration: float,
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-) -> tuple[str, dict[str, Any]]:
-    """
-    Level 1: Warped-Time Segmentation.
-
-    1. Uniformly sample N frames from the full video.
-    2. Label them [Frame 1] .. [Frame N] — no real timestamps.
-    3. Model predicts phase boundaries on the warped frame axis.
-    4. Map warped frame indices back to real seconds via the mapping table.
-    """
-    all_frames = get_all_frame_files(frame_dir)
-    if not all_frames:
-        raise RuntimeError(f"no frames found in {frame_dir}")
-
-    sampled_files, mapping = build_warped_frame_mapping(all_frames, n_sample=max_frames)
-    frame_b64 = encode_frame_files(sampled_files, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-
-    # Warped labels: [Frame 1], [Frame 2], ...
-    frame_labels = [f"[Frame {entry['warped_idx']}]" for entry in mapping]
-
-    prompt_text = get_level1_prompt(n_frames=len(sampled_files))
-    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
-    if parsed is None:
-        raise RuntimeError("level1 JSON parse failed after retry")
-
-    # Map warped frame indices back to real seconds
-    phases = parsed.get("macro_phases")
-    if isinstance(phases, list):
-        for phase in phases:
-            if not isinstance(phase, dict):
-                continue
-            sf = phase.get("start_frame")
-            ef = phase.get("end_frame")
-            if isinstance(sf, (int, float)):
-                phase["start_time"] = warped_to_real_sec(int(sf), mapping)
-            if isinstance(ef, (int, float)):
-                phase["end_time"] = warped_to_real_sec(int(ef), mapping)
-
-    return "level1", {
-        **parsed,
-        "_warped_mapping": mapping,
-        "_sampling": {
-            "n_sampled_frames": len(sampled_files),
-            "resize_max_width": resize_max_width,
-            "jpeg_quality": jpeg_quality,
-        },
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -556,18 +466,21 @@ def _split_merged_response(
     resize_max_width: int,
     jpeg_quality: int,
     clip_duration: float,
-) -> tuple[dict, dict, str, str]:
-    """Split merged VLM response into level1/level2 dicts + domain + summary.
+) -> tuple[dict, dict, str, str, str]:
+    """Split merged VLM response into level1/level2 dicts + domain_l1 + domain_l2 + summary.
 
     The VLM outputs events nested inside phases. This function:
-    1. Extracts and validates domain/summary
+    1. Extracts and validates domain_l1/domain_l2/summary
     2. Strips nested events out of phases → flat events list
     3. Tags each event with parent_phase_id
     4. Re-numbers event_id globally by start_time
     """
-    domain = parsed.get("domain", "other")
-    if domain not in DOMAIN_TAXONOMY:
-        domain = "other"
+    domain_l1 = parsed.get("domain_l1", "other")
+    if domain_l1 not in DOMAIN_TAXONOMY:
+        domain_l1 = "other"
+    domain_l2 = parsed.get("domain_l2", "other")
+    if domain_l2 not in DOMAIN_L2_ALL:
+        domain_l2 = "other"
     summary = parsed.get("summary", "")
 
     raw_phases = parsed.get("macro_phases", [])
@@ -618,7 +531,7 @@ def _split_merged_response(
         },
     }
     level2 = {"events": all_events}
-    return level1, level2, domain, summary
+    return level1, level2, domain_l1, domain_l2, summary
 
 
 def _annotate_merged_l1l2(
@@ -634,7 +547,7 @@ def _annotate_merged_l1l2(
     from the full video.
 
     Returns dict of annotation updates:
-      {"level1": ..., "level2": ..., "domain": ..., "summary": ...}
+      {"level1": ..., "level2": ..., "domain_l1": ..., "domain_l2": ..., "summary": ...}
     """
     all_frames = get_all_frame_files(frame_dir)
     if not all_frames:
@@ -655,115 +568,16 @@ def _annotate_merged_l1l2(
     if parsed is None:
         raise RuntimeError("merged L1+L2 JSON parse failed after retry")
 
-    level1, level2, domain, summary = _split_merged_response(
+    level1, level2, domain_l1, domain_l2, summary = _split_merged_response(
         parsed, len(sampled), resize_max_width, jpeg_quality, clip_duration,
     )
 
     return {
         "level1": level1,
         "level2": level2,
-        "domain": domain,
+        "domain_l1": domain_l1,
+        "domain_l2": domain_l2,
         "summary": summary,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Level 2: Phase-Based Event Detection
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _annotate_level2(
-    frame_dir: Path,
-    clip_duration: float,
-    l1_result: dict[str, Any],
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-) -> tuple[str, dict[str, Any]]:
-    """
-    Level 2: Phase-Based Event Detection.
-
-    Uses L1 macro phases as scope:
-      1. For each L1 phase, extract frames in [start_time, end_time].
-      2. Detect complete cooking events within that phase.
-      3. Collect all events across phases (no NMS needed since phases don't overlap).
-    """
-    phases = l1_result.get("macro_phases", [])
-    phases = sorted(
-        [p for p in phases if isinstance(p, dict)],
-        key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)),
-    )
-    if not phases:
-        raise RuntimeError("level1 macro_phases missing or empty")
-
-    all_events: list[dict[str, Any]] = []
-    phase_calls: list[dict[str, Any]] = []
-
-    for phase in phases:
-        phase_id = phase.get("phase_id", len(phase_calls) + 1)
-        start_time = phase.get("start_time")
-        end_time = phase.get("end_time")
-        phase_name = phase.get("phase_name", "")
-        narrative_summary = phase.get("narrative_summary", "")
-
-        if not isinstance(start_time, (int, float)) or not isinstance(end_time, (int, float)):
-            phase_calls.append({
-                "phase_id": phase_id, "phase_name": phase_name,
-                "start_time": start_time, "end_time": end_time,
-                "skipped": True, "skip_reason": "invalid time",
-            })
-            continue
-
-        phase_frames = get_frames_in_time_range(frame_dir, int(start_time), int(end_time))
-        if not phase_frames:
-            phase_calls.append({
-                "phase_id": phase_id, "phase_name": phase_name,
-                "start_time": start_time, "end_time": end_time,
-                "skipped": True, "skip_reason": "no frames",
-            })
-            continue
-
-        sampled = sample_uniform(phase_frames, max_frames)
-        frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-
-        # Real-time labels for L2
-        frame_labels = []
-        for fp in sampled:
-            idx = frame_stem_to_index(fp, 0)
-            frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
-
-        prompt_text = get_level2_prompt(
-            int(start_time), int(end_time),
-            phase_name=phase_name, narrative_summary=narrative_summary,
-        )
-        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
-
-        n_raw = 0
-        if parsed is not None:
-            events = parsed.get("events")
-            if isinstance(events, list):
-                for ev in events:
-                    if isinstance(ev, dict):
-                        st = ev.get("start_time")
-                        et = ev.get("end_time")
-                        if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
-                            ev["parent_phase_id"] = phase_id
-                            all_events.append(ev)
-                            n_raw += 1
-
-        phase_calls.append({
-            "phase_id": phase_id, "phase_name": phase_name,
-            "start_time": start_time, "end_time": end_time,
-            "n_sampled_frames": len(sampled),
-            "n_events_raw": n_raw,
-        })
-
-    # Re-number event_ids globally
-    all_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
-    for i, ev in enumerate(all_events, 1):
-        ev["event_id"] = i
-
-    return "level2", {
-        "events": all_events,
-        "_phase_calls": phase_calls,
     }
 
 
@@ -777,14 +591,17 @@ def _annotate_level3(
     l2_result: dict[str, Any],
     api_base: str, api_key: str, model: str,
     max_frames: int, resize_max_width: int, jpeg_quality: int,
+    l3_base: Path | None = None,
+    clip_key_str: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """
     Level 3: Local Temporal Grounding.
 
     For each L2 event:
-      1. Extract frames within the event time range.
+      1. Prefer per-event frames from {l3_base}/{clip_key}_ev{event_id}/ (high-fps).
+         If not available, fall back to filtering the full-video 1fps frame dir.
       2. Use the event instruction as the action query.
-      3. Model pinpoints atomic state-change moments.
+      3. Model pinpoints atomic state-change moments with ABSOLUTE timestamps.
     """
     events = l2_result.get("events", [])
     events = sorted(
@@ -793,6 +610,9 @@ def _annotate_level3(
     )
     if not events:
         raise RuntimeError("level2 events missing or empty")
+
+    meta = load_frame_meta(frame_dir)
+    fps = float(meta.get("fps", 1.0))
 
     all_results: list[dict[str, Any]] = []
     segment_calls: list[dict[str, Any]] = []
@@ -811,7 +631,34 @@ def _annotate_level3(
             })
             continue
 
-        ev_frames = get_frames_in_time_range(frame_dir, int(start_time), int(end_time))
+        # Try per-event frame dir first (high-fps extracted by extract_frames.py L3 mode)
+        ev_dir = (l3_base / f"{clip_key_str}_ev{event_id}") if (l3_base and clip_key_str) else None
+        using_per_event = ev_dir is not None and ev_dir.exists() and len(list(ev_dir.glob("*.jpg"))) > 0
+
+        if using_per_event:
+            ev_meta = load_frame_meta(ev_dir)
+            ev_fps = float(ev_meta.get("fps", 2.0))
+            ev_start = float(ev_meta.get("event_start_sec", start_time))
+            ev_frames = get_all_frame_files(ev_dir)
+            # Absolute timestamp: ev_start + (frame_idx - 1) / ev_fps
+            def make_labels(frames: list[Path], _ev_fps: float = ev_fps, _ev_start: float = ev_start) -> list[str]:
+                labels = []
+                for fp in frames:
+                    idx = frame_stem_to_index(fp, 0)
+                    t_abs = _ev_start + frame_index_to_sec(idx, _ev_fps)
+                    labels.append(f"[Timestamp {format_mmss(t_abs)} | Frame {idx}]")
+                return labels
+        else:
+            ev_fps = fps
+            ev_frames = get_frames_in_time_range(frame_dir, start_time, end_time, fps)
+            def make_labels(frames: list[Path], _fps: float = fps) -> list[str]:
+                labels = []
+                for fp in frames:
+                    idx = frame_stem_to_index(fp, 0)
+                    t = frame_index_to_sec(idx, _fps)
+                    labels.append(f"[Timestamp {format_mmss(t)} | Frame {idx}]")
+                return labels
+
         if not ev_frames:
             segment_calls.append({
                 "event_id": event_id, "instruction": instruction,
@@ -822,12 +669,7 @@ def _annotate_level3(
 
         sampled = sample_uniform(ev_frames, max_frames)
         frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-
-        # Real-time labels
-        frame_labels = []
-        for fp in sampled:
-            idx = frame_stem_to_index(fp, 0)
-            frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+        frame_labels = make_labels(sampled)
 
         prompt_text = get_level3_prompt(int(start_time), int(end_time), instruction)
         parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
@@ -852,6 +694,7 @@ def _annotate_level3(
             "start_time": start_time, "end_time": end_time,
             "n_sampled_frames": len(sampled),
             "n_grounding_results": len(results) if isinstance(results, list) else 0,
+            "frame_source": "per_event" if using_per_event else "full_video_filtered",
         })
 
     # Sort and re-number
@@ -961,18 +804,12 @@ def _check_level2(
     phases = l1_result.get("macro_phases", [])
     phases = sorted(
         [p for p in phases if isinstance(p, dict)],
-        key=lambda p: (p.get("start_frame", 0), p.get("end_frame", 0)),
+        key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)),
     )
     if not phases:
         raise RuntimeError("level1 macro_phases missing or empty")
 
     existing_events = l2_result.get("events", [])
-
-    # Build warped mapping to convert phase frame boundaries to real seconds
-    warped_mapping = l1_result.get("_warped_mapping") or []
-    warp_to_sec = {}
-    for m in warped_mapping:
-        warp_to_sec[m.get("warped_idx")] = m.get("real_sec")
 
     all_checked: list[dict[str, Any]] = []
     check_calls: list[dict[str, Any]] = []
@@ -983,11 +820,8 @@ def _check_level2(
         phase_name = phase.get("phase_name", "")
         narrative = phase.get("narrative_summary", "")
 
-        # Convert warped frame bounds to real seconds
-        sf = phase.get("start_frame", 0)
-        ef = phase.get("end_frame", 0)
-        phase_start = warp_to_sec.get(sf, sf)
-        phase_end = warp_to_sec.get(ef, ef)
+        phase_start = phase.get("start_time", 0)
+        phase_end = phase.get("end_time", 0)
 
         # Gather events belonging to this phase
         phase_events = [
@@ -1158,12 +992,14 @@ def _check_level3(
     l3_result: dict[str, Any],
     api_base: str, api_key: str, model: str,
     max_frames: int, resize_max_width: int, jpeg_quality: int,
+    l3_base: Path | None = None,
+    clip_key_str: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """
     Level 3 Check: Model-based quality review and supplement for L3 annotations.
 
     For each L2 event:
-      1. Gather existing L3 grounding_results belonging to this event.
+      1. Prefer per-event frames from {l3_base}/{clip_key}_ev{event_id}/ (high-fps).
       2. Re-read event frames and call the judge model.
       3. Apply verdicts (keep/revise/remove) and add supplemented actions.
     """
@@ -1174,6 +1010,9 @@ def _check_level3(
     )
     if not events:
         raise RuntimeError("level2 events missing or empty")
+
+    meta = load_frame_meta(frame_dir)
+    fps = float(meta.get("fps", 1.0))
 
     existing_l3 = l3_result.get("grounding_results", [])
 
@@ -1201,7 +1040,6 @@ def _check_level3(
         ]
 
         if not event_results:
-            # No existing L3 results for this event → nothing to check
             check_calls.append({
                 "event_id": event_id, "instruction": instruction,
                 "start_time": start_time, "end_time": end_time,
@@ -1209,24 +1047,46 @@ def _check_level3(
             })
             continue
 
-        ev_frames = get_frames_in_time_range(frame_dir, int(start_time), int(end_time))
+        # Try per-event dir first
+        ev_dir = (l3_base / f"{clip_key_str}_ev{event_id}") if (l3_base and clip_key_str) else None
+        using_per_event = ev_dir is not None and ev_dir.exists() and len(list(ev_dir.glob("*.jpg"))) > 0
+
+        if using_per_event:
+            ev_meta = load_frame_meta(ev_dir)
+            ev_fps = float(ev_meta.get("fps", 2.0))
+            ev_start = float(ev_meta.get("event_start_sec", start_time))
+            ev_frames = get_all_frame_files(ev_dir)
+
+            def make_labels(frames: list[Path], _ev_fps: float = ev_fps, _ev_start: float = ev_start) -> list[str]:
+                labels = []
+                for fp in frames:
+                    idx = frame_stem_to_index(fp, 0)
+                    t_abs = _ev_start + frame_index_to_sec(idx, _ev_fps)
+                    labels.append(f"[Timestamp {format_mmss(t_abs)} | Frame {idx}]")
+                return labels
+        else:
+            ev_frames = get_frames_in_time_range(frame_dir, start_time, end_time, fps)
+
+            def make_labels(frames: list[Path], _fps: float = fps) -> list[str]:
+                labels = []
+                for fp in frames:
+                    idx = frame_stem_to_index(fp, 0)
+                    t = frame_index_to_sec(idx, _fps)
+                    labels.append(f"[Timestamp {format_mmss(t)} | Frame {idx}]")
+                return labels
+
         if not ev_frames:
             check_calls.append({
                 "event_id": event_id, "instruction": instruction,
                 "start_time": start_time, "end_time": end_time,
                 "skipped": True, "skip_reason": "no frames",
             })
-            # Keep originals when we can't check
             all_checked.extend(event_results)
             continue
 
         sampled = sample_uniform(ev_frames, max_frames)
         frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-
-        frame_labels = []
-        for fp in sampled:
-            idx = frame_stem_to_index(fp, 0)
-            frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+        frame_labels = make_labels(sampled)
 
         prompt_text = get_level3_check_prompt(
             int(start_time), int(end_time), instruction, event_results,
@@ -1290,17 +1150,19 @@ def _check_level3(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Hierarchical DVC annotation pipeline for YouCook2",
+        description="Hierarchical video annotation pipeline (merged L1+L2, L3, and quality checks)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--jsonl", default=None,
                         help="可选：输入 JSONL。若不提供，则直接遍历 --frames-dir 下所有样本。")
     parser.add_argument("--frames-dir", required=True,
-                        help="Root directory of pre-extracted 1fps frames")
+                        help="Root directory of pre-extracted frames")
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write per-clip annotation JSON files")
-    parser.add_argument("--level", type=str, choices=["1", "2", "3", "2c", "3c", "merged"], default="1",
-                        help="Annotation level (1/2/3=annotate, 2c/3c=check, merged=L1+L2+domain in one call)")
+    parser.add_argument("--l3-frames-dir", default=None,
+                        help="High-FPS frames directory for L3/3c (falls back to --frames-dir)")
+    parser.add_argument("--level", type=str, choices=["merged", "3", "2c", "3c"], default="merged",
+                        help="Annotation level (merged=L1+L2+domain, 3=L3 grounding, 2c/3c=check)")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -1350,15 +1212,14 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    level = int(args.level) if args.level in ("1", "2", "3") else args.level
+    level = args.level
+    l3_frames_dir = Path(args.l3_frames_dir) if args.l3_frames_dir else None
 
     print(f"Annotating {len(records)} clips at Level {args.level}")
     print(f"API: {args.api_base}  model: {args.model}  workers: {args.workers}")
     print(f"resize_max_width={args.resize_max_width}  jpeg_quality={args.jpeg_quality}")
     if level == "merged":
         print(f"Merged mode: L1 phases + L2 events + domain + summary in one VLM call")
-    elif level == 2:
-        print(f"L2 phase-based: events detected per L1 macro phase")
     elif level == "2c":
         print(f"L2 check mode: model-based quality review & supplement for L2 events")
     elif level == "3c":
@@ -1377,6 +1238,7 @@ def main() -> None:
                 args.resize_max_width,
                 args.jpeg_quality,
                 args.overwrite,
+                l3_frames_dir,
             ): rec
             for rec in records
         }

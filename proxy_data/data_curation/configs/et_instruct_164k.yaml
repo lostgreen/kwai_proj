@@ -72,5 +72,5 @@ stage_b:
 
 # 输出
 output:
-  results_dir: sources/et_instruct_164k/results
+  results_dir: results/et_instruct_164k
   review_sample_size: 50

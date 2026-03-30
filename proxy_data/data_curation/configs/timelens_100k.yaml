@@ -55,4 +55,4 @@ vision_filter:
 
 # 输出
 output:
-  results_dir: sources/timelens_100k/results
+  results_dir: results/timelens_100k

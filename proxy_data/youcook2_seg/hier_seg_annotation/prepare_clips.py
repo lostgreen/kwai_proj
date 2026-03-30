@@ -20,8 +20,8 @@ For each L3 record:
 
 Usage:
     python prepare_clips.py \
-        --input  datasets/youcook2_hier_L1_train.jsonl \
-        --output datasets/youcook2_hier_L1_train_clipped.jsonl \
+        --input  datasets/hier_L1_train.jsonl \
+        --output datasets/hier_L1_train_clipped.jsonl \
         --clip-dir /path/to/clip_output_dir \
         --workers 8 \
         --l1-fps 1
@@ -136,7 +136,7 @@ def _process_l2(record: dict, clip_dir: Path) -> dict:
 
     # Rebuild prompt (0-based duration)
     new_user_text = (
-        "Watch the following cooking video clip carefully:\n<video>\n\n"
+        "Watch the following video clip carefully:\n<video>\n\n"
         + get_level2_train_prompt(duration)
     )
 
