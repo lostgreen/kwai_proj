@@ -102,9 +102,11 @@ def get_all_frame_files(frame_dir: Path) -> list[Path]:
 
 
 def sample_uniform(frame_files: list[Path], n_sample: int) -> list[Path]:
-    """Uniformly sample exactly n_sample frames from a list."""
-    if not frame_files or n_sample <= 0:
+    """Uniformly sample up to n_sample frames. n_sample=0 returns all frames."""
+    if not frame_files:
         return []
+    if n_sample <= 0:
+        return list(frame_files)
     if len(frame_files) <= n_sample:
         return list(frame_files)
     stride = (len(frame_files) - 1) / (n_sample - 1)
@@ -1169,8 +1171,8 @@ def main() -> None:
                         help="API key (prefers NOVITA_API_KEY env var, then OPENAI_API_KEY)")
     parser.add_argument("--model", default="pa/gmn-2.5-pr",
                         help="Model name to pass to the API")
-    parser.add_argument("--max-frames-per-call", type=int, default=32,
-                        help="Max frames per API call")
+    parser.add_argument("--max-frames-per-call", type=int, default=0,
+                        help="Max frames per API call (0 = no limit, send all frames)")
     parser.add_argument("--resize-max-width", type=int, default=384,
                         help="Resize frames before upload; <=0 disables resizing")
     parser.add_argument("--jpeg-quality", type=int, default=60,
