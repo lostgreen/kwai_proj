@@ -1426,20 +1426,19 @@ def main() -> None:
                 res = fut.result()
             except Exception as exc:
                 error_count += 1
-                print(f"[{i}/{total}] CRASH  {clip_key}: {type(exc).__name__}: {exc}")
+                print(f"[{i}/{total}] CRASH  {clip_key}: {type(exc).__name__}: {exc}", flush=True)
                 continue
             if res["skipped"]:
                 skipped_count += 1
-                if i % 50 == 0:
-                    print(f"[{i}/{total}] SKIP   {res['clip_key']}")
+                print(f"\r[{i}/{total}] skip={skipped_count} ok={ok_count} err={error_count}", end="", flush=True)
             elif res["ok"]:
                 ok_count += 1
-                print(f"[{i}/{total}] OK     {res['clip_key']}")
+                print(f"\n[{i}/{total}] OK     {res['clip_key']}", flush=True)
             else:
                 error_count += 1
-                print(f"[{i}/{total}] ERROR  {res['clip_key']}: {res['error']}")
+                print(f"\n[{i}/{total}] ERROR  {res['clip_key']}: {res['error']}", flush=True)
 
-    print(f"\nFinished: {ok_count} annotated, {skipped_count} skipped, {error_count} errors")
+    print(f"\n\nFinished: {ok_count} annotated, {skipped_count} skipped, {error_count} errors", flush=True)
     if error_count > 0:
         print("Re-run with --overwrite to retry failed clips.")
 

@@ -12,13 +12,16 @@
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# Force unbuffered Python output (critical for tee piping)
+export PYTHONUNBUFFERED=1
+
 # ── Config ──────────────────────────────────────────────────────────
 SCRIPT_DIR="proxy_data/youcook2_seg/hier_seg_annotation"
 DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation"
 
-JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampled/sampled_1k.jsonl}"
+JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampled/sampled_1000.jsonl}"
 MODEL="${MODEL:-pa/gemini-3.1-pro-preview}"
-WORKERS="${WORKERS:-8}"
+WORKERS="${WORKERS:-4}"
 
 LOG_DIR="${DATA_ROOT}/logs"
 mkdir -p "$LOG_DIR"

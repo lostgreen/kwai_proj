@@ -689,15 +689,17 @@ def run_l3_extraction(
                 continue
             if res.get("skipped"):
                 skipped += 1
+                if i % 50 == 0 or i == len(tasks):
+                    print(f"\r[{i}/{len(tasks)}] done={done} skipped={skipped} errors={errors}", end="", flush=True)
             elif res.get("error"):
                 errors += 1
-                print(f"[{i}/{len(tasks)}] ERROR  {res['key']}: {res['error']}")
+                print(f"\n[{i}/{len(tasks)}] ERROR  {res['key']}: {res['error']}", flush=True)
             else:
                 done += 1
-                if i % 100 == 0 or i == len(tasks):
-                    print(f"[{i}/{len(tasks)}] done={done} skipped={skipped} errors={errors}")
+                if i % 50 == 0 or i == len(tasks):
+                    print(f"\r[{i}/{len(tasks)}] done={done} skipped={skipped} errors={errors}", end="", flush=True)
 
-    print(f"\nDone: {done} extracted, {skipped} skipped, {errors} errors")
+    print(f"\n\nDone: {done} extracted, {skipped} skipped, {errors} errors", flush=True)
 
 
 def main() -> None:
@@ -826,23 +828,22 @@ def main() -> None:
                 errors += 1
                 rec = futures[fut]
                 ckey = (rec.get("videos") or ["?"])[0].rsplit("/", 1)[-1].rsplit(".", 1)[0] if rec.get("videos") else "?"
-                print(f"[{i}/{len(records)}] CRASH  {ckey}: {type(exc).__name__}: {exc}")
+                print(f"[{i}/{len(records)}] CRASH  {ckey}: {type(exc).__name__}: {exc}", flush=True)
                 continue
             if res.get("filtered"):
                 filtered += 1
-                print(f"[{i}/{len(records)}] FILTER {res['clip_key']}: {res['error']}")
+                print(f"\n[{i}/{len(records)}] FILTER {res['clip_key']}: {res['error']}", flush=True)
             elif res["error"]:
                 errors += 1
-                print(f"[{i}/{len(records)}] ERROR  {res['clip_key']}: {res['error']}")
+                print(f"\n[{i}/{len(records)}] ERROR  {res['clip_key']}: {res['error']}", flush=True)
             elif res["skipped"]:
                 skipped += 1
-                if i % 100 == 0:
-                    print(f"[{i}/{len(records)}] (skip) {res['clip_key']} ({res['n_frames']} frames)")
+                print(f"\r[{i}/{len(records)}] skip={skipped} ok={done} err={errors}", end="", flush=True)
             else:
                 done += 1
-                print(f"[{i}/{len(records)}] OK     {res['clip_key']} → {res['n_frames']} frames")
+                print(f"\n[{i}/{len(records)}] OK     {res['clip_key']} → {res['n_frames']} frames", flush=True)
 
-    print(f"\nDone: {done} extracted, {skipped} skipped, {filtered} filtered, {errors} errors")
+    print(f"\n\nDone: {done} extracted, {skipped} skipped, {filtered} filtered, {errors} errors", flush=True)
 
 
 if __name__ == "__main__":
