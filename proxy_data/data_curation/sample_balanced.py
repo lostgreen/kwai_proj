@@ -20,6 +20,8 @@ sample_balanced.py — 从 candidates.jsonl 中按 source 域均衡采样。
       TimeLens-100K    → VIDEO_ROOT_TL (环境变量或默认值)
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
