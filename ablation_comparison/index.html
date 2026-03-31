@@ -1000,15 +1000,25 @@ function initScrollSync() {
   shell.addEventListener('scroll', sync, { passive: true });
   sync();
 
-  // Drag-to-scroll (mouse)
-  var dragging = false, startX = 0, startLeft = 0;
+  // Drag-to-scroll (mouse) with dead-zone to avoid clashing with segment clicks
+  var dragging = false, dragStarted = false, startX = 0, startLeft = 0;
+  var DRAG_THRESHOLD = 5; // px before drag activates
   var onMove = function(e) {
     if (!dragging) return;
-    shell.scrollLeft = startLeft - (e.clientX - startX);
+    var dx = e.clientX - startX;
+    if (!dragStarted && Math.abs(dx) >= DRAG_THRESHOLD) {
+      dragStarted = true;
+      shell.classList.add('dragging');
+    }
+    if (dragStarted) {
+      e.preventDefault();
+      shell.scrollLeft = startLeft - dx;
+    }
   };
   var onUp = function() {
     if (!dragging) return;
     dragging = false;
+    dragStarted = false;
     shell.classList.remove('dragging');
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
@@ -1016,9 +1026,9 @@ function initScrollSync() {
   shell.addEventListener('mousedown', function(e) {
     if (e.button !== 0) return;
     dragging = true;
+    dragStarted = false;
     startX = e.clientX;
     startLeft = shell.scrollLeft;
-    shell.classList.add('dragging');
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
