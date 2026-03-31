@@ -508,8 +508,10 @@ class RLHFDataset(Dataset):
                 videos = [os.path.join(self.image_dir, video) for video in videos]
 
             processed_videos = [] if len(videos) != 0 else None  # text-only data
+            _meta = example.get("metadata") or {}
+            _eff_fps = _meta.get("l1_fps", self.video_fps) if _meta.get("level") == 1 else self.video_fps
             for video in videos:
-                processed_videos.append(process_video(video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=self.max_frames, min_frames=self.min_frames, video_fps=self.video_fps))
+                processed_videos.append(process_video(video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=self.max_frames, min_frames=self.min_frames, video_fps=_eff_fps))
 
             model_inputs = self.processor(
                 videos=processed_videos, text=[prompt], add_special_tokens=False, return_tensors="pt"
@@ -588,10 +590,13 @@ class RLHFDataset(Dataset):
             # 多视频时，将 max_frames 均匀分配给每个视频以防止 OOM
             n_videos = len(videos)
             max_frames_per_video = max(1, self.max_frames // n_videos) if n_videos > 1 else self.max_frames
+            # Per-record fps: L1 clips are resampled at l1_fps (e.g. 1fps)
+            _meta = example.get("metadata") or {}
+            _eff_fps = _meta.get("l1_fps", self.video_fps) if _meta.get("level") == 1 else self.video_fps
 
             for video in videos:
                 processed_video, video_fps = process_video(
-                    video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=max_frames_per_video, min_frames=self.min_frames, video_fps=self.video_fps, return_fps=True
+                    video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=max_frames_per_video, min_frames=self.min_frames, video_fps=_eff_fps, return_fps=True
                 )
                 video_kwargs = {"do_sample_frames": False}
                 processed_videos.append(processed_video)
@@ -619,7 +624,7 @@ class RLHFDataset(Dataset):
                 "max_pixels": self.max_pixels,
                 "max_frames": max_frames_per_video,
                 "min_frames": self.min_frames,
-                "video_fps": self.video_fps
+                "video_fps": _eff_fps
             }
             token_stats_grid_video = model_inputs.get("video_grid_thw", None)
         else:
