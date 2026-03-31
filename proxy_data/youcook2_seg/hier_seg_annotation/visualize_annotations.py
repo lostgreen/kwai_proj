@@ -272,11 +272,14 @@ def aggregate(records: list[TrainRecord]) -> dict:
     input_durations: dict[str, list[float]] = {"L1": [], "L2": [], "L3": []}
     output_counts: dict[str, list[int]] = {"L1": [], "L2": [], "L3": []}
     per_video: dict[str, dict] = {}  # clip_key → {domain_l1, domain_l2, L1, L2, L3}
+    # 按层级分组, 方便各层级独立做 domain 统计
+    level_records: dict[str, list[TrainRecord]] = {"L1": [], "L2": [], "L3": []}
 
     for r in records:
         per_level[r.level] += 1
         input_durations[r.level].append(r.input_duration)
         output_counts[r.level].append(r.output_count)
+        level_records[r.level].append(r)
 
         if r.clip_key not in per_video:
             per_video[r.clip_key] = {
@@ -293,6 +296,7 @@ def aggregate(records: list[TrainRecord]) -> dict:
         "input_durations": input_durations,
         "output_counts": output_counts,
         "per_video": list(per_video.values()),
+        "level_records": level_records,
     }
 
 
@@ -337,17 +341,25 @@ def plot_training_yield(stats: dict, stats_raw: dict, n_videos: int,
 
 
 # =====================================================================
-# Fig 2: 两层 Domain 嵌套饼图
+# Fig 2: 筛选后三层各自的 domain 分布 (3 个嵌套饼图)
 # =====================================================================
-def plot_domain_sunburst(anns: list[dict], ax: plt.Axes):
+def _draw_one_domain_donut(records: list[TrainRecord], level: str, ax: plt.Axes):
+    """为单个层级画 domain_l1(内环) + domain_l2(外环) 嵌套饼图。"""
+    if not records:
+        ax.set_title(f"{level} (no data)")
+        ax.axis("off")
+        return
+
+    # 统计: 用去重的 clip_key 计数 (一个视频在某层可能贡献多条 record)
     l1_counter = Counter()
     l2_counter = Counter()
-    for ann in anns:
-        d1 = ann.get("domain_l1", "other")
-        d2 = ann.get("domain_l2", "other")
-        l1_counter[d1] += 1
-        l2_counter[(d1, d2)] += 1
 
+    # 按 record 数计  (而非 clip 数), 更准确反映训练数据分布
+    for r in records:
+        l1_counter[r.domain_l1] += 1
+        l2_counter[(r.domain_l1, r.domain_l2)] += 1
+
+    total = sum(l1_counter.values())
     l1_sorted = sorted(l1_counter.keys(), key=lambda x: -l1_counter[x])
 
     inner_sizes, inner_colors, inner_labels = [], [], []
@@ -356,7 +368,7 @@ def plot_domain_sunburst(anns: list[dict], ax: plt.Axes):
     for d1 in l1_sorted:
         inner_sizes.append(l1_counter[d1])
         inner_colors.append(DOMAIN_L1_COLORS.get(d1, "#999"))
-        pct = l1_counter[d1] / len(anns) * 100
+        pct = l1_counter[d1] / total * 100
         inner_labels.append(f"{d1}\n({pct:.0f}%)")
 
         subs = sorted(
@@ -369,23 +381,29 @@ def plot_domain_sunburst(anns: list[dict], ax: plt.Axes):
             alpha = 0.5 + 0.5 * (1 - i / max(len(subs), 1))
             c = (*base_color[:3], alpha)
             outer_colors.append(c)
-            pct2 = cnt / len(anns) * 100
-            outer_labels.append(f"{d2}\n({cnt})" if pct2 >= 2 else "")
+            pct2 = cnt / total * 100
+            outer_labels.append(f"{d2}\n({cnt})" if pct2 >= 3 else "")
 
     wedge_kwargs = dict(edgecolor="white", linewidth=1.5)
     ax.pie(
         inner_sizes, radius=0.65, colors=inner_colors,
         labels=inner_labels, labeldistance=0.35,
-        textprops={"fontsize": 8, "fontweight": "bold"},
+        textprops={"fontsize": 7, "fontweight": "bold"},
         wedgeprops=wedge_kwargs,
     )
     ax.pie(
         outer_sizes, radius=1.0, colors=outer_colors,
         labels=outer_labels, labeldistance=1.12,
-        textprops={"fontsize": 7},
+        textprops={"fontsize": 6},
         wedgeprops={**wedge_kwargs, "width": 0.3},
     )
-    ax.set_title(f"Domain Distribution (L1 inner / L2 outer)\n{len(anns)} videos", pad=20)
+    ax.set_title(f"{level}  ({total} records)", fontsize=11, pad=15)
+
+
+def plot_domain_per_level(stats: dict, axes: list[plt.Axes]):
+    """三个层级各画一个 domain 嵌套饼图。"""
+    for ax, lv in zip(axes, ["L1", "L2", "L3"]):
+        _draw_one_domain_donut(stats["level_records"][lv], lv, ax)
 
 
 # =====================================================================
@@ -697,11 +715,16 @@ def main():
     fig1.savefig(os.path.join(args.output_dir, "fig1_training_yield.png"), dpi=args.dpi)
     print(f"  Saved fig1_training_yield.png")
 
-    # ── Fig 2 ──
-    fig2, ax2 = plt.subplots(figsize=(9, 9))
-    plot_domain_sunburst(anns, ax2)
-    fig2.savefig(os.path.join(args.output_dir, "fig2_domain_sunburst.png"), dpi=args.dpi)
-    print(f"  Saved fig2_domain_sunburst.png")
+    # ── Fig 2: Domain distribution per level ──
+    fig2, axes2 = plt.subplots(1, 3, figsize=(18, 6))
+    plot_domain_per_level(stats, list(axes2))
+    filter_label = f"  (Filter: {filt.summary()})" if filt.active() else ""
+    fig2.suptitle(f"Domain Distribution per Level{filter_label}",
+                  fontsize=13, y=1.02)
+    fig2.tight_layout()
+    fig2.savefig(os.path.join(args.output_dir, "fig2_domain_per_level.png"), dpi=args.dpi,
+                 bbox_inches="tight")
+    print(f"  Saved fig2_domain_per_level.png")
 
     # ── Fig 3 ──
     fig3, ax3 = plt.subplots(figsize=(10, 5))
