@@ -3,18 +3,27 @@
 # build_v1_data.sh — V1 层级分割训练数据一键构建
 #
 # 位置: proxy_data/youcook2_seg/hier_seg_annotation/
-# 独立于消融实验目录, 构建通用基础训练数据.
+# 输出: 标注目录同级的 train/ 下, clips 在各层的 videos/ 子目录
 #
-# 流程:
-#   1. build_hier_data.py (per-phase L2, 筛选, 均衡采样, 生成 JSONL)
-#   2. prepare_clips.py (L1@1fps, L2@2fps, L3@2fps 切 clip)
-#   3. 合并所有层级到 train_all.jsonl / val_all.jsonl
+# 输出结构:
+#   ${DATA_ROOT}/
+#   ├── annotations/          (原始标注)
+#   ├── train/                (训练数据)
+#   │   ├── L1/
+#   │   │   ├── train.jsonl / val.jsonl
+#   │   │   └── videos/      {clip_key}_L1_1fps.mp4
+#   │   ├── L2/
+#   │   │   ├── train.jsonl / val.jsonl
+#   │   │   └── videos/      {clip_key}_L2_ph{id}_{s}_{e}.mp4
+#   │   ├── L3_seg/
+#   │   │   ├── train.jsonl / val.jsonl
+#   │   │   └── videos/      {clip_key}_L3_ev{id}_{s}_{e}.mp4
+#   │   ├── train_all.jsonl   (三层合并)
+#   │   └── val_all.jsonl
 #
 # 用法:
 #   bash build_v1_data.sh [--use-hint]
-#
-#   # 自定义参数:
-#   BALANCE_PER_LEVEL=600 L2_MIN_EVENTS=3 bash build_v1_data.sh
+#   BALANCE_PER_LEVEL=600 bash build_v1_data.sh
 # =============================================================
 
 set -euo pipefail
@@ -23,20 +32,18 @@ set -euo pipefail
 HIER_SEG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${HIER_SEG_DIR}/../../.." && pwd)"
 
-# ---- 标注 & 输出目录 ----
-ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
-DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg}"
-VERSION="${VERSION:-v1}"
-OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/${VERSION}}"
-CLIP_DIR="${OUTPUT_DIR}/clips"
+# ---- 数据根目录 (annotations 所在目录) ----
+DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation}"
+ANNOTATION_DIR="${ANNOTATION_DIR:-${DATA_ROOT}/annotations}"
+OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/train}"
 
-# ---- 筛选参数 (与 visualize_annotations.py FilterConfig 对齐) ----
+# ---- 筛选参数 (与 visualize_annotations.py 对齐) ----
 L1_MIN_PHASES="${L1_MIN_PHASES:-2}"
 L1_MAX_PHASES="${L1_MAX_PHASES:-6}"
-L2_MIN_EVENTS="${L2_MIN_EVENTS:-2}"
-L2_MAX_EVENTS="${L2_MAX_EVENTS:-999}"
+L2_MIN_EVENTS="${L2_MIN_EVENTS:-3}"
+L2_MAX_EVENTS="${L2_MAX_EVENTS:-8}"
 L3_MIN_ACTIONS="${L3_MIN_ACTIONS:-3}"
-L3_MAX_ACTIONS="${L3_MAX_ACTIONS:-999}"
+L3_MAX_ACTIONS="${L3_MAX_ACTIONS:-10}"
 
 # ---- 采样 ----
 TRAIN_PER_LEVEL="${TRAIN_PER_LEVEL:-800}"
@@ -53,15 +60,10 @@ if [[ "${1:-}" == "--use-hint" ]] || [[ "${USE_HINT:-}" == "true" ]]; then
     echo "[build_v1] Hint mode: ON"
 fi
 
-# ---- clip 子目录 ----
-CLIP_DIR_L1="${CLIP_DIR}/L1"
-CLIP_DIR_L2="${CLIP_DIR}/L2"
-CLIP_DIR_L3="${CLIP_DIR}/L3"
-
 echo "========================================"
 echo "  Build V1 Hier Seg Training Data"
 echo "========================================"
-echo "  VERSION:         ${VERSION}"
+echo "  DATA_ROOT:       ${DATA_ROOT}"
 echo "  ANNOTATION_DIR:  ${ANNOTATION_DIR}"
 echo "  OUTPUT_DIR:      ${OUTPUT_DIR}"
 echo "  L2_MODE:         ${L2_MODE}"
@@ -97,22 +99,18 @@ for LEVEL in L1 L2 L3_seg; do
         ${USE_HINT_FLAG}
 done
 
-# ---- Step 2: 切 clip ----
+# ---- Step 2: 切 clip (videos/ 放在各层子目录下) ----
 echo ""
 echo "[Step 2/3] Preparing clips (prepare_clips.py) ..."
 
 for LEVEL in L1 L2 L3_seg; do
     TRAIN_JSONL="${OUTPUT_DIR}/${LEVEL}/train.jsonl"
     VAL_JSONL="${OUTPUT_DIR}/${LEVEL}/val.jsonl"
+    LEVEL_VIDEO_DIR="${OUTPUT_DIR}/${LEVEL}/videos"
 
     if [[ "${LEVEL}" == "L1" ]]; then
-        LEVEL_CLIP_DIR="${CLIP_DIR_L1}"
         FPS_ARG="--l1-fps 1"
-    elif [[ "${LEVEL}" == "L2" ]]; then
-        LEVEL_CLIP_DIR="${CLIP_DIR_L2}"
-        FPS_ARG="--l2l3-fps 2"
     else
-        LEVEL_CLIP_DIR="${CLIP_DIR_L3}"
         FPS_ARG="--l2l3-fps 2"
     fi
 
@@ -126,7 +124,7 @@ for LEVEL in L1 L2 L3_seg; do
         python "${HIER_SEG_DIR}/prepare_clips.py" \
             --input "${SPLIT_JSONL}" \
             --output "${OUT_JSONL}" \
-            --clip-dir "${LEVEL_CLIP_DIR}" \
+            --clip-dir "${LEVEL_VIDEO_DIR}" \
             --workers 8 \
             ${FPS_ARG} \
             --overwrite
@@ -158,3 +156,11 @@ echo "  Build Complete!"
 echo "  Train: ${TRAIN_COUNT} records → ${FINAL_TRAIN}"
 echo "  Val:   ${VAL_COUNT} records → ${FINAL_VAL}"
 echo "========================================"
+echo ""
+echo "  输出结构:"
+echo "  ${OUTPUT_DIR}/"
+echo "  ├── L1/   (train.jsonl + val.jsonl + videos/)"
+echo "  ├── L2/   (train.jsonl + val.jsonl + videos/)"
+echo "  ├── L3_seg/ (train.jsonl + val.jsonl + videos/)"
+echo "  ├── train_all.jsonl"
+echo "  └── val_all.jsonl"
