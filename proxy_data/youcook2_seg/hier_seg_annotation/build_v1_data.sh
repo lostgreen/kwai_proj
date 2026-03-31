@@ -2,23 +2,36 @@
 # =============================================================
 # build_v1_data.sh — V1 层级分割训练数据一键构建
 #
+# 位置: proxy_data/youcook2_seg/hier_seg_annotation/
+# 独立于消融实验目录, 构建通用基础训练数据.
+#
 # 流程:
-#   1. build_hier_data.py (per-phase L2, 筛选, 生成 JSONL)
-#   2. prepare_clips.py (L1 1fps, L2/L3 2fps 切 clip)
+#   1. build_hier_data.py (per-phase L2, 筛选, 均衡采样, 生成 JSONL)
+#   2. prepare_clips.py (L1@1fps, L2@2fps, L3@2fps 切 clip)
+#   3. 合并所有层级到 train_all.jsonl / val_all.jsonl
 #
 # 用法:
 #   bash build_v1_data.sh [--use-hint]
+#
+#   # 自定义参数:
+#   BALANCE_PER_LEVEL=600 L2_MIN_EVENTS=3 bash build_v1_data.sh
 # =============================================================
 
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# ---- 版本与输出目录 ----
+# ---- 路径定位 ----
+HIER_SEG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${HIER_SEG_DIR}/../../.." && pwd)"
+ABLATION_DIR="${REPO_ROOT}/local_scripts/hier_seg_ablations"
+
+# ---- 标注 & 输出目录 ----
+ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
+DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg}"
 VERSION="${VERSION:-v1}"
-OUTPUT_DIR="${ABLATION_DATA_ROOT}/${VERSION}"
+OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/${VERSION}}"
 CLIP_DIR="${OUTPUT_DIR}/clips"
 
-# ---- 筛选参数 ----
+# ---- 筛选参数 (与 visualize_annotations.py FilterConfig 对齐) ----
 L1_MIN_PHASES="${L1_MIN_PHASES:-2}"
 L1_MAX_PHASES="${L1_MAX_PHASES:-6}"
 L2_MIN_EVENTS="${L2_MIN_EVENTS:-2}"
@@ -46,36 +59,38 @@ CLIP_DIR_L1="${CLIP_DIR}/L1"
 CLIP_DIR_L2="${CLIP_DIR}/L2"
 CLIP_DIR_L3="${CLIP_DIR}/L3"
 
-HIER_SEG_DIR="${REPO_ROOT}/proxy_data/youcook2_seg/hier_seg_annotation"
-
 echo "========================================"
 echo "  Build V1 Hier Seg Training Data"
 echo "========================================"
-echo "  VERSION:        ${VERSION}"
-echo "  ANNOTATION_DIR: ${ANNOTATION_DIR}"
-echo "  OUTPUT_DIR:     ${OUTPUT_DIR}"
-echo "  L2_MODE:        ${L2_MODE}"
-echo "  FILTER:         L1=[${L1_MIN_PHASES},${L1_MAX_PHASES}] L2=[${L2_MIN_EVENTS},${L2_MAX_EVENTS}] L3=[${L3_MIN_ACTIONS},${L3_MAX_ACTIONS}]"
+echo "  VERSION:         ${VERSION}"
+echo "  ANNOTATION_DIR:  ${ANNOTATION_DIR}"
+echo "  OUTPUT_DIR:      ${OUTPUT_DIR}"
+echo "  L2_MODE:         ${L2_MODE}"
+echo "  FILTER:          L1=[${L1_MIN_PHASES},${L1_MAX_PHASES}] L2=[${L2_MIN_EVENTS},${L2_MAX_EVENTS}] L3=[${L3_MIN_ACTIONS},${L3_MAX_ACTIONS}]"
+echo "  BALANCE:         ${BALANCE_PER_LEVEL}/level"
 echo "  TRAIN_PER_LEVEL: ${TRAIN_PER_LEVEL}"
-echo "  USE_HINT:       ${USE_HINT_FLAG:-OFF}"
+echo "  USE_HINT:        ${USE_HINT_FLAG:-OFF}"
 echo "========================================"
 
 mkdir -p "${OUTPUT_DIR}"
 
 # ---- Step 1: 构建 JSONL ----
 echo ""
-echo "[Step 1/2] Building JSONL (build_hier_data.py) ..."
+echo "[Step 1/3] Building JSONL (build_hier_data.py) ..."
 
-# 按层级分别构建，以便后续分别 prepare_clips
 for LEVEL in L1 L2 L3_seg; do
     echo "  → Building ${LEVEL} ..."
-    python "${SCRIPT_DIR}/build_hier_data.py" \
+    python "${ABLATION_DIR}/build_hier_data.py" \
         --annotation-dir "${ANNOTATION_DIR}" \
         --output-dir "${OUTPUT_DIR}/${LEVEL}" \
         --levels "${LEVEL}" \
         --l2-mode "${L2_MODE}" \
-        --min-events "${L2_MIN_EVENTS}" \
-        --min-actions "${L3_MIN_ACTIONS}" \
+        --l1-min-phases "${L1_MIN_PHASES}" \
+        --l1-max-phases "${L1_MAX_PHASES}" \
+        --l2-min-events "${L2_MIN_EVENTS}" \
+        --l2-max-events "${L2_MAX_EVENTS}" \
+        --l3-min-actions "${L3_MIN_ACTIONS}" \
+        --l3-max-actions "${L3_MAX_ACTIONS}" \
         --complete-only \
         --balance-per-level "${BALANCE_PER_LEVEL}" \
         --train-per-level "${TRAIN_PER_LEVEL}" \
@@ -85,7 +100,7 @@ done
 
 # ---- Step 2: 切 clip ----
 echo ""
-echo "[Step 2/2] Preparing clips (prepare_clips.py) ..."
+echo "[Step 2/3] Preparing clips (prepare_clips.py) ..."
 
 for LEVEL in L1 L2 L3_seg; do
     TRAIN_JSONL="${OUTPUT_DIR}/${LEVEL}/train.jsonl"
@@ -119,9 +134,9 @@ for LEVEL in L1 L2 L3_seg; do
     done
 done
 
-# ---- 合并所有层级的 clipped JSONL ----
+# ---- Step 3: 合并所有层级 ----
 echo ""
-echo "[合并] Merging all levels into final train/val JSONL ..."
+echo "[Step 3/3] Merging all levels into final train/val JSONL ..."
 FINAL_TRAIN="${OUTPUT_DIR}/train_all.jsonl"
 FINAL_VAL="${OUTPUT_DIR}/val_all.jsonl"
 

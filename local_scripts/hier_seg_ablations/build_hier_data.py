@@ -711,10 +711,19 @@ def main():
                         help="L2 数据构建模式: phase=per-phase 输入, window=滑窗模式 (默认: phase)")
     parser.add_argument("--use-hint", action="store_true",
                         help="使用 hint（criterion 改写后的内容无关版本）作为 prompt 附加信息")
-    parser.add_argument("--min-events", type=int, default=2,
-                        help="L2 每窗口/phase 最少事件数")
-    parser.add_argument("--min-actions", type=int, default=3,
+    # ---- per-level 筛选 (与 visualize_annotations.py FilterConfig 对齐) ----
+    parser.add_argument("--l1-min-phases", type=int, default=0,
+                        help="L1 最少 phase 数 (default=0 不限制)")
+    parser.add_argument("--l1-max-phases", type=int, default=999,
+                        help="L1 最多 phase 数 (default=999 不限制)")
+    parser.add_argument("--l2-min-events", type=int, default=2,
+                        help="L2 每 phase/窗口 最少事件数")
+    parser.add_argument("--l2-max-events", type=int, default=999,
+                        help="L2 每 phase/窗口 最多事件数 (default=999 不限制)")
+    parser.add_argument("--l3-min-actions", type=int, default=3,
                         help="L3 每事件最少 grounding results 数")
+    parser.add_argument("--l3-max-actions", type=int, default=999,
+                        help="L3 每事件最多 grounding results 数 (default=999 不限制)")
     parser.add_argument("--complete-only", action="store_true",
                         help="仅处理 L1+L2+L3 均完整的 clip")
     parser.add_argument("--balance-per-level", type=int, default=-1,
@@ -744,17 +753,17 @@ def main():
             elif lv == "L2":
                 if args.l2_mode == "phase":
                     recs = build_l2_phase_records(
-                        ann, args.clip_dir_l2, args.min_events, args.use_hint,
+                        ann, args.clip_dir_l2, args.l2_min_events, args.use_hint,
                     )
                 else:
                     recs = build_l2_records(
-                        ann, args.clip_dir_l2, args.min_events,
+                        ann, args.clip_dir_l2, args.l2_min_events,
                         args.l2_window_size, args.l2_stride,
                     )
             elif lv == "L3":
-                recs = build_l3_records(ann, args.clip_dir_l3, args.min_actions, args.l3_order)
+                recs = build_l3_records(ann, args.clip_dir_l3, args.l3_min_actions, args.l3_order)
             elif lv == "L3_seg":
-                recs = build_l3_seg_records(ann, args.clip_dir_l3, args.min_actions, args.use_hint)
+                recs = build_l3_seg_records(ann, args.clip_dir_l3, args.l3_min_actions, args.use_hint)
             else:
                 continue
 
@@ -764,9 +773,32 @@ def main():
                 level_records[lv].extend(recs)
 
     # 打印提取统计
-    print(f"\n=== Extraction Stats ===")
+    print(f"\n=== Extraction Stats (raw) ===")
     for lv in args.levels:
         print(f"  {lv}: {stats[lv]['clips']} clips, {stats[lv]['records']} records")
+
+    # ---- per-level min/max 筛选 (与 visualize FilterConfig 对齐) ----
+    filter_map = {
+        "L1":     (args.l1_min_phases, args.l1_max_phases),
+        "L2":     (args.l2_min_events, args.l2_max_events),
+        "L3":     (args.l3_min_actions, args.l3_max_actions),
+        "L3_seg": (args.l3_min_actions, args.l3_max_actions),
+    }
+    any_filtered = False
+    for lv in args.levels:
+        lo, hi = filter_map.get(lv, (0, 999))
+        if lo > 0 or hi < 999:
+            before = len(level_records[lv])
+            level_records[lv] = [
+                r for r in level_records[lv]
+                if lo <= r.get("metadata", {}).get("output_count", 0) <= hi
+            ]
+            after = len(level_records[lv])
+            if before != after:
+                print(f"  {lv}: filtered {before} → {after} (output_count ∈ [{lo}, {hi}])")
+                any_filtered = True
+    if not any_filtered:
+        print("  (no additional filtering applied)")
 
     # 领域均衡采样 (在 train/val 分割之前)
     if args.balance_per_level > 0:

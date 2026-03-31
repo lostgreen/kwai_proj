@@ -24,17 +24,17 @@ clipped JSONL + 物理视频 clips
 cd /path/to/train
 
 # 默认: per-phase L2, 筛选, 领域均衡 800 条/层, 300 val
-bash local_scripts/hier_seg_ablations/build_v1_data.sh
+bash proxy_data/youcook2_seg/hier_seg_annotation/build_v1_data.sh
 
 # 带 hint 版本 (prompt 附加 criterion 改写后的结构化 hint)
-bash local_scripts/hier_seg_ablations/build_v1_data.sh --use-hint
+bash proxy_data/youcook2_seg/hier_seg_annotation/build_v1_data.sh --use-hint
 
 # 自定义参数
 BALANCE_PER_LEVEL=600 \
 TRAIN_PER_LEVEL=600 \
 L2_MIN_EVENTS=3 \
 L3_MIN_ACTIONS=3 \
-bash local_scripts/hier_seg_ablations/build_v1_data.sh
+bash proxy_data/youcook2_seg/hier_seg_annotation/build_v1_data.sh
 ```
 
 **环境变量 (可覆盖)**:
@@ -299,8 +299,7 @@ local_scripts/hier_seg_ablations/
 ├── README.md                          # 本文件
 ├── common.sh                          # 共用超参数 (含 ANNOTATION_DIR/CLIP_DIR_L2/L3)
 ├── build_hier_data.py                 # 统一数据构建: annotation JSON → JSONL (一步)
-├── build_v1_data.sh                   # [NEW] V1 一键构建脚本 (build + clip)
-├── eval_baseline_rollout.py           # [NEW] Baseline rollout 评估 (segment vs. hint)
+├── eval_baseline_rollout.py           # Baseline rollout 评估 (segment vs. hint)
 │
 │ ── 层级组合消融 (Exp 1-7) ──
 ├── prepare_data.py                    # 按层/变体筛选 + split + merge (从 _clipped.jsonl 读)
@@ -321,11 +320,12 @@ local_scripts/hier_seg_ablations/
 └── run_batch.sh
 
 proxy_data/youcook2_seg/hier_seg_annotation/
+├── build_v1_data.sh                   # [NEW] V1 一键构建脚本 (build + clip + merge)
 ├── prompts.py                         # prompt 模板库 (含 hint 版本)
 ├── prepare_clips.py                   # 物理视频截取 (含 phase-level clips)
+├── visualize_annotations.py           # 数据分布可视化 (筛选+均衡采样+9 张图)
 ├── annotate.py / annotate_check.py    # 标注工具链
 ├── rewrite_criteria_hints.py          # criterion → hint 改写
-├── visualize_annotations.py           # 数据分布可视化 (筛选+均衡采样+9 张图)
 ├── build_dataset.py                   # [DEPRECATED] 已被 build_hier_data.py 替代
 ├── sample_mixed_dataset.py            # [DEPRECATED]
 └── run_build.sh                       # [DEPRECATED]
@@ -461,9 +461,9 @@ bash local_scripts/hier_seg_ablations/exp8_chain_L2L3.sh
 ```
 原始标注 JSON (annotations/*.json)
     ↓
-    ├─── build_v1_data.sh ──────────────────→ V1 训练数据 (per-phase L2, 均衡采样)
-    │    ├ build_hier_data.py (JSONL)             ├ train_all.jsonl / val_all.jsonl
-    │    └ prepare_clips.py (clips)               └ clips/L1,L2,L3/
+    ├─── build_v1_data.sh (proxy_data/.../hier_seg_annotation/) ──→ V1 基础训练数据
+    │    ├ build_hier_data.py (JSONL, per-phase L2, 均衡采样)
+    │    └ prepare_clips.py (L1@1fps, L2@2fps, L3@2fps)
     │
     ├─── eval_baseline_rollout.py ──────────→ Baseline 评估 (segment vs hint)
     │
