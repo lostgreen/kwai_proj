@@ -177,6 +177,8 @@ def main() -> None:
     )
     parser.add_argument("--input", required=True,
                         help="输入 candidates.jsonl 路径")
+    parser.add_argument("--exclude", default="",
+                        help="排除 JSONL 路径（已采样过的记录，按 videos[0] 去重）")
     parser.add_argument("--output-dir", required=True,
                         help="输出目录")
     parser.add_argument("--total", type=int, default=1000,
@@ -211,6 +213,19 @@ def main() -> None:
         sys.exit(1)
     records = load_candidates(input_path)
     print(f"Loaded {len(records)} candidates from {input_path}")
+
+    # 排除已采样的记录
+    if args.exclude:
+        exclude_path = Path(args.exclude)
+        if exclude_path.exists():
+            excluded = load_candidates(exclude_path)
+            exclude_videos = {r["videos"][0] for r in excluded if r.get("videos")}
+            before = len(records)
+            records = [r for r in records if r.get("videos", [""])[0] not in exclude_videos]
+            print(f"Excluded {before - len(records)} already-sampled records ({len(records)} remaining)")
+        else:
+            print(f"WARNING: exclude file not found: {exclude_path}, skipping exclusion", file=sys.stderr)
+
     print_distribution(records, "All Candidates")
 
     # 采样
