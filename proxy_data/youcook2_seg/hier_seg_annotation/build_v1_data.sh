@@ -22,7 +22,6 @@ set -euo pipefail
 # ---- 路径定位 ----
 HIER_SEG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${HIER_SEG_DIR}/../../.." && pwd)"
-ABLATION_DIR="${REPO_ROOT}/local_scripts/hier_seg_ablations"
 
 # ---- 标注 & 输出目录 ----
 ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
@@ -80,7 +79,7 @@ echo "[Step 1/3] Building JSONL (build_hier_data.py) ..."
 
 for LEVEL in L1 L2 L3_seg; do
     echo "  → Building ${LEVEL} ..."
-    python "${ABLATION_DIR}/build_hier_data.py" \
+    python "${HIER_SEG_DIR}/build_hier_data.py" \
         --annotation-dir "${ANNOTATION_DIR}" \
         --output-dir "${OUTPUT_DIR}/${LEVEL}" \
         --levels "${LEVEL}" \
