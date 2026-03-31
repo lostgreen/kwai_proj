@@ -45,6 +45,9 @@ from prompts import (
     get_level2_train_prompt,
     get_level3_query_prompt,
     get_level3_seg_prompt,
+    get_level1_train_prompt_with_hint,
+    get_level2_train_prompt_with_hint,
+    get_level3_seg_prompt_with_hint,
 )
 from shared.seg_source import (
     load_annotations,
@@ -52,6 +55,7 @@ from shared.seg_source import (
     compute_l3_clip as _compute_l3_clip,
     get_l1_clip_path,
     get_l2_clip_path,
+    get_l2_phase_clip_path,
     get_l3_clip_path,
     L2_WINDOW_SIZE,
     L2_STRIDE,
@@ -84,6 +88,7 @@ def build_l1_records(
     ann: dict,
     clip_dir_l1: str = "",
     l1_fps: int = 1,
+    use_hint: bool = False,
 ) -> list[dict]:
     """从标注 JSON 构建 L1 训练记录 (基于真实时间戳)。
 
@@ -130,10 +135,17 @@ def build_l1_records(
     else:
         vp = source_video
 
-    prompt = (
-        "Watch the following video clip carefully:\n<video>\n\n"
-        + get_level1_train_prompt_temporal(duration)
-    )
+    if use_hint:
+        hint = ann.get("global_phase_hint") or ann.get("global_phase_criterion") or ""
+        prompt = (
+            "Watch the following video clip carefully:\n<video>\n\n"
+            + get_level1_train_prompt_with_hint(duration, hint)
+        )
+    else:
+        prompt = (
+            "Watch the following video clip carefully:\n<video>\n\n"
+            + get_level1_train_prompt_temporal(duration)
+        )
     answer = f"<events>{json.dumps(spans)}</events>"
 
     return [{
@@ -150,6 +162,10 @@ def build_l1_records(
             "l1_fps": l1_fps,
             "source_video_path": source_video,  # 供 prepare_clips.py 使用
             "n_phases": len(spans),
+            "domain_l1": ann.get("domain_l1", "other"),
+            "domain_l2": ann.get("domain_l2", "other"),
+            "topology": ann.get("topology_type", ""),
+            "output_count": len(spans),
             "source": "annotation_json",
         },
     }]
@@ -239,6 +255,128 @@ def build_l2_records(
                 "window_start_sec": ws,
                 "window_end_sec": we,
                 "n_events_in_window": len(matched),
+                "domain_l1": ann.get("domain_l1", "other"),
+                "domain_l2": ann.get("domain_l2", "other"),
+                "topology": ann.get("topology_type", ""),
+                "output_count": len(matched),
+                "source": "annotation_json",
+            },
+        })
+
+    return records
+
+
+# =====================================================================
+# L2 Phase: Event Detection (per-phase 模式, 每个 L1 phase 作为输入)
+# =====================================================================
+def build_l2_phase_records(
+    ann: dict,
+    clip_dir_l2: str = "",
+    min_events: int = 2,
+    use_hint: bool = False,
+) -> list[dict]:
+    """从标注 JSON 构建 L2 训练记录 (per-phase 模式).
+
+    每个 L1 macro_phase 生成一条记录, phase 内的 events 作为输出.
+    时间戳归零到 phase 起始点.
+    """
+    l1 = ann.get("level1")
+    l2 = ann.get("level2")
+    if not l1 or not l2 or l1.get("_parse_error") or l2.get("_parse_error"):
+        return []
+
+    clip_duration = float(ann.get("clip_duration_sec") or 0)
+    if clip_duration <= 0:
+        return []
+
+    phases = l1.get("macro_phases", [])
+    events = l2.get("events", [])
+    clip_key = ann.get("clip_key", "")
+    video_path = ann.get("source_video_path") or ann.get("video_path", "")
+
+    # Build phase → events mapping
+    from collections import defaultdict
+    phase_event_map: dict[int, list[dict]] = defaultdict(list)
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        pid = ev.get("parent_phase_id")
+        if pid is not None:
+            phase_event_map[pid].append(ev)
+
+    records = []
+    for phase in phases:
+        if not isinstance(phase, dict):
+            continue
+        phase_id = phase.get("phase_id")
+        ph_start = phase.get("start_time")
+        ph_end = phase.get("end_time")
+
+        if not isinstance(ph_start, (int, float)) or not isinstance(ph_end, (int, float)):
+            continue
+        ph_start, ph_end = int(ph_start), int(ph_end)
+        if ph_start >= ph_end:
+            continue
+
+        duration = ph_end - ph_start
+
+        # Collect events within this phase, clip and zero-base
+        children = phase_event_map.get(phase_id, [])
+        matched = []
+        for ev in children:
+            ev_start = ev.get("start_time")
+            ev_end = ev.get("end_time")
+            if not isinstance(ev_start, (int, float)) or not isinstance(ev_end, (int, float)):
+                continue
+            ev_start, ev_end = int(ev_start), int(ev_end)
+            # Clip to phase boundary and zero-base
+            s = max(ev_start, ph_start) - ph_start
+            e = min(ev_end, ph_end) - ph_start
+            if s < e:
+                matched.append([s, e])
+
+        if len(matched) < min_events:
+            continue
+
+        # Determine video path
+        if clip_dir_l2:
+            vp = get_l2_phase_clip_path(clip_key, phase_id, ph_start, ph_end, clip_dir_l2)
+        else:
+            vp = video_path
+
+        # Build prompt
+        if use_hint:
+            hint = phase.get("event_split_hint") or phase.get("event_split_criterion") or ""
+            prompt = (
+                "Watch the following video clip carefully:\n<video>\n\n"
+                + get_level2_train_prompt_with_hint(duration, hint)
+            )
+        else:
+            prompt = (
+                "Watch the following video clip carefully:\n<video>\n\n"
+                + get_level2_train_prompt(duration)
+            )
+        answer = f"<events>{json.dumps(matched)}</events>"
+
+        records.append({
+            "messages": [{"role": "user", "content": prompt}],
+            "prompt": prompt,
+            "answer": answer,
+            "videos": [vp],
+            "data_type": "video",
+            "problem_type": PROBLEM_TYPES["L2"],
+            "metadata": {
+                "clip_key": clip_key,
+                "clip_duration_sec": clip_duration,
+                "level": 2,
+                "phase_id": phase_id,
+                "phase_start_sec": ph_start,
+                "phase_end_sec": ph_end,
+                "n_events_in_phase": len(matched),
+                "domain_l1": ann.get("domain_l1", "other"),
+                "domain_l2": ann.get("domain_l2", "other"),
+                "topology": ann.get("topology_type", ""),
+                "output_count": len(matched),
                 "source": "annotation_json",
             },
         })
@@ -364,6 +502,7 @@ def build_l3_seg_records(
     ann: dict,
     clip_dir_l3: str = "",
     min_actions: int = 3,
+    use_hint: bool = False,
 ) -> list[dict]:
     """从标注 JSON 构建 L3 segmentation (无 query) 训练记录。"""
     l2 = ann.get("level2")
@@ -416,10 +555,17 @@ def build_l3_seg_records(
         else:
             vp = video_path
 
-        prompt = (
-            "Watch the following video clip carefully:\n<video>\n\n"
-            + get_level3_seg_prompt(duration)
-        )
+        if use_hint:
+            hint = l3.get("micro_split_hint") or l3.get("micro_split_criterion") or ""
+            prompt = (
+                "Watch the following video clip carefully:\n<video>\n\n"
+                + get_level3_seg_prompt_with_hint(duration, hint)
+            )
+        else:
+            prompt = (
+                "Watch the following video clip carefully:\n<video>\n\n"
+                + get_level3_seg_prompt(duration)
+            )
         answer = f"<events>{json.dumps(spans)}</events>"
 
         records.append({
@@ -439,11 +585,91 @@ def build_l3_seg_records(
                 "clip_start_sec": clip_start,
                 "clip_end_sec": clip_end,
                 "n_actions": len(spans),
+                "domain_l1": ann.get("domain_l1", "other"),
+                "domain_l2": ann.get("domain_l2", "other"),
+                "topology": ann.get("topology_type", ""),
+                "output_count": len(spans),
                 "source": "annotation_json",
             },
         })
 
     return records
+
+
+# =====================================================================
+# 领域均衡采样
+# =====================================================================
+def balanced_sample(
+    level_records: dict[str, list[dict]],
+    target_per_level: int,
+) -> dict[str, list[dict]]:
+    """按 domain_l2 均衡采样, 超出的域优先砍 output_count 小的记录。
+
+    策略 (每层级独立):
+      1. 按 domain_l2 分组
+      2. 计算每个域的 quota = target / n_domains (均匀分配)
+      3. 不足 quota 的域全部保留, 多余名额重分配给其他域
+      4. 需要裁剪的域内按 output_count 降序排列, 优先保留事件多的
+    """
+    from collections import defaultdict
+
+    result: dict[str, list[dict]] = {}
+
+    for lv, records in level_records.items():
+        if not records or target_per_level <= 0:
+            result[lv] = records
+            continue
+
+        if len(records) <= target_per_level:
+            result[lv] = records
+            continue
+
+        # 按 domain_l2 分组
+        by_domain: dict[str, list[dict]] = defaultdict(list)
+        for rec in records:
+            d = rec.get("metadata", {}).get("domain_l2", "other")
+            by_domain[d].append(rec)
+
+        n_domains = len(by_domain)
+        base_quota = target_per_level // n_domains
+        remaining = target_per_level
+
+        # 第一轮: 不足 quota 的域全部保留
+        small_domains: dict[str, list[dict]] = {}
+        large_domains: dict[str, list[dict]] = {}
+        for d, recs in by_domain.items():
+            if len(recs) <= base_quota:
+                small_domains[d] = recs
+                remaining -= len(recs)
+            else:
+                large_domains[d] = recs
+
+        sampled: list[dict] = []
+
+        # 小域全部保留
+        for d, recs in small_domains.items():
+            sampled.extend(recs)
+
+        # 第二轮: 大域的名额重分配
+        if large_domains:
+            quota_for_large = remaining // len(large_domains)
+            extra = remaining - quota_for_large * len(large_domains)
+
+            sorted_large = sorted(large_domains.items(), key=lambda x: -len(x[1]))
+
+            for idx, (d, recs) in enumerate(sorted_large):
+                q = quota_for_large + (1 if idx < extra else 0)
+                # 按 output_count 降序排列, 保留事件多的
+                recs_sorted = sorted(
+                    recs,
+                    key=lambda r: -r.get("metadata", {}).get("output_count", 0),
+                )
+                sampled.extend(recs_sorted[:q])
+
+        result[lv] = sampled
+        print(f"  {lv}: balanced {len(records)} → {len(sampled)}")
+
+    return result
 
 
 # =====================================================================
@@ -480,12 +706,19 @@ def main():
                         help="L2 滑窗大小（秒）。设为 -1 则不切窗，直接用完整 clip（默认: 128）")
     parser.add_argument("--l2-stride", type=int, default=L2_STRIDE,
                         help="L2 滑窗步长（秒），仅在 --l2-window-size > 0 时生效（默认: 64）")
+    parser.add_argument("--l2-mode", default="phase",
+                        choices=["phase", "window"],
+                        help="L2 数据构建模式: phase=per-phase 输入, window=滑窗模式 (默认: phase)")
+    parser.add_argument("--use-hint", action="store_true",
+                        help="使用 hint（criterion 改写后的内容无关版本）作为 prompt 附加信息")
     parser.add_argument("--min-events", type=int, default=2,
-                        help="L2 每窗口最少事件数")
+                        help="L2 每窗口/phase 最少事件数")
     parser.add_argument("--min-actions", type=int, default=3,
                         help="L3 每事件最少 grounding results 数")
     parser.add_argument("--complete-only", action="store_true",
                         help="仅处理 L1+L2+L3 均完整的 clip")
+    parser.add_argument("--balance-per-level", type=int, default=-1,
+                        help="每层级领域均衡采样目标数 (-1 = 不做均衡采样)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -507,16 +740,21 @@ def main():
     for ann in ann_list:
         for lv in args.levels:
             if lv == "L1":
-                recs = build_l1_records(ann, args.clip_dir_l1, args.l1_fps)
+                recs = build_l1_records(ann, args.clip_dir_l1, args.l1_fps, args.use_hint)
             elif lv == "L2":
-                recs = build_l2_records(
-                    ann, args.clip_dir_l2, args.min_events,
-                    args.l2_window_size, args.l2_stride,
-                )
+                if args.l2_mode == "phase":
+                    recs = build_l2_phase_records(
+                        ann, args.clip_dir_l2, args.min_events, args.use_hint,
+                    )
+                else:
+                    recs = build_l2_records(
+                        ann, args.clip_dir_l2, args.min_events,
+                        args.l2_window_size, args.l2_stride,
+                    )
             elif lv == "L3":
                 recs = build_l3_records(ann, args.clip_dir_l3, args.min_actions, args.l3_order)
             elif lv == "L3_seg":
-                recs = build_l3_seg_records(ann, args.clip_dir_l3, args.min_actions)
+                recs = build_l3_seg_records(ann, args.clip_dir_l3, args.min_actions, args.use_hint)
             else:
                 continue
 
@@ -529,6 +767,11 @@ def main():
     print(f"\n=== Extraction Stats ===")
     for lv in args.levels:
         print(f"  {lv}: {stats[lv]['clips']} clips, {stats[lv]['records']} records")
+
+    # 领域均衡采样 (在 train/val 分割之前)
+    if args.balance_per_level > 0:
+        print(f"\n=== Balanced Sampling (target={args.balance_per_level}/level) ===")
+        level_records = balanced_sample(level_records, args.balance_per_level)
 
     # 合并、分割 train/val
     train_per_level = None if args.train_per_level < 0 else args.train_per_level

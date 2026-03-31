@@ -196,6 +196,25 @@ def get_l2_clip_path(
     return str(Path(clip_dir_l2) / f"{clip_key}_L2_w{ws}_{we}.mp4")
 
 
+def get_l2_phase_clip_path(
+    clip_key: str,
+    phase_id: int,
+    phase_start: int,
+    phase_end: int,
+    clip_dir_l2: str | Path,
+) -> str:
+    """Return the expected path for an L2 per-phase clip.
+
+    Naming convention::
+
+        {clip_dir_l2}/{clip_key}_L2_ph{phase_id}_{phase_start}_{phase_end}.mp4
+    """
+    return str(
+        Path(clip_dir_l2)
+        / f"{clip_key}_L2_ph{phase_id}_{phase_start}_{phase_end}.mp4"
+    )
+
+
 def get_l3_clip_path(
     clip_key: str,
     event_id: int,

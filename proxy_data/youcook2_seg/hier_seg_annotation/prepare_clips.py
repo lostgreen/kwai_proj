@@ -110,6 +110,27 @@ def _ffmpeg_extract(src: str, start: int, end: int, dst: Path) -> None:
         )
 
 
+def _ffmpeg_extract_with_fps(src: str, start: int, end: int, dst: Path, fps: int = 2) -> None:
+    """Extract [start, end] seconds and re-encode at *fps* frames per second."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    duration = end - start
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start),
+        "-t",  str(duration),
+        "-i",  src,
+        "-vf", f"fps={fps}",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        str(dst),
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg extract+fps failed for {src} [{start},{end}] @{fps}fps:\n"
+            + result.stderr.decode(errors="replace")
+        )
+
+
 def _process_l2(record: dict, clip_dir: Path) -> dict:
     meta = record["metadata"]
     clip_key    = meta["clip_key"]
@@ -149,7 +170,33 @@ def _process_l2(record: dict, clip_dir: Path) -> dict:
     return rec
 
 
-def _process_l3(record: dict, clip_dir: Path) -> dict:
+def _process_l2_phase(record: dict, clip_dir: Path, fps: int = 2) -> dict:
+    """Extract a per-phase L2 clip and re-encode at *fps* frames per second.
+
+    Expects metadata with ``phase_id``, ``phase_start_sec``, ``phase_end_sec``
+    (set by ``build_hier_data.py --l2-mode phase``).
+    Answer timestamps are already 0-based (built that way in build_l2_phase_records).
+    """
+    meta      = record["metadata"]
+    clip_key  = meta["clip_key"]
+    phase_id  = meta["phase_id"]
+    ph_start  = meta["phase_start_sec"]
+    ph_end    = meta["phase_end_sec"]
+    src_video = record["videos"][0]
+
+    out_name = f"{clip_key}_L2_ph{phase_id}_{ph_start}_{ph_end}.mp4"
+    out_path = clip_dir / out_name
+
+    if not out_path.exists():
+        _ffmpeg_extract_with_fps(src_video, ph_start, ph_end, out_path, fps)
+
+    rec = dict(record)
+    rec["videos"]   = [str(out_path)]
+    rec["metadata"] = dict(meta, clip_offset_sec=ph_start)
+    return rec
+
+
+def _process_l3(record: dict, clip_dir: Path, fps: int = 0) -> dict:
     meta      = record["metadata"]
     clip_key  = meta["clip_key"]
     event_id  = meta["parent_event_id"]
@@ -164,7 +211,10 @@ def _process_l3(record: dict, clip_dir: Path) -> dict:
     out_path = clip_dir / out_name
 
     if not out_path.exists():
-        _ffmpeg_extract(src_video, clip_start, clip_end, out_path)
+        if fps > 0:
+            _ffmpeg_extract_with_fps(src_video, clip_start, clip_end, out_path, fps)
+        else:
+            _ffmpeg_extract(src_video, clip_start, clip_end, out_path)
 
     # Timestamps in answer are already 0-based (normalized in build_dataset.py).
     # Prompt is already correct (get_level3_query_prompt with 0-based duration).
@@ -184,6 +234,7 @@ def main() -> None:
     parser.add_argument("--clip-dir", required=True, help="Directory to write extracted video clips")
     parser.add_argument("--workers",  type=int, default=4, help="Parallel ffmpeg workers")
     parser.add_argument("--l1-fps",   type=int, default=1, help="Frame rate for L1 fps-resampled clips (default: 1)")
+    parser.add_argument("--l2l3-fps", type=int, default=0, help="Frame rate for L2/L3 clips (0=stream copy, 2=recommended)")
     parser.add_argument("--dry-run",  action="store_true", help="Skip ffmpeg, only rewrite JSONL (clips must exist)")
     parser.add_argument("--overwrite", action="store_true", help="Re-run even if output JSONL already exists")
     args = parser.parse_args()
@@ -216,10 +267,20 @@ def main() -> None:
         print("DRY RUN: skipping ffmpeg")
 
     l1_fps = args.l1_fps
+    l2l3_fps = args.l2l3_fps
+
+    # Detect L2 mode: phase (has phase_id) vs window (has window_start_sec)
+    is_l2_phase = (level == 2 and "phase_id" in records[0].get("metadata", {}))
+
+    def _select_l2_fn(rec, d):
+        if is_l2_phase:
+            return _process_l2_phase(rec, d, fps=l2l3_fps if l2l3_fps > 0 else 2)
+        return _process_l2(rec, d)
+
     process_fn = {
         1: lambda rec, d: _process_l1(rec, d, fps=l1_fps),
-        2: _process_l2,
-        3: _process_l3,
+        2: _select_l2_fn,
+        3: lambda rec, d: _process_l3(rec, d, fps=l2l3_fps),
     }[level]
 
     done = skipped = errors = 0
@@ -235,7 +296,10 @@ def main() -> None:
                     fps = meta.get("l1_fps", args.l1_fps)
                     name = f"{meta['clip_key']}_L1_{fps}fps.mp4"
                 elif level == 2:
-                    name = f"{meta['clip_key']}_L2_w{meta['window_start_sec']}_{meta['window_end_sec']}.mp4"
+                    if "phase_id" in meta:
+                        name = f"{meta['clip_key']}_L2_ph{meta['phase_id']}_{meta['phase_start_sec']}_{meta['phase_end_sec']}.mp4"
+                    else:
+                        name = f"{meta['clip_key']}_L2_w{meta['window_start_sec']}_{meta['window_end_sec']}.mp4"
                 else:
                     cs = meta.get("clip_start_sec", meta["event_start_sec"])
                     ce = meta.get("clip_end_sec",   meta["event_end_sec"])

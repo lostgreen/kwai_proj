@@ -1,6 +1,169 @@
 # 三层分割 (Hier Seg) 消融实验
 
-基于 YouCook2 分层时序标注（L1 宏观阶段 / L2 事件检测 / L3 原子动作定位），通过 RL 训练消融验证最优层级组合。
+基于分层时序标注（L1 宏观阶段 / L2 事件检测 / L3 原子动作定位），通过 RL 训练消融验证最优层级组合。
+
+---
+
+## V1 训练数据构建 & Baseline 评估 (推荐入口)
+
+### 整体流程
+
+```
+原始标注 JSON
+    ↓ build_hier_data.py (per-phase L2, 筛选, 均衡采样)
+JSONL (L1/L2/L3_seg 分别输出)
+    ↓ prepare_clips.py (L1@1fps, L2@2fps, L3@2fps)
+clipped JSONL + 物理视频 clips
+    ↓ eval_baseline_rollout.py (采样 + rollout + reward 对比)
+评估结果 (segment vs. segment+hint)
+```
+
+### 快速开始 — 一键构建 V1 数据
+
+```bash
+cd /path/to/train
+
+# 默认: per-phase L2, 筛选, 领域均衡 800 条/层, 300 val
+bash local_scripts/hier_seg_ablations/build_v1_data.sh
+
+# 带 hint 版本 (prompt 附加 criterion 改写后的结构化 hint)
+bash local_scripts/hier_seg_ablations/build_v1_data.sh --use-hint
+
+# 自定义参数
+BALANCE_PER_LEVEL=600 \
+TRAIN_PER_LEVEL=600 \
+L2_MIN_EVENTS=3 \
+L3_MIN_ACTIONS=3 \
+bash local_scripts/hier_seg_ablations/build_v1_data.sh
+```
+
+**环境变量 (可覆盖)**:
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VERSION` | `v1` | 输出子目录名 |
+| `ANNOTATION_DIR` | common.sh 中的默认路径 | 标注 JSON 目录 |
+| `BALANCE_PER_LEVEL` | `800` | 领域均衡采样目标 (每层) |
+| `TRAIN_PER_LEVEL` | `800` | 每层 train 上限 |
+| `TOTAL_VAL` | `300` | 总 val 数 (三层平分) |
+| `L2_MODE` | `phase` | L2 模式: `phase` (per-phase) 或 `window` (滑窗) |
+| `L1_MIN_PHASES` | `2` | L1 最少 phase 数 |
+| `L2_MIN_EVENTS` | `2` | L2 最少 event 数 |
+| `L3_MIN_ACTIONS` | `3` | L3 最少 action 数 |
+| `USE_HINT` | `false` | 设为 `true` 等价于传 `--use-hint` |
+
+**输出结构**:
+
+```
+${ABLATION_DATA_ROOT}/v1/
+├── L1/
+│   ├── train.jsonl              # 原始 JSONL (视频路径指向源文件)
+│   ├── val.jsonl
+│   ├── train_clipped.jsonl      # clip 后 JSONL (视频路径指向 clips/)
+│   └── val_clipped.jsonl
+├── L2/   (同上)
+├── L3_seg/  (同上)
+├── clips/
+│   ├── L1/   {clip_key}_L1_1fps.mp4
+│   ├── L2/   {clip_key}_L2_ph{id}_{start}_{end}.mp4
+│   └── L3/   {clip_key}_L3_ev{id}_{start}_{end}.mp4
+├── train_all.jsonl              # 三层合并 (train)
+└── val_all.jsonl                # 三层合并 (val)
+```
+
+### build_hier_data.py 核心参数
+
+```bash
+python build_hier_data.py \
+    --annotation-dir /path/to/annotations \
+    --output-dir /path/to/output \
+    --levels L1 L2 L3_seg \
+    --l2-mode phase           # per-phase (推荐) 或 window (滑窗)
+    --min-events 2            # L2 最少事件数
+    --min-actions 3           # L3 最少动作数
+    --balance-per-level 800   # 领域均衡采样 (-1=不做)
+    --train-per-level 800     # 每层 train 上限
+    --total-val 300           # 总 val 数
+    --use-hint                # 使用 hint prompt (可选)
+    --complete-only           # 仅处理三层完整的标注
+```
+
+**L2 两种模式**:
+
+| 模式 | CLI | 输入 | 说明 |
+|------|-----|------|------|
+| **Per-phase** (推荐) | `--l2-mode phase` | 每个 L1 phase 作为独立输入 | 输出该 phase 内的 events，时间戳归零 |
+| **Sliding window** | `--l2-mode window` | 128s 滑窗 (可配置) | 旧模式，兼容 Track 1 实验 |
+
+**均衡采样逻辑** (`--balance-per-level N`):
+
+1. 每层级独立处理
+2. 按 `domain_l2` 分组，均匀分配 quota = N / n_domains
+3. 不足 quota 的小域全部保留，多余名额重分配给大域
+4. 大域内按 `output_count` 降序排列，优先保留 segment 数多的记录
+
+### prepare_clips.py 核心参数
+
+```bash
+python prepare_clips.py \
+    --input train.jsonl \
+    --output train_clipped.jsonl \
+    --clip-dir /path/to/clips \
+    --l1-fps 1              # L1 帧率
+    --l2l3-fps 2            # L2/L3 帧率 (0=stream copy)
+    --workers 8             # 并行 ffmpeg 数
+    --overwrite             # 覆盖已有输出
+```
+
+- L1: ffmpeg `-vf fps=1`，全视频重采样
+- L2 (phase 模式): ffmpeg `-ss -t -vf fps=2`，按 phase 边界裁剪+重采样
+- L3: ffmpeg `-ss -t` + 可选 `-vf fps=2`，按 event+padding 裁剪
+
+### Hint 机制
+
+标注 JSON 中有 3 对 criterion/hint 字段:
+
+| 层级 | Criterion 字段 | Hint 字段 | JSON 位置 |
+|------|---------------|-----------|-----------|
+| L1 | `global_phase_criterion` | `global_phase_hint` | 顶层 |
+| L2 | `event_split_criterion` | `event_split_hint` | 每个 phase 内 |
+| L3 | `micro_split_criterion` | `micro_split_hint` | level3 顶层 |
+
+- **criterion**: VLM 原始输出，包含具体视频内容描述
+- **hint**: 经 LLM 改写后的内容无关版本，仅保留结构/逻辑信息
+- `--use-hint` 时自动从 annotation JSON 读取 hint，附加到 prompt 末尾
+
+### Baseline Rollout 评估
+
+```bash
+python eval_baseline_rollout.py \
+    --input-dir /path/to/v1/ \
+    --model-path /home/xuboshen/models/Qwen3-VL-4B-Instruct \
+    --sample-per-level 50 \
+    --num-rollouts 8 \
+    --tensor-parallel-size 2 \
+    --output-dir ./eval_results/
+
+# 对比 hint 版本 (需要先用 --use-hint 构建第二份数据)
+python eval_baseline_rollout.py \
+    --input-dir /path/to/v1/ \
+    --hint-input-dir /path/to/v1_hint/ \
+    --model-path /home/xuboshen/models/Qwen3-VL-4B-Instruct \
+    --sample-per-level 50 \
+    --num-rollouts 8 \
+    --output-dir ./eval_results/
+```
+
+**输出**:
+
+```
+eval_results/
+├── segment_results.jsonl         # 逐条 rollout reward 详情
+├── segment_hint_results.jsonl    # hint 版本详情 (如果有)
+└── summary.json                  # 汇总统计 (per-level mean±std)
+```
+
+---
 
 ## 研究问题
 
@@ -135,7 +298,9 @@ L3 标注基于 VLM 自动标注（Gemini），原子动作时间边界可能不
 local_scripts/hier_seg_ablations/
 ├── README.md                          # 本文件
 ├── common.sh                          # 共用超参数 (含 ANNOTATION_DIR/CLIP_DIR_L2/L3)
-├── build_hier_data.py                 # [NEW] 统一数据构建: annotation JSON → JSONL (一步)
+├── build_hier_data.py                 # 统一数据构建: annotation JSON → JSONL (一步)
+├── build_v1_data.sh                   # [NEW] V1 一键构建脚本 (build + clip)
+├── eval_baseline_rollout.py           # [NEW] Baseline rollout 评估 (segment vs. hint)
 │
 │ ── 层级组合消融 (Exp 1-7) ──
 ├── prepare_data.py                    # 按层/变体筛选 + split + merge (从 _clipped.jsonl 读)
@@ -155,16 +320,18 @@ local_scripts/hier_seg_ablations/
 │ ── 批量运行 ──
 └── run_batch.sh
 
-proxy_data/hier_seg_annotation/
-├── prompts.py                         # [ACTIVE] prompt 模板库 (含 L1 temporal)
-├── prepare_clips.py                   # [ACTIVE] 物理视频截取 (clips/L2/, clips/L3/)
-├── annotate.py / annotate_check.py    # [Annotation-only] 标注工具链
+proxy_data/youcook2_seg/hier_seg_annotation/
+├── prompts.py                         # prompt 模板库 (含 hint 版本)
+├── prepare_clips.py                   # 物理视频截取 (含 phase-level clips)
+├── annotate.py / annotate_check.py    # 标注工具链
+├── rewrite_criteria_hints.py          # criterion → hint 改写
+├── visualize_annotations.py           # 数据分布可视化 (筛选+均衡采样+9 张图)
 ├── build_dataset.py                   # [DEPRECATED] 已被 build_hier_data.py 替代
-├── sample_mixed_dataset.py            # [DEPRECATED] 已被 build_hier_data.py 内置替代
-├── run_build.sh                       # [DEPRECATED] 旧流水线已失效
-└── datasets/
-    ├── youcook2_hier_L{1,2,3}_train_clipped.jsonl  # 旧格式数据 (exp1-7 使用)
-    └── ablation_data/                              # 新格式数据 (prompt ablation V2 使用)
+├── sample_mixed_dataset.py            # [DEPRECATED]
+└── run_build.sh                       # [DEPRECATED]
+
+proxy_data/shared/
+└── seg_source.py                      # 统一常量/加载/clip 命名 (含 get_l2_phase_clip_path)
 
 verl/reward_function/
 ├── youcook2_hier_seg_reward.py        # L1/L2/L3_seg: F1-IoU
@@ -292,15 +459,21 @@ bash local_scripts/hier_seg_ablations/exp8_chain_L2L3.sh
 ### 数据流程图
 
 ```
-YouCook2 原始标注 JSON
-    ↓ (一步构建)
+原始标注 JSON (annotations/*.json)
+    ↓
+    ├─── build_v1_data.sh ──────────────────→ V1 训练数据 (per-phase L2, 均衡采样)
+    │    ├ build_hier_data.py (JSONL)             ├ train_all.jsonl / val_all.jsonl
+    │    └ prepare_clips.py (clips)               └ clips/L1,L2,L3/
+    │
+    ├─── eval_baseline_rollout.py ──────────→ Baseline 评估 (segment vs hint)
+    │
     ├── build_hier_data.py + prepare_prompt_data.py → Track 2: Prompt 消融数据 (V1-V4)
     ├── prepare_data.py (从 _clipped.jsonl 读)          → Track 1: 层级组合数据
     └── chain_seg_ablation/build_chain_seg_data.py       → Track 3: Chain-Seg 数据
     ↓
 EasyR1 训练 (launch_train.sh)
     ↓ (reward dispatch)
-    ├── youcook2_hier_seg_reward.py   → Track 1 & 2 的 reward (F1-IoU)
+    ├── youcook2_hier_seg_reward.py   → Track 1 & 2 + V1 的 reward (F1-IoU)
     └── youcook2_chain_seg_reward.py  → Track 3 的 reward (0.4*tIoU + 0.6*F1-IoU)
     ↓
 WandB / TensorBoard 对比
