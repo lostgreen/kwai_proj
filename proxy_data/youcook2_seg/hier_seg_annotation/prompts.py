@@ -257,28 +257,17 @@ def get_merged_l1l2_prompt(n_frames: int, duration_sec: int) -> str:
 #   <events>[[start, end], [start, end], ...]</events>
 # ─────────────────────────────────────────────────────────────────────────────
 
-_LEVEL1_TRAIN_BASE = """\
-You are given {n_frames} frames uniformly sampled from a video, numbered 1 to {n_frames}. \
-Segment the frame sequence into 3–5 high-level macro phases \
-(e.g., preparation, execution, assembly, finishing). \
-Skip non-activity spans such as narration, beauty shots, or idle waiting.
-
-Output the start and end frame number for each phase in order:
-<events>[[start_frame, end_frame], ...]</events>
-
-Example: <events>[[3, 80], [95, 150], [160, 220]]</events>"""
-
-
-def get_level1_train_prompt(n_frames: int) -> str:
-    """Training prompt for Level 1 (warped-frame macro phase segmentation)."""
-    return _LEVEL1_TRAIN_BASE.format(n_frames=n_frames)
-
-
 _LEVEL1_TRAIN_TEMPORAL_BASE = """\
 You are given a {duration}s video clip (timestamps 0 to {duration}). \
-Segment the video into 3–5 high-level macro phases \
-(e.g., preparation, execution, assembly, finishing). \
-Skip non-activity spans such as narration, beauty shots, or idle waiting.
+Segment the video into its high-level macro phases (broad activity stages).
+
+Granularity guide:
+- A macro phase is a broad stage of activity organized by overall intent \
+(e.g., preparation → execution → finishing).
+- Output 1–6 phases. A single-phase video is valid if it is one continuous routine.
+- Skip intros, outros, static non-activity spans, narration-only, and idle waiting.
+- Phases do NOT need to cover the entire video — gaps are expected.
+- Do NOT split by camera cuts or brief pauses.
 
 Output the start and end time (integer seconds, 0-based) for each phase in order:
 <events>[[start_time, end_time], ...]</events>
@@ -293,9 +282,23 @@ def get_level1_train_prompt_temporal(duration: int) -> str:
 
 _LEVEL2_TRAIN_BASE = """\
 You are given a {duration}s video clip (timestamps 0 to {duration}). \
-Detect all complete activity events in this clip. \
-Each event is a multi-second, goal-directed workflow that transforms materials/objects or completes a process subgoal. \
-Skip idle waiting, narration, tool pickup without progress, or beauty shots.
+Detect all activity events in this clip.
+
+Granularity guide — an event sits between two levels:
+- TOO COARSE (phase-level): a broad stage summarizing the whole clip. \
+Do NOT output an event that restates the overall activity.
+- CORRECT (event-level): a multi-second workflow (typically 10–60s) that \
+completes a meaningful sub-goal. It involves a sequence of physical \
+interactions unified by a single intent.
+- TOO FINE (atomic action): a single brief motion (2–6s) like one pour, \
+one cut stroke, or picking up a tool. Do NOT fragment into atomic actions.
+
+Rules:
+- Events must not overlap.
+- Group related manipulations into one event rather than splitting by each tool motion.
+- Skip idle waiting, narration, tool-only movements, or non-activity content.
+- It is valid to output fewer events if the clip has few distinct sub-goals.
+- Gaps between events are expected and encouraged.
 
 Output the start and end time (integer seconds, 0-based) for each event in order:
 <events>[[start_time, end_time], ...]</events>
@@ -450,8 +453,25 @@ def get_level3_query_prompt(queries: list[str], duration: int) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 _LEVEL3_SEG_BASE = """\
 You are given a {duration}s video clip. \
-Detect all atomic actions (state-changing physical operations like cutting, assembling, transferring, adjusting) in this clip. \
-Skip idle waiting, narration, or tool pickup.
+Detect all atomic actions in this clip.
+
+Granularity guide — an atomic action is the finest annotation level:
+- TOO COARSE (event-level): a multi-step workflow spanning 10–60s. \
+If an action covers multiple distinct state changes, split it.
+- CORRECT (atomic action): a single, discrete physical interaction (typically \
+2–6s) where one object undergoes one visible state change. The start is \
+the onset of the physical interaction; the end is when the new state is \
+visually established. \
+Examples: cutting material, pouring into a container, attaching a part, \
+flipping a piece, applying adhesive.
+- TOO FINE (sub-atomic): a partial body movement that does not produce a \
+complete state change (reaching, gripping, adjusting posture). \
+Do NOT annotate these.
+
+Rules:
+- Allow gaps between actions — do not force full coverage.
+- Skip idle waiting, narration, tool pickup without progress, or reactions.
+- Merge uninterrupted motion belonging to one single state change.
 
 Output the start and end time (integer seconds, 0-based) for each action in chronological order:
 <events>[[start_time, end_time], ...]</events>
@@ -803,43 +823,3 @@ def get_level3_check_prompt(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Chain-of-Segment: L2 Grounding + L3 Atomic Segmentation (链式层次分割)
-# Input:  video clip + numbered L2 event descriptions
-# Output: L2 grounding segments + per-event L3 atomic segments
-# ─────────────────────────────────────────────────────────────────────────────
-_CHAIN_SEG_BASE = """\
-You are given a {duration}s video clip and a list of events that occur in it. \
-Your task has two steps:
-1. **Locate** each event's time segment in the clip (L2 grounding).
-2. **Decompose** each event into its atomic actions (L3 segmentation).
-
-Events to locate and decompose:
-{event_list}
-
-Rules:
-- L2: output one [start_time, end_time] per event, in the given order
-- L3: for each event, output the atomic actions as [[start, end], ...] within that event's time range
-- all timestamps are integer seconds (0-based, 0 ≤ start < end ≤ {duration})
-- atomic actions are brief (2-6s) physical state changes (transferring, adjusting, shaping, etc.)
-- skip idle/narration within events; gaps between atomic actions are fine
-
-Output format:
-<l2_events>[[start, end], ...]</l2_events>
-<l3_events>[[[start, end], ...], [[start, end], ...], ...]</l3_events>
-
-Example (2 events, first has 3 atomic actions, second has 2):
-<l2_events>[[5, 30], [35, 55]]</l2_events>
-<l3_events>[[[5, 10], [12, 20], [22, 30]], [[35, 42], [45, 55]]]</l3_events>"""
-
-
-def get_chain_seg_prompt(event_descriptions: list[str], duration: int) -> str:
-    """
-    Build the Chain-of-Segment (L2 grounding + L3 segmentation) prompt.
-
-    Args:
-        event_descriptions: Ordered list of L2 event description strings.
-        duration: Duration of the video clip in seconds.
-    """
-    event_list = "\n".join(f'{i + 1}. "{d}"' for i, d in enumerate(event_descriptions))
-    return _CHAIN_SEG_BASE.format(duration=duration, event_list=event_list)
