@@ -1075,25 +1075,23 @@ def _check_level2(
         )
         all_checked.extend(checked)
 
-        reviews = parsed.get("reviews") or []
-        for rv in reviews:
-            if isinstance(rv, dict):
-                v = rv.get("verdict", "keep")
-                if v == "keep":
-                    stats["kept"] += 1
-                elif v == "revise":
-                    stats["revised"] += 1
-                elif v == "remove":
-                    stats["removed"] += 1
-        n_supplements = len(parsed.get("supplements") or [])
-        stats["supplemented"] += n_supplements
+        # Count stats from actual apply results
+        for r in checked:
+            tag = r.get("_checked")
+            if tag == "revised":
+                stats["revised"] += 1
+            elif tag == "supplemented":
+                stats["supplemented"] += 1
+            else:
+                stats["kept"] += 1
+        stats["removed"] += n_before - sum(1 for r in checked if r.get("_checked") != "supplemented")
 
         check_calls.append({
             "phase_id": phase_id, "phase_name": phase_name,
             "start_time": phase_start, "end_time": phase_end,
             "n_before": n_before,
             "n_after": len(checked),
-            "n_supplements": n_supplements,
+            "n_supplements": sum(1 for r in checked if r.get("_checked") == "supplemented"),
         })
 
     # Sort and re-number
@@ -1313,26 +1311,23 @@ def _check_level3(
         )
         all_checked.extend(checked)
 
-        # Count stats
-        reviews = parsed.get("reviews") or []
-        for rv in reviews:
-            if isinstance(rv, dict):
-                v = rv.get("verdict", "keep")
-                if v == "keep":
-                    stats["kept"] += 1
-                elif v == "revise":
-                    stats["revised"] += 1
-                elif v == "remove":
-                    stats["removed"] += 1
-        n_supplements = len(parsed.get("supplements") or [])
-        stats["supplemented"] += n_supplements
+        # Count stats from actual apply results
+        for r in checked:
+            tag = r.get("_checked")
+            if tag == "revised":
+                stats["revised"] += 1
+            elif tag == "supplemented":
+                stats["supplemented"] += 1
+            else:
+                stats["kept"] += 1
+        stats["removed"] += n_before - sum(1 for r in checked if r.get("_checked") != "supplemented")
 
         check_calls.append({
             "event_id": event_id, "instruction": instruction,
             "start_time": start_time, "end_time": end_time,
             "n_before": n_before,
             "n_after": len(checked),
-            "n_supplements": n_supplements,
+            "n_supplements": sum(1 for r in checked if r.get("_checked") == "supplemented"),
         })
 
     # Sort and re-number
@@ -1563,22 +1558,34 @@ def _check_merged_l1l2(
     for i, e in enumerate(final_events, 1):
         e["event_id"] = i
 
-    # ── Aggregate stats ──
+    # ── Aggregate stats from actual results ──
     l1_stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
-    for rv in (parsed.get("phase_reviews") or []):
-        if isinstance(rv, dict):
-            v = rv.get("verdict", "keep")
-            if v in l1_stats:
-                l1_stats[v] += 1
-    l1_stats["supplemented"] = len(parsed.get("phase_supplements") or [])
+    original_phase_ids = {p.get("phase_id") for p in phases}
+    for p in checked_phases:
+        tag = p.get("_checked")
+        if tag == "revised":
+            l1_stats["revised"] += 1
+        elif tag == "supplemented":
+            l1_stats["supplemented"] += 1
+        else:
+            l1_stats["kept"] += 1
+    l1_stats["removed"] = len(original_phase_ids) - (l1_stats["kept"] + l1_stats["revised"])
+    if l1_stats["removed"] < 0:
+        l1_stats["removed"] = 0
 
     l2_stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
-    for rv in event_reviews:
-        if isinstance(rv, dict):
-            v = rv.get("verdict", "keep")
-            if v in l2_stats:
-                l2_stats[v] += 1
-    l2_stats["supplemented"] = len(event_supplements)
+    original_event_ids = {e.get("event_id") for e in existing_events}
+    for e in final_events:
+        tag = e.get("_checked")
+        if tag == "revised":
+            l2_stats["revised"] += 1
+        elif tag == "supplemented":
+            l2_stats["supplemented"] += 1
+        elif e.get("event_id") in original_event_ids or tag is None:
+            l2_stats["kept"] += 1
+    l2_stats["removed"] = len(original_event_ids) - (l2_stats["kept"] + l2_stats["revised"])
+    if l2_stats["removed"] < 0:
+        l2_stats["removed"] = 0
 
     checked_l1 = {
         "macro_phases": checked_phases,
