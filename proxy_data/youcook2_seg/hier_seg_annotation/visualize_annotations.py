@@ -121,6 +121,28 @@ class FilterConfig:
 # 每条训练记录的原始信息
 # =====================================================================
 @dataclass
+class ContextExpansion:
+    """L2/L3 上下文扩展参数: 先 grounding 再 segmentation。"""
+    l2_target_dur: int = 0    # L2 目标最小输入时长 (秒), 0=不扩展
+    l3_target_dur: int = 0    # L3 目标最小输入时长 (秒), 0=不扩展
+    max_dur: int = 240        # 扩展后的最大时长上限 (秒)
+
+    def active(self) -> bool:
+        return self.l2_target_dur > 0 or self.l3_target_dur > 0
+
+    def summary(self) -> str:
+        parts = []
+        if self.l2_target_dur > 0:
+            parts.append(f"L2 target≥{self.l2_target_dur}s")
+        if self.l3_target_dur > 0:
+            parts.append(f"L3 target≥{self.l3_target_dur}s")
+        return ", ".join(parts) if parts else "no expansion"
+
+
+# =====================================================================
+# 每条训练记录的原始信息
+# =====================================================================
+@dataclass
 class TrainRecord:
     level: str          # "L1" / "L2" / "L3"
     clip_key: str
@@ -129,6 +151,7 @@ class TrainRecord:
     topology: str
     input_duration: float   # 输入片段时长 (秒)
     output_count: int       # 要输出多少个 segments
+    expanded_duration: float = 0.0  # 上下文扩展后的输入时长 (0=未扩展)
 
 
 # =====================================================================
@@ -151,8 +174,36 @@ def load_annotations(ann_dir: Path, complete_only: bool = False) -> list[dict]:
 # =====================================================================
 # 提取所有训练记录 (不做筛选)
 # =====================================================================
-def extract_all_records(anns: list[dict]) -> list[TrainRecord]:
+def _expand_duration(
+    seg_start: float, seg_end: float, video_dur: float, target: int, max_dur: int,
+) -> float:
+    """将 [seg_start, seg_end] 向两侧对称扩展到 target 秒, 不超过 video_dur 和 max_dur。"""
+    seg_dur = seg_end - seg_start
+    if target <= 0 or seg_dur >= target:
+        return seg_dur
+    need = target - seg_dur
+    half = need / 2
+    # 向两侧扩展, clamp 到视频边界
+    new_start = max(0, seg_start - half)
+    new_end = min(video_dur, seg_end + half)
+    # 如果一侧碰到边界, 把剩余量加到另一侧
+    actual = new_end - new_start
+    if actual < target:
+        shortfall = target - actual
+        if new_start == 0:
+            new_end = min(video_dur, new_end + shortfall)
+        else:
+            new_start = max(0, new_start - shortfall)
+    expanded = min(new_end - new_start, max_dur)
+    return max(expanded, seg_dur)  # 至少不缩短
+
+
+def extract_all_records(
+    anns: list[dict], ctx: ContextExpansion | None = None,
+) -> list[TrainRecord]:
     """从标注中提取所有可能的训练记录。"""
+    if ctx is None:
+        ctx = ContextExpansion()
     records: list[TrainRecord] = []
 
     for ann in anns:
@@ -194,12 +245,20 @@ def extract_all_records(anns: list[dict]) -> list[TrainRecord]:
         # ── L2: 1 条 per phase ──
         for phase in valid_phases:
             pid = phase.get("phase_id")
-            ph_dur = float(phase.get("end_time", 0)) - float(phase.get("start_time", 0))
+            ph_start = float(phase.get("start_time", 0))
+            ph_end = float(phase.get("end_time", 0))
+            ph_dur = ph_end - ph_start
             children = phase_event_map.get(pid, [])
             if ph_dur > 0:
+                exp_dur = _expand_duration(
+                    ph_start, ph_end, clip_duration,
+                    ctx.l2_target_dur, ctx.max_dur,
+                )
                 records.append(TrainRecord(
                     level="L2", input_duration=ph_dur,
-                    output_count=len(children), **common,
+                    output_count=len(children),
+                    expanded_duration=exp_dur,
+                    **common,
                 ))
 
         # ── L3: 1 条 per leaf node ──
@@ -213,7 +272,9 @@ def extract_all_records(anns: list[dict]) -> list[TrainRecord]:
 
             if children:
                 for ev in children:
-                    ev_dur = float(ev.get("end_time", 0)) - float(ev.get("start_time", 0))
+                    ev_start = float(ev.get("start_time", 0))
+                    ev_end = float(ev.get("end_time", 0))
+                    ev_dur = ev_end - ev_start
                     eid = ev.get("event_id")
                     if ev_dur <= 0:
                         continue
@@ -222,12 +283,20 @@ def extract_all_records(anns: list[dict]) -> list[TrainRecord]:
                         if isinstance(a, dict) and a.get("parent_event_id") == eid
                     )
                     if n_acts > 0:
+                        exp_dur = _expand_duration(
+                            ev_start, ev_end, clip_duration,
+                            ctx.l3_target_dur, ctx.max_dur,
+                        )
                         records.append(TrainRecord(
                             level="L3", input_duration=ev_dur,
-                            output_count=n_acts, **common,
+                            output_count=n_acts,
+                            expanded_duration=exp_dur,
+                            **common,
                         ))
             else:
-                ph_dur = float(phase.get("end_time", 0)) - float(phase.get("start_time", 0))
+                ph_start = float(phase.get("start_time", 0))
+                ph_end = float(phase.get("end_time", 0))
+                ph_dur = ph_end - ph_start
                 if ph_dur <= 0:
                     continue
                 n_acts = sum(
@@ -235,9 +304,15 @@ def extract_all_records(anns: list[dict]) -> list[TrainRecord]:
                     if isinstance(a, dict) and a.get("parent_phase_id") == pid
                 )
                 if n_acts > 0:
+                    exp_dur = _expand_duration(
+                        ph_start, ph_end, clip_duration,
+                        ctx.l3_target_dur, ctx.max_dur,
+                    )
                     records.append(TrainRecord(
                         level="L3", input_duration=ph_dur,
-                        output_count=n_acts, **common,
+                        output_count=n_acts,
+                        expanded_duration=exp_dur,
+                        **common,
                     ))
 
     return records
@@ -264,12 +339,81 @@ def apply_filter(records: list[TrainRecord], cfg: FilterConfig) -> list[TrainRec
 
 
 # =====================================================================
+# 领域均衡采样
+# =====================================================================
+def balanced_sample(
+    records: list[TrainRecord],
+    target_per_level: int = 800,
+    seed: int = 42,
+) -> list[TrainRecord]:
+    """按领域均衡采样, 超出的域优先砍 output_count 小的记录。
+
+    策略 (每层级独立):
+      1. 按 domain_l2 分组
+      2. 计算每个域的 quota = target / n_domains (均匀分配)
+      3. 不足 quota 的域全部保留, 多余名额重分配给其他域
+      4. 需要裁剪的域内按 output_count 升序排列, 优先丢弃事件少的
+    """
+    import random
+    rng = random.Random(seed)
+
+    sampled: list[TrainRecord] = []
+    for lv in ("L1", "L2", "L3"):
+        lv_records = [r for r in records if r.level == lv]
+        if not lv_records or target_per_level <= 0:
+            sampled.extend(lv_records)
+            continue
+
+        if len(lv_records) <= target_per_level:
+            sampled.extend(lv_records)
+            continue
+
+        # 按 domain_l2 分组
+        by_domain: dict[str, list[TrainRecord]] = defaultdict(list)
+        for r in lv_records:
+            by_domain[r.domain_l2].append(r)
+
+        n_domains = len(by_domain)
+        base_quota = target_per_level // n_domains
+        remaining = target_per_level
+
+        # 第一轮: 不足 quota 的域全部保留
+        small_domains = {}
+        large_domains = {}
+        for d, recs in by_domain.items():
+            if len(recs) <= base_quota:
+                small_domains[d] = recs
+                remaining -= len(recs)
+            else:
+                large_domains[d] = recs
+
+        # 第二轮: 大域的名额重分配
+        if large_domains:
+            quota_for_large = remaining // len(large_domains)
+            extra = remaining - quota_for_large * len(large_domains)
+
+            # 按域大小排序 (最大的域分到 extra)
+            sorted_large = sorted(large_domains.items(), key=lambda x: -len(x[1]))
+
+            for idx, (d, recs) in enumerate(sorted_large):
+                q = quota_for_large + (1 if idx < extra else 0)
+                # 按 output_count 降序排列, 保留事件多的
+                recs_sorted = sorted(recs, key=lambda r: -r.output_count)
+                sampled.extend(recs_sorted[:q])
+        for d, recs in small_domains.items():
+            sampled.extend(recs)
+
+    return sampled
+
+
+# =====================================================================
 # 聚合统计
 # =====================================================================
 def aggregate(records: list[TrainRecord]) -> dict:
     """从记录列表聚合出绘图需要的统计数据。"""
     per_level = Counter()
     input_durations: dict[str, list[float]] = {"L1": [], "L2": [], "L3": []}
+    expanded_durations: dict[str, list[float]] = {"L1": [], "L2": [], "L3": []}
     output_counts: dict[str, list[int]] = {"L1": [], "L2": [], "L3": []}
     per_video: dict[str, dict] = {}  # clip_key → {domain_l1, domain_l2, L1, L2, L3}
     # 按层级分组, 方便各层级独立做 domain 统计
@@ -278,6 +422,9 @@ def aggregate(records: list[TrainRecord]) -> dict:
     for r in records:
         per_level[r.level] += 1
         input_durations[r.level].append(r.input_duration)
+        expanded_durations[r.level].append(
+            r.expanded_duration if r.expanded_duration > 0 else r.input_duration
+        )
         output_counts[r.level].append(r.output_count)
         level_records[r.level].append(r)
 
@@ -294,6 +441,7 @@ def aggregate(records: list[TrainRecord]) -> dict:
     return {
         "per_level": per_level,
         "input_durations": input_durations,
+        "expanded_durations": expanded_durations,
         "output_counts": output_counts,
         "per_video": list(per_video.values()),
         "level_records": level_records,
@@ -652,6 +800,57 @@ def plot_output_count_distribution(
 
 
 # =====================================================================
+# Fig 9: 上下文扩展前后输入时长对比 (L2/L3 各一个 subplot)
+# =====================================================================
+def plot_context_expansion_comparison(
+    stats: dict, ctx: ContextExpansion, axes: list[plt.Axes],
+):
+    """L2/L3 的原始时长 vs 扩展后时长对比直方图。"""
+    configs = [
+        ("L2", ctx.l2_target_dur),
+        ("L3", ctx.l3_target_dur),
+    ]
+    for ax, (lv, target) in zip(axes, configs):
+        orig = stats["input_durations"][lv]
+        expanded = stats["expanded_durations"][lv]
+        if not orig:
+            ax.set_title(f"{lv}: no data")
+            continue
+
+        bins = np.linspace(0, max(max(orig), max(expanded)) + 5, 50)
+        ax.hist(orig, bins=bins, alpha=0.5, color="#BBBBBB", edgecolor="white",
+                linewidth=0.3, label=f"Original (avg={np.mean(orig):.0f}s)")
+        ax.hist(expanded, bins=bins, alpha=0.6, color=LEVEL_COLORS[lv], edgecolor="white",
+                linewidth=0.3, label=f"Expanded (avg={np.mean(expanded):.0f}s)")
+
+        if target > 0:
+            ax.axvline(target, color="red", linestyle="--", alpha=0.8, linewidth=1.5)
+            ax.text(target + 1, ax.get_ylim()[1] * 0.9, f"target={target}s",
+                    color="red", fontsize=9, va="top")
+
+        ax.set_xlabel("Input Duration (sec)")
+        ax.set_ylabel("Count")
+        ax.set_title(f"{lv}: Original vs Context-Expanded Duration")
+        ax.legend(fontsize=9)
+
+        # 统计量对比
+        info_lines = [
+            f"Original:  avg={np.mean(orig):.0f}s  med={np.median(orig):.0f}s",
+            f"Expanded:  avg={np.mean(expanded):.0f}s  med={np.median(expanded):.0f}s",
+        ]
+        if target > 0:
+            below_orig = sum(1 for d in orig if d < target)
+            below_exp = sum(1 for d in expanded if d < target)
+            info_lines.append(f"<{target}s:  {below_orig}→{below_exp} "
+                              f"({below_orig/len(orig)*100:.0f}%→{below_exp/len(expanded)*100:.0f}%)")
+        ax.text(
+            0.97, 0.72, "\n".join(info_lines),
+            transform=ax.transAxes, ha="right", va="top",
+            fontsize=8, bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85),
+        )
+
+
+# =====================================================================
 # Main
 # =====================================================================
 def main():
@@ -682,12 +881,34 @@ def main():
     g.add_argument("--l3-max-actions", type=int, default=999,
                    help="L3 每 leaf 最多 actions 数 (默认: 999, 不限)")
 
+    # ── 上下文扩展参数 ──
+    e = parser.add_argument_group("expansion",
+        "L2/L3 上下文扩展: 向两侧 padding 到目标时长 (先 grounding 再 segmentation)")
+    e.add_argument("--l2-target-dur", type=int, default=0,
+                   help="L2 目标最小输入时长(秒), 不足则向两侧扩展 (默认: 0, 不扩展)")
+    e.add_argument("--l3-target-dur", type=int, default=0,
+                   help="L3 目标最小输入时长(秒), 不足则向两侧扩展 (默认: 0, 不扩展)")
+    e.add_argument("--max-expansion-dur", type=int, default=240,
+                   help="扩展后的最大时长上限(秒) (默认: 240)")
+
+    # ── 均衡采样参数 ──
+    s = parser.add_argument_group("sampling", "领域均衡采样")
+    s.add_argument("--balance-per-level", type=int, default=0,
+                   help="每层级目标保留条数 (默认: 0, 不做均衡采样). "
+                        "超出的域优先砍 output_count 小的记录")
+    s.add_argument("--seed", type=int, default=42)
+
     args = parser.parse_args()
 
     filt = FilterConfig(
         l1_min_phases=args.l1_min_phases, l1_max_phases=args.l1_max_phases,
         l2_min_events=args.l2_min_events, l2_max_events=args.l2_max_events,
         l3_min_actions=args.l3_min_actions, l3_max_actions=args.l3_max_actions,
+    )
+    ctx = ContextExpansion(
+        l2_target_dur=args.l2_target_dur,
+        l3_target_dur=args.l3_target_dur,
+        max_dur=args.max_expansion_dur,
     )
 
     ann_dir = Path(args.annotation_dir)
@@ -698,10 +919,16 @@ def main():
 
     print(f"Loaded {len(anns)} annotations from {ann_dir}")
     print(f"Filter: {filt.summary()}")
+    print(f"Context expansion: {ctx.summary()}")
 
-    # 提取 & 筛选
-    all_records = extract_all_records(anns)
+    # 提取 & 筛选 & 均衡采样
+    all_records = extract_all_records(anns, ctx)
     filtered_records = apply_filter(all_records, filt) if filt.active() else all_records
+    if args.balance_per_level > 0:
+        filtered_records = balanced_sample(
+            filtered_records, target_per_level=args.balance_per_level, seed=args.seed,
+        )
+        print(f"Balanced sampling: {args.balance_per_level} per level")
 
     stats_raw = aggregate(all_records)
     stats = aggregate(filtered_records)
@@ -770,6 +997,19 @@ def main():
                  bbox_inches="tight")
     print(f"  Saved fig8_output_counts.png")
 
+    # ── Fig 9: Context expansion comparison (only if expansion is active) ──
+    if ctx.active():
+        fig9, axes9 = plt.subplots(1, 2, figsize=(14, 5))
+        plot_context_expansion_comparison(stats, ctx, list(axes9))
+        fig9.suptitle(
+            f"Context Expansion: Input Duration Before vs After\n({ctx.summary()})",
+            fontsize=13, y=1.03,
+        )
+        fig9.tight_layout()
+        fig9.savefig(os.path.join(args.output_dir, "fig9_context_expansion.png"),
+                     dpi=args.dpi, bbox_inches="tight")
+        print(f"  Saved fig9_context_expansion.png")
+
     plt.close("all")
 
     # ── 打印汇总 ──
@@ -778,21 +1018,24 @@ def main():
     print(f"{'='*60}")
     print(f"  Source videos: {len(anns)}")
     print(f"  Filter: {filt.summary()}")
-    print(f"{'─'*60}")
-    print(f"  {'Level':<6} {'Raw':>6} {'Filtered':>9} {'Kept%':>7}  Input Duration")
-    print(f"{'─'*60}")
+    print(f"  Context expansion: {ctx.summary()}")
+    print(f"{'─'*70}")
+    print(f"  {'Level':<6} {'Raw':>6} {'Filt':>6} {'Kept%':>6}  {'Orig Dur':>12}  {'Expanded Dur':>14}")
+    print(f"{'─'*70}")
     for lv in ("L1", "L2", "L3"):
         raw = stats_raw["per_level"].get(lv, 0)
         flt = stats["per_level"].get(lv, 0)
         pct = flt / raw * 100 if raw > 0 else 0
         durs = stats["input_durations"][lv]
-        dur_info = f"avg={np.mean(durs):.0f}s, med={np.median(durs):.0f}s" if durs else "N/A"
-        print(f"  {lv:<6} {raw:>6} {flt:>9} {pct:>6.1f}%  {dur_info}")
+        exp_durs = stats["expanded_durations"][lv]
+        dur_info = f"avg={np.mean(durs):.0f}s" if durs else "N/A"
+        exp_info = f"avg={np.mean(exp_durs):.0f}s" if exp_durs else "N/A"
+        print(f"  {lv:<6} {raw:>6} {flt:>6} {pct:>5.1f}%  {dur_info:>12}  {exp_info:>14}")
     raw_total = sum(stats_raw["per_level"].values())
     flt_total = sum(stats["per_level"].values())
     pct_total = flt_total / raw_total * 100 if raw_total > 0 else 0
-    print(f"{'─'*60}")
-    print(f"  {'TOTAL':<6} {raw_total:>6} {flt_total:>9} {pct_total:>6.1f}%")
+    print(f"{'─'*70}")
+    print(f"  {'TOTAL':<6} {raw_total:>6} {flt_total:>6} {pct_total:>5.1f}%")
     print(f"\n  Figures saved to: {os.path.abspath(args.output_dir)}/")
 
 
