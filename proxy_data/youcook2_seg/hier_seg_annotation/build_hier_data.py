@@ -33,8 +33,10 @@ from pathlib import Path
 
 # 添加 repo root 到 sys.path 以便 import prompts + shared
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
-PROMPTS_DIR = os.path.join(REPO_ROOT, "proxy_data", "youcook2_seg", "hier_seg_annotation")
+# SCRIPT_DIR = proxy_data/youcook2_seg/hier_seg_annotation/
+# → repo root 在上三级
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
+PROMPTS_DIR = SCRIPT_DIR  # prompts.py 就在同目录
 PROXY_DATA_DIR = os.path.join(REPO_ROOT, "proxy_data")
 for _p in (PROMPTS_DIR, PROXY_DATA_DIR):
     if _p not in sys.path:
