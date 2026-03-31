@@ -257,6 +257,19 @@ class ComparisonStore:
         # Sort by video key
         self.video_keys = sorted(self.video_index.keys())
 
+        # ── Diagnostic: check for videos with incomplete settings ──
+        all_settings = set(self.settings.keys())
+        incomplete = 0
+        for vk, entry in self.video_index.items():
+            present = set(entry["settings"].keys())
+            if present != all_settings:
+                incomplete += 1
+                if incomplete <= 5:  # only show first 5
+                    missing = all_settings - present
+                    print(f"  [WARN] {vk}: missing settings {missing}, has {present}")
+        if incomplete:
+            print(f"  [WARN] {incomplete}/{len(self.video_keys)} videos have incomplete settings (key mismatch?)")
+
     def get_frames(self, video_key: str, fps: float = 1.0) -> list[dict]:
         if video_key in self._frame_cache:
             return self._frame_cache[video_key]
@@ -588,6 +601,19 @@ def main():
     summary = store.summary()
     print(f"\n  Total videos: {summary['total_videos']}")
     print(f"  Settings:     {summary['setting_names']}")
+    print(f"  Steps:        {summary['steps']}")
+
+    # Show per-setting video coverage
+    for sname in summary["setting_names"]:
+        n_with = sum(1 for vk in store.video_keys if sname in store.video_index[vk]["settings"])
+        print(f"  [{sname}] present in {n_with}/{len(store.video_keys)} video keys")
+
+    # Show sample video key/settings for first 3
+    for vk in store.video_keys[:3]:
+        entry = store.video_index[vk]
+        snames = list(entry["settings"].keys())
+        steps = {sn: [r["step"] for r in recs] for sn, recs in entry["settings"].items()}
+        print(f"  Sample: {vk} → settings={snames}, steps={steps}")
 
     # Pre-compute data blob to inject into index.html (works through reverse proxies)
     global _preloaded_html
