@@ -832,6 +832,196 @@ def get_level3_check_prompt(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Leaf-Node Check: Per-leaf L3 review + parent boundary shrinkage
+# Input:  frames within a leaf node (event or eventless phase) + existing L3
+# Output: L3 verdicts + shrunk parent boundaries
+# ─────────────────────────────────────────────────────────────────────────────
+_LEAF_CHECK_BASE = """\
+You are a quality reviewer for hierarchical video annotations. You are viewing \
+frames from a {parent_type} spanning [{parent_start}s – {parent_end}s].
+
+Parent {parent_type}: "{parent_name}"
+Micro-action type: {micro_type}
+Original splitting criterion: "{micro_split_criterion}"
+
+Below are the EXISTING L3 atomic action annotations within this {parent_type}:
+{existing_annotations}
+
+You have TWO tasks:
+
+## TASK 1 — L3 MICRO-ACTION REVIEW (Granularity & Completeness)
+
+Review each existing L3 annotation AND identify any MISSING atomic actions.
+
+GRANULARITY SPECTRUM — use this to judge every annotation:
+
+  Parent {parent_type} (ABOVE — too coarse for L3):
+    If an annotation's sub_action essentially restates the parent description, \
+it is NOT a valid L3 action — it belongs at the parent level.
+
+  L3 Atomic Action (THIS LEVEL — correct granularity):
+    A single, discrete physical interaction (2–6 seconds) where exactly ONE \
+object undergoes ONE visible state change. The start is the moment of physical \
+contact or the onset of the transformation; the end is when the new state is \
+visually established.
+    Examples: "Transfer material into the container", \
+"Flip the piece with a tool", "Apply adhesive along the edge".
+
+  Sub-atomic motion (BELOW — too fine for L3):
+    A partial body movement that does not by itself produce a complete object \
+state change. Reaching, gripping, lifting a tool, repositioning hands, or \
+adjusting posture are NOT valid L3 annotations.
+    Examples of TOO FINE: "Reach for the tool", "Lift hand from the surface", \
+"Adjust grip on handle".
+
+L3 REVIEW CRITERIA:
+
+1. [Granularity — Not Too Coarse]: Does the sub_action describe a SINGLE \
+physical state change, not a multi-step workflow? If it covers multiple \
+distinct state changes, it should be SPLIT (revise into one, supplement \
+the others).
+
+2. [Granularity — Not Too Fine]: Does the sub_action produce a complete, \
+visible object state change? If it is merely a hand/body motion without \
+any object transformation, it should be REMOVED.
+
+3. [Temporal Accuracy]: Does start_time/end_time match what is visible? \
+start = physical contact or transformation onset. end = new state established. \
+Typical duration: 2-6 seconds.
+
+4. [State Description Quality]: Are pre_state and post_state specific, concrete, \
+and visually verifiable? Vague descriptions ("task done", "materials on table") \
+are insufficient — they must describe exact visual appearance.
+
+5. [Activity Relevance]: Does the sub_action involve real physical state change \
+of objects, materials, or workspace contents? Exclude pure hand movements, \
+tool pickups, posture adjustments, narration, or idle frames.
+
+6. [Completeness]: Are there visible atomic state changes in the frames not \
+covered by existing annotations?
+
+For each existing annotation, output a verdict:
+- "keep": Annotation is correct as-is.
+- "revise": Annotation has issues — provide corrected fields.
+- "remove": Annotation is invalid (no real state change, wrong granularity, or duplicate).
+
+Then list any MISSING actions.
+
+## TASK 2 — PARENT BOUNDARY SHRINKAGE (Critical)
+
+Examine the frames near the START and END of the parent's time range.
+
+Determine: does the parent's [{parent_start}s – {parent_end}s] contain "dead zones" \
+— stretches of time at the beginning or end where NO meaningful physical action occurs?
+
+Rules:
+- If actual physical activity starts AFTER {parent_start}s (e.g., idle, talking, \
+static frames at the beginning), output a tighter shrunk_start.
+- If actual physical activity ends BEFORE {parent_end}s (e.g., idle tail, \
+static frames at the end), output a tighter shrunk_end.
+- The shrunk boundaries should tightly wrap the FIRST and LAST visible physical \
+actions (aligned with L3 annotations when possible).
+- If the boundaries are already tight, output shrunk_start = {parent_start} \
+and shrunk_end = {parent_end} (no change).
+- Shrinkage must preserve ALL kept/revised/supplemented L3 actions within bounds.
+- Use integer seconds.
+
+## OUTPUT FORMAT
+
+{{{{
+  "l3_reviews": [
+    {{{{
+      "action_id": 1,
+      "verdict": "keep"
+    }}}},
+    {{{{
+      "action_id": 2,
+      "verdict": "revise",
+      "issue": "too_fine|too_coarse|bad_boundary|bad_state_desc|overlap",
+      "revised": {{{{
+        "start_time": 45,
+        "end_time": 49,
+        "sub_action": "Corrected description",
+        "pre_state": "Specific pre-state",
+        "post_state": "Specific post-state"
+      }}}}
+    }}}},
+    {{{{
+      "action_id": 3,
+      "verdict": "remove",
+      "issue": "too_fine|too_coarse|not_relevant|duplicate",
+      "reason": "Brief explanation"
+    }}}}
+  ],
+  "l3_supplements": [
+    {{{{
+      "start_time": 55,
+      "end_time": 59,
+      "sub_action": "Description of missed action",
+      "pre_state": "Pre-state",
+      "post_state": "Post-state"
+    }}}}
+  ],
+  "shrunk_start": {parent_start},
+  "shrunk_end": {parent_end}
+}}}}
+
+IMPORTANT:
+- You MUST review every existing annotation by action_id.
+- "l3_supplements" can be an empty list if nothing is missing.
+- Do NOT invent actions not visible in the provided frames.
+- Always include the "issue" field for revise/remove verdicts.
+- shrunk_start/shrunk_end MUST satisfy: shrunk_start <= min(L3 start_times) \
+and shrunk_end >= max(L3 end_times) for all kept/revised/supplemented L3 actions.
+- Be strict: vague, non-physical, or multi-step annotations should be revised or removed."""
+
+
+def get_leaf_check_prompt(
+    parent_type: str,
+    parent_name: str,
+    parent_start: int,
+    parent_end: int,
+    existing_results: list[dict],
+    micro_type: str = "state_change",
+    micro_split_criterion: str = "",
+) -> str:
+    """
+    Build the Leaf-Node Check prompt for combined L3 review + parent shrinkage.
+
+    Args:
+        parent_type: "event" or "phase".
+        parent_name: The event instruction or phase name.
+        parent_start: Parent start time in seconds.
+        parent_end: Parent end time in seconds.
+        existing_results: List of existing L3 grounding_results for this leaf.
+        micro_type: The micro-action type (state_change or repetition_unit).
+        micro_split_criterion: The original splitting criterion from annotation.
+    """
+    import json as _json
+    display_results = []
+    for r in existing_results:
+        display_results.append({
+            "action_id": r.get("action_id"),
+            "start_time": r.get("start_time"),
+            "end_time": r.get("end_time"),
+            "sub_action": r.get("sub_action"),
+            "pre_state": r.get("pre_state"),
+            "post_state": r.get("post_state"),
+        })
+    annotations_str = _json.dumps(display_results, ensure_ascii=False, indent=2)
+
+    return _LEAF_CHECK_BASE.format(
+        parent_type=parent_type,
+        parent_name=parent_name,
+        parent_start=parent_start,
+        parent_end=parent_end,
+        micro_type=micro_type,
+        micro_split_criterion=micro_split_criterion,
+        existing_annotations=annotations_str,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Merged L1+L2 Check: Simultaneous Phase + Event Quality Review
 # Input:  full video frames (1fps) + existing L1 phases + L2 events
 # Output: reviewed phases with verdicts, reviewed events with verdicts

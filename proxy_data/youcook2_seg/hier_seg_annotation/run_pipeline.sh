@@ -80,26 +80,17 @@ run_step "STEP4_L3_ANNOTATION" \
         --level 3 \
         --model "$MODEL" --workers "$WORKERS"
 
-# ── Step 5: Merged L1+L2 check (1fps full-video, mirrors Step 2) ──
+# ── Step 5: Leaf-Node Audit (L3 review + parent shrinkage) ────────
 CHECK_MODEL="${CHECK_MODEL:-$MODEL}"
 CHECK_OUTPUT="${CHECK_OUTPUT:-$DATA_ROOT/annotations_checked}"
 
-run_step "STEP5_CHECK_L1L2" \
-    python "$SCRIPT_DIR/annotate_check.py" \
-        --frames-dir "$DATA_ROOT/frames" \
-        --annotation-dir "$DATA_ROOT/annotations" \
-        --output-dir "$CHECK_OUTPUT" \
-        --levels merged_c \
-        --model "$CHECK_MODEL" --workers "$WORKERS"
-
-# ── Step 6: L3 check (2fps leaf-node, mirrors Step 3+4) ───────────
-run_step "STEP6_CHECK_L3" \
+run_step "STEP5_LEAF_AUDIT" \
     python "$SCRIPT_DIR/annotate_check.py" \
         --frames-dir "$DATA_ROOT/frames" \
         --l3-frames-dir "$DATA_ROOT/frames_l3" \
-        --annotation-dir "$CHECK_OUTPUT" \
+        --annotation-dir "$DATA_ROOT/annotations" \
         --output-dir "$CHECK_OUTPUT" \
-        --levels 3c \
+        --levels leaf_c \
         --model "$CHECK_MODEL" --workers "$WORKERS"
 
 # ── Summary ─────────────────────────────────────────────────────────

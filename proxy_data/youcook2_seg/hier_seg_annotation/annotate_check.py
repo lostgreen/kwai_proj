@@ -49,6 +49,7 @@ from annotate import (
     SYSTEM_PROMPT,
     _apply_l2_check_results,
     _apply_l3_check_results,
+    _check_leaf_node,
     _check_level2,
     _check_level3,
     _check_merged_l1l2,
@@ -116,6 +117,51 @@ def _remove_out_of_bounds_l3(
                 continue
         cleaned.append(r)
     return cleaned
+
+
+def collect_leaf_nodes(ann: dict) -> list[dict]:
+    """Collect leaf nodes for audit.
+
+    A leaf node is either:
+      - An L2 event (if the parent phase has events)
+      - An L1 phase itself (if it has no events)
+
+    Returns list of dicts with keys:
+        parent_type, parent_id, parent_name, parent_start, parent_end
+    """
+    phases = ann.get("level1", {}).get("macro_phases", [])
+    events = ann.get("level2", {}).get("events", [])
+
+    # Group events by parent_phase_id
+    phase_events: dict[int, list[dict]] = {}
+    for e in events:
+        ppid = e.get("parent_phase_id")
+        if ppid is not None:
+            phase_events.setdefault(ppid, []).append(e)
+
+    leaves: list[dict] = []
+    for phase in phases:
+        pid = phase.get("phase_id")
+        if phase_events.get(pid):
+            # Phase has events → events are leaves
+            for event in sorted(phase_events[pid], key=lambda e: (e.get("start_time", 0), e.get("end_time", 0))):
+                leaves.append({
+                    "parent_type": "event",
+                    "parent_id": event.get("event_id"),
+                    "parent_name": event.get("instruction", ""),
+                    "parent_start": event.get("start_time", 0),
+                    "parent_end": event.get("end_time", 0),
+                })
+        else:
+            # Phase has no events → phase itself is leaf
+            leaves.append({
+                "parent_type": "phase",
+                "parent_id": pid,
+                "parent_name": phase.get("phase_name", ""),
+                "parent_start": phase.get("start_time", 0),
+                "parent_end": phase.get("end_time", 0),
+            })
+    return leaves
 
 
 def check_clip(
@@ -266,6 +312,135 @@ def check_clip(
             ann["level3"] = checked_l3
             combined_stats["l3"] = checked_l3.get("_check_stats", {})
 
+    # ---- Leaf-Node Check ----
+    if "leaf_c" in levels:
+        l1 = ann.get("level1")
+        l3 = ann.get("level3")
+        if l1 is None or l3 is None:
+            return {"clip_key": clip_key, "ok": False,
+                    "error": "level1+level3 required for leaf check", "skipped": False, "stats": {}}
+
+        if not overwrite and l3.get("_check_stats") is not None:
+            combined_stats["leaf"] = l3["_check_stats"]
+        elif dry_run:
+            leaves = collect_leaf_nodes(ann)
+            n_actions = len(l3.get("grounding_results", []))
+            combined_stats["leaf"] = {"dry_run": True, "n_leaves": len(leaves), "n_actions": n_actions}
+        else:
+            leaves = collect_leaf_nodes(ann)
+            if not leaves:
+                combined_stats["leaf"] = {"skipped": True, "reason": "no leaf nodes"}
+            else:
+                existing_l3 = l3.get("grounding_results", [])
+                micro_type = l3.get("micro_type", "state_change")
+                micro_split_criterion = l3.get("micro_split_criterion", "")
+
+                all_checked_l3: list[dict] = []
+                check_calls: list[dict] = []
+                stats: dict[str, int] = {
+                    "kept": 0, "revised": 0, "removed": 0, "supplemented": 0,
+                    "parents_shrunk": 0, "parents_unchanged": 0,
+                }
+
+                # Build lookup indices for L3 by parent
+                l3_by_event: dict[int, list[dict]] = {}
+                l3_by_phase: dict[int, list[dict]] = {}
+                for r in existing_l3:
+                    peid = r.get("parent_event_id")
+                    ppid = r.get("parent_phase_id")
+                    if peid is not None:
+                        l3_by_event.setdefault(peid, []).append(r)
+                    elif ppid is not None:
+                        l3_by_phase.setdefault(ppid, []).append(r)
+
+                # Build lookup for L1 phases and L2 events for shrinkage write-back
+                phases_by_id = {p.get("phase_id"): p for p in l1.get("macro_phases", [])}
+                l2 = ann.get("level2", {})
+                events_by_id = {e.get("event_id"): e for e in l2.get("events", [])}
+
+                for leaf in leaves:
+                    pt = leaf["parent_type"]
+                    pid = leaf["parent_id"]
+
+                    # Gather existing L3 for this leaf
+                    if pt == "event":
+                        leaf_l3 = l3_by_event.get(pid, [])
+                    else:
+                        leaf_l3 = l3_by_phase.get(pid, [])
+
+                    if not leaf_l3:
+                        check_calls.append({
+                            "parent_type": pt,
+                            "parent_id": pid,
+                            "parent_name": leaf["parent_name"],
+                            "skipped": True,
+                            "skip_reason": "no existing L3 results",
+                        })
+                        continue
+
+                    result = _check_leaf_node(
+                        frame_dir, clip_duration,
+                        leaf_parent_type=pt,
+                        leaf_parent_id=pid,
+                        leaf_parent_name=leaf["parent_name"],
+                        leaf_parent_start=leaf["parent_start"],
+                        leaf_parent_end=leaf["parent_end"],
+                        existing_l3=leaf_l3,
+                        micro_type=micro_type,
+                        micro_split_criterion=micro_split_criterion,
+                        api_base=api_base, api_key=api_key, model=model,
+                        max_frames=max_frames,
+                        resize_max_width=resize_max_width,
+                        jpeg_quality=jpeg_quality,
+                        l3_base=l3_frames_base,
+                        clip_key_str=clip_key,
+                    )
+
+                    all_checked_l3.extend(result["checked_l3"])
+                    check_calls.append(result["call_info"])
+
+                    # Count stats
+                    for r in result["checked_l3"]:
+                        tag = r.get("_checked")
+                        if tag == "revised":
+                            stats["revised"] += 1
+                        elif tag == "supplemented":
+                            stats["supplemented"] += 1
+                        else:
+                            stats["kept"] += 1
+                    stats["removed"] += len(leaf_l3) - sum(
+                        1 for r in result["checked_l3"] if r.get("_checked") != "supplemented"
+                    )
+
+                    # Write back parent shrinkage
+                    if result["was_shrunk"]:
+                        stats["parents_shrunk"] += 1
+                        if pt == "event" and pid in events_by_id:
+                            ev = events_by_id[pid]
+                            ev["_shrunk_from"] = [ev.get("start_time"), ev.get("end_time")]
+                            ev["start_time"] = result["shrunk_start"]
+                            ev["end_time"] = result["shrunk_end"]
+                            ev["_shrunk"] = True
+                        elif pt == "phase" and pid in phases_by_id:
+                            ph = phases_by_id[pid]
+                            ph["_shrunk_from"] = [ph.get("start_time"), ph.get("end_time")]
+                            ph["start_time"] = result["shrunk_start"]
+                            ph["end_time"] = result["shrunk_end"]
+                            ph["_shrunk"] = True
+                    else:
+                        stats["parents_unchanged"] += 1
+
+                # Sort and renumber all L3 action_ids
+                all_checked_l3.sort(key=lambda r: (r.get("start_time", 0), r.get("end_time", 0)))
+                for i, r in enumerate(all_checked_l3, 1):
+                    r["action_id"] = i
+
+                # Preserve other level3 fields, update grounding_results + stats
+                ann["level3"]["grounding_results"] = all_checked_l3
+                ann["level3"]["_check_calls"] = check_calls
+                ann["level3"]["_check_stats"] = stats
+                combined_stats["leaf"] = stats
+
     # Write output
     if not dry_run:
         ann["_audit_meta"] = {
@@ -296,7 +471,7 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True,
                         help="Output directory for checked annotations (separate from input)")
     parser.add_argument("--levels", default="merged_c,3c",
-                        help="Comma-separated checks to run: merged_c, 2c, 3c")
+                        help="Comma-separated checks to run: merged_c, 2c, 3c, leaf_c")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -321,7 +496,7 @@ def main() -> None:
 
     # Validate levels
     levels = [l.strip() for l in args.levels.split(",")]
-    valid_levels = {"merged_c", "2c", "3c"}
+    valid_levels = {"merged_c", "2c", "3c", "leaf_c"}
     for l in levels:
         if l not in valid_levels:
             print(f"ERROR: unsupported level '{l}', must be one of {valid_levels}", file=sys.stderr)

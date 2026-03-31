@@ -297,7 +297,7 @@ JSONL_1K=/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampl
 MODEL=pa/gemini-3.1-pro-preview
 ```
 
-### 完整 4 步流程
+### 完整 5 步流程
 
 ```bash
 # Step 1: 全视频 1fps 抽帧 (仅首次需要)
@@ -329,9 +329,18 @@ python $SCRIPT_DIR/annotate.py \
     --level 3 \
     --model $MODEL --workers 8
 
-# Step 5 (可选): Criterion → 通用 Training Hint 改写
-python $SCRIPT_DIR/rewrite_criteria_hints.py \
+# Step 5: Leaf-Node Audit (L3 查漏补缺 + 父节点边界收缩)
+python $SCRIPT_DIR/annotate_check.py \
+    --frames-dir $DATA_ROOT/frames \
+    --l3-frames-dir $DATA_ROOT/frames_l3 \
     --annotation-dir $DATA_ROOT/annotations \
+    --output-dir $DATA_ROOT/annotations_checked \
+    --levels leaf_c \
+    --model $MODEL --workers 4
+
+# Step 6 (可选): Criterion → 通用 Training Hint 改写
+python $SCRIPT_DIR/rewrite_criteria_hints.py \
+    --annotation-dir $DATA_ROOT/annotations_checked \
     --api-base $API_BASE \
     --model gpt-4o-mini \
     --workers 4
@@ -817,179 +826,357 @@ python rewrite_criteria_hints.py --annotation-dir annotations/ --dry-run
 
 ---
 
-## 7. Phase 2: Quality Check Pipeline (已实现)
+## 7. Phase 2: Leaf-Node Audit (重新设计)
 
-### 7.1 概述
+### 7.1 核心理念：从"双重审计"到"叶子节点审计"
 
-标注完成后，通过 **独立的 check 流程** 对 L1+L2+L3 进行模型级质量复审。check 通过 `annotate_check.py` 独立运行，读取已有标注 JSON，调用（可能更强的）VLM 对结果进行 keep/revise/remove 三分类审核，并补充遗漏标注（supplement）。
+**旧方案**的问题：
+- `merged_c` 审 L1+L2，`3c` 审 L3 → 两步串行，VLM 调用量大
+- L1/L2 审计在全视频尺度上看帧 → 审核者缺乏局部帧精度，改动效果有限
+- 父节点边界审核和 L3 微动作审核是分开的，但实际上两者天然耦合
 
-**核心设计原则**:
-1. **幂等安全**: 每层 check 完成后写入 `_check_stats` 标记字段，re-run 时自动跳过
-2. **级联一致**: merged_c 先审核 L1+L2，3c 基于 checked 结果审核 L3
-3. **保守策略**: VLM 未 review 到的条目默认 keep（safety net）
-4. **划分依据传递**: check prompt 包含原始标注的 criterion/split_criterion，让审核模型了解原始分割意图
+**新方案**核心思想：**不再单独审计 L1 和 L2**。只审计**叶子节点（Leaf Nodes）及其内部的 L3**。
 
-### 7.2 Check 数据流
+叶子节点定义（沿用 Phase 1.5）：
+- 如果叶子节点是 **L2 Event** → 审计 `[Event, L3s]`
+- 如果叶子节点是 **无 Event 的 L1 Phase** → 审计 `[Phase, L3s]`
+
+Check 只有**两个核心目标**：
+
+| # | 目标 | 说明 |
+|---|------|------|
+| 1 | **L3 查漏补缺** (Granularity & Completeness) | 微动作有没有遗漏？粒度对不对？ |
+| 2 | **父节点收缩** (Parent Shrinkage) | 父节点的 `[start_time, end_time]` 是否有大段"无动作真空区"？如有，强制往里缩，紧贴首尾 L3 动作 |
+
+**优势**：
+- **单步完成**：不再需要先 merged_c 再 3c，一次 `leaf_c` 搞定
+- **局部帧精度**：每次 VLM 调用只看叶子节点时间区间内的帧，分辨率更高
+- **父子联动**：L3 补全和父边界收缩在同一次调用中完成，保证一致性
+- **VLM 调用数 = 叶子节点数**：比旧方案的 (1 全局 merged_c + N 个 3c) 更精简
+
+### 7.2 Leaf-Node 收集逻辑
+
+```python
+def collect_leaf_nodes(ann: dict) -> list[LeafNode]:
+    """收集所有叶子节点，每个叶子节点包含其父信息和对应的 L3 结果。"""
+    phases = ann["level1"]["macro_phases"]
+    events = ann["level2"]["events"]
+    l3_results = ann["level3"]["grounding_results"]
+
+    # 按 parent_phase_id 索引 events
+    phase_events = group_by(events, key="parent_phase_id")
+    # 按 parent_event_id / parent_phase_id 索引 L3
+    l3_by_event = group_by(l3_results, key="parent_event_id")
+    l3_by_phase = group_by(l3_results, key="parent_phase_id")
+
+    leaves = []
+    for phase in phases:
+        pid = phase["phase_id"]
+        if phase_events.get(pid):
+            # 情况 A: Phase 有 events → events 是叶子
+            for event in phase_events[pid]:
+                eid = event["event_id"]
+                leaves.append(LeafNode(
+                    parent_type="event",
+                    parent_id=eid,
+                    parent_name=event["instruction"],
+                    parent_start=event["start_time"],
+                    parent_end=event["end_time"],
+                    l3_results=l3_by_event.get(eid, []),
+                    grandparent_phase=phase,  # 保留上层 context
+                ))
+        else:
+            # 情况 B: Phase 无 events → phase 自身是叶子
+            leaves.append(LeafNode(
+                parent_type="phase",
+                parent_id=pid,
+                parent_name=phase["phase_name"],
+                parent_start=phase["start_time"],
+                parent_end=phase["end_time"],
+                l3_results=l3_by_phase.get(pid, []),
+                grandparent_phase=None,
+            ))
+    return leaves
+```
+
+### 7.3 Check 数据流 (简化)
 
 ```
 annotations/                      annotations_checked/
 ├─ {clip}.json                    ├─ {clip}.json
-│  level1                         │  level1 + _check_stats
-│  level2          ──(Step 5)──→  │  level2 + _check_stats
-│  level3 (原始)                  │  level3 (孤儿已清理)
-│  global_phase_criterion         │  _audit_meta
-│  summary, topology_type         │
-│                                 │
-│                  ──(Step 6)──→  │  level3 + _check_stats
-│                                 │  _audit_meta (更新)
+│  level1                         │  level1 (父节点边界可能被收缩)
+│  level2          ──(Step 5)──→  │  level2 (父节点边界可能被收缩)
+│  level3                         │  level3 + _check_stats
+│                                 │  _audit_meta
 ```
 
-**run_pipeline.sh 中的执行**:
+**单步执行**:
 
-| Step | 命令 | 入参 | 输出 |
-|------|------|------|------|
-| 5 | `annotate_check.py --levels merged_c` | `annotations/` → `annotations_checked/` | L1+L2 checked |
-| 6 | `annotate_check.py --levels 3c` | `annotations_checked/` → `annotations_checked/` (in-place) | L3 checked |
+| Step | 命令 | 说明 |
+|------|------|------|
+| 5 | `annotate_check.py --levels leaf_c` | 遍历所有叶子节点 → 每个叶子独立调 VLM → 写回 L1/L2/L3 |
 
-### 7.3 Skip (幂等) 机制
+### 7.4 每个叶子节点的 VLM 输入
+
+#### 7.4.1 传入帧
+
+| 帧来源 | 条件 | 说明 |
+|--------|------|------|
+| `frames_l3/{clip_key}_ev{eid}/` | parent_type=event, 目录存在 | 2fps per-event 帧 (高精度) |
+| `frames_l3/{clip_key}_ph{pid}/` | parent_type=phase, 目录存在 | 2fps per-phase 帧 (高精度) |
+| `frames/{clip_key}/` 中 `[parent_start, parent_end]` 区间 | 以上不存在时 fallback | 1fps 全视频帧裁切 |
+
+帧均匀采样至 `max_frames` (默认 32)，附带 timestamp label。
+
+#### 7.4.2 传入的结构化信息
+
+| 字段 | 内容 | 来源 |
+|------|------|------|
+| `parent_type` | `"event"` 或 `"phase"` | 叶子节点类型 |
+| `parent_name` | Event instruction 或 Phase name | L2 event / L1 phase |
+| `parent_start` | 父节点当前 start_time (秒) | L2 event / L1 phase |
+| `parent_end` | 父节点当前 end_time (秒) | L2 event / L1 phase |
+| `micro_type` | `"state_change"` / `"repetition_unit"` | `level3.micro_type` |
+| `micro_split_criterion` | 原始 L3 划分依据 | `level3.micro_split_criterion` |
+| `existing_l3` | 当前被审核的 L3 列表 (JSON) | `level3.grounding_results` 按 parent 过滤 |
+
+#### 7.4.3 完整 Prompt 模板 (`_LEAF_CHECK_BASE`)
+
+```
+You are a quality reviewer for hierarchical video annotations. You are viewing
+frames from a {parent_type} spanning [{parent_start}s – {parent_end}s].
+
+Parent {parent_type}: "{parent_name}"
+Micro-action type: {micro_type}
+Original splitting criterion: "{micro_split_criterion}"
+
+Below are the EXISTING L3 atomic action annotations within this {parent_type}:
+{existing_l3_json}
+
+You have TWO tasks:
+
+## TASK 1 — L3 MICRO-ACTION REVIEW (Granularity & Completeness)
+
+Review each existing L3 annotation AND identify any MISSING atomic actions.
+
+GRANULARITY SPECTRUM — use this to judge every annotation:
+
+  Parent {parent_type} (ABOVE — too coarse for L3):
+    If an annotation's sub_action essentially restates the parent description,
+    it is NOT a valid L3 action — it belongs at the parent level.
+
+  L3 Atomic Action (THIS LEVEL — correct granularity):
+    A single, discrete physical interaction (2–6 seconds) where exactly ONE
+    object undergoes ONE visible state change.
+
+  Sub-atomic motion (BELOW — too fine for L3):
+    A partial body movement that does not produce a complete object state change.
+    Reaching, gripping, adjusting posture are NOT valid L3 annotations.
+
+L3 REVIEW CRITERIA:
+1. [Granularity — Not Too Coarse]: Single physical state change, not multi-step?
+2. [Granularity — Not Too Fine]: Produces a complete visible state change?
+3. [Temporal Accuracy]: start = contact/onset, end = new state established.
+4. [State Description Quality]: pre/post_state are specific & visually verifiable?
+5. [Activity Relevance]: Real physical state change, not hand motion or idle?
+6. [Completeness]: Any visible atomic actions NOT covered by existing annotations?
+
+For each existing annotation, output a verdict:
+- "keep": Correct as-is.
+- "revise": Has issues — provide corrected fields.
+- "remove": Invalid (no real state change, wrong granularity, duplicate).
+
+Then list any MISSING actions as supplements.
+
+## TASK 2 — PARENT BOUNDARY SHRINKAGE (Critical)
+
+Examine the frames near the START and END of the parent's time range.
+
+Determine: does the parent's [{parent_start}s – {parent_end}s] contain "dead zones"
+— stretches of time at the beginning or end where NO meaningful physical action occurs?
+
+Rules:
+- If actual physical activity starts AFTER {parent_start}s (e.g., idle, talking,
+  static frames at the beginning), output a tighter `shrunk_start`.
+- If actual physical activity ends BEFORE {parent_end}s (e.g., idle tail,
+  static frames at the end), output a tighter `shrunk_end`.
+- The shrunk boundaries should tightly wrap the FIRST and LAST visible physical
+  actions (aligned with L3 annotations when possible).
+- If the boundaries are already tight, output `shrunk_start = {parent_start}`
+  and `shrunk_end = {parent_end}` (no change).
+- Shrinkage must preserve ALL kept/revised/supplemented L3 actions within bounds.
+- Use integer seconds.
+
+## OUTPUT FORMAT
+
+{{
+  "l3_reviews": [
+    {{
+      "action_id": 1,
+      "verdict": "keep"
+    }},
+    {{
+      "action_id": 2,
+      "verdict": "revise",
+      "issue": "too_fine|too_coarse|bad_boundary|bad_state_desc|overlap",
+      "revised": {{
+        "start_time": 45,
+        "end_time": 49,
+        "sub_action": "Corrected description",
+        "pre_state": "Specific pre-state",
+        "post_state": "Specific post-state"
+      }}
+    }},
+    {{
+      "action_id": 3,
+      "verdict": "remove",
+      "issue": "too_fine|too_coarse|not_relevant|duplicate",
+      "reason": "Brief explanation"
+    }}
+  ],
+  "l3_supplements": [
+    {{
+      "start_time": 55,
+      "end_time": 59,
+      "sub_action": "Description of missed action",
+      "pre_state": "Pre-state",
+      "post_state": "Post-state"
+    }}
+  ],
+  "shrunk_start": {parent_start},
+  "shrunk_end": {parent_end}
+}}
+
+IMPORTANT:
+- You MUST review every existing annotation by action_id.
+- "l3_supplements" can be an empty list if nothing is missing.
+- Do NOT invent actions not visible in the provided frames.
+- Always include the "issue" field for revise/remove verdicts.
+- shrunk_start/shrunk_end MUST satisfy: shrunk_start <= min(L3 start_times)
+  and shrunk_end >= max(L3 end_times) for all kept/revised/supplemented L3 actions.
+```
+
+### 7.5 VLM 输出处理逻辑
+
+每个叶子节点的 VLM 返回包含两部分，分别处理：
+
+#### 7.5.1 L3 Verdict 处理 (`_apply_leaf_l3_results`)
+
+与旧 `_apply_l3_check_results` 逻辑一致：
+
+```
+for review in l3_reviews:
+  keep    → 原样保留
+  revise  → 合并 revised 字段 (start_time, end_time, sub_action, pre_state, post_state)
+          → 校验 start < end → 标记 _checked=revised
+  remove  → 删除
+
+未被 review 到的 L3 → 默认 keep (safety net)
+l3_supplements → 追加，自动设置 parent_event_id 或 parent_phase_id，标记 _checked=supplemented
+排序 + 重编号 action_id
+```
+
+#### 7.5.2 Parent Shrinkage 处理 (`_apply_parent_shrinkage`)
 
 ```python
-# annotate_check.py check_clip() 中的跳过判断:
+shrunk_start = parsed["shrunk_start"]
+shrunk_end = parsed["shrunk_end"]
 
-#  merged_c: 需要 L1 和 L2 的 _check_stats 都已存在
-if l1.get("_check_stats") is not None and l2.get("_check_stats") is not None:
-    skip
+# 安全校验
+assert shrunk_start >= 0
+assert shrunk_end > shrunk_start
+assert shrunk_start <= min(l3.start_time for l3 in kept_l3s)  # 不割掉 L3
+assert shrunk_end >= max(l3.end_time for l3 in kept_l3s)      # 不割掉 L3
 
-# 3c: 需要 L3 的 _check_stats 已存在
+# 写回父节点
+if parent_type == "event":
+    event["start_time"] = shrunk_start
+    event["end_time"] = shrunk_end
+    event["_shrunk"] = True  # 标记已收缩
+elif parent_type == "phase":
+    phase["start_time"] = shrunk_start
+    phase["end_time"] = shrunk_end
+    phase["_shrunk"] = True
+```
+
+**校验失败时** → 保留原始边界，不做收缩（保守策略）。
+
+### 7.6 `annotate_check.py` 新流程 (`leaf_c`)
+
+```python
+def check_clip_leaf(ann, frames_base, l3_frames_base, ...):
+    """Leaf-Node Audit: 单步遍历所有叶子节点。"""
+
+    # 1. 跳过不需要 L3 的拓扑类型
+    l3_mode = ann.get("l3_mode") or TOPOLOGY_TO_L3_MODE.get(ann.get("topology_type"))
+    if l3_mode == "skip":
+        return {"skipped": True, "reason": "l3_mode=skip"}
+
+    # 2. 收集叶子节点
+    leaves = collect_leaf_nodes(ann)
+
+    # 3. 逐叶子审计
+    all_checked_l3 = []
+    check_calls = []
+    stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0,
+             "parents_shrunk": 0, "parents_unchanged": 0}
+
+    for leaf in leaves:
+        # 3a. 加载帧
+        frames = load_leaf_frames(leaf, frames_base, l3_frames_base, clip_key)
+
+        # 3b. 构建 prompt
+        prompt = get_leaf_check_prompt(
+            parent_type=leaf.parent_type,
+            parent_name=leaf.parent_name,
+            parent_start=leaf.parent_start,
+            parent_end=leaf.parent_end,
+            existing_l3=leaf.l3_results,
+            micro_type=ann["level3"]["micro_type"],
+            micro_split_criterion=ann["level3"].get("micro_split_criterion", ""),
+        )
+
+        # 3c. 调 VLM
+        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt, frames)
+
+        # 3d. 处理 L3 verdicts
+        checked_l3 = _apply_leaf_l3_results(
+            leaf.l3_results, parsed, leaf.parent_type, leaf.parent_id
+        )
+        all_checked_l3.extend(checked_l3)
+        update_stats(stats, leaf.l3_results, checked_l3)
+
+        # 3e. 处理 Parent Shrinkage
+        shrunk = _apply_parent_shrinkage(parsed, leaf, checked_l3)
+        if shrunk:
+            stats["parents_shrunk"] += 1
+        else:
+            stats["parents_unchanged"] += 1
+
+        check_calls.append({...})
+
+    # 4. 全局排序 + 重编号 L3 action_id
+    all_checked_l3.sort(key=lambda r: (r["start_time"], r["end_time"]))
+    for i, r in enumerate(all_checked_l3, 1):
+        r["action_id"] = i
+
+    # 5. 写回
+    ann["level3"]["grounding_results"] = all_checked_l3
+    ann["level3"]["_check_calls"] = check_calls
+    ann["level3"]["_check_stats"] = stats
+```
+
+### 7.7 Skip (幂等) 机制
+
+```python
+# leaf_c: 检查 level3._check_stats 是否已存在
 if l3.get("_check_stats") is not None:
     skip
 
 # 可用 --overwrite 强制重新 check
 ```
 
-**重要**: merged_c 和 3c 的 skip 判断**独立**——即使 L1+L2 已 check，L3 仍然会被 check（如果还没做过）。
-
-### 7.4 merged_c — L1+L2 联合 Check
-
-**入口**: `annotate_check.py:check_clip()` → `annotate.py:_check_merged_l1l2()`
-
-**输入给 VLM 的信息**:
-| 信息 | 来源 |
-|------|------|
-| 全视频 1fps 帧 (采样至 max_frames) | `frames/{clip_key}/` |
-| 现有 L1 phases (嵌套 L2 events) | `ann["level1"]`, `ann["level2"]` |
-| 视频摘要 | `ann["summary"]` |
-| 拓扑类型 + 置信度 | `ann["topology_type"]`, `ann["topology_confidence"]` |
-| L1 划分依据 | `ann["global_phase_criterion"]` |
-| L2 划分依据 (per phase) | `phase["event_split_criterion"]` |
-
-**Prompt 结构** (`prompts.py:_MERGED_CHECK_BASE`):
-
-```
-Context:
-  - {duration}s video, {n_frames} frames
-  - summary, topology_type, topology_confidence
-  - global_phase_criterion (原始 L1 划分依据)
-
-Existing annotations (nested JSON):
-  - L1 phases (含 event_split_criterion)
-    └─ L2 events per phase
-
-L1 PHASE REVIEW (granularity spectrum + 6 criteria):
-  1. Phase Boundaries
-  2. Not Too Broad
-  3. Not Too Fine
-  4. Phase Naming
-  5. Camera Cut Independence
-  6. Completeness
-
-L2 EVENT REVIEW (granularity spectrum + 7 criteria):
-  1. Not Too Coarse
-  2. Not Too Fine
-  3. Temporal Accuracy
-  4. Description Quality
-  5. Activity Relevance
-  6. Temporal Overlap
-  7. Completeness
-
-Output:
-  { phase_reviews, phase_supplements, event_reviews, event_supplements }
-```
-
-**Verdict 处理逻辑** (`_apply_l1_check_results` + `_check_merged_l1l2`):
-
-```
-for review in phase_reviews:
-  keep    → 原样保留
-  revise  → 合并 revised 字段 → 校验 start<end → 成功标记 _checked=revised
-          → 失败保留原始，标记 revise_failed_kept_original
-  remove  → 删除
-
-未被 review 到的 phase → 默认 keep (safety net)
-phase_supplements → 追加，标记 _checked=supplemented
-
-排序 + 重编号 phase_id
-同样逻辑处理 event_reviews / event_supplements
-孤儿 events (parent_phase_id 不存在) → 删除
-排序 + 重编号 event_id
-```
-
-**级联 L3 孤儿清理** (`annotate_check.py:197-210`):
-如果 L3 已存在:
-1. `_remove_orphaned_l3_results()`: 删除 parent event/phase 已被删除的 L3
-2. `_remove_out_of_bounds_l3()`: 删除 parent event 边界变了导致完全越界的 L3
-
-### 7.5 3c — L3 Check
-
-**入口**: `annotate_check.py:check_clip()` → `annotate.py:_check_level3()`
-
-**输入给 VLM 的信息**:
-| 信息 | 来源 |
-|------|------|
-| 帧 (优先 2fps per-event, fallback 1fps) | `frames_l3/{clip_key}_ev{id}/` 或 `frames/{clip_key}/` |
-| 现有 L3 grounding_results (per event) | `ann["level3"]["grounding_results"]` |
-| L2 event context (instruction, 时间范围) | `ann["level2"]["events"]` |
-| 微动作类型 | `l3_result["micro_type"]` (state_change / repetition_unit) |
-| L3 划分依据 | `l3_result["micro_split_criterion"]` |
-
-**Prompt 结构** (`prompts.py:_LEVEL3_CHECK_BASE`):
-
-```
-Context:
-  - Event clip ({event_start}s to {event_end}s)
-  - action_query = L2 event instruction
-  - micro_type (state_change / repetition_unit)
-  - micro_split_criterion (原始 L3 划分依据)
-
-Existing L3 annotations (JSON array):
-  - action_id, start_time, end_time, sub_action, pre_state, post_state
-
-GRANULARITY SPECTRUM (三层定义):
-  L2 Event (ABOVE — too coarse)
-  L3 Atomic Action (THIS LEVEL — correct)
-  Sub-atomic motion (BELOW — too fine)
-
-7 Review Criteria:
-  1. Granularity — Not Too Coarse
-  2. Granularity — Not Too Fine
-  3. Temporal Accuracy
-  4. State Description Quality
-  5. Activity Relevance
-  6. Boundary Compliance (start >= event_start, end <= event_end)
-  7. Completeness
-
-Output:
-  { reviews, supplements }
-```
-
-**处理逻辑** (`_apply_l3_check_results`):
-- 与 L1/L2 完全一致的 keep/revise/remove + supplement 模式
-- revise 字段: start_time, end_time, sub_action, pre_state, post_state
-- supplement 自动标记 parent_event_id
-
-### 7.6 Check 输出 JSON Schema
-
-check 完成后，annotation JSON 中新增/修改的字段:
+### 7.8 Check 输出 JSON Schema
 
 ```json
 {
@@ -997,72 +1184,170 @@ check 完成后，annotation JSON 中新增/修改的字段:
     "macro_phases": [
       {
         "phase_id": 1,
-        "_checked": "revised"
+        "start_time": 5,
+        "end_time": 120,
+        "phase_name": "...",
+        "narrative_summary": "..."
+      },
+      {
+        "phase_id": 2,
+        "start_time": 52,
+        "end_time": 98,
+        "phase_name": "Securing the New Shingle",
+        "_shrunk": true,
+        "_shrunk_from": [52, 157]
       }
-    ],
-    "_check_stats": {
-      "kept": 3,
-      "revised": 1,
-      "removed": 0,
-      "supplemented": 1
-    }
+    ]
   },
+
   "level2": {
     "events": [
       {
         "event_id": 1,
+        "start_time": 0,
+        "end_time": 28,
+        "instruction": "Pry up surrounding shingles",
+        "_shrunk": true,
+        "_shrunk_from": [0, 30]
+      }
+    ]
+  },
+
+  "level3": {
+    "micro_type": "state_change",
+    "grounding_results": [
+      {
+        "action_id": 1,
+        "start_time": 3,
+        "end_time": 8,
+        "sub_action": "Insert flat bar under shingle edge",
+        "pre_state": "Shingle flat on roof",
+        "post_state": "Shingle edge lifted, bar wedged underneath",
+        "parent_event_id": 1,
+        "_checked": "revised"
+      },
+      {
+        "action_id": 5,
+        "start_time": 55,
+        "end_time": 59,
+        "sub_action": "Hammer nail into new shingle",
+        "pre_state": "Nail positioned on shingle surface",
+        "post_state": "Nail flush with shingle, secured",
+        "parent_phase_id": 2,
         "_checked": "supplemented"
+      }
+    ],
+    "_check_calls": [
+      {
+        "parent_type": "event",
+        "parent_id": 1,
+        "parent_name": "Pry up surrounding shingles",
+        "n_before": 3,
+        "n_after": 3,
+        "n_supplements": 0,
+        "shrunk": true,
+        "shrunk_from": [0, 30],
+        "shrunk_to": [0, 28]
+      },
+      {
+        "parent_type": "phase",
+        "parent_id": 2,
+        "parent_name": "Securing the New Shingle",
+        "n_before": 4,
+        "n_after": 5,
+        "n_supplements": 1,
+        "shrunk": true,
+        "shrunk_from": [52, 157],
+        "shrunk_to": [52, 98]
       }
     ],
     "_check_stats": {
       "kept": 5,
-      "revised": 2,
-      "removed": 1,
-      "supplemented": 0
+      "revised": 1,
+      "removed": 0,
+      "supplemented": 2,
+      "parents_shrunk": 2,
+      "parents_unchanged": 0
     }
   },
-  "level3": {
-    "grounding_results": [...],
-    "_check_calls": [
-      {
-        "event_id": 1,
-        "n_before": 4,
-        "n_after": 5,
-        "n_supplements": 1
-      }
-    ],
-    "_check_stats": {
-      "kept": 8,
-      "revised": 3,
-      "removed": 1,
-      "supplemented": 2
-    }
-  },
+
   "_audit_meta": {
     "audit_model": "pa/gmn-2.5-pr",
-    "audit_levels": ["merged_c", "3c"],
+    "audit_levels": ["leaf_c"],
     "audited_at": "2026-03-31T...",
     "original_annotation": "annotations/clip_key.json"
   }
 }
 ```
 
-### 7.7 Check Prompt 信息传递对照表
+**新增字段说明**:
 
-| Check 层级 | 传入的划分依据 | 传入的标注结构 | 传入的帧 |
-|-----------|--------------|-------------|---------|
-| merged_c | `global_phase_criterion` + per-phase `event_split_criterion` | L1 phases (嵌套 L2 events) | 全视频 1fps 采样 |
-| 3c | `micro_type` + `micro_split_criterion` | per-event L3 grounding_results | per-event 2fps (fallback 1fps) |
+| 字段 | 层级 | 说明 |
+|------|------|------|
+| `_shrunk` | L1 phase / L2 event | 是否被收缩过 |
+| `_shrunk_from` | L1 phase / L2 event | 收缩前的 `[start, end]`（用于审计溯源） |
+| `parents_shrunk` | `_check_stats` | 被收缩的叶子父节点数 |
+| `parents_unchanged` | `_check_stats` | 未变化的叶子父节点数 |
 
-### 7.8 `--frames-dir` 在 L3 check 中的必要性
+### 7.9 Prompt 信息传递对照表
 
-即使只运行 3c，`--frames-dir`（1fps 帧目录）仍然必须提供:
+| Check 层级 | 每次调用的作用域 | 传入的父节点信息 | 传入的 L3 信息 | 传入的帧 |
+|-----------|-----------------|----------------|---------------|---------|
+| `leaf_c` | 单个叶子节点 | parent_type, parent_name, start/end | 该叶子下的 L3 grounding_results | 叶子时间区间内 2fps (fallback 1fps) |
 
-| 用途 | 代码位置 |
-|------|---------|
-| 加载 `clip_duration` (from `frame_meta.json`) | `annotate_check.py:154-159` |
-| 获取全局 fps (from `frame_meta.json`) | `annotate.py:_check_level3():1217-1218` |
-| Fallback 帧源 (per-event 帧不存在时) | `annotate.py:_check_level3():1272-1273` |
+### 7.10 与旧方案的对比
+
+| 维度 | 旧方案 (merged_c + 3c) | 新方案 (leaf_c) |
+|------|------------------------|-----------------|
+| VLM 调用步骤 | 2 步串行 | 1 步 |
+| L1/L2 结构审核 | 是 (可增删改 phase/event) | 否 (信任原始结构，仅收缩边界) |
+| L3 审核 | 是 (per-event) | 是 (per-leaf, 包含无 event 的 phase) |
+| 父边界调整 | 无 (保持原始) | 有 (shrinkage) |
+| 帧精度 | merged_c 全视频 1fps / 3c per-event 2fps | 统一 per-leaf 2fps (fallback 1fps) |
+| VLM 调用数 | 1 (merged_c) + N (3c) = N+1 | N (leaf 数) |
+| 输出复杂度 | 3 个 _check_stats (L1/L2/L3) | 1 个 _check_stats + parent _shrunk 标记 |
+| L3 覆盖 | 仅 event-based L3 | event-based + phase-based L3 (更完整) |
+
+### 7.11 运行方式
+
+```bash
+# 单步 Leaf-Node Audit
+python annotate_check.py \
+    --frames-dir $DATA_ROOT/frames \
+    --l3-frames-dir $DATA_ROOT/frames_l3 \
+    --annotation-dir $DATA_ROOT/annotations \
+    --output-dir $DATA_ROOT/annotations_checked \
+    --levels leaf_c \
+    --model pa/gmn-2.5-pr \
+    --workers 4
+
+# Dry run
+python annotate_check.py \
+    --annotation-dir $DATA_ROOT/annotations \
+    --levels leaf_c \
+    --dry-run
+```
+
+### 7.12 `--frames-dir` 的必要性
+
+即使 `leaf_c` 主要使用 per-leaf 帧，`--frames-dir`（1fps 帧目录）仍然必须提供:
+
+| 用途 | 说明 |
+|------|------|
+| 加载 `clip_duration` | 从 `frame_meta.json` 读取 |
+| 获取全局 fps | 从 `frame_meta.json` 读取，用于 fallback 帧时间计算 |
+| Fallback 帧源 | per-leaf 2fps 帧不存在时，从 1fps 全视频帧中按时间区间裁切 |
+
+### 7.13 边界情况处理
+
+| 场景 | 处理 |
+|------|------|
+| 叶子节点无 L3 结果 | 跳过 VLM 调用，记录 `skip_reason: "no existing L3"` |
+| VLM 返回 parse 失败 | 保留原始 L3，不做收缩，记录 `skip_reason: "parse failed"` |
+| shrunk 校验失败 (割掉 L3) | 保留原始边界，不收缩 |
+| `l3_mode == "skip"` 的拓扑 | 整个 clip 跳过，不进 leaf_c |
+| 旧标注无 topology 字段 | 默认 `"procedural"`，正常走叶子收集 |
+| Phase 2 被收缩后 Phase 1 end > Phase 2 start | 不处理 — shrinkage 只缩不扩，不改变 phase 间相对顺序 |
 
 ---
 
