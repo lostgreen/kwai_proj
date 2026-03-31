@@ -3,16 +3,32 @@
 """
 eval_baseline_rollout.py — Baseline rollout evaluation for hier-seg data.
 
-Samples N records per level from built JSONL, runs model rollouts,
-and compares segment vs. segment+hint performance.
+Samples N records per level from built JSONL (val by default), runs model
+rollouts, and compares segment vs. segment+hint performance.
+
+Output format is compatible with ablation_comparison/server.py — each result
+record preserves original videos/metadata/prompt/answer and adds response/reward.
 
 Usage:
+    # Evaluate val set (segment only)
     python eval_baseline_rollout.py \
-        --input-dir /path/to/v1/ \
+        --input-dir /path/to/train/ \
         --model-path /home/xuboshen/models/Qwen3-VL-4B-Instruct \
         --sample-per-level 50 \
-        --num-rollouts 8 \
         --output-dir ./eval_results/
+
+    # Evaluate val set (segment + hint comparison)
+    python eval_baseline_rollout.py \
+        --input-dir /path/to/train/ \
+        --model-path /home/xuboshen/models/Qwen3-VL-4B-Instruct \
+        --sample-per-level 50 \
+        --use-hint \
+        --output-dir ./eval_results/
+
+    # Then visualize with ablation_comparison:
+    python ablation_comparison/server.py \
+        --setting segment:./eval_results/segment \
+        --setting hint:./eval_results/segment_hint
 """
 
 from __future__ import annotations
@@ -51,11 +67,16 @@ def parse_args() -> argparse.Namespace:
     )
     # Data
     parser.add_argument("--input-dir", required=True,
-                        help="V1 data dir (contains L1/L2/L3_seg sub-dirs with train_clipped.jsonl)")
+                        help="V1 data dir (contains L1/L2/L3_seg sub-dirs)")
     parser.add_argument("--hint-input-dir", default="",
-                        help="Optional separate hint-version data dir. If empty, builds hint prompts on-the-fly.")
+                        help="Optional separate hint-version data dir. If empty and --use-hint, "
+                             "reads *_hint_clipped.jsonl from --input-dir.")
     parser.add_argument("--output-dir", required=True, help="Directory for eval results")
     parser.add_argument("--sample-per-level", type=int, default=50)
+    parser.add_argument("--split", default="val", choices=["val", "train"],
+                        help="Which split to evaluate (default: val)")
+    parser.add_argument("--use-hint", action="store_true",
+                        help="Also evaluate hint variant (reads *_hint*.jsonl alongside base)")
     parser.add_argument("--seed", type=int, default=42)
 
     # Model
@@ -95,25 +116,37 @@ def load_jsonl(path: str | Path) -> list[dict]:
 
 
 def sample_per_level(
-    input_dir: Path, n_per_level: int, seed: int
+    input_dir: Path, n_per_level: int, seed: int,
+    split: str = "val", suffix: str = "",
 ) -> dict[str, list[dict]]:
-    """Load and sample n records per level from train_clipped.jsonl files."""
+    """Load and sample n records per level from {split}{suffix}_clipped.jsonl files.
+
+    Args:
+        split: "val" or "train"
+        suffix: "" for base, "_hint" for hint variant
+    """
     rng = random.Random(seed)
     sampled: dict[str, list[dict]] = {}
 
     for level_name in ("L1", "L2", "L3_seg"):
-        jsonl_path = input_dir / level_name / "train_clipped.jsonl"
-        if not jsonl_path.exists():
-            # Fallback: try train.jsonl
-            jsonl_path = input_dir / level_name / "train.jsonl"
-        if not jsonl_path.exists():
-            print(f"  WARN: {jsonl_path} not found, skipping {level_name}")
+        # Try clipped first, then raw JSONL
+        candidates = [
+            input_dir / level_name / f"{split}{suffix}_clipped.jsonl",
+            input_dir / level_name / f"{split}{suffix}.jsonl",
+        ]
+        jsonl_path = None
+        for p in candidates:
+            if p.exists():
+                jsonl_path = p
+                break
+        if jsonl_path is None:
+            print(f"  WARN: no {split}{suffix} JSONL found for {level_name}, skipping")
             continue
 
         records = load_jsonl(jsonl_path)
         rng.shuffle(records)
         sampled[level_name] = records[:n_per_level]
-        print(f"  {level_name}: sampled {len(sampled[level_name])}/{len(records)}")
+        print(f"  {level_name}: sampled {len(sampled[level_name])}/{len(records)} from {jsonl_path.name}")
 
     return sampled
 
@@ -199,7 +232,12 @@ def run_rollouts_vllm(
 def score_results(
     results: list[dict], reward_fn, condition: str
 ) -> list[dict]:
-    """Score each rollout response with the reward function."""
+    """Score each rollout response with the reward function.
+
+    Output format is compatible with ablation_comparison/server.py:
+    each record preserves original videos/metadata/prompt/answer and
+    adds response (best) + reward (best).
+    """
     scored = []
     for item in results:
         rec = item["record"]
@@ -207,7 +245,6 @@ def score_results(
         rewards = []
         for resp in responses:
             try:
-                # reward_fn expects: solution_str, ground_truth, extra_info
                 score = reward_fn(
                     solution_str=resp,
                     ground_truth=rec.get("answer", ""),
@@ -220,18 +257,31 @@ def score_results(
             except Exception:
                 rewards.append(0.0)
 
+        best_idx = int(np.argmax(rewards)) if rewards else 0
+        best_response = responses[best_idx] if responses else ""
+        best_reward = rewards[best_idx] if rewards else 0.0
+
+        # ablation_comparison compatible format
         scored.append({
-            "clip_key": rec.get("metadata", {}).get("clip_key", ""),
-            "level": rec.get("metadata", {}).get("level", ""),
+            # Original record fields (for ablation_comparison)
+            "videos": rec.get("videos", []),
+            "metadata": rec.get("metadata", {}),
+            "prompt": rec.get("prompt", ""),
+            "answer": rec.get("answer", ""),
             "problem_type": rec.get("problem_type", ""),
+            "data_type": rec.get("data_type", "video"),
+            # Rollout results
+            "response": best_response,
+            "reward": best_reward,
+            "step": 0,  # baseline = step 0
+            "phase": "val",
+            # Detailed stats
             "condition": condition,
             "n_rollouts": len(responses),
             "rewards": rewards,
             "mean_reward": float(np.mean(rewards)) if rewards else 0.0,
             "std_reward": float(np.std(rewards)) if rewards else 0.0,
-            "max_reward": float(np.max(rewards)) if rewards else 0.0,
-            "best_response": responses[int(np.argmax(rewards))] if rewards else "",
-            "answer": rec.get("answer", ""),
+            "max_reward": best_reward,
         })
 
     return scored
@@ -241,7 +291,8 @@ def print_summary(scored: list[dict], condition: str) -> dict:
     """Print and return summary statistics."""
     by_level: dict[str, list[float]] = defaultdict(list)
     for item in scored:
-        by_level[str(item["level"])].append(item["mean_reward"])
+        level = item.get("metadata", {}).get("level", "")
+        by_level[str(level)].append(item["mean_reward"])
 
     print(f"\n{'='*50}")
     print(f"  Condition: {condition}")
@@ -259,6 +310,15 @@ def print_summary(scored: list[dict], condition: str) -> dict:
     print(f"  Overall:  mean={overall_mean:.4f}  (n={len(all_rewards)})")
     summary["overall"] = {"mean": float(overall_mean), "n": len(all_rewards)}
     return summary
+
+
+def _write_results(scored: list[dict], path: Path) -> None:
+    """Write scored results to JSONL."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for item in scored:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    print(f"  → Saved: {path}  ({len(scored)} records)")
 
 
 def main() -> None:
@@ -287,11 +347,12 @@ def main() -> None:
     print(f"[eval] Loading reward function: {reward_spec}")
     reward_fn = load_reward_function(reward_spec)
 
-    # ── Sample data ──
-    print(f"\n[eval] Sampling {args.sample_per_level} records per level from {input_dir}")
-    sampled = sample_per_level(input_dir, args.sample_per_level, args.seed)
+    # ── Sample data (base: no hint) ──
+    split = args.split
+    print(f"\n[eval] Sampling {args.sample_per_level} records per level from {input_dir} ({split})")
+    sampled = sample_per_level(input_dir, args.sample_per_level, args.seed,
+                               split=split, suffix="")
 
-    # Flatten for batch inference
     all_segment_records = []
     for level_name, records in sampled.items():
         for rec in records:
@@ -299,6 +360,20 @@ def main() -> None:
             all_segment_records.append(rec)
 
     print(f"\n[eval] Total segment records: {len(all_segment_records)}")
+
+    # ── Sample hint data (if --use-hint) ──
+    all_hint_records = []
+    if args.use_hint:
+        hint_dir = Path(args.hint_input_dir) if args.hint_input_dir else input_dir
+        hint_suffix = "_hint" if not args.hint_input_dir else ""
+        print(f"\n[eval] Sampling hint records from {hint_dir} ({split}, suffix='{hint_suffix}')")
+        hint_sampled = sample_per_level(hint_dir, args.sample_per_level, args.seed,
+                                        split=split, suffix=hint_suffix)
+        for level_name, records in hint_sampled.items():
+            for rec in records:
+                rec.setdefault("metadata", {})["condition"] = "segment_hint"
+                all_hint_records.append(rec)
+        print(f"  Total hint records: {len(all_hint_records)}")
 
     # ── Initialize vLLM ──
     print(f"\n[eval] Initializing vLLM (model={args.model_path}, tp={args.tensor_parallel_size})")
@@ -312,30 +387,11 @@ def main() -> None:
     segment_scored = score_results(segment_results, reward_fn, "segment")
     segment_summary = print_summary(segment_scored, "segment")
 
-    # ── Save segment results ──
-    segment_out = output_dir / "segment_results.jsonl"
-    with open(segment_out, "w", encoding="utf-8") as f:
-        for item in segment_scored:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
-    print(f"  → Saved: {segment_out}")
+    # Save to output_dir/segment/ (ablation_comparison compatible)
+    _write_results(segment_scored, output_dir / "segment" / "results.jsonl")
 
     # ── Condition 2: Segment with hint ──
-    # Build hint variants: for records from a hint-built JSONL, the prompt already
-    # contains hints. Otherwise, we try to inject from metadata.
-    if args.hint_input_dir:
-        hint_dir = Path(args.hint_input_dir)
-        print(f"\n[eval] Loading hint records from {hint_dir}")
-        hint_sampled = sample_per_level(hint_dir, args.sample_per_level, args.seed)
-        all_hint_records = []
-        for level_name, records in hint_sampled.items():
-            for rec in records:
-                rec.setdefault("metadata", {})["condition"] = "segment_hint"
-                all_hint_records.append(rec)
-    else:
-        print(f"\n[eval] No --hint-input-dir provided.")
-        print(f"  To run hint comparison, rebuild data with --use-hint and pass via --hint-input-dir")
-        all_hint_records = []
-
+    hint_summary = {}
     if all_hint_records:
         print(f"\n[eval] Running rollouts: SEGMENT + HINT ...")
         hint_results = run_rollouts_vllm(
@@ -344,13 +400,7 @@ def main() -> None:
         hint_scored = score_results(hint_results, reward_fn, "segment_hint")
         hint_summary = print_summary(hint_scored, "segment_hint")
 
-        hint_out = output_dir / "segment_hint_results.jsonl"
-        with open(hint_out, "w", encoding="utf-8") as f:
-            for item in hint_scored:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
-        print(f"  → Saved: {hint_out}")
-    else:
-        hint_summary = {}
+        _write_results(hint_scored, output_dir / "segment_hint" / "results.jsonl")
 
     # ── Save combined summary ──
     summary = {
@@ -362,6 +412,7 @@ def main() -> None:
             "num_rollouts": args.num_rollouts,
             "temperature": args.temperature,
             "seed": args.seed,
+            "split": split,
         },
     }
     summary_path = output_dir / "summary.json"
@@ -384,6 +435,14 @@ def main() -> None:
         seg_all = segment_summary.get("overall", {}).get("mean", 0)
         hint_all = hint_summary.get("overall", {}).get("mean", 0)
         print(f"  Overall: segment={seg_all:.4f}  hint={hint_all:.4f}  Δ={hint_all-seg_all:+.4f}")
+
+    # ── Print ablation_comparison launch hint ──
+    print(f"\n[eval] To visualize with ablation_comparison:")
+    cmd_parts = [f"python ablation_comparison/server.py"]
+    cmd_parts.append(f"  --setting segment:{output_dir / 'segment'}")
+    if hint_summary:
+        cmd_parts.append(f"  --setting hint:{output_dir / 'segment_hint'}")
+    print("  " + " \\\n    ".join(cmd_parts))
 
 
 if __name__ == "__main__":
