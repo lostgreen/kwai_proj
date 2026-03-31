@@ -141,6 +141,19 @@ h3{font-size:13px;font-weight:600;color:#374151}
 ::-webkit-scrollbar-thumb{background:rgba(100,116,139,.25);border-radius:999px}
 ::-webkit-scrollbar-track{background:transparent}
 input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:20px}
+
+/* ── Playhead ── */
+.playhead{position:absolute;top:0;bottom:0;width:2px;background:rgba(45,108,223,.75);pointer-events:none;z-index:20;border-radius:1px}
+.playhead-head{position:absolute;top:-4px;left:-4.5px;width:11px;height:11px;background:var(--accent);border-radius:50%;box-shadow:0 0 0 3px rgba(45,108,223,.22);cursor:ew-resize;pointer-events:all}
+.playhead-label{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:8px;background:var(--accent);color:#fff;padding:1px 5px;border-radius:3px;white-space:nowrap;text-align:center;min-width:26px}
+.cur-time-chip{font-size:11px;font-weight:700;color:var(--accent);background:rgba(45,108,223,.1);padding:2px 8px;border-radius:5px;font-family:"SF Mono","Menlo",monospace;min-width:42px;text-align:center;display:inline-block}
+.lane-track{cursor:crosshair}
+/* ── Full-viewport detail layout ── */
+html,body{height:100%}
+#pg-detail.active{display:grid;grid-template-rows:auto 1fr;height:100vh;overflow:hidden;box-sizing:border-box;max-width:100%;padding:16px}
+.detail-layout{height:100%;overflow:hidden;min-height:0}
+.sidebar{height:100%;max-height:none;overflow-y:auto}
+.group-main{height:100%;max-height:none;overflow-y:auto;overflow-x:hidden}
 </style>
 </head>
 <body>
@@ -240,6 +253,7 @@ var currentStep = null;
 var currentPhase = 'val'; // default to val
 var currentVideoKey = null;
 var hiddenCurves = {};
+var currentDur = 60;  // duration of current sample (seconds)
 
 /* ═══════════════ UTIL ═══════════════ */
 function esc(s) {
@@ -623,7 +637,7 @@ async function loadFrames(videoKey) {
     for (var i = 0; i < frames.length; i++) {
       var sec = frames[i].second;
       var fLeft = sec * STRIDE;
-      html += '<div class="frame-thumb" id="f-' + sec + '" style="left:' + fLeft + 'px">'
+      html += '<div class="frame-thumb" id="f-' + sec + '" style="left:' + fLeft + 'px;cursor:pointer" onclick="seekTo(' + sec + ')">'
         + (frames[i].src ? '<img loading="lazy" src="' + frames[i].src + '"/>' : '')
         + '</div>'
         + '<div class="frame-label" style="left:' + fLeft + 'px">' + sec + 's</div>';
@@ -649,6 +663,39 @@ function clearFrameHighlight() {
   for (var i = 0; i < els.length; i++) els[i].classList.remove('highlight');
 }
 
+/* ═══════════════ SEEK / PLAYHEAD ═══════════════ */
+function seekTo(sec) {
+  sec = Math.max(0, Math.min(Number(sec) || 0, currentDur));
+  var px = sec * STRIDE;
+  var ph = document.getElementById('playhead');
+  var plb = document.getElementById('playheadLabel');
+  var chip = document.getElementById('curTimeChip');
+  if (ph) ph.style.left = px + 'px';
+  if (plb) plb.textContent = mmss(sec);
+  if (chip) chip.textContent = mmss(sec);
+  // Highlight nearest frame
+  clearFrameHighlight();
+  var frame = document.getElementById('f-' + Math.floor(sec));
+  if (frame) {
+    frame.classList.add('highlight');
+    // Auto-scroll to keep playhead visible
+    var shell = document.getElementById('scrollShell');
+    if (shell) {
+      var left = shell.scrollLeft, w = shell.clientWidth;
+      if (px < left + 40 || px > left + w - 40) {
+        shell.scrollLeft = Math.max(0, px - w / 2);
+      }
+    }
+  }
+}
+
+function onTrackClick(e) {
+  var shell = document.getElementById('scrollShell');
+  if (shell && shell.classList.contains('dragging')) return;
+  // offsetX = click position in px within the lane-track element (0 = left edge of track = t=0)
+  seekTo(e.offsetX / STRIDE);
+}
+
 /* ═══════════════ TOGGLE EXTRA ═══════════════ */
 function toggleExtra(idx, btn, count) {
   var el = document.getElementById('extra-' + idx);
@@ -666,6 +713,7 @@ function toggleExtra(idx, btn, count) {
 function renderComparison(data) {
   var main = document.getElementById('groupMain');
   var dur = Math.max(1, data.duration || 60);
+  currentDur = dur;  // store for seekTo
   var gtSegs = data.gt_segments || [];
   var settings = data.settings || {};
   var prompts = data.prompts || {};
@@ -686,7 +734,9 @@ function renderComparison(data) {
   html += '</div>';
 
   /* ── Timeline ── */
-  html += '<div class="sync-shell" id="scrollShell"><div class="sync-inner" style="width:' + totalWidth + 'px">';
+  html += '<div class="sync-shell" id="scrollShell"><div class="sync-inner" id="sInner" style="width:' + totalWidth + 'px;position:relative">';
+  /* Playhead */
+  html += '<div class="playhead" id="playhead" style="left:0px"><div class="playhead-head"></div><div class="playhead-label" id="playheadLabel">0:00</div></div>';
 
   /* Frame strip */
   html += '<div class="lane-block"><div class="lane-head"><div class="lane-title">Frames</div>'
@@ -715,9 +765,10 @@ function renderComparison(data) {
   html += '</div></div>';
 
   /* Scroll control */
-  html += '<div class="scroll-control"><div class="meta">0s</div>'
+  html += '<div class="scroll-control">'
+    + '<span class="cur-time-chip" id="curTimeChip">0:00</span>'
     + '<input id="scrollBar" class="scroll-slider" type="range" min="0" max="1000" value="0"/>'
-    + '<div class="meta">' + mmss(dur) + '</div></div>';
+    + '<span class="meta">' + mmss(dur) + '</span></div>';
   html += '</div>';
 
   /* ── Reward Table ── */
@@ -818,13 +869,14 @@ function renderLane(label, segments, totalWidth, duration, segClass, meta) {
     var width = Math.max(6, (e - s) * STRIDE - 4);
     segsHtml += '<div class="segment ' + segClass + '" style="left:' + left + 'px;width:' + width + 'px"'
       + ' title="[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']"'
-      + ' onmouseenter="highlightFrames(' + s + ',' + e + ')" onmouseleave="clearFrameHighlight()">'
+      + ' onmouseenter="highlightFrames(' + s + ',' + e + ')" onmouseleave="clearFrameHighlight()"'
+      + ' onclick="event.stopPropagation();seekTo(' + s + ')">'
       + '<div class="segment-label">[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']</div></div>';
   }
   return '<div class="lane-block">'
     + '<div class="lane-head"><div class="lane-title">' + esc(label) + '</div>'
     + '<div class="lane-meta">' + esc(String(meta || '')) + '</div></div>'
-    + '<div class="lane-track" style="width:' + totalWidth + 'px">' + segsHtml + '</div></div>';
+    + '<div class="lane-track" style="width:' + totalWidth + 'px" onclick="onTrackClick(event)">' + segsHtml + '</div></div>';
 }
 
 /* ═══════════════ SCROLL SYNC + DRAG ═══════════════ */
