@@ -147,13 +147,20 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
 .playhead-head{position:absolute;top:-4px;left:-4.5px;width:11px;height:11px;background:var(--accent);border-radius:50%;box-shadow:0 0 0 3px rgba(45,108,223,.22);cursor:ew-resize;pointer-events:all}
 .playhead-label{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:8px;background:var(--accent);color:#fff;padding:1px 5px;border-radius:3px;white-space:nowrap;text-align:center;min-width:26px}
 .cur-time-chip{font-size:11px;font-weight:700;color:var(--accent);background:rgba(45,108,223,.1);padding:2px 8px;border-radius:5px;font-family:"SF Mono","Menlo",monospace;min-width:42px;text-align:center;display:inline-block}
+/* segment interactive states (like data_visualization) */
+.segment.muted{opacity:.15;transition:opacity .12s}
+.segment.seg-active{box-shadow:0 0 0 2px rgba(255,255,255,.85),0 0 0 3.5px rgba(45,108,223,.6);z-index:12;opacity:1!important}
 .lane-track{cursor:crosshair}
 /* ── Full-viewport detail layout ── */
-html,body{height:100%}
-#pg-detail.active{display:grid;grid-template-rows:auto 1fr;height:100vh;overflow:hidden;box-sizing:border-box;max-width:100%;padding:16px}
+#pg-detail.active{
+  position:fixed;inset:0;display:grid;grid-template-rows:auto 1fr;
+  overflow:hidden;padding:16px;box-sizing:border-box;max-width:none;margin:0;
+  background:radial-gradient(1200px 500px at 8% -10%,rgba(37,99,235,.08),transparent 70%),
+    radial-gradient(900px 450px at 92% 0%,rgba(16,185,129,.06),transparent 65%),var(--bg);
+}
 .detail-layout{height:100%;overflow:hidden;min-height:0}
 .sidebar{height:100%;max-height:none;overflow-y:auto}
-.group-main{height:100%;max-height:none;overflow-y:auto;overflow-x:hidden}
+.group-main{height:100%;max-height:none;overflow-y:auto;overflow-x:hidden;padding-bottom:16px}
 </style>
 </head>
 <body>
@@ -254,6 +261,7 @@ var currentPhase = 'val'; // default to val
 var currentVideoKey = null;
 var hiddenCurves = {};
 var currentDur = 60;  // duration of current sample (seconds)
+var currentSec = -1;  // last seeked time (-1 = not seeked yet)
 
 /* ═══════════════ UTIL ═══════════════ */
 function esc(s) {
@@ -611,6 +619,7 @@ function renderSampleList(items) {
 /* ═══════════════ SELECT SAMPLE ═══════════════ */
 async function selectSample(videoKey) {
   currentVideoKey = videoKey;
+  currentSec = -1;  // reset playhead state for new sample
   filterSamples(); // update active state
   var main = document.getElementById('groupMain');
   main.innerHTML = '<div class="card" style="padding:40px;text-align:center"><span class="spin"></span></div>';
@@ -651,21 +660,38 @@ async function loadFrames(videoKey) {
 }
 
 function highlightFrames(startSec, endSec) {
-  clearFrameHighlight();
+  clearFrameHighlightOnly();
   var s = Math.floor(startSec), e = Math.ceil(endSec);
   for (var i = s; i < e; i++) {
     var el = document.getElementById('f-' + i);
     if (el) el.classList.add('highlight');
   }
+  // Mute segments that don't overlap [startSec, endSec) — like data_viz hover
+  var segs = document.querySelectorAll('.lane-track .segment');
+  for (var i = 0; i < segs.length; i++) {
+    var seg = segs[i];
+    var st = parseFloat(seg.getAttribute('data-start'));
+    var en = parseFloat(seg.getAttribute('data-end'));
+    var overlaps = !isNaN(st) && !isNaN(en) && st < endSec && en > startSec;
+    seg.classList.toggle('seg-active', overlaps);
+    seg.classList.toggle('muted', !overlaps);
+  }
 }
-function clearFrameHighlight() {
+function clearFrameHighlightOnly() {
   var els = document.querySelectorAll('.frame-thumb.highlight');
   for (var i = 0; i < els.length; i++) els[i].classList.remove('highlight');
+}
+function clearFrameHighlight() {
+  clearFrameHighlightOnly();
+  // Restore seek state on segment mouseleave
+  if (currentSec >= 0) applySegmentState(currentSec);
+  else clearSegmentState();
 }
 
 /* ═══════════════ SEEK / PLAYHEAD ═══════════════ */
 function seekTo(sec) {
   sec = Math.max(0, Math.min(Number(sec) || 0, currentDur));
+  currentSec = sec;
   var px = sec * STRIDE;
   var ph = document.getElementById('playhead');
   var plb = document.getElementById('playheadLabel');
@@ -687,12 +713,38 @@ function seekTo(sec) {
       }
     }
   }
+  // Active/muted state like data_visualization
+  applySegmentState(sec);
+}
+
+/* Activate segments that contain sec, mute others (like data_visualization) */
+function applySegmentState(sec) {
+  var segs = document.querySelectorAll('.lane-track .segment');
+  var anyActive = false;
+  for (var i = 0; i < segs.length; i++) {
+    var s = segs[i];
+    var st = parseFloat(s.getAttribute('data-start'));
+    var en = parseFloat(s.getAttribute('data-end'));
+    var inside = !isNaN(st) && !isNaN(en) && sec >= st && sec < en;
+    s.classList.toggle('seg-active', inside);
+    s.classList.toggle('muted', !inside);
+    if (inside) anyActive = true;
+  }
+  // If nothing contains this time, remove all state
+  if (!anyActive) clearSegmentState();
+}
+
+function clearSegmentState() {
+  var segs = document.querySelectorAll('.lane-track .segment');
+  for (var i = 0; i < segs.length; i++) {
+    segs[i].classList.remove('seg-active', 'muted');
+  }
 }
 
 function onTrackClick(e) {
   var shell = document.getElementById('scrollShell');
   if (shell && shell.classList.contains('dragging')) return;
-  // offsetX = click position in px within the lane-track element (0 = left edge of track = t=0)
+  // offsetX = click position within lane-track (starts at t=0, STRIDE px/sec)
   seekTo(e.offsetX / STRIDE);
 }
 
@@ -869,6 +921,7 @@ function renderLane(label, segments, totalWidth, duration, segClass, meta) {
     var width = Math.max(6, (e - s) * STRIDE - 4);
     segsHtml += '<div class="segment ' + segClass + '" style="left:' + left + 'px;width:' + width + 'px"'
       + ' title="[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']"'
+      + ' data-start="' + s + '" data-end="' + e + '"'
       + ' onmouseenter="highlightFrames(' + s + ',' + e + ')" onmouseleave="clearFrameHighlight()"'
       + ' onclick="event.stopPropagation();seekTo(' + s + ')">'
       + '<div class="segment-label">[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']</div></div>';
