@@ -255,12 +255,14 @@ def main() -> None:
         print("No records found.", file=sys.stderr)
         sys.exit(1)
 
-    level = records[0]["metadata"].get("level")
+    raw_level = records[0]["metadata"].get("level")
+    # Normalize level: "3s" (L3_seg) → 3
+    level = 3 if raw_level in (3, "3s") else raw_level
     if level not in (1, 2, 3):
-        print(f"ERROR: prepare_clips supports L1, L2, L3 (got level={level})", file=sys.stderr)
+        print(f"ERROR: prepare_clips supports L1, L2, L3 (got level={raw_level})", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Processing {len(records)} L{level} records → {output_path}")
+    print(f"Processing {len(records)} L{raw_level} records → {output_path}")
     print(f"Clip output dir: {clip_dir}")
 
     if args.dry_run:
