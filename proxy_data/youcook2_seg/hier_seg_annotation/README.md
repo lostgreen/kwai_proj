@@ -307,9 +307,12 @@ python local_scripts/hier_seg_ablations/build_hier_data.py \
 | 函数 | 用途 | 调用者 |
 |------|------|--------|
 | `get_merged_l1l2_prompt(n_frames, duration)` | L1+L2 合并标注（标注用） | `annotate.py` |
-| `get_level1_train_prompt_temporal(duration)` | L1 训练（时间戳模式，推荐） | `build_hier_data.py` |
-| `get_level1_train_prompt(n_frames)` | L1 训练（warped 帧号，旧版） | — |
-| `get_level2_train_prompt(duration)` | L2 训练 | `build_hier_data.py` |
+| `get_level1_train_prompt_temporal(duration)` | L1 训练（粒度引导版） | `build_hier_data.py` |
+| `get_level2_train_prompt(duration)` | L2 训练（三层粒度频谱版） | `build_hier_data.py`, `prepare_clips.py` |
 | `get_level3_query_prompt(queries, duration)` | L3 grounding 训练 | `build_hier_data.py` |
-| `get_level3_seg_prompt(duration)` | L3 segmentation 训练 | `build_hier_data.py` |
-| `get_chain_seg_prompt(events, duration)` | Chain-of-Segment（L2+L3 联合） | chain_seg ablation |
+| `get_level3_seg_prompt(duration)` | L3 segmentation 训练（三层粒度频谱版） | `build_hier_data.py` |
+| `get_level1_train_prompt_with_hint(duration, hint)` | L1 训练 + hint | `build_hier_data.py` |
+| `get_level2_train_prompt_with_hint(duration, hint)` | L2 训练 + hint | `build_hier_data.py` |
+| `get_level3_seg_prompt_with_hint(duration, hint)` | L3 训练 + hint | `build_hier_data.py` |
+| `get_level2_check_prompt(...)` | L2 质量审核（标注用） | `annotate.py` |
+| `get_level3_check_prompt(...)` | L3 质量审核（标注用） | `annotate.py` |
