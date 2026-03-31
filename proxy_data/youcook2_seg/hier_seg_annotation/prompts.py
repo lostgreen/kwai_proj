@@ -674,6 +674,8 @@ _LEVEL3_CHECK_BASE = """\
 You are a quality reviewer for atomic action annotations. You are viewing \
 frames from an event clip ({event_start}s to {event_end}s). \
 The event is: "{action_query}"
+Micro-action type: {micro_type}
+Original splitting criterion: "{micro_split_criterion}"
 
 Below are the EXISTING L3 atomic action annotations for this event:
 {existing_annotations}
@@ -792,6 +794,8 @@ def get_level3_check_prompt(
     event_end_sec: int,
     action_query: str,
     existing_results: list[dict],
+    micro_type: str = "state_change",
+    micro_split_criterion: str = "",
 ) -> str:
     """
     Build the Level 3 Check (Quality Judge & Supplement) user-turn prompt.
@@ -801,6 +805,8 @@ def get_level3_check_prompt(
         event_end_sec: End of the L2 event clip (seconds).
         action_query: The L2 event instruction.
         existing_results: List of existing grounding_results dicts for this event.
+        micro_type: The micro-action type (state_change or repetition_unit).
+        micro_split_criterion: The original splitting criterion from annotation.
     """
     import json as _json
     display_results = []
@@ -819,7 +825,213 @@ def get_level3_check_prompt(
         event_start=event_start_sec,
         event_end=event_end_sec,
         action_query=action_query,
+        micro_type=micro_type,
+        micro_split_criterion=micro_split_criterion,
         existing_annotations=annotations_str,
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Merged L1+L2 Check: Simultaneous Phase + Event Quality Review
+# Input:  full video frames (1fps) + existing L1 phases + L2 events
+# Output: reviewed phases with verdicts, reviewed events with verdicts
+# ─────────────────────────────────────────────────────────────────────────────
+_MERGED_CHECK_BASE = """\
+You are a quality reviewer for hierarchical video annotations. You are viewing \
+a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+
+Existing annotation summary: "{summary}"
+Topology: {topology_type} (confidence: {topology_confidence})
+Original phase-splitting criterion: "{global_phase_criterion}"
+
+Below are the EXISTING annotations — L1 macro phases with their nested L2 events:
+{existing_annotations}
+
+Your task: REVIEW both L1 phases and L2 events simultaneously, then identify \
+any MISSING phases or events.
+
+## L1 PHASE REVIEW
+
+GRANULARITY SPECTRUM for L1 phases:
+
+  L1 Phase (THIS LEVEL — correct granularity):
+    A broad stage of activity organized by overall intent. Each phase should \
+represent a distinct functional stage in the video, typically 30-120 seconds. \
+Phases do NOT need to cover the entire video — gaps are expected.
+    Examples: "Material Preparation", "Assembly", "Finishing".
+
+  L2 Event (BELOW — too fine for L1):
+    If a phase describes a single specific action rather than a broad stage, \
+it is TOO FINE for L1.
+
+L1 REVIEW CRITERIA:
+1. [Phase Boundaries]: Do start_time/end_time match the visible stage transitions?
+2. [Phase Granularity — Not Too Broad]: Does a phase contain clearly distinct \
+stages that should be separate phases?
+3. [Phase Granularity — Not Too Fine]: Is a phase too narrow — describing a \
+single action rather than a broad stage? Should it be merged with adjacent phases?
+4. [Phase Naming]: Does phase_name accurately describe the intent of this stage?
+5. [Camera Cut Independence]: Phases should NOT be split by camera cuts — only \
+by semantic intent changes.
+6. [Completeness]: Are there visible activity stages NOT covered by any phase?
+
+## L2 EVENT REVIEW (per phase)
+
+GRANULARITY SPECTRUM for L2 events:
+
+  L1 Phase (ABOVE — too coarse for L2):
+    If an event essentially restates the whole phase, it belongs at L1, not L2.
+
+  L2 Event (THIS LEVEL — correct granularity):
+    A multi-second, goal-directed workflow (typically 10-60s) that completes a \
+meaningful process sub-goal. It involves a sequence of physical interactions \
+unified by a single intent.
+
+  L3 Atomic Action (BELOW — too fine for L2):
+    A single momentary physical interaction (2-6s). Single hand motions, single \
+pours, or single cut strokes are TOO FINE for L2.
+
+L2 REVIEW CRITERIA:
+1. [Granularity — Not Too Coarse]: Does the event describe something more \
+specific than the phase itself?
+2. [Granularity — Not Too Fine]: Does the event encompass a multi-step workflow?
+3. [Temporal Accuracy]: Do start_time/end_time match the visible activity?
+4. [Description Quality]: Does the instruction clearly convey the goal?
+5. [Activity Relevance]: Does the event involve actual physical object/material \
+transformation?
+6. [Temporal Overlap]: Do multiple events cover the same time span?
+7. [Completeness]: Are there visible workflows NOT covered by existing events?
+
+## OUTPUT FORMAT
+
+Output JSON with BOTH phase-level and event-level reviews:
+{{
+  "phase_reviews": [
+    {{
+      "phase_id": 1,
+      "verdict": "keep"
+    }},
+    {{
+      "phase_id": 2,
+      "verdict": "revise",
+      "issue": "bad_boundary|too_broad|too_fine|bad_name",
+      "revised": {{
+        "start_time": 35,
+        "end_time": 90,
+        "phase_name": "Corrected phase name",
+        "narrative_summary": "Corrected summary"
+      }}
+    }},
+    {{
+      "phase_id": 3,
+      "verdict": "remove",
+      "issue": "too_fine|not_relevant|duplicate",
+      "reason": "Brief explanation"
+    }}
+  ],
+  "phase_supplements": [
+    {{
+      "start_time": 120,
+      "end_time": 170,
+      "phase_name": "Missed stage name",
+      "narrative_summary": "Description of the missed stage"
+    }}
+  ],
+  "event_reviews": [
+    {{
+      "event_id": 1,
+      "verdict": "keep"
+    }},
+    {{
+      "event_id": 2,
+      "verdict": "revise",
+      "issue": "too_fine|too_coarse|bad_boundary|bad_description|overlap",
+      "revised": {{
+        "start_time": 40,
+        "end_time": 58,
+        "instruction": "Corrected event description",
+        "visual_keywords": ["keyword1", "keyword2"]
+      }}
+    }},
+    {{
+      "event_id": 3,
+      "verdict": "remove",
+      "issue": "too_fine|too_coarse|not_relevant|duplicate",
+      "reason": "Brief explanation"
+    }}
+  ],
+  "event_supplements": [
+    {{
+      "start_time": 70,
+      "end_time": 90,
+      "instruction": "Description of missed activity event",
+      "visual_keywords": ["keyword1", "keyword2"],
+      "parent_phase_id": 1
+    }}
+  ]
+}}
+
+IMPORTANT:
+- You MUST review every existing phase by phase_id.
+- You MUST review every existing event by event_id.
+- "phase_supplements" and "event_supplements" can be empty lists.
+- Do NOT invent phases or events not visible in the provided frames.
+- Always include the "issue" field for revise/remove verdicts.
+- Each supplemented event MUST include "parent_phase_id" linking to an existing \
+or supplemented phase.
+- Be strict on granularity at both levels."""
+
+
+def get_merged_check_prompt(
+    n_frames: int,
+    duration_sec: int,
+    summary: str,
+    topology_type: str,
+    topology_confidence: float,
+    l1_phases: list[dict],
+    l2_events: list[dict],
+    global_phase_criterion: str = "",
+) -> str:
+    """
+    Build the merged L1+L2 check (quality review) prompt.
+
+    Presents the full video context with existing L1 phases and nested L2 events,
+    mirroring the merged annotation structure.
+    """
+    import json as _json
+
+    # Build nested display: phases with their events
+    display_phases = []
+    for phase in l1_phases:
+        phase_id = phase.get("phase_id")
+        phase_events = [
+            {
+                "event_id": e.get("event_id"),
+                "start_time": e.get("start_time"),
+                "end_time": e.get("end_time"),
+                "instruction": e.get("instruction"),
+                "visual_keywords": e.get("visual_keywords"),
+            }
+            for e in l2_events
+            if e.get("parent_phase_id") == phase_id
+        ]
+        display_phases.append({
+            "phase_id": phase_id,
+            "start_time": phase.get("start_time"),
+            "end_time": phase.get("end_time"),
+            "phase_name": phase.get("phase_name"),
+            "narrative_summary": phase.get("narrative_summary"),
+            "event_split_criterion": phase.get("event_split_criterion", ""),
+            "events": phase_events,
+        })
+    annotations_str = _json.dumps(display_phases, ensure_ascii=False, indent=2)
+
+    return _MERGED_CHECK_BASE.format(
+        n_frames=n_frames,
+        duration=duration_sec,
+        summary=summary,
+        topology_type=topology_type,
+        topology_confidence=topology_confidence,
+        global_phase_criterion=global_phase_criterion,
+        existing_annotations=annotations_str,
+    )

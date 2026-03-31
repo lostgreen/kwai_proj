@@ -1,6 +1,6 @@
 # Topology-Adaptive 分层标注 Pipeline
 
-> 实现状态：**Phase 1.5 已完成** (2026-03-30) — Leaf-node L3 路由
+> 实现状态：**Phase 2 已完成** (2026-03-31) — Quality Check Pipeline
 
 ---
 
@@ -817,15 +817,264 @@ python rewrite_criteria_hints.py --annotation-dir annotations/ --dry-run
 
 ---
 
-## 7. 后续阶段（未实现）
+## 7. Phase 2: Quality Check Pipeline (已实现)
 
-### Phase 2: Schema + 训练样本改造
+### 7.1 概述
+
+标注完成后，通过 **独立的 check 流程** 对 L1+L2+L3 进行模型级质量复审。check 通过 `annotate_check.py` 独立运行，读取已有标注 JSON，调用（可能更强的）VLM 对结果进行 keep/revise/remove 三分类审核，并补充遗漏标注（supplement）。
+
+**核心设计原则**:
+1. **幂等安全**: 每层 check 完成后写入 `_check_stats` 标记字段，re-run 时自动跳过
+2. **级联一致**: merged_c 先审核 L1+L2，3c 基于 checked 结果审核 L3
+3. **保守策略**: VLM 未 review 到的条目默认 keep（safety net）
+4. **划分依据传递**: check prompt 包含原始标注的 criterion/split_criterion，让审核模型了解原始分割意图
+
+### 7.2 Check 数据流
+
+```
+annotations/                      annotations_checked/
+├─ {clip}.json                    ├─ {clip}.json
+│  level1                         │  level1 + _check_stats
+│  level2          ──(Step 5)──→  │  level2 + _check_stats
+│  level3 (原始)                  │  level3 (孤儿已清理)
+│  global_phase_criterion         │  _audit_meta
+│  summary, topology_type         │
+│                                 │
+│                  ──(Step 6)──→  │  level3 + _check_stats
+│                                 │  _audit_meta (更新)
+```
+
+**run_pipeline.sh 中的执行**:
+
+| Step | 命令 | 入参 | 输出 |
+|------|------|------|------|
+| 5 | `annotate_check.py --levels merged_c` | `annotations/` → `annotations_checked/` | L1+L2 checked |
+| 6 | `annotate_check.py --levels 3c` | `annotations_checked/` → `annotations_checked/` (in-place) | L3 checked |
+
+### 7.3 Skip (幂等) 机制
+
+```python
+# annotate_check.py check_clip() 中的跳过判断:
+
+#  merged_c: 需要 L1 和 L2 的 _check_stats 都已存在
+if l1.get("_check_stats") is not None and l2.get("_check_stats") is not None:
+    skip
+
+# 3c: 需要 L3 的 _check_stats 已存在
+if l3.get("_check_stats") is not None:
+    skip
+
+# 可用 --overwrite 强制重新 check
+```
+
+**重要**: merged_c 和 3c 的 skip 判断**独立**——即使 L1+L2 已 check，L3 仍然会被 check（如果还没做过）。
+
+### 7.4 merged_c — L1+L2 联合 Check
+
+**入口**: `annotate_check.py:check_clip()` → `annotate.py:_check_merged_l1l2()`
+
+**输入给 VLM 的信息**:
+| 信息 | 来源 |
+|------|------|
+| 全视频 1fps 帧 (采样至 max_frames) | `frames/{clip_key}/` |
+| 现有 L1 phases (嵌套 L2 events) | `ann["level1"]`, `ann["level2"]` |
+| 视频摘要 | `ann["summary"]` |
+| 拓扑类型 + 置信度 | `ann["topology_type"]`, `ann["topology_confidence"]` |
+| L1 划分依据 | `ann["global_phase_criterion"]` |
+| L2 划分依据 (per phase) | `phase["event_split_criterion"]` |
+
+**Prompt 结构** (`prompts.py:_MERGED_CHECK_BASE`):
+
+```
+Context:
+  - {duration}s video, {n_frames} frames
+  - summary, topology_type, topology_confidence
+  - global_phase_criterion (原始 L1 划分依据)
+
+Existing annotations (nested JSON):
+  - L1 phases (含 event_split_criterion)
+    └─ L2 events per phase
+
+L1 PHASE REVIEW (granularity spectrum + 6 criteria):
+  1. Phase Boundaries
+  2. Not Too Broad
+  3. Not Too Fine
+  4. Phase Naming
+  5. Camera Cut Independence
+  6. Completeness
+
+L2 EVENT REVIEW (granularity spectrum + 7 criteria):
+  1. Not Too Coarse
+  2. Not Too Fine
+  3. Temporal Accuracy
+  4. Description Quality
+  5. Activity Relevance
+  6. Temporal Overlap
+  7. Completeness
+
+Output:
+  { phase_reviews, phase_supplements, event_reviews, event_supplements }
+```
+
+**Verdict 处理逻辑** (`_apply_l1_check_results` + `_check_merged_l1l2`):
+
+```
+for review in phase_reviews:
+  keep    → 原样保留
+  revise  → 合并 revised 字段 → 校验 start<end → 成功标记 _checked=revised
+          → 失败保留原始，标记 revise_failed_kept_original
+  remove  → 删除
+
+未被 review 到的 phase → 默认 keep (safety net)
+phase_supplements → 追加，标记 _checked=supplemented
+
+排序 + 重编号 phase_id
+同样逻辑处理 event_reviews / event_supplements
+孤儿 events (parent_phase_id 不存在) → 删除
+排序 + 重编号 event_id
+```
+
+**级联 L3 孤儿清理** (`annotate_check.py:197-210`):
+如果 L3 已存在:
+1. `_remove_orphaned_l3_results()`: 删除 parent event/phase 已被删除的 L3
+2. `_remove_out_of_bounds_l3()`: 删除 parent event 边界变了导致完全越界的 L3
+
+### 7.5 3c — L3 Check
+
+**入口**: `annotate_check.py:check_clip()` → `annotate.py:_check_level3()`
+
+**输入给 VLM 的信息**:
+| 信息 | 来源 |
+|------|------|
+| 帧 (优先 2fps per-event, fallback 1fps) | `frames_l3/{clip_key}_ev{id}/` 或 `frames/{clip_key}/` |
+| 现有 L3 grounding_results (per event) | `ann["level3"]["grounding_results"]` |
+| L2 event context (instruction, 时间范围) | `ann["level2"]["events"]` |
+| 微动作类型 | `l3_result["micro_type"]` (state_change / repetition_unit) |
+| L3 划分依据 | `l3_result["micro_split_criterion"]` |
+
+**Prompt 结构** (`prompts.py:_LEVEL3_CHECK_BASE`):
+
+```
+Context:
+  - Event clip ({event_start}s to {event_end}s)
+  - action_query = L2 event instruction
+  - micro_type (state_change / repetition_unit)
+  - micro_split_criterion (原始 L3 划分依据)
+
+Existing L3 annotations (JSON array):
+  - action_id, start_time, end_time, sub_action, pre_state, post_state
+
+GRANULARITY SPECTRUM (三层定义):
+  L2 Event (ABOVE — too coarse)
+  L3 Atomic Action (THIS LEVEL — correct)
+  Sub-atomic motion (BELOW — too fine)
+
+7 Review Criteria:
+  1. Granularity — Not Too Coarse
+  2. Granularity — Not Too Fine
+  3. Temporal Accuracy
+  4. State Description Quality
+  5. Activity Relevance
+  6. Boundary Compliance (start >= event_start, end <= event_end)
+  7. Completeness
+
+Output:
+  { reviews, supplements }
+```
+
+**处理逻辑** (`_apply_l3_check_results`):
+- 与 L1/L2 完全一致的 keep/revise/remove + supplement 模式
+- revise 字段: start_time, end_time, sub_action, pre_state, post_state
+- supplement 自动标记 parent_event_id
+
+### 7.6 Check 输出 JSON Schema
+
+check 完成后，annotation JSON 中新增/修改的字段:
+
+```json
+{
+  "level1": {
+    "macro_phases": [
+      {
+        "phase_id": 1,
+        "_checked": "revised"
+      }
+    ],
+    "_check_stats": {
+      "kept": 3,
+      "revised": 1,
+      "removed": 0,
+      "supplemented": 1
+    }
+  },
+  "level2": {
+    "events": [
+      {
+        "event_id": 1,
+        "_checked": "supplemented"
+      }
+    ],
+    "_check_stats": {
+      "kept": 5,
+      "revised": 2,
+      "removed": 1,
+      "supplemented": 0
+    }
+  },
+  "level3": {
+    "grounding_results": [...],
+    "_check_calls": [
+      {
+        "event_id": 1,
+        "n_before": 4,
+        "n_after": 5,
+        "n_supplements": 1
+      }
+    ],
+    "_check_stats": {
+      "kept": 8,
+      "revised": 3,
+      "removed": 1,
+      "supplemented": 2
+    }
+  },
+  "_audit_meta": {
+    "audit_model": "pa/gmn-2.5-pr",
+    "audit_levels": ["merged_c", "3c"],
+    "audited_at": "2026-03-31T...",
+    "original_annotation": "annotations/clip_key.json"
+  }
+}
+```
+
+### 7.7 Check Prompt 信息传递对照表
+
+| Check 层级 | 传入的划分依据 | 传入的标注结构 | 传入的帧 |
+|-----------|--------------|-------------|---------|
+| merged_c | `global_phase_criterion` + per-phase `event_split_criterion` | L1 phases (嵌套 L2 events) | 全视频 1fps 采样 |
+| 3c | `micro_type` + `micro_split_criterion` | per-event L3 grounding_results | per-event 2fps (fallback 1fps) |
+
+### 7.8 `--frames-dir` 在 L3 check 中的必要性
+
+即使只运行 3c，`--frames-dir`（1fps 帧目录）仍然必须提供:
+
+| 用途 | 代码位置 |
+|------|---------|
+| 加载 `clip_duration` (from `frame_meta.json`) | `annotate_check.py:154-159` |
+| 获取全局 fps (from `frame_meta.json`) | `annotate.py:_check_level3():1217-1218` |
+| Fallback 帧源 (per-event 帧不存在时) | `annotate.py:_check_level3():1272-1273` |
+
+---
+
+## 8. 后续阶段（未实现）
+
+### Phase 3: Schema + 训练样本改造
 - training builder 支持 `parent_phase_id`，构建 phase-based L3 训练数据
 - `seg_source.py` 的 `get_l3_clip_path()` 和 `prepare_clips.py` 支持 `_L3_ph{id}_` 命名
 - 可选：统一训练 prompt 为 "parent → child" 通用模板
 - 加入控制 token: `<granularity=macro/meso/micro>`, `<micro_type=...>`
 
-### Phase 3: 筛选规则 + QC 联动
+### Phase 4: 筛选规则 + QC 联动
 - Route D 从固定 `events >= 3` 扩展到 topology-aware
 - 2c / 3c 检查 prompt 按 topology 改写
 - periodic/sequence 新增专用 QC 规则

@@ -65,6 +65,7 @@ from prompts import (
     get_level2_check_prompt,
     get_level3_prompt,
     get_level3_check_prompt,
+    get_merged_check_prompt,
     get_merged_l1l2_prompt,
 )
 
@@ -467,6 +468,26 @@ def annotate_clip(
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
             )
+        elif level == "merged_c":
+            l1 = existing.get("level1")
+            l2 = existing.get("level2")
+            if l1 is None or l2 is None:
+                return {"clip_key": key, "ok": False,
+                        "error": "level1+level2 annotations required for merged check; run merged first",
+                        "skipped": False}
+            checked_l1, checked_l2 = _check_merged_l1l2(
+                frame_dir, clip_duration, l1, l2,
+                summary=existing.get("summary", ""),
+                topology_type=existing.get("topology_type", "procedural"),
+                topology_confidence=float(existing.get("topology_confidence", 0.5)),
+                api_base=api_base, api_key=api_key, model=model,
+                max_frames=max_frames_per_call,
+                resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
+                global_phase_criterion=existing.get("global_phase_criterion", ""),
+            )
+            # merged_c writes both level1 and level2 — handled specially below
+            result_key = "merged_c"
+            result_val = {"level1": checked_l1, "level2": checked_l2}
         elif level == "3c":
             l2 = existing.get("level2")
             l3 = existing.get("level3")
@@ -507,6 +528,9 @@ def annotate_clip(
     }
     if level == "merged":
         ann.update(merged_result)  # overwrites level1, level2, domain_l1, domain_l2, summary
+    elif level == "merged_c":
+        ann["level1"] = result_val["level1"]
+        ann["level2"] = result_val["level2"]
     else:
         ann[result_key] = result_val
     ann["annotated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1191,6 +1215,8 @@ def _check_level3(
     fps = float(meta.get("fps", 1.0))
 
     existing_l3 = l3_result.get("grounding_results", [])
+    micro_type = l3_result.get("micro_type", "state_change")
+    micro_split_criterion = l3_result.get("micro_split_criterion", "")
 
     all_checked: list[dict[str, Any]] = []
     check_calls: list[dict[str, Any]] = []
@@ -1266,6 +1292,7 @@ def _check_level3(
 
         prompt_text = get_level3_check_prompt(
             int(start_time), int(end_time), instruction, event_results,
+            micro_type=micro_type, micro_split_criterion=micro_split_criterion,
         )
         parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
 
@@ -1321,8 +1348,248 @@ def _check_level3(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main
+# Merged L1+L2 Check: Simultaneous Phase + Event Quality Review
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _apply_l1_check_results(
+    existing_phases: list[dict[str, Any]],
+    check_parsed: dict[str, Any],
+    clip_duration: float,
+) -> list[dict[str, Any]]:
+    """
+    Apply check verdicts to existing L1 phases.
+
+    Returns the updated list of macro phases.
+    """
+    phase_by_id = {p.get("phase_id"): p for p in existing_phases}
+
+    reviews = check_parsed.get("phase_reviews") or []
+    kept_phases: list[dict[str, Any]] = []
+
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        pid = review.get("phase_id")
+        verdict = review.get("verdict", "keep")
+        original = phase_by_id.get(pid)
+        if original is None:
+            continue
+
+        if verdict == "keep":
+            kept_phases.append(original)
+        elif verdict == "revise":
+            revised = review.get("revised")
+            if isinstance(revised, dict):
+                updated = dict(original)
+                for field in ("start_time", "end_time", "phase_name", "narrative_summary"):
+                    if field in revised:
+                        updated[field] = revised[field]
+                st = updated.get("start_time")
+                et = updated.get("end_time")
+                if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
+                    updated["_checked"] = "revised"
+                    kept_phases.append(updated)
+                else:
+                    original["_checked"] = "revise_failed_kept_original"
+                    kept_phases.append(original)
+            else:
+                original["_checked"] = "revise_no_data_kept_original"
+                kept_phases.append(original)
+        elif verdict == "remove":
+            pass  # intentionally removed
+        else:
+            kept_phases.append(original)
+
+    # Any existing phases not mentioned in reviews are kept
+    reviewed_ids = {r.get("phase_id") for r in reviews if isinstance(r, dict)}
+    for p in existing_phases:
+        if p.get("phase_id") not in reviewed_ids:
+            kept_phases.append(p)
+
+    # Add supplements
+    supplements = check_parsed.get("phase_supplements") or []
+    for sup in supplements:
+        if not isinstance(sup, dict):
+            continue
+        st = sup.get("start_time")
+        et = sup.get("end_time")
+        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
+            continue
+        sup["start_time"] = int(st)
+        sup["end_time"] = min(int(et), int(clip_duration))
+        sup["_checked"] = "supplemented"
+        kept_phases.append(sup)
+
+    return kept_phases
+
+
+def _check_merged_l1l2(
+    frame_dir: Path,
+    clip_duration: float,
+    l1_result: dict[str, Any],
+    l2_result: dict[str, Any],
+    summary: str,
+    topology_type: str,
+    topology_confidence: float,
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+    global_phase_criterion: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    Merged L1+L2 Check: Model-based quality review for both L1 phases and L2 events.
+
+    Sends full-video 1fps frames with existing L1+L2 annotations for simultaneous
+    review, mirroring the merged annotation call.
+
+    Returns (checked_l1, checked_l2) dicts.
+    """
+    phases = l1_result.get("macro_phases", [])
+    phases = sorted(
+        [p for p in phases if isinstance(p, dict)],
+        key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)),
+    )
+    if not phases:
+        raise RuntimeError("level1 macro_phases missing or empty")
+
+    existing_events = l2_result.get("events", [])
+
+    # Sample full-video frames (same as merged annotation)
+    all_frames = get_all_frame_files(frame_dir)
+    if not all_frames:
+        raise RuntimeError(f"no frames found in {frame_dir}")
+
+    sampled = sample_uniform(all_frames, max_frames)
+    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+    frame_labels = []
+    for fp in sampled:
+        idx = frame_stem_to_index(fp, 0)
+        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+
+    prompt_text = get_merged_check_prompt(
+        n_frames=len(sampled),
+        duration_sec=int(clip_duration),
+        summary=summary,
+        topology_type=topology_type,
+        topology_confidence=topology_confidence,
+        l1_phases=phases,
+        l2_events=existing_events,
+        global_phase_criterion=global_phase_criterion,
+    )
+    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+
+    if parsed is None:
+        raise RuntimeError("merged check: VLM parse failed")
+
+    # ── Apply L1 phase verdicts ──
+    checked_phases = _apply_l1_check_results(phases, parsed, clip_duration)
+
+    # Sort and re-number phases
+    checked_phases.sort(key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)))
+    for i, p in enumerate(checked_phases, 1):
+        p["phase_id"] = i
+
+    # Build old→new phase_id mapping for event parent_phase_id fixup
+    # (supplements get new IDs from re-numbering above)
+    valid_phase_ids = {p["phase_id"] for p in checked_phases}
+
+    # ── Apply L2 event verdicts ──
+    event_by_id = {e.get("event_id"): e for e in existing_events}
+    event_reviews = parsed.get("event_reviews") or []
+    kept_events: list[dict[str, Any]] = []
+
+    for review in event_reviews:
+        if not isinstance(review, dict):
+            continue
+        eid = review.get("event_id")
+        verdict = review.get("verdict", "keep")
+        original = event_by_id.get(eid)
+        if original is None:
+            continue
+
+        if verdict == "keep":
+            kept_events.append(original)
+        elif verdict == "revise":
+            revised = review.get("revised")
+            if isinstance(revised, dict):
+                updated = dict(original)
+                for field in ("start_time", "end_time", "instruction", "visual_keywords"):
+                    if field in revised:
+                        updated[field] = revised[field]
+                st = updated.get("start_time")
+                et = updated.get("end_time")
+                if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
+                    updated["_checked"] = "revised"
+                    kept_events.append(updated)
+                else:
+                    original["_checked"] = "revise_failed_kept_original"
+                    kept_events.append(original)
+            else:
+                original["_checked"] = "revise_no_data_kept_original"
+                kept_events.append(original)
+        elif verdict == "remove":
+            pass
+        else:
+            kept_events.append(original)
+
+    # Any existing events not mentioned in reviews are kept
+    reviewed_eids = {r.get("event_id") for r in event_reviews if isinstance(r, dict)}
+    for e in existing_events:
+        if e.get("event_id") not in reviewed_eids:
+            kept_events.append(e)
+
+    # Add event supplements
+    event_supplements = parsed.get("event_supplements") or []
+    for sup in event_supplements:
+        if not isinstance(sup, dict):
+            continue
+        st = sup.get("start_time")
+        et = sup.get("end_time")
+        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
+            continue
+        sup["_checked"] = "supplemented"
+        kept_events.append(sup)
+
+    # Drop events whose parent_phase_id no longer exists
+    final_events = []
+    for e in kept_events:
+        ppid = e.get("parent_phase_id")
+        if ppid is not None and ppid not in valid_phase_ids:
+            continue  # orphaned by phase removal
+        final_events.append(e)
+
+    # Sort and re-number events
+    final_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
+    for i, e in enumerate(final_events, 1):
+        e["event_id"] = i
+
+    # ── Aggregate stats ──
+    l1_stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
+    for rv in (parsed.get("phase_reviews") or []):
+        if isinstance(rv, dict):
+            v = rv.get("verdict", "keep")
+            if v in l1_stats:
+                l1_stats[v] += 1
+    l1_stats["supplemented"] = len(parsed.get("phase_supplements") or [])
+
+    l2_stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
+    for rv in event_reviews:
+        if isinstance(rv, dict):
+            v = rv.get("verdict", "keep")
+            if v in l2_stats:
+                l2_stats[v] += 1
+    l2_stats["supplemented"] = len(event_supplements)
+
+    checked_l1 = {
+        "macro_phases": checked_phases,
+        "_check_stats": l1_stats,
+    }
+    checked_l2 = {
+        "events": final_events,
+        "_check_stats": l2_stats,
+    }
+
+    return checked_l1, checked_l2
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -1337,8 +1604,8 @@ def main() -> None:
                         help="Directory to write per-clip annotation JSON files")
     parser.add_argument("--l3-frames-dir", default=None,
                         help="High-FPS frames directory for L3/3c (falls back to --frames-dir)")
-    parser.add_argument("--level", type=str, choices=["merged", "3", "2c", "3c"], default="merged",
-                        help="Annotation level (merged=L1+L2+domain, 3=L3 grounding, 2c/3c=check)")
+    parser.add_argument("--level", type=str, choices=["merged", "3", "2c", "3c", "merged_c"], default="merged",
+                        help="Annotation level (merged=L1+L2+domain, 3=L3 grounding, 2c/3c=check, merged_c=L1+L2 check)")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",

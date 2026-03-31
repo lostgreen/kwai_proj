@@ -1,19 +1,36 @@
 #!/usr/bin/env python3
 """
-annotate_check.py — Standalone annotation quality audit for YouCook2 hierarchical segmentation.
+annotate_check.py — Standalone annotation quality audit for hierarchical segmentation.
 
-Reads existing annotation JSONs, runs L2 and/or L3 granularity-based quality
-checks using a (potentially stronger) VLM model, and writes revised annotations
-to a separate output directory.
+Reads existing annotation JSONs, runs quality checks using a (potentially stronger)
+VLM model, and writes revised annotations to a separate output directory.
+
+Two-step check pipeline (mirrors the annotation pipeline):
+  Step 1: merged_c  — L1+L2 simultaneous check using 1fps full-video frames
+  Step 2: 3c        — L3 check using 2fps leaf-node frames (--l3-frames-dir)
 
 Usage:
-    python annotate_check.py \
-        --frames-dir frames/ \
-        --annotation-dir annotations/ \
-        --output-dir annotations_checked/ \
-        --levels 2c,3c \
-        --model gpt-4o \
+    # Step 1: Merged L1+L2 check (1fps frames, like annotation Step 1+2)
+    python annotate_check.py \\
+        --frames-dir frames/ \\
+        --annotation-dir annotations/ \\
+        --output-dir annotations_checked/ \\
+        --levels merged_c \\
+        --model gpt-4o \\
         --workers 4
+
+    # Step 2: L3 check (2fps leaf-node frames, like annotation Step 3+4)
+    python annotate_check.py \\
+        --frames-dir frames/ \\
+        --l3-frames-dir frames_l3/ \\
+        --annotation-dir annotations_checked/ \\
+        --output-dir annotations_checked/ \\
+        --levels 3c \\
+        --model gpt-4o \\
+        --workers 4
+
+    # Legacy: L2-only check (per-phase, old behavior)
+    python annotate_check.py ... --levels 2c
 
     # Dry run (scan only, no API calls)
     python annotate_check.py ... --dry-run
@@ -34,6 +51,7 @@ from annotate import (
     _apply_l3_check_results,
     _check_level2,
     _check_level3,
+    _check_merged_l1l2,
     call_and_parse,
     count_extracted_frames,
     encode_frame_files,
@@ -49,9 +67,55 @@ from annotate import (
 def _remove_orphaned_l3_results(
     l3_results: list[dict],
     valid_event_ids: set[int],
+    valid_phase_ids: set[int] | None = None,
 ) -> list[dict]:
-    """Remove L3 results whose parent_event_id no longer exists after L2 check."""
-    return [r for r in l3_results if r.get("parent_event_id") in valid_event_ids]
+    """Remove L3 results whose parent no longer exists after L1+L2 check.
+
+    Checks both parent_event_id (normal events) and parent_phase_id
+    (eventless phases used as L3 parents).
+    """
+    cleaned = []
+    for r in l3_results:
+        peid = r.get("parent_event_id")
+        ppid = r.get("parent_phase_id")
+        # If linked to an event, check event validity
+        if peid is not None:
+            if peid in valid_event_ids:
+                cleaned.append(r)
+            continue
+        # If linked directly to a phase (eventless leaf), check phase validity
+        if ppid is not None and valid_phase_ids is not None:
+            if ppid in valid_phase_ids:
+                cleaned.append(r)
+            continue
+        # No parent link — keep (shouldn't happen, but safe)
+        cleaned.append(r)
+    return cleaned
+
+
+def _remove_out_of_bounds_l3(
+    l3_results: list[dict],
+    l2_events: list[dict],
+) -> list[dict]:
+    """Remove L3 results whose timestamps fall outside their parent event's new boundaries."""
+    event_bounds = {}
+    for e in l2_events:
+        eid = e.get("event_id")
+        if eid is not None:
+            event_bounds[eid] = (e.get("start_time", 0), e.get("end_time", float("inf")))
+
+    cleaned = []
+    for r in l3_results:
+        peid = r.get("parent_event_id")
+        if peid is not None and peid in event_bounds:
+            ev_start, ev_end = event_bounds[peid]
+            r_start = r.get("start_time", 0)
+            r_end = r.get("end_time", 0)
+            # Drop if L3 action is completely outside event bounds
+            if r_end <= ev_start or r_start >= ev_end:
+                continue
+        cleaned.append(r)
+    return cleaned
 
 
 def check_clip(
@@ -63,12 +127,13 @@ def check_clip(
     max_frames: int, resize_max_width: int, jpeg_quality: int,
     overwrite: bool,
     dry_run: bool,
+    l3_frames_base: Path | None = None,
 ) -> dict:
     """
     Run quality checks on a single clip's annotation.
 
-    When levels contains both "2c" and "3c", runs L2 check first,
-    then L3 check uses the L2-checked results as parent context.
+    Supports levels: "merged_c" (L1+L2 simultaneous), "2c" (L2 only, legacy),
+    "3c" (L3 with optional per-event 2fps frames).
 
     Returns status dict: {clip_key, ok, error, skipped, stats}.
     """
@@ -95,7 +160,57 @@ def check_clip(
 
     combined_stats: dict[str, dict] = {}
 
-    # ---- L2 Check ----
+    # ---- Merged L1+L2 Check ----
+    if "merged_c" in levels:
+        l1 = ann.get("level1")
+        l2 = ann.get("level2")
+        if l1 is None or l2 is None:
+            return {"clip_key": clip_key, "ok": False,
+                    "error": "level1+level2 required for merged check", "skipped": False, "stats": {}}
+
+        already_checked = (
+            l1.get("_check_stats") is not None and l2.get("_check_stats") is not None
+        )
+        if not overwrite and already_checked:
+            combined_stats["l1"] = l1["_check_stats"]
+            combined_stats["l2"] = l2["_check_stats"]
+        elif dry_run:
+            n_phases = len(l1.get("macro_phases", []))
+            n_events = len(l2.get("events", []))
+            combined_stats["l1"] = {"dry_run": True, "n_phases": n_phases}
+            combined_stats["l2"] = {"dry_run": True, "n_events": n_events}
+        else:
+            checked_l1, checked_l2 = _check_merged_l1l2(
+                frame_dir, clip_duration, l1, l2,
+                summary=ann.get("summary", ""),
+                topology_type=ann.get("topology_type", "procedural"),
+                topology_confidence=float(ann.get("topology_confidence", 0.5)),
+                api_base=api_base, api_key=api_key, model=model,
+                max_frames=max_frames,
+                resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
+                global_phase_criterion=ann.get("global_phase_criterion", ""),
+            )
+            ann["level1"] = checked_l1
+            ann["level2"] = checked_l2
+            combined_stats["l1"] = checked_l1.get("_check_stats", {})
+            combined_stats["l2"] = checked_l2.get("_check_stats", {})
+
+            # Orphan cleanup: remove L3 results for deleted events/phases
+            if ann.get("level3") is not None:
+                valid_eids = {e.get("event_id") for e in checked_l2.get("events", [])}
+                valid_pids = {p.get("phase_id") for p in checked_l1.get("macro_phases", [])}
+                old_l3 = ann["level3"].get("grounding_results", [])
+
+                # Step 1: remove orphans (parent deleted)
+                cleaned = _remove_orphaned_l3_results(old_l3, valid_eids, valid_pids)
+                # Step 2: remove out-of-bounds (parent boundary changed)
+                cleaned = _remove_out_of_bounds_l3(cleaned, checked_l2.get("events", []))
+
+                if len(cleaned) != len(old_l3):
+                    ann["level3"]["grounding_results"] = cleaned
+                    combined_stats["l3_orphans_removed"] = len(old_l3) - len(cleaned)
+
+    # ---- Legacy L2-only Check ----
     if "2c" in levels:
         l1 = ann.get("level1")
         l2 = ann.get("level2")
@@ -130,10 +245,10 @@ def check_clip(
         l2 = ann.get("level2")
         l3 = ann.get("level3")
         if l2 is None or l3 is None:
-            if "2c" not in levels:
+            if "merged_c" not in levels and "2c" not in levels:
                 return {"clip_key": clip_key, "ok": False,
                         "error": "level2+level3 required for L3 check", "skipped": False, "stats": {}}
-            # L3 doesn't exist but L2 check was run — skip L3 check
+            # L3 doesn't exist but upper check was run — skip L3 check
             combined_stats["l3"] = {"skipped": True, "reason": "no level3 data"}
         elif not overwrite and l3.get("_check_stats") is not None:
             combined_stats["l3"] = l3["_check_stats"]
@@ -145,6 +260,8 @@ def check_clip(
                 frame_dir, clip_duration, l2, l3,
                 api_base, api_key, model,
                 max_frames, resize_max_width, jpeg_quality,
+                l3_base=l3_frames_base,
+                clip_key_str=clip_key,
             )
             ann["level3"] = checked_l3
             combined_stats["l3"] = checked_l3.get("_check_stats", {})
@@ -166,17 +283,20 @@ def check_clip(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Standalone quality audit for YouCook2 hierarchical annotations",
+        description="Standalone quality audit for hierarchical annotations",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--frames-dir", required=True,
                         help="Root directory of pre-extracted 1fps frames")
+    parser.add_argument("--l3-frames-dir", default="",
+                        help="Root directory of 2fps leaf-node frames for L3 check "
+                             "(falls back to --frames-dir if not provided)")
     parser.add_argument("--annotation-dir", required=True,
                         help="Input directory with existing annotation JSONs")
     parser.add_argument("--output-dir", required=True,
                         help="Output directory for checked annotations (separate from input)")
-    parser.add_argument("--levels", default="2c,3c",
-                        help="Comma-separated checks to run: 2c, 3c, or 2c,3c")
+    parser.add_argument("--levels", default="merged_c,3c",
+                        help="Comma-separated checks to run: merged_c, 2c, 3c")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -201,10 +321,16 @@ def main() -> None:
 
     # Validate levels
     levels = [l.strip() for l in args.levels.split(",")]
+    valid_levels = {"merged_c", "2c", "3c"}
     for l in levels:
-        if l not in ("2c", "3c"):
-            print(f"ERROR: unsupported level '{l}', must be 2c or 3c", file=sys.stderr)
+        if l not in valid_levels:
+            print(f"ERROR: unsupported level '{l}', must be one of {valid_levels}", file=sys.stderr)
             sys.exit(1)
+
+    # Warn if both merged_c and 2c are used (redundant)
+    if "merged_c" in levels and "2c" in levels:
+        print("WARNING: both 'merged_c' and '2c' specified — merged_c already covers L2 check, "
+              "2c will re-check L2 events per-phase after merged check", file=sys.stderr)
 
     api_key = args.api_key or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
 
@@ -218,6 +344,12 @@ def main() -> None:
         print(f"ERROR: frames-dir not found: {frames_base}", file=sys.stderr)
         sys.exit(1)
 
+    l3_frames_base = Path(args.l3_frames_dir) if args.l3_frames_dir else None
+    if l3_frames_base and not l3_frames_base.exists():
+        print(f"WARNING: l3-frames-dir not found: {l3_frames_base}, "
+              "L3 check will fall back to 1fps frames", file=sys.stderr)
+        l3_frames_base = None
+
     ann_files = sorted(ann_dir.glob("*.json"))
     if args.limit > 0:
         ann_files = ann_files[:args.limit]
@@ -228,7 +360,10 @@ def main() -> None:
     mode_str = "DRY RUN" if args.dry_run else "AUDIT"
     print(f"[{mode_str}] {len(ann_files)} clips, levels={levels}")
     print(f"API: {args.api_base}  model: {args.model}  workers: {args.workers}")
-    print(f"Input: {ann_dir}  Output: {output_dir}\n")
+    print(f"Input: {ann_dir}  Output: {output_dir}")
+    if l3_frames_base:
+        print(f"L3 frames: {l3_frames_base}")
+    print()
 
     ok_count = skipped_count = error_count = 0
     agg_stats: dict[str, int] = {}
@@ -244,6 +379,7 @@ def main() -> None:
                 args.jpeg_quality,
                 args.overwrite,
                 args.dry_run,
+                l3_frames_base,
             ): ann_path
             for ann_path in ann_files
         }

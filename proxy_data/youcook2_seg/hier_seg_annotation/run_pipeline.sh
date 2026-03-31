@@ -80,10 +80,33 @@ run_step "STEP4_L3_ANNOTATION" \
         --level 3 \
         --model "$MODEL" --workers "$WORKERS"
 
+# ── Step 5: Merged L1+L2 check (1fps full-video, mirrors Step 2) ──
+CHECK_MODEL="${CHECK_MODEL:-$MODEL}"
+CHECK_OUTPUT="${CHECK_OUTPUT:-$DATA_ROOT/annotations_checked}"
+
+run_step "STEP5_CHECK_L1L2" \
+    python "$SCRIPT_DIR/annotate_check.py" \
+        --frames-dir "$DATA_ROOT/frames" \
+        --annotation-dir "$DATA_ROOT/annotations" \
+        --output-dir "$CHECK_OUTPUT" \
+        --levels merged_c \
+        --model "$CHECK_MODEL" --workers "$WORKERS"
+
+# ── Step 6: L3 check (2fps leaf-node, mirrors Step 3+4) ───────────
+run_step "STEP6_CHECK_L3" \
+    python "$SCRIPT_DIR/annotate_check.py" \
+        --frames-dir "$DATA_ROOT/frames" \
+        --l3-frames-dir "$DATA_ROOT/frames_l3" \
+        --annotation-dir "$CHECK_OUTPUT" \
+        --output-dir "$CHECK_OUTPUT" \
+        --levels 3c \
+        --model "$CHECK_MODEL" --workers "$WORKERS"
+
 # ── Summary ─────────────────────────────────────────────────────────
 log "========== PIPELINE COMPLETE =========="
-log "Annotations: $DATA_ROOT/annotations/"
-log "Full log:    $LOG_FILE"
+log "Annotations:         $DATA_ROOT/annotations/"
+log "Checked annotations: $CHECK_OUTPUT/"
+log "Full log:            $LOG_FILE"
 
 # Count results
 TOTAL=$(ls "$DATA_ROOT/annotations/"*.json 2>/dev/null | wc -l)
