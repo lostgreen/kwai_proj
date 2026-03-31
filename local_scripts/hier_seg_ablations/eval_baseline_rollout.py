@@ -237,25 +237,30 @@ def score_results(
     Output format is compatible with ablation_comparison/server.py:
     each record preserves original videos/metadata/prompt/answer and
     adds response (best) + reward (best).
+
+    reward_fn is compute_score(reward_inputs: list[dict]) → list[dict]
+    (batch interface compatible with EasyR1 BatchFunctionRewardManager).
     """
     scored = []
     for item in results:
         rec = item["record"]
         responses = item["responses"]
-        rewards = []
-        for resp in responses:
-            try:
-                score = reward_fn(
-                    solution_str=resp,
-                    ground_truth=rec.get("answer", ""),
-                    extra_info={
-                        "problem_type": rec.get("problem_type", ""),
-                        "metadata": rec.get("metadata", {}),
-                    },
-                )
-                rewards.append(float(score))
-            except Exception:
-                rewards.append(0.0)
+
+        # Build batch reward_inputs for all rollout responses of this record
+        reward_inputs = [
+            {
+                "response": resp,
+                "ground_truth": rec.get("answer", ""),
+                "problem_type": rec.get("problem_type", ""),
+            }
+            for resp in responses
+        ]
+
+        try:
+            score_dicts = reward_fn(reward_inputs)
+            rewards = [float(d.get("overall", 0.0)) for d in score_dicts]
+        except Exception:
+            rewards = [0.0] * len(responses)
 
         best_idx = int(np.argmax(rewards)) if rewards else 0
         best_response = responses[best_idx] if responses else ""
