@@ -483,6 +483,48 @@ def plot_l3_completeness_by_domain(anns: list[dict], ax: plt.Axes):
 
 
 # =====================================================================
+# Fig 8: 每层级输出 segments 数量分布 (3 subplot)
+# =====================================================================
+def plot_output_count_distribution(results: dict, axes: list[plt.Axes]):
+    """每层级模型需要划分多少个 segments 的计数分布 (bar chart)。"""
+    levels = ["L1", "L2", "L3"]
+    titles = [
+        "L1: # Phases per Video",
+        "L2: # Events per Phase",
+        "L3: # Actions per Leaf",
+    ]
+    for ax, lv, title in zip(axes, levels, titles):
+        counts = results["output_counts"][lv]
+        if not counts:
+            ax.set_title(f"{title}\n(no data)")
+            continue
+
+        counter = Counter(counts)
+        xs = sorted(counter.keys())
+        ys = [counter[x] for x in xs]
+
+        ax.bar(xs, ys, color=LEVEL_COLORS[lv], edgecolor="white", linewidth=0.5)
+        ax.set_xlabel("# Segments")
+        ax.set_ylabel("Count")
+        ax.set_title(title)
+
+        # 标注统计量
+        avg = np.mean(counts)
+        med = np.median(counts)
+        ax.axvline(avg, color="red", linestyle="--", alpha=0.7, linewidth=1)
+        ax.axvline(med, color="orange", linestyle="--", alpha=0.7, linewidth=1)
+        ax.text(
+            0.97, 0.95,
+            f"n={len(counts)}\navg={avg:.1f}\nmed={med:.0f}\nmax={max(counts)}",
+            transform=ax.transAxes, ha="right", va="top",
+            fontsize=9, bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+        )
+
+        # x 轴整数刻度
+        ax.set_xticks(xs if len(xs) <= 20 else np.linspace(min(xs), max(xs), 15, dtype=int))
+
+
+# =====================================================================
 # Main
 # =====================================================================
 def main():
@@ -559,6 +601,15 @@ def main():
     fig7.tight_layout()
     fig7.savefig(os.path.join(args.output_dir, "fig7_l3_completeness.png"), dpi=args.dpi)
     print(f"  Saved fig7_l3_completeness.png")
+
+    # ── Fig 8: Output segments count distribution ──
+    fig8, axes8 = plt.subplots(1, 3, figsize=(16, 5))
+    plot_output_count_distribution(results, list(axes8))
+    fig8.suptitle("Output Segments Count Distribution per Level", fontsize=13, y=1.02)
+    fig8.tight_layout()
+    fig8.savefig(os.path.join(args.output_dir, "fig8_output_counts.png"), dpi=args.dpi,
+                 bbox_inches="tight")
+    print(f"  Saved fig8_output_counts.png")
 
     plt.close("all")
 
