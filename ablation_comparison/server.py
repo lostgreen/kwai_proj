@@ -90,7 +90,7 @@ def _normalize_level(raw_level) -> str:
         return s
 
 
-def _image_to_data_url(image: Image.Image, max_w: int = 180) -> str:
+def _image_to_data_url(image: Image.Image, max_w: int = 240) -> str:
     image = image.convert("RGB")
     if image.width > max_w:
         r = max_w / float(image.width)

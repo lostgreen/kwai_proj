@@ -69,31 +69,32 @@ h3{font-size:13px;font-weight:600;color:#374151}
 .sync-shell{overflow-x:auto;overflow-y:visible;padding:0 0 8px 16px;scrollbar-width:thin;cursor:grab}
 .sync-shell.dragging{cursor:grabbing;user-select:none}
 .sync-inner{position:relative;display:block;min-width:max-content;padding-right:16px}
-.lane-block{display:flex;align-items:stretch;margin-bottom:6px;min-height:0}
-.lane-head{width:100px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;padding:0 8px 0 0}
-.lane-title{font-size:11px;font-weight:700;white-space:nowrap}
+.lane-block{display:flex;align-items:stretch;margin-bottom:8px;min-height:0}
+.lane-head{width:110px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;padding:0 8px 0 0}
+.lane-title{font-size:12px;font-weight:700;white-space:nowrap}
 .lane-meta{font-size:10px;color:var(--muted)}
 .lane-track{
-  position:relative;height:54px;border-radius:16px;
-  border:1px solid rgba(71,85,105,.1);
+  position:relative;height:62px;border-radius:16px;
+  border:1px solid rgba(71,85,105,.12);
   background:
     linear-gradient(180deg, rgba(255,255,255,.8), rgba(241,245,249,.9)),
     repeating-linear-gradient(
       90deg,
-      rgba(71,85,105,.045) 0,
-      rgba(71,85,105,.045) 93px,
-      transparent 93px,
-      transparent 94px
+      rgba(71,85,105,.06) 0,
+      rgba(71,85,105,.06) 1px,
+      transparent 1px,
+      transparent 126px
     );
 }
 
 /* ── Segment ── */
-.segment{position:absolute;top:7px;height:40px;border-radius:13px;
+.segment{position:absolute;top:7px;height:48px;border-radius:13px;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   overflow:hidden;cursor:default;transition:opacity .15s,transform .1s;
-  font-size:10px;color:#fff;padding:0 4px;border:1px solid rgba(15,23,42,.08)}
-.segment:hover{opacity:1!important;transform:scaleY(1.08);z-index:10;box-shadow:0 12px 24px rgba(15,23,42,.18)}
+  font-size:11px;color:#fff;padding:2px 6px;border:1px solid rgba(15,23,42,.1)}
+.segment:hover{opacity:1!important;transform:scaleY(1.06);z-index:10;box-shadow:0 12px 24px rgba(15,23,42,.22)}
 .segment-label{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.segment-time{font-size:9px;opacity:.85;margin-top:1px;font-family:"JetBrains Mono","SF Mono",monospace}
 .seg-gt{background:linear-gradient(135deg,rgba(239,68,68,.95),rgba(220,38,38,.92))}
 .seg-s0{background:linear-gradient(135deg,rgba(45,108,223,.95),rgba(37,99,235,.92))}
 .seg-s1{background:linear-gradient(135deg,rgba(228,157,28,.95),rgba(217,119,6,.92))}
@@ -116,12 +117,15 @@ h3{font-size:13px;font-weight:600;color:#374151}
 .scroll-slider::-webkit-slider-thumb{appearance:none;width:14px;height:14px;background:var(--accent);border-radius:50%;cursor:pointer}
 
 /* ── Frame strip ── */
-.frame-strip{position:relative;height:70px;min-height:70px}
-.frame-thumb{position:absolute;top:0;width:88px;height:56px;border-radius:6px;overflow:hidden;
-  border:2px solid rgba(71,85,105,.14);background:linear-gradient(135deg,rgba(45,108,223,.06),rgba(21,154,140,.06))}
+.frame-strip{position:relative;height:100px;min-height:100px}
+.frame-thumb{position:absolute;top:0;width:120px;height:78px;border-radius:8px;overflow:hidden;
+  border:2px solid rgba(71,85,105,.16);background:linear-gradient(135deg,rgba(45,108,223,.06),rgba(21,154,140,.06));
+  transition:border-color .15s,box-shadow .15s}
 .frame-thumb img{width:100%;height:100%;object-fit:cover;display:block}
 .frame-thumb.highlight{border-color:var(--accent);box-shadow:0 0 0 3px rgba(45,108,223,.25)}
-.frame-label{position:absolute;top:58px;left:0;width:88px;text-align:center;
+.frame-thumb .placeholder{display:flex;align-items:center;justify-content:center;width:100%;height:100%;
+  font-size:10px;color:var(--muted);background:rgba(241,245,249,.9)}
+.frame-label{position:absolute;top:80px;left:0;width:120px;text-align:center;
   font-size:10px;color:var(--muted);font-family:"JetBrains Mono","SF Mono",monospace}
 
 /* ── Tables ── */
@@ -137,10 +141,11 @@ h3{font-size:13px;font-weight:600;color:#374151}
   max-height:480px;overflow-y:auto;line-height:1.5}
 
 /* ── Expand toggle ── */
-.expand-btn{padding:2px 0 4px 108px;font-size:10px;color:var(--accent);cursor:pointer;user-select:none}
+.expand-btn{padding:2px 0 4px 118px;font-size:10px;color:var(--accent);cursor:pointer;user-select:none}
 .expand-btn:hover{text-decoration:underline}
 .extra-lanes .segment{opacity:.55}
-.extra-lanes .lane-track{height:34px}
+.extra-lanes .lane-track{height:42px}
+.extra-lanes .segment{height:30px;top:6px}
 
 /* ── States ── */
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;color:var(--muted)}
@@ -255,8 +260,8 @@ input[type=range]{-webkit-appearance:auto;appearance:auto;cursor:pointer;height:
 
 <script>
 /* ═══════════════ CONSTANTS ═══════════════ */
-var FRAME_W = 88, FRAME_GAP = 6, STRIDE = FRAME_W + FRAME_GAP;
-var MIN_WIDTH = 800;
+var FRAME_W = 120, FRAME_GAP = 6, STRIDE = FRAME_W + FRAME_GAP;
+var MIN_WIDTH = 900;
 var GT_COLOR = '#ef4444';
 var COLORS = ['#2d6cdf','#e49d1c','#d4577c','#059669','#7c3aed','#0891b2','#eab308','#f87171'];
 var BASE = window.location.pathname.replace(/\/[^/]*$/, '');
@@ -647,28 +652,46 @@ async function selectSample(videoKey) {
 
 /* ═══════════════ ASYNC FRAMES ═══════════════ */
 async function loadFrames(videoKey) {
+  var strip = document.getElementById('frameStrip');
+  var meta = document.getElementById('framesMeta');
   try {
     var data = await api('/api/frames/' + encodeURIComponent(videoKey) + '?fps=1');
     var frames = data.frames || [];
-    var strip = document.getElementById('frameStrip');
-    var meta = document.getElementById('framesMeta');
     if (!strip) return;
+    if (frames.length === 0) {
+      showPlaceholderFrames(strip, meta);
+      return;
+    }
     var html = '';
     for (var i = 0; i < frames.length; i++) {
       var sec = frames[i].second;
       var fLeft = sec * STRIDE;
-      html += '<div class="frame-thumb" id="f-' + sec + '" style="left:' + fLeft + 'px;cursor:pointer" onclick="seekTo(' + sec + ')">'
-        + (frames[i].src ? '<img loading="lazy" src="' + frames[i].src + '"/>' : '')
+      html += '<div class="frame-thumb" id="f-' + sec + '" style="left:' + fLeft + 'px;cursor:pointer" onclick="seekTo(' + sec + ')">' 
+        + (frames[i].src ? '<img loading="lazy" src="' + frames[i].src + '"/>' : '<div class="placeholder">' + sec + 's</div>')
         + '</div>'
         + '<div class="frame-label" style="left:' + fLeft + 'px">' + sec + 's</div>';
     }
     strip.innerHTML = html;
     if (meta) meta.textContent = frames.length + ' frames';
   } catch (e) {
-    var meta = document.getElementById('framesMeta');
-    if (meta) meta.textContent = 'unavailable';
+    showPlaceholderFrames(strip, meta);
   }
 }
+
+function showPlaceholderFrames(strip, meta) {
+  if (!strip) return;
+  // Show placeholder frame boxes for every second so timeline has visual anchors
+  var nSec = Math.ceil(currentDur);
+  var step = nSec > 60 ? 2 : 1; // skip every other second for long videos
+  var html = '';
+  for (var s = 0; s <= nSec; s += step) {
+    var fLeft = s * STRIDE;
+    html += '<div class="frame-thumb" id="f-' + s + '" style="left:' + fLeft + 'px;cursor:pointer" onclick="seekTo(' + s + ')">' 
+      + '<div class="placeholder">' + s + 's</div></div>'
+      + '<div class="frame-label" style="left:' + fLeft + 'px">' + s + 's</div>';
+  }
+  strip.innerHTML = html;
+  if (meta) meta.textContent = 'no video';
 
 function highlightFrames(startSec, endSec) {
   clearFrameHighlightOnly();
@@ -944,13 +967,14 @@ function renderLane(label, segments, totalWidth, duration, segClass, meta) {
     var s = Array.isArray(seg) ? seg[0] : seg.start;
     var e = Array.isArray(seg) ? seg[1] : seg.end;
     var left = Math.max(0, s * STRIDE);
-    var width = Math.max(6, (e - s) * STRIDE - 4);
+    var width = Math.max(STRIDE, (e - s) * STRIDE - 4);
     segsHtml += '<div class="segment ' + segClass + '" style="left:' + left + 'px;width:' + width + 'px"'
       + ' title="[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']"'
       + ' data-start="' + s + '" data-end="' + e + '"'
       + ' onmouseenter="highlightFrames(' + s + ',' + e + ')" onmouseleave="clearFrameHighlight()"'
       + ' onclick="event.stopPropagation();seekTo(' + s + ')">'
-      + '<div class="segment-label">[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']</div></div>';
+      + '<div class="segment-label">[' + Number(s).toFixed(1) + ', ' + Number(e).toFixed(1) + ']</div>'
+      + '<div class="segment-time">' + (e - s).toFixed(1) + 's</div></div>';
   }
   return '<div class="lane-block">'
     + '<div class="lane-head"><div class="lane-title">' + esc(label) + '</div>'
