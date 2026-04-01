@@ -580,7 +580,7 @@ def build_l3_seg_records(
             "metadata": {
                 "clip_key": clip_key,
                 "clip_duration_sec": clip_duration,
-                "level": "3s",
+                "level": 3,
                 "parent_event_id": event_id,
                 "event_start_sec": ev_start,
                 "event_end_sec": ev_end,
