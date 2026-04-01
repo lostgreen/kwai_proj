@@ -1,19 +1,17 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
-YouCook2 分层时序分割 Reward 函数。
+YouCook2 分层时序分割 Reward 函数 — V2: NGIoU 分层奖励。
 
-支持三种 problem_type：
-  - temporal_seg_hier_L1:     宏观阶段分割    → F1-IoU（NMS + 匈牙利匹配）
-  - temporal_seg_hier_L2:     滑窗事件检测    → F1-IoU（同 L1）
-  - temporal_seg_hier_L3:     原子操作分割    → F1-IoU（同 L1/L2，自由分割无 query）
-  - temporal_seg_hier_L3_seg: 同上（别名）    → F1-IoU
+支持四种 problem_type：
+  - temporal_seg_hier_L1:     宏观阶段分割    → Margin-Relaxed F1-NGIoU (Δ=5s)
+  - temporal_seg_hier_L2:     滑窗事件检测    → F1-NGIoU
+  - temporal_seg_hier_L3:     原子操作分割    → F1-NGIoU (无 NMS)
+  - temporal_seg_hier_L3_seg: 同上（别名）    → F1-NGIoU
 
-[变更] temporal_seg_hier_L3 已从 query-conditioned grounding（position-aligned tIoU）
-改为自由分割（free segmentation），reward 统一使用 F1-IoU，与 L1/L2 对齐。
-旧 _l3_reward / compute_aligned_iou 保留，仅供向后兼容或实验对比使用。
-
-所有 level 统一 <events>[[s,e],...]</events> 格式。
+[V2 变更] IoU → NGIoU，提供不重叠段间的连续梯度信号。
+L1 使用 margin-relaxed NGIoU（GT 外扩 5s），对宏观边界偏差更宽容。
+所有层统一 Hungarian 匹配，不使用 NMS（提示词已要求不重叠）。
 """
 
 import random
@@ -22,7 +20,9 @@ from typing import Any, Dict, List
 
 from verl.reward_function.youcook2_temporal_seg_reward import (
     compute_f1_iou,
+    compute_f1_ngiou,
     has_events_tag,
+    ngiou,
     parse_segments,
     temporal_iou,
 )
@@ -47,30 +47,75 @@ _ZERO = {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
 
 # ===========================
-# L1 / L2: F1-IoU
+# L1 / L2 (legacy): F1-IoU
 # ===========================
 
 def _l1_l2_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """
-    F1-IoU reward（复用 youcook2_temporal_seg_reward 核心逻辑）。
-
-    适用 L1（宏观阶段）和 L2（滑窗事件），两者均为变长 segment 列表。
-    """
+    """F1-IoU reward（旧版，保留供对比）。"""
     gt_segs = parse_segments(ground_truth)
     if not gt_segs:
         return dict(_ZERO)
-
     if not _anti_hack_check(response):
         return dict(_ZERO)
-
     if not has_events_tag(response):
         return dict(_ZERO)
-
     pred_segs = parse_segments(response)
     if not pred_segs:
         return dict(_ZERO)
-
     f1 = compute_f1_iou(pred_segs, gt_segs)
+    return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
+
+
+# ===========================
+# V2: NGIoU 分层 reward
+# ===========================
+
+# L1 margin: GT 边界外扩秒数（宏观阶段 30-120s，±5s 不影响语义）
+_L1_MARGIN = 5.0
+
+
+def _parse_and_check(response: str, ground_truth: str):
+    """共用的解析+反作弊检查，返回 (pred_segs, gt_segs) 或 None。"""
+    gt_segs = parse_segments(ground_truth)
+    if not gt_segs:
+        return None
+    if not _anti_hack_check(response):
+        return None
+    if not has_events_tag(response):
+        return None
+    pred_segs = parse_segments(response)
+    if not pred_segs:
+        return None
+    return pred_segs, gt_segs
+
+
+def _l1_reward(response: str, ground_truth: str) -> Dict[str, float]:
+    """L1: Margin-Relaxed F1-NGIoU（GT 外扩 Δ=5s 后计算 NGIoU）。"""
+    result = _parse_and_check(response, ground_truth)
+    if result is None:
+        return dict(_ZERO)
+    pred_segs, gt_segs = result
+    f1 = compute_f1_ngiou(pred_segs, gt_segs, margin=_L1_MARGIN)
+    return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
+
+
+def _l2_reward(response: str, ground_truth: str) -> Dict[str, float]:
+    """L2: F1-NGIoU（标准模式，无 margin）。"""
+    result = _parse_and_check(response, ground_truth)
+    if result is None:
+        return dict(_ZERO)
+    pred_segs, gt_segs = result
+    f1 = compute_f1_ngiou(pred_segs, gt_segs)
+    return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
+
+
+def _l3_reward_v2(response: str, ground_truth: str) -> Dict[str, float]:
+    """L3: F1-NGIoU（无 NMS，无 margin）。"""
+    result = _parse_and_check(response, ground_truth)
+    if result is None:
+        return dict(_ZERO)
+    pred_segs, gt_segs = result
+    f1 = compute_f1_ngiou(pred_segs, gt_segs)
     return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
 
 
@@ -132,11 +177,10 @@ def _l3_reward(response: str, ground_truth: str) -> Dict[str, float]:
 # ===========================
 
 _DISPATCH = {
-    "temporal_seg_hier_L1":     _l1_l2_reward,
-    "temporal_seg_hier_L2":     _l1_l2_reward,
-    # L3 改为自由分割，统一使用 F1-IoU（与 L1/L2 对齐）
-    "temporal_seg_hier_L3":     _l1_l2_reward,
-    "temporal_seg_hier_L3_seg": _l1_l2_reward,
+    "temporal_seg_hier_L1":     _l1_reward,      # Margin-Relaxed F1-NGIoU
+    "temporal_seg_hier_L2":     _l2_reward,      # F1-NGIoU
+    "temporal_seg_hier_L3":     _l3_reward_v2,   # F1-NGIoU (no NMS)
+    "temporal_seg_hier_L3_seg": _l3_reward_v2,   # 同上
 }
 
 

@@ -88,6 +88,28 @@ def temporal_iou(a: List[float], b: List[float]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def ngiou(a: List[float], b: List[float]) -> float:
+    """Normalized Generalized IoU for 1D intervals. Returns value in [0, 1].
+
+    NGIoU = (GIoU + 1) / 2, where GIoU = IoU - (|C| - |A∪B|) / |C|.
+    Key: even when pred and gt don't overlap, NGIoU > 0 (closer → higher).
+    """
+    inter_start = max(a[0], b[0])
+    inter_end = min(a[1], b[1])
+    intersection = max(0.0, inter_end - inter_start)
+    union = (a[1] - a[0]) + (b[1] - b[0]) - intersection
+    if union <= 0:
+        return 0.0
+    iou = intersection / union
+
+    c_len = max(a[1], b[1]) - min(a[0], b[0])
+    if c_len <= 0:
+        return 0.0
+
+    giou = iou - (c_len - union) / c_len
+    return (giou + 1.0) / 2.0
+
+
 # ===========================
 # NMS
 # ===========================
@@ -250,6 +272,62 @@ def compute_f1_iou(
 
     recall = total_iou / num_gt
     precision = total_iou / num_pred
+    denom = recall + precision
+    return float(2.0 * recall * precision / denom) if denom > 0.0 else 0.0
+
+
+# ===========================
+# F1-NGIoU 计算
+# ===========================
+def compute_f1_ngiou(
+    pred_segs: List[List[float]],
+    gt_segs: List[List[float]],
+    margin: float = 0.0,
+) -> float:
+    """
+    F1-NGIoU（无 NMS）:
+    1. 可选 margin: GT 边界外扩 margin 秒（L1 宽容模式）
+       对每个 (pred, gt) 对取 max(ngiou(pred, gt), ngiou(pred, expanded_gt))
+       确保 margin 只会提高分数，不会降低
+    2. 构建 NGIoU cost matrix → 匈牙利匹配
+    3. recall    = Σ NGIoU_matched / N_gt
+       precision = Σ NGIoU_matched / N_pred
+       reward    = 2·R·P / (R+P)
+    """
+    num_pred = len(pred_segs)
+    num_gt = len(gt_segs)
+
+    if num_pred == 0 or num_gt == 0:
+        return 0.0
+
+    # NGIoU cost matrix (num_pred × num_gt)
+    cost_matrix = []
+    if margin > 0:
+        expanded_gt = [[max(0.0, g[0] - margin), g[1] + margin] for g in gt_segs]
+        for i in range(num_pred):
+            row = []
+            for j in range(num_gt):
+                # Take max of original and expanded → margin only helps
+                score = max(ngiou(pred_segs[i], gt_segs[j]),
+                            ngiou(pred_segs[i], expanded_gt[j]))
+                row.append(1.0 - score)
+            cost_matrix.append(row)
+    else:
+        for i in range(num_pred):
+            row = []
+            for j in range(num_gt):
+                row.append(1.0 - ngiou(pred_segs[i], gt_segs[j]))
+            cost_matrix.append(row)
+
+    # 匈牙利匹配
+    matches = _hungarian_assignment(cost_matrix)
+
+    # F1-NGIoU
+    matched_scores = [1.0 - cost_matrix[r][c] for r, c in matches]
+    total_score = sum(matched_scores)
+
+    recall = total_score / num_gt
+    precision = total_score / num_pred
     denom = recall + precision
     return float(2.0 * recall * precision / denom) if denom > 0.0 else 0.0
 
