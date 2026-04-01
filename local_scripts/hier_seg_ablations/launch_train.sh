@@ -44,24 +44,6 @@ export RAY_TMPDIR="${_ray_tmpdir}"
 echo "[hier] Ray tmpdir (local): ${_ray_tmpdir}"
 
 # =========================================================
-# 自动计算 task weights（按 problem_type 等权重）
-# =========================================================
-TASK_WEIGHTS=$(python3 -c "
-import json, sys
-from collections import Counter
-types = Counter()
-with open('${TRAIN_FILE}') as f:
-    for line in f:
-        types[json.loads(line)['problem_type']] += 1
-n = len(types)
-if n == 0:
-    sys.exit(1)
-w = {t: round(1.0/n, 4) for t in sorted(types)}
-print(json.dumps(w))
-")
-echo "[hier] Task weights: ${TASK_WEIGHTS}"
-
-# =========================================================
 # progress.txt 进度追踪（独立文件，后台更新）
 # =========================================================
 _progress_file="${_ckpt_dir}/progress.txt"
@@ -129,9 +111,6 @@ python3 -m verl.trainer.main \
   data.rollout_batch_size="${ROLLOUT_BS}" \
   data.format_prompt="" \
   data.filter_overlong_prompts=false \
-  data.task_homogeneous_batching=true \
-  data.task_weights="${TASK_WEIGHTS}" \
-  data.task_key="problem_type" \
   algorithm.adv_estimator="${ADV_ESTIMATOR}" \
   algorithm.disable_kl="${DISABLE_KL}" \
   algorithm.use_kl_loss=true \
