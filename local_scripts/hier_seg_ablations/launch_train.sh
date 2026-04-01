@@ -110,7 +110,8 @@ echo "[hier] Starting training: ${EXP_NAME}"
 echo "[hier] LR=${LR}  warmup=${WARMUP_STYLE}  warmup_ratio=${LR_WARMUP_RATIO}"
 
 set -x
-TENSORBOARD_DIR="${CHECKPOINT_ROOT}/tensorboard" \
+TENSORBOARD_DIR="${CHECKPOINT_ROOT}/${EXP_NAME}/tensorboard" \
+TENSORBOARD_FLAT=1 \
 python3 -m verl.trainer.main \
   config=examples/config_ema_grpo_64.yaml \
   data.train_files="${TRAIN_FILE}" \

@@ -115,9 +115,13 @@ class SwanlabLogger(Logger):
 class TensorBoardLogger(Logger):
     def __init__(self, config: dict[str, Any]) -> None:
         tensorboard_dir = os.getenv("TENSORBOARD_DIR", "tensorboard_log")
-        tensorboard_dir = os.path.join(
-            tensorboard_dir, config["trainer"]["project_name"], config["trainer"]["experiment_name"]
-        )
+        # If TENSORBOARD_FLAT is set, use TENSORBOARD_DIR directly without nesting project/experiment
+        if os.getenv("TENSORBOARD_FLAT", ""):
+            pass  # use tensorboard_dir as-is
+        else:
+            tensorboard_dir = os.path.join(
+                tensorboard_dir, config["trainer"]["project_name"], config["trainer"]["experiment_name"]
+            )
         os.makedirs(tensorboard_dir, exist_ok=True)
         print(f"Saving tensorboard log to {tensorboard_dir}.")
         self.writer = SummaryWriter(tensorboard_dir)

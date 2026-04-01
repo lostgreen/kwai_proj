@@ -59,6 +59,16 @@ def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
                 values / torch.clamp(prompt_length, min=1.0)
             ).mean().detach().item()
 
+    # video_nframes / video_fps from multi_modal_data (non-tensor)
+    mm_data = batch.non_tensor_batch.get("multi_modal_data", [])
+    for field in ("video_nframes", "video_fps"):
+        vals = [d.get(field) for d in mm_data if isinstance(d, dict) and d.get(field) is not None]
+        if vals:
+            arr = np.array(vals, dtype=np.float64)
+            metrics[f"{field}/mean"] = float(arr.mean())
+            metrics[f"{field}/max"] = float(arr.max())
+            metrics[f"{field}/min"] = float(arr.min())
+
     return metrics
 
 

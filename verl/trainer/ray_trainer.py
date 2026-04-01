@@ -482,6 +482,8 @@ class RayPPOTrainer:
                     "reward": scores[i],
                     "video_paths": video_paths,
                     "image_paths": image_paths,
+                    "video_nframes": mm_source.get("video_nframes") if isinstance(mm_source, dict) else None,
+                    "video_fps": mm_source.get("video_fps") if isinstance(mm_source, dict) else None,
                     "multi_modal_source": mm_source_json,
                 }
                 if self.config.trainer.save_rollout_include_timeline and problem_type == "temporal_seg":

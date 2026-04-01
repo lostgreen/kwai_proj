@@ -618,13 +618,16 @@ class RLHFDataset(Dataset):
 
             input_ids = model_inputs.pop("input_ids")[0]
             attention_mask = model_inputs.pop("attention_mask")[0]
+            # Actual frame count fed to the model (after smart_nframes sampling)
+            video_nframes = sum(f.shape[0] for f in all_frames) if all_frames else 0
             example["multi_modal_data"] = {
                 "videos": videos,
                 "min_pixels": self.min_pixels,
                 "max_pixels": self.max_pixels,
                 "max_frames": max_frames_per_video,
                 "min_frames": self.min_frames,
-                "video_fps": _eff_fps
+                "video_fps": _eff_fps,
+                "video_nframes": video_nframes,
             }
             token_stats_grid_video = model_inputs.get("video_grid_thw", None)
         else:
