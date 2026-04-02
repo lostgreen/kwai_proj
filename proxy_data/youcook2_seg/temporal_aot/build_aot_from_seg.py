@@ -78,7 +78,8 @@ def _balanced_sample_by_domain(
     # ---- L1 层均衡 ----
     by_l1: dict[str, list[dict]] = defaultdict(list)
     for rec in records:
-        by_l1[rec.get("domain_l1", "other")].append(rec)
+        meta = rec.get("metadata", {})
+        by_l1[meta.get("domain_l1", "other")].append(rec)
 
     l1_quotas = _distribute_quota(budget, {d: len(recs) for d, recs in by_l1.items()})
 
@@ -95,7 +96,8 @@ def _balanced_sample_by_domain(
         # ---- L2 层均衡 (within this L1 domain) ----
         by_l2: dict[str, list[dict]] = defaultdict(list)
         for rec in l1_recs:
-            by_l2[rec.get("domain_l2", "other")].append(rec)
+            meta = rec.get("metadata", {})
+            by_l2[meta.get("domain_l2", "other")].append(rec)
 
         l2_quotas = _distribute_quota(q1, {d: len(recs) for d, recs in by_l2.items()})
         for d2, l2_recs in by_l2.items():
@@ -1136,7 +1138,7 @@ def main():
             all_val.extend(val)
             all_train.extend(train)
             # Report domain distribution
-            l1_dist = Counter(r.get("domain_l1", "other") for r in train)
+            l1_dist = Counter(r.get("metadata", {}).get("domain_l1", "other") for r in train)
             l1_str = ", ".join(f"{d}={c}" for d, c in sorted(l1_dist.items()))
             print(f"  {task}: {len(train)} train + {len(val)} val"
                   f"  (level={level}, budget={per_task_budget or 'unlimited'},"
@@ -1164,10 +1166,10 @@ def main():
         "val_total": len(all_val),
         "train_by_type": dict(Counter(r["problem_type"] for r in all_train)),
         "val_by_type": dict(Counter(r["problem_type"] for r in all_val)),
-        "train_by_domain_l1": dict(Counter(r.get("domain_l1", "other") for r in all_train)),
-        "train_by_domain_l2": dict(Counter(r.get("domain_l2", "other") for r in all_train)),
-        "val_by_domain_l1": dict(Counter(r.get("domain_l1", "other") for r in all_val)),
-        "val_by_domain_l2": dict(Counter(r.get("domain_l2", "other") for r in all_val)),
+        "train_by_domain_l1": dict(Counter(r.get("metadata", {}).get("domain_l1", "other") for r in all_train)),
+        "train_by_domain_l2": dict(Counter(r.get("metadata", {}).get("domain_l2", "other") for r in all_train)),
+        "val_by_domain_l1": dict(Counter(r.get("metadata", {}).get("domain_l1", "other") for r in all_val)),
+        "val_by_domain_l2": dict(Counter(r.get("metadata", {}).get("domain_l2", "other") for r in all_val)),
     }
     stats_path = os.path.join(args.output_dir, "stats.json")
     with open(stats_path, "w", encoding="utf-8") as f:

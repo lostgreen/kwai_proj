@@ -45,6 +45,12 @@ DOMAIN_L1_COLORS = {
     "other": "#CCCCCC",
 }
 
+LEVEL_COLORS = {
+    "phase": "#4C72B0",
+    "event": "#55A868",
+    "action": "#C44E52",
+}
+
 TASK_COLORS = {
     "seg_aot_phase_v2t": "#4C72B0",
     "seg_aot_phase_t2v": "#7BA5D4",
@@ -63,6 +69,28 @@ def load_jsonl(path: str | Path) -> list[dict]:
             if line:
                 items.append(json.loads(line))
     return items
+
+
+def _get_meta(rec: dict, key: str, default: str = "other") -> str:
+    """从 metadata 或顶层取字段。"""
+    meta = rec.get("metadata", {})
+    return meta.get(key, rec.get(key, default))
+
+
+def _get_level(rec: dict) -> str:
+    """从 problem_type 提取 level: phase/event/action。"""
+    ptype = rec.get("problem_type", "")
+    parts = ptype.replace("seg_aot_", "").split("_")
+    return parts[0] if parts else "other"
+
+
+def _get_duration(rec: dict) -> float:
+    """从 metadata.total_duration_sec 获取时长。"""
+    meta = rec.get("metadata", {})
+    dur = meta.get("total_duration_sec")
+    if dur is not None:
+        return float(dur)
+    return 0.0
 
 
 # ── Fig 1: Task distribution bar chart ──
@@ -90,8 +118,8 @@ def plot_domain_donut(records: list[dict], ax: plt.Axes):
     l1_counter: Counter = Counter()
     l2_counter: Counter = Counter()
     for r in records:
-        d1 = r.get("domain_l1", "other")
-        d2 = r.get("domain_l2", "other")
+        d1 = _get_meta(r, "domain_l1")
+        d2 = _get_meta(r, "domain_l2")
         l1_counter[d1] += 1
         l2_counter[(d1, d2)] += 1
 
@@ -140,13 +168,13 @@ def plot_domain_donut(records: list[dict], ax: plt.Axes):
 # ── Fig 3: Task × Domain stacked bar ──
 def plot_task_domain_stacked(records: list[dict], ax: plt.Axes):
     tasks = sorted(set(r.get("problem_type", "unknown") for r in records))
-    domains = sorted(set(r.get("domain_l1", "other") for r in records))
+    domains = sorted(set(_get_meta(r, "domain_l1") for r in records))
 
     # task → domain → count
     matrix = defaultdict(Counter)
     for r in records:
         t = r.get("problem_type", "unknown")
-        d = r.get("domain_l1", "other")
+        d = _get_meta(r, "domain_l1")
         matrix[t][d] += 1
 
     labels = [t.replace("seg_aot_", "") for t in tasks]
@@ -173,25 +201,15 @@ def plot_task_domain_stacked(records: list[dict], ax: plt.Axes):
     ax.legend(title="domain_l1", loc="upper right", fontsize=8)
 
 
-# ── Fig 4: Duration distribution per task level ──
+# ── Fig 4: Duration distribution per level (overlaid histogram with stats) ──
 def plot_duration_histogram(records: list[dict], ax: plt.Axes):
-    """按 level (phase/event/action) 分组绘制输入时长直方图。"""
-    LEVEL_COLORS = {
-        "phase": "#4C72B0",
-        "event": "#55A868",
-        "action": "#C44E52",
-    }
-
     by_level: dict[str, list[float]] = defaultdict(list)
     for r in records:
-        dur = r.get("total_duration_sec")
-        if dur is None:
+        dur = _get_duration(r)
+        if dur <= 0:
             continue
-        ptype = r.get("problem_type", "")
-        # seg_aot_phase_v2t → phase
-        parts = ptype.replace("seg_aot_", "").split("_")
-        level = parts[0] if parts else "other"
-        by_level[level].append(float(dur))
+        level = _get_level(r)
+        by_level[level].append(dur)
 
     if not by_level:
         ax.set_title("Duration Distribution (no data)")
@@ -199,18 +217,34 @@ def plot_duration_histogram(records: list[dict], ax: plt.Axes):
         return
 
     all_durs = [d for durs in by_level.values() for d in durs]
-    bins = np.linspace(0, max(all_durs) * 1.05, 30)
+    bins = np.linspace(0, max(all_durs) * 1.05, 40)
 
     for level in ("phase", "event", "action"):
         durs = by_level.get(level, [])
         if durs:
-            ax.hist(durs, bins=bins, alpha=0.5, label=f"{level} (n={len(durs)}, μ={np.mean(durs):.0f}s)",
-                    color=LEVEL_COLORS.get(level, "#999"), edgecolor="white")
+            ax.hist(durs, bins=bins, alpha=0.55,
+                    label=f"{level} (n={len(durs)})",
+                    color=LEVEL_COLORS.get(level, "#999"),
+                    edgecolor="white", linewidth=0.3)
 
-    ax.set_xlabel("Input Duration (seconds)")
+    ax.set_xlabel("Input Duration (sec)")
     ax.set_ylabel("Count")
-    ax.set_title("Input Duration Distribution by Level")
-    ax.legend(fontsize=8)
+    ax.set_title("Input Duration Distribution per Level")
+    ax.legend(fontsize=9)
+
+    # 统计量文字
+    text_lines = []
+    for level in ("phase", "event", "action"):
+        durs = by_level.get(level, [])
+        if durs:
+            text_lines.append(
+                f"{level}: avg={np.mean(durs):.0f}s, med={np.median(durs):.0f}s, "
+                f"[{min(durs):.0f}, {max(durs):.0f}]"
+            )
+    if text_lines:
+        ax.text(0.97, 0.95, "\n".join(text_lines),
+                transform=ax.transAxes, ha="right", va="top", fontsize=9,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
 
 
 def main():
