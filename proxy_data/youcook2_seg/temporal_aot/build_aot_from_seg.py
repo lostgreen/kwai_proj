@@ -3,28 +3,27 @@
 build_aot_from_seg.py — 从三层分割标注 JSON 构建 AOT (Action Ordering Task) MCQ 数据。
 
 直接复用 seg annotation 的 L1 macro_phases、L2 events 和 L3 grounding_results，
-消除独立的 VLM captioning 步骤。
+消除独立的 VLM captioning 步骤。使用 prepare_all_clips.py 产出的原子 clips。
 
 六种任务类型（3 粒度 × 2 方向）:
 
-  L1 (phase) 层:
-  - seg_aot_phase_v2t:  给 L1 全视频，判断哪个阶段列表顺序正确        (A/B/C)
-  - seg_aot_phase_t2v:  给 forward 阶段列表，从三个 L1 clip 中选匹配的 (A/B/C)
+  L1 (phase) 层 — 视频输入：全视频（L1 fps-resampled）
+  - seg_aot_phase_v2t:  给全视频，判断哪个阶段列表顺序正确        (A/B/C)
+  - seg_aot_phase_t2v:  给 forward 阶段列表，从三个全视频中选匹配的 (A/B/C)
 
-  L2 (event) 层:
-  - seg_aot_event_v2t:  给 L2 window clip，判断哪个事件列表顺序正确    (A/B/C)
-  - seg_aot_event_t2v:  给 forward 事件列表，从三个 L2 clip 中选匹配的 (A/B/C)
+  L2 (event) 层 — 视频输入：L1 phase clip（包含子 events）
+  - seg_aot_event_v2t:  给 phase clip，判断哪个事件列表顺序正确    (A/B/C)
+  - seg_aot_event_t2v:  给 forward 事件列表，从三个 phase clips 中选匹配的 (A/B/C)
 
-  L3 (action) 层:
-  - seg_aot_action_v2t: 给 L3 event clip，判断哪个动作列表顺序正确     (A/B)
-  - seg_aot_action_t2v: 给 forward 动作列表，从两个 L3 clip 中选匹配的 (A/B)
+  L3 (action) 层 — 视频输入：L2 event clip（包含子 sub_actions）
+  - seg_aot_action_v2t: 给 event clip，判断哪个动作列表顺序正确    (A/B)
+  - seg_aot_action_t2v: 给 forward 动作列表，从两个 event clips 中选匹配的 (A/B)
 
 用法:
-    python proxy_data/temporal_aot/build_aot_from_seg.py \\
+    python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \\
         --annotation-dir /path/to/annotations \\
-        --clip-dir-l1 /path/to/clips/L1 \\
-        --clip-dir-l2 /path/to/clips/L2 \\
-        --clip-dir-l3 /path/to/clips/L3 \\
+        --clip-dir-l1 /path/to/clips/L1_fullvideo \\
+        --clip-dir /path/to/clips \\
         --output-dir /path/to/output \\
         --tasks phase_v2t phase_t2v action_v2t action_t2v event_v2t event_t2v \\
         --complete-only
@@ -46,15 +45,10 @@ if _PROXY_DATA_DIR not in sys.path:
 
 from shared.seg_source import (
     load_annotations,
-    generate_sliding_windows,
-    compute_l3_clip as _compute_l3_clip,
     get_l1_clip_path,
-    get_l2_clip_path,
-    get_l3_clip_path,
-    L2_WINDOW_SIZE,
-    L2_STRIDE,
-    L3_MAX_CLIP_SEC,
-    L3_PADDING,
+    get_l1_phase_atomic_path,
+    get_l2_event_atomic_path,
+    get_l3_action_atomic_path,
 )
 
 ANSWER_LETTERS = ["A", "B", "C"]
@@ -390,13 +384,14 @@ def build_phase_t2v_records(
 # =====================================================================
 def build_action_v2t_records(
     ann: dict,
-    clip_dir_l3: str,
+    clip_dir: str,
     min_actions: int = 3,
     complete_only: bool = False,
     rng: random.Random | None = None,
 ) -> list[dict]:
     """每个 L2 event 构建一条 action-order V2T 二选一记录。
 
+    以 event clip 为视频输入（包含该 event 的所有 sub_actions），
     给视频，判断 forward 还是 reversed 动作列表正确。
     """
     if rng is None:
@@ -420,11 +415,10 @@ def build_action_v2t_records(
         if not isinstance(event, dict):
             continue
         event_id = event.get("event_id")
-        ev_start = event.get("start_time")
-        ev_end = event.get("end_time")
-        if not isinstance(ev_start, (int, float)) or not isinstance(ev_end, (int, float)):
+        ev_start = int(event.get("start_time", 0))
+        ev_end = int(event.get("end_time", 0))
+        if ev_end <= ev_start:
             continue
-        ev_start_i, ev_end_i = int(ev_start), int(ev_end)
 
         raw = sorted(
             [r for r in all_results
@@ -436,12 +430,10 @@ def build_action_v2t_records(
             continue
 
         reversed_actions = list(reversed(sub_actions))
+        duration = ev_end - ev_start
 
-        clip_start, clip_end, duration = _compute_l3_clip(
-            ev_start_i, ev_end_i, int(clip_duration),
-        )
-        vp = get_l3_clip_path(clip_key, event_id, clip_start, clip_end, clip_dir_l3) if clip_dir_l3 else ann.get("video_path", "")
-        if complete_only and clip_dir_l3 and not os.path.exists(vp):
+        vp = get_l2_event_atomic_path(clip_key, event_id, ev_start, ev_end, clip_dir) if clip_dir else ann.get("video_path", "")
+        if complete_only and clip_dir and not os.path.exists(vp):
             continue
 
         if rng.random() < 0.5:
@@ -467,8 +459,8 @@ def build_action_v2t_records(
             "metadata": {
                 "clip_key": clip_key,
                 "parent_event_id": event_id,
-                "clip_start_sec": clip_start,
-                "clip_end_sec": clip_end,
+                "event_start_sec": ev_start,
+                "event_end_sec": ev_end,
                 "n_actions": len(sub_actions),
                 "forward_descriptions": sub_actions,
                 "alt_descriptions": reversed_actions,
@@ -487,15 +479,16 @@ def build_action_v2t_records(
 # =====================================================================
 def build_action_t2v_records(
     ann: dict,
-    clip_dir_l3: str,
+    clip_dir: str,
     min_actions: int = 3,
     complete_only: bool = False,
     rng: random.Random | None = None,
 ) -> list[dict]:
-    """同 clip_key 内两个 L3 event clips 构成一条 action T2V 二选一记录。
+    """同 clip_key 内两个 L2 event clips 构成一条 action T2V 二选一记录。
 
+    以 event clip 为视频选项（每个 event clip 包含其 sub_actions），
     给 forward 动作列表（来自 event_i），从 event_i clip 和 event_j clip 中选匹配的。
-    干扰项：同 clip_key 内另一 L2 event 的 L3 clip（actions 不同）。
+    干扰项：同 clip_key 内另一 L2 event 的 clip。
     """
     if rng is None:
         rng = random.Random(42)
@@ -519,11 +512,10 @@ def build_action_t2v_records(
         if not isinstance(event, dict):
             continue
         event_id = event.get("event_id")
-        ev_start = event.get("start_time")
-        ev_end = event.get("end_time")
-        if not isinstance(ev_start, (int, float)) or not isinstance(ev_end, (int, float)):
+        ev_start = int(event.get("start_time", 0))
+        ev_end = int(event.get("end_time", 0))
+        if ev_end <= ev_start:
             continue
-        ev_start_i, ev_end_i = int(ev_start), int(ev_end)
 
         raw = sorted(
             [r for r in all_results
@@ -534,11 +526,9 @@ def build_action_t2v_records(
         if len(sub_actions) < min_actions:
             continue
 
-        clip_start, clip_end, duration = _compute_l3_clip(
-            ev_start_i, ev_end_i, int(clip_duration),
-        )
-        vp = get_l3_clip_path(clip_key, event_id, clip_start, clip_end, clip_dir_l3) if clip_dir_l3 else ann.get("video_path", "")
-        if complete_only and clip_dir_l3 and not os.path.exists(vp):
+        duration = ev_end - ev_start
+        vp = get_l2_event_atomic_path(clip_key, event_id, ev_start, ev_end, clip_dir) if clip_dir else ann.get("video_path", "")
+        if complete_only and clip_dir and not os.path.exists(vp):
             continue
 
         valid_events.append({
@@ -553,9 +543,7 @@ def build_action_t2v_records(
         return []
 
     records = []
-    # 对每个 event_i，选一个不同的 event_j 作为干扰
     for i, target_ev in enumerate(valid_events):
-        # 选干扰：随机取 j ≠ i
         other_indices = [j for j in range(len(valid_events)) if j != i]
         j = rng.choice(other_indices)
         distractor_ev = valid_events[j]
@@ -563,10 +551,8 @@ def build_action_t2v_records(
         target_clip = target_ev["clip_path"]
         distractor_clip = distractor_ev["clip_path"]
         forward_actions = target_ev["sub_actions"]
-        # duration 取两者平均，近似显示给模型
         avg_duration = (target_ev["duration"] + distractor_ev["duration"]) // 2
 
-        # 随机化 A/B 位置
         if rng.random() < 0.5:
             correct_pos, videos = "A", [target_clip, distractor_clip]
         else:
@@ -577,8 +563,7 @@ def build_action_t2v_records(
             duration=avg_duration,
             forward_list=forward_list_str,
         )
-        # T2V: multiple video tags
-        video_tags = "".join(f"<video>" for _ in videos)
+        video_tags = "".join("<video>" for _ in videos)
         prompt = f"{video_tags}\n\n{prompt_body}"
 
         records.append({
@@ -609,59 +594,57 @@ def build_action_t2v_records(
 # =====================================================================
 def build_event_v2t_records(
     ann: dict,
-    clip_dir_l2: str,
+    clip_dir: str,
     min_events: int = 3,
     max_events: int = 999,
     complete_only: bool = False,
     rng: random.Random | None = None,
-    window_size: int = L2_WINDOW_SIZE,
-    stride: int = L2_STRIDE,
 ) -> list[dict]:
-    """每个 L2 window 构建一条 event-order V2T 三选一记录。
+    """每个 L1 phase 构建一条 event-order V2T 三选一记录。
 
+    以 phase clip 为视频输入（包含该 phase 下所有 events），
     三个选项: forward / shuffle / reversed。
-    window_size <= 0 时不切窗，直接以完整 clip 为单一窗口。
     """
     if rng is None:
         rng = random.Random(42)
 
+    l1 = ann.get("level1")
     l2 = ann.get("level2")
-    if not l2 or l2.get("_parse_error"):
+    if not l1 or not l2 or l2.get("_parse_error"):
         return []
 
     clip_duration = float(ann.get("clip_duration_sec") or 0)
     if clip_duration <= 0:
         return []
 
+    phases = l1.get("macro_phases", [])
     events = l2.get("events", [])
     clip_key = ann.get("clip_key", "")
 
-    if window_size > 0:
-        windows = generate_sliding_windows(clip_duration, window_size, stride)
-    else:
-        windows = [(0, int(clip_duration))]
-
     records = []
-    for ws, we in windows:
-        duration = we - ws
+    for phase in phases:
+        if not isinstance(phase, dict):
+            continue
+        ph_id = phase.get("phase_id")
+        ph_start = int(phase.get("start_time", 0))
+        ph_end = int(phase.get("end_time", 0))
+        if ph_end <= ph_start:
+            continue
 
+        duration = ph_end - ph_start
+
+        # 收集属于此 phase 的 events
         matched_events = []
         for ev in events:
             if not isinstance(ev, dict):
                 continue
-            ev_start = ev.get("start_time")
-            ev_end = ev.get("end_time")
+            if ev.get("parent_phase_id") != ph_id:
+                continue
             instruction = ev.get("instruction", "").strip()
-            if not isinstance(ev_start, (int, float)) or not isinstance(ev_end, (int, float)):
-                continue
-            if int(ev_start) >= we or int(ev_end) <= ws:
-                continue
             if instruction:
                 matched_events.append(instruction)
 
-        if len(matched_events) < min_events:
-            continue
-        if len(matched_events) > max_events:
+        if len(matched_events) < min_events or len(matched_events) > max_events:
             continue
 
         # 生成 shuffled (Fisher-Yates, 保证 ≠ forward)
@@ -673,11 +656,10 @@ def build_event_v2t_records(
         if shuffled == matched_events:
             continue
 
-        # 生成 reversed (直接倒序，len≥2 时一定 ≠ forward)
         reversed_events = list(reversed(matched_events))
 
-        vp = get_l2_clip_path(clip_key, ws, we, clip_dir_l2) if clip_dir_l2 else ann.get("video_path", "")
-        if complete_only and clip_dir_l2 and not os.path.exists(vp):
+        vp = get_l1_phase_atomic_path(clip_key, ph_id, ph_start, ph_end, clip_dir) if clip_dir else ann.get("video_path", "")
+        if complete_only and clip_dir and not os.path.exists(vp):
             continue
 
         # 三选一：随机排列 forward/shuffled/reversed 到 A/B/C
@@ -706,8 +688,9 @@ def build_event_v2t_records(
             "problem_type": "seg_aot_event_v2t",
             "metadata": {
                 "clip_key": clip_key,
-                "window_start_sec": ws,
-                "window_end_sec": we,
+                "parent_phase_id": ph_id,
+                "phase_start_sec": ph_start,
+                "phase_end_sec": ph_end,
                 "n_events": len(matched_events),
                 "forward_descriptions": matched_events,
                 "option_a_type": options[0][0],
@@ -810,11 +793,9 @@ def main():
     parser.add_argument("--annotation-dir", required=True,
                         help="标注 JSON 目录 (annotations/*.json)")
     parser.add_argument("--clip-dir-l1", default="",
-                        help="L1 clips 目录 (clips/L1/)，留空则用原始视频路径")
-    parser.add_argument("--clip-dir-l2", default="",
-                        help="L2 clips 目录 (clips/L2/)，留空则用原始视频路径")
-    parser.add_argument("--clip-dir-l3", default="",
-                        help="L3 clips 目录 (clips/L3/)，留空则用原始视频路径")
+                        help="L1 全视频 clips 目录，留空则用原始视频路径")
+    parser.add_argument("--clip-dir", default="",
+                        help="原子 clips 根目录（下设 L1/ L2/ L3/），由 prepare_all_clips.py 产出")
     parser.add_argument("--output-dir", required=True,
                         help="输出目录，生成 train.jsonl / val.jsonl / stats.json")
     parser.add_argument(
@@ -825,16 +806,12 @@ def main():
     )
     parser.add_argument("--l1-fps", type=int, default=1,
                         help="L1 视频帧率（默认: 1）")
-    parser.add_argument("--l2-window-size", type=int, default=L2_WINDOW_SIZE,
-                        help="L2 滑窗大小（秒）。-1 = 不切窗，直接用完整 clip（默认: 128）")
-    parser.add_argument("--l2-stride", type=int, default=L2_STRIDE,
-                        help="L2 滑窗步长（秒），仅在 --l2-window-size > 0 时生效（默认: 64）")
     parser.add_argument("--min-phases", type=int, default=3,
                         help="phase_*: 每视频最少 phase 数")
     parser.add_argument("--min-events", type=int, default=3,
-                        help="event_*: 每窗口最少事件数")
+                        help="event_*: 每 phase 最少事件数")
     parser.add_argument("--max-events", type=int, default=999,
-                        help="event_*: 每窗口最多事件数")
+                        help="event_*: 每 phase 最多事件数")
     parser.add_argument("--min-actions", type=int, default=3,
                         help="action_*: 每事件最少 action 数")
     parser.add_argument("--total-val", type=int, default=200,
@@ -873,31 +850,29 @@ def main():
                 )
             )
 
-        # L3 action tasks
+        # L3 action tasks (use L2 event clips as video input)
         if "action_v2t" in args.tasks:
             task_records["action_v2t"].extend(
                 build_action_v2t_records(
-                    ann, args.clip_dir_l3, args.min_actions, args.complete_only,
+                    ann, args.clip_dir, args.min_actions, args.complete_only,
                     random.Random(rng.random()),
                 )
             )
         if "action_t2v" in args.tasks:
             task_records["action_t2v"].extend(
                 build_action_t2v_records(
-                    ann, args.clip_dir_l3, args.min_actions, args.complete_only,
+                    ann, args.clip_dir, args.min_actions, args.complete_only,
                     random.Random(rng.random()),
                 )
             )
 
-        # L2 event tasks
+        # L2 event tasks (use L1 phase clips as video input)
         if "event_v2t" in args.tasks or "event_t2v" in args.tasks:
             task_records.setdefault("event_v2t", []).extend(
                 build_event_v2t_records(
-                    ann, args.clip_dir_l2, args.min_events, args.max_events,
+                    ann, args.clip_dir, args.min_events, args.max_events,
                     args.complete_only,
                     random.Random(rng.random()),
-                    window_size=args.l2_window_size,
-                    stride=args.l2_stride,
                 )
             )
 

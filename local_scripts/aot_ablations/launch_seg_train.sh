@@ -40,8 +40,7 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
   python3 "${REPO_ROOT}/proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py" \
     --annotation-dir "${ANNOTATION_DIR}" \
     --clip-dir-l1 "${CLIP_DIR_L1}" \
-    --clip-dir-l2 "${CLIP_DIR_L2}" \
-    --clip-dir-l3 "${CLIP_DIR_L3}" \
+    --clip-dir "${CLIP_ROOT}" \
     --output-dir "${DATA_DIR}" \
     --tasks ${SEG_TASKS} \
     --l1-fps "${L1_FPS}" \
