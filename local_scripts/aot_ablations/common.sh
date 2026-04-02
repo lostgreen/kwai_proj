@@ -24,6 +24,7 @@ MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- Seg Annotation 数据路径 ----
 ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
+CLIP_DIR_L1="${CLIP_DIR_L1:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L1}"
 CLIP_DIR_L2="${CLIP_DIR_L2:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L2}"
 CLIP_DIR_L3="${CLIP_DIR_L3:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L3}"
 
@@ -33,8 +34,10 @@ SEG_AOT_DATA_ROOT="${SEG_AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxy
 # ---- 数据采样量 ----
 TOTAL_VAL="${TOTAL_VAL:-200}"
 TRAIN_PER_TASK="${TRAIN_PER_TASK:-500}"
+MIN_PHASES="${MIN_PHASES:-3}"
 MIN_EVENTS="${MIN_EVENTS:-3}"
 MIN_ACTIONS="${MIN_ACTIONS:-3}"
+L1_FPS="${L1_FPS:-1}"
 
 # ---- 视频 & 分辨率 ----
 VIDEO_FPS=2.0

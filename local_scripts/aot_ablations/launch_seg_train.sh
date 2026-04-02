@@ -4,7 +4,7 @@
 #
 # 调用前必须在各实验脚本里已 source common.sh 并设置:
 #   EXP_NAME       实验名称
-#   SEG_TASKS      空格分隔的任务列表 (action_v2t action_t2v event_v2t event_t2v)
+#   SEG_TASKS      空格分隔的任务列表 (phase_v2t phase_t2v action_v2t action_t2v event_v2t event_t2v)
 # =============================================================
 set -euo pipefail
 set -x
@@ -21,12 +21,15 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
   echo "[seg-aot] Building data for tasks: ${SEG_TASKS} ..."
   mkdir -p "${DATA_DIR}"
   # shellcheck disable=SC2086
-  python3 "${REPO_ROOT}/proxy_data/temporal_aot/build_aot_from_seg.py" \
+  python3 "${REPO_ROOT}/proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py" \
     --annotation-dir "${ANNOTATION_DIR}" \
+    --clip-dir-l1 "${CLIP_DIR_L1}" \
     --clip-dir-l2 "${CLIP_DIR_L2}" \
     --clip-dir-l3 "${CLIP_DIR_L3}" \
     --output-dir "${DATA_DIR}" \
     --tasks ${SEG_TASKS} \
+    --l1-fps "${L1_FPS}" \
+    --min-phases "${MIN_PHASES}" \
     --min-events "${MIN_EVENTS}" \
     --min-actions "${MIN_ACTIONS}" \
     --total-val "${TOTAL_VAL}" \
