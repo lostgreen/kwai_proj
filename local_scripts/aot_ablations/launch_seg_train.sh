@@ -48,7 +48,8 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
     --min-events "${MIN_EVENTS}" \
     --min-actions "${MIN_ACTIONS}" \
     --total-val "${TOTAL_VAL}" \
-    --train-per-task "${TRAIN_PER_TASK}" \
+    --train-total "${TRAIN_TOTAL}" \
+    --level-ratio "${LEVEL_RATIO}" \
     --seed 42 \
     --complete-only
 fi

@@ -853,7 +853,10 @@ def main():
     parser.add_argument("--max-events", type=int, default=999)
     parser.add_argument("--min-actions", type=int, default=3)
     parser.add_argument("--total-val", type=int, default=200)
-    parser.add_argument("--train-per-task", type=int, default=-1)
+    parser.add_argument("--train-total", type=int, default=-1,
+                        help="总训练样本数上限 (-1=不限制)")
+    parser.add_argument("--level-ratio", type=str, default="1:2:2",
+                        help="L1:L2:L3 采样比例 (默认 1:2:2)")
     parser.add_argument("--complete-only", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -998,24 +1001,54 @@ def main():
     for task in args.tasks:
         print(f"  {task}: {len(task_records.get(task, []))} records")
 
-    # ---- 5. Train/val split ----
+    # ---- 5. Train/val split with level-balanced sampling ----
+    # Parse level ratio
+    ratio_parts = [float(x) for x in args.level_ratio.split(":")]
+    if len(ratio_parts) != 3:
+        raise ValueError(f"--level-ratio must be L1:L2:L3, got: {args.level_ratio}")
+    ratio_sum = sum(ratio_parts)
+    level_weights = {
+        "phase": ratio_parts[0] / ratio_sum,
+        "event": ratio_parts[1] / ratio_sum,
+        "action": ratio_parts[2] / ratio_sum,
+    }
+
+    # Group tasks by level
+    level_tasks = {"phase": [], "event": [], "action": []}
+    for task in args.tasks:
+        level = task.split("_")[0]  # phase_v2t → phase
+        level_tasks[level].append(task)
+
+    # Compute per-level train budget
+    train_total = args.train_total
     n_tasks = len(args.tasks)
-    val_per_task = max(1, args.total_val // n_tasks)
-    train_limit = None if args.train_per_task < 0 else args.train_per_task
+    val_per_task = max(1, args.total_val // max(n_tasks, 1))
 
     all_train: list[dict] = []
     all_val: list[dict] = []
 
-    for task in args.tasks:
-        records = task_records.get(task, [])
-        rng.shuffle(records)
-        n_val = min(val_per_task, max(1, len(records) // 5))
-        val = records[:n_val]
-        train_pool = records[n_val:]
-        train = train_pool[:train_limit] if train_limit is not None else train_pool
-        all_val.extend(val)
-        all_train.extend(train)
-        print(f"  {task}: {len(train)} train + {len(val)} val")
+    for level, tasks_in_level in level_tasks.items():
+        if not tasks_in_level:
+            continue
+
+        # Per-level budget (split equally among tasks within same level)
+        if train_total > 0:
+            level_budget = int(train_total * level_weights[level])
+            per_task_budget = max(1, level_budget // len(tasks_in_level))
+        else:
+            per_task_budget = None
+
+        for task in tasks_in_level:
+            records = task_records.get(task, [])
+            rng.shuffle(records)
+            n_val = min(val_per_task, max(1, len(records) // 5))
+            val = records[:n_val]
+            train_pool = records[n_val:]
+            train = train_pool[:per_task_budget] if per_task_budget is not None else train_pool
+            all_val.extend(val)
+            all_train.extend(train)
+            print(f"  {task}: {len(train)} train + {len(val)} val"
+                  f"  (level={level}, budget={per_task_budget or 'unlimited'})")
 
     rng.shuffle(all_train)
     rng.shuffle(all_val)
@@ -1030,6 +1063,8 @@ def main():
     stats = {
         "total_annotations": len(ann_list),
         "tasks": args.tasks,
+        "level_ratio": args.level_ratio,
+        "train_total_budget": train_total,
         "concat_dir": concat_dir,
         "concat_total": len(all_jobs),
         "concat_failed": len(failed_paths),
