@@ -481,9 +481,9 @@ def main() -> None:
                         help="Model for quality review (can differ from annotation model)")
     parser.add_argument("--max-frames-per-call", type=int, default=32,
                         help="Max frames per API call")
-    parser.add_argument("--resize-max-width", type=int, default=256,
+    parser.add_argument("--resize-max-width", type=int, default=384,
                         help="Resize frames before upload; <=0 disables resizing")
-    parser.add_argument("--jpeg-quality", type=int, default=40,
+    parser.add_argument("--jpeg-quality", type=int, default=60,
                         help="JPEG quality for recompressing frames before upload")
     parser.add_argument("--workers", type=int, default=2,
                         help="Parallel audit workers")
