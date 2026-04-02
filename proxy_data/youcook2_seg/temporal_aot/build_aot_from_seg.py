@@ -214,7 +214,7 @@ def _action_concat_path(clip_key: str, event_id: int, order: str, concat_dir: st
 # Prompt templates
 # =====================================================================
 _PHASE_V2T_PROMPT = """\
-Watch this {duration}s video.
+Watch the video carefully.
 
 Which numbered list correctly describes the temporal order of high-level phases in this video?
 
@@ -242,7 +242,7 @@ Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
 
 _EVENT_V2T_PROMPT = """\
-Watch this {duration}s video.
+Watch the video carefully.
 
 Which numbered list correctly describes the temporal order of events visible in this video?
 
@@ -270,7 +270,7 @@ Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
 
 _ACTION_V2T_PROMPT = """\
-Watch this {duration}s video clip.
+Watch the video clip carefully.
 
 Which numbered list correctly describes the temporal order of atomic actions in this video?
 
@@ -608,7 +608,6 @@ def _build_phase_v2t(info: dict, rng: random.Random) -> dict | None:
     correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
 
     body = _PHASE_V2T_PROMPT.format(
-        duration=info["total_duration"],
         option_a=_format_list(options[0][1]),
         option_b=_format_list(options[1][1]),
         option_c=_format_list(options[2][1]),
@@ -713,7 +712,6 @@ def _build_event_v2t(info: dict, rng: random.Random) -> dict | None:
     correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
 
     body = _EVENT_V2T_PROMPT.format(
-        duration=info["total_duration"],
         option_a=_format_list(options[0][1]),
         option_b=_format_list(options[1][1]),
         option_c=_format_list(options[2][1]),
@@ -817,7 +815,6 @@ def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
     correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
 
     body = _ACTION_V2T_PROMPT.format(
-        duration=info["total_duration"],
         option_a=_format_list(options[0][1]),
         option_b=_format_list(options[1][1]),
         option_c=_format_list(options[2][1]),
