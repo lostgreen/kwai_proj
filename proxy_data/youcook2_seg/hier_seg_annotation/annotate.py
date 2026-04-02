@@ -305,6 +305,11 @@ def call_vlm(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 response_format={"type": "json_object"},
+                extra_body={
+                    "generation_config": {
+                        "media_resolution": "MEDIA_RESOLUTION_LOW",
+                    }
+                },
             )
             _accumulate_usage(resp.usage, text_chars, image_b64_bytes, len(frame_b64_list))
             if resp.usage:
