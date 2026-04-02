@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Rebalance A/B answer distribution for filtered Temporal AoT datasets by swapping
-option order in a subset of records.
+Rebalance A/B(/C) answer distribution for filtered Temporal AoT datasets by
+swapping option order in a subset of records.
 
 This script does not drop any samples. Instead, it flips some majority-answer
 records so the final kept data is as balanced as possible after filtering.
 
-Examples:
-python proxy_data/temporal_aot/rebalance_aot_answers.py \
-  --input-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.jsonl \
-  --output-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.balanced.jsonl
+Supports both legacy (aot_*) and new (seg_aot_*) problem types.
 
-python proxy_data/temporal_aot/rebalance_aot_answers.py \
-  --input-jsonl proxy_data/temporal_aot/data/mixed_aot_train.offline_filtered.jsonl \
-  --output-jsonl /tmp/mixed_aot_train.balanced.jsonl \
+Examples:
+python proxy_data/youcook2_seg/temporal_aot/rebalance_aot_answers.py \
+  --input-jsonl data/train.offline_filtered.jsonl \
+  --output-jsonl data/train.offline_filtered.balanced.jsonl
+
+python proxy_data/youcook2_seg/temporal_aot/rebalance_aot_answers.py \
+  --input-jsonl data/train.offline_filtered.jsonl \
+  --output-jsonl /tmp/train.balanced.jsonl \
   --balance-scope all \
   --seed 7
 """
@@ -26,16 +28,37 @@ import copy
 import json
 import os
 import random
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
 from prompts import get_v2t_prompt, get_t2v_prompt, get_3way_v2t_prompt
 
 
-SUPPORTED_PROBLEM_TYPES = ("aot_t2v", "aot_v2t", "aot_3way_v2t", "aot_3way_t2v")
-BINARY_PROBLEM_TYPES = {"aot_t2v", "aot_v2t"}
-THREEWAY_PROBLEM_TYPES = {"aot_3way_v2t", "aot_3way_t2v"}
+# ── Legacy (VLM-captioning pipeline) ──────────────────────────────────────────
+SUPPORTED_PROBLEM_TYPES = (
+    "aot_t2v", "aot_v2t", "aot_3way_v2t", "aot_3way_t2v",
+    "seg_aot_action_v2t", "seg_aot_action_t2v",
+    "seg_aot_event_v2t", "seg_aot_event_t2v",
+    "seg_aot_phase_v2t", "seg_aot_phase_t2v",
+)
+BINARY_PROBLEM_TYPES = {"aot_t2v", "aot_v2t", "seg_aot_action_v2t", "seg_aot_action_t2v"}
+THREEWAY_PROBLEM_TYPES = {
+    "aot_3way_v2t", "aot_3way_t2v",
+    "seg_aot_event_v2t", "seg_aot_event_t2v",
+    "seg_aot_phase_v2t", "seg_aot_phase_t2v",
+}
 _THREEWAY_LETTERS = ("A", "B", "C")
+
+# V2T types need prompt text rebuilt when swapping; T2V types only swap videos.
+_V2T_TYPES = {
+    "aot_v2t", "aot_3way_v2t",
+    "seg_aot_action_v2t", "seg_aot_event_v2t", "seg_aot_phase_v2t",
+}
+_T2V_TYPES = {
+    "aot_t2v", "aot_3way_t2v",
+    "seg_aot_action_t2v", "seg_aot_event_t2v", "seg_aot_phase_t2v",
+}
 
 
 def load_jsonl(path: str) -> list[dict[str, Any]]:
@@ -75,6 +98,7 @@ def sync_prompt(record: dict[str, Any], prompt: str) -> None:
 
 
 def flip_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Flip A↔B for a binary problem type (both legacy and seg_aot)."""
     problem_type = record.get("problem_type")
     flipped = copy.deepcopy(record)
     metadata = flipped.setdefault("metadata", {})
@@ -106,6 +130,28 @@ def flip_record(record: dict[str, Any]) -> dict[str, Any]:
         )
         metadata["option_a_segment"] = cur_b_seg
         metadata["option_b_segment"] = cur_a_seg
+    elif problem_type == "seg_aot_action_v2t":
+        # Swap the two option text blocks in the prompt and flip option_a_type
+        new_prompt = _swap_v2t_option_blocks(flipped["prompt"], "A", "B")
+        sync_prompt(flipped, new_prompt)
+        cur_a = metadata.get("option_a_type", "forward")
+        metadata["option_a_type"] = "reversed" if cur_a == "forward" else "forward"
+        # Swap description lists
+        fwd = metadata.get("forward_descriptions", [])
+        alt = metadata.get("alt_descriptions", [])
+        metadata["forward_descriptions"] = alt
+        metadata["alt_descriptions"] = fwd
+    elif problem_type == "seg_aot_action_t2v":
+        # Swap the two video paths; prompt is generic ("Clip A / Clip B")
+        videos = list(flipped.get("videos") or [])
+        if len(videos) == 2:
+            videos[0], videos[1] = videos[1], videos[0]
+            flipped["videos"] = videos
+        # Swap target/distractor metadata
+        target = metadata.get("target_event_id")
+        distractor = metadata.get("distractor_event_id")
+        metadata["target_event_id"] = distractor
+        metadata["distractor_event_id"] = target
     else:
         raise ValueError(f"Unsupported problem_type for flipping: {problem_type!r}")
 
@@ -115,33 +161,81 @@ def flip_record(record: dict[str, Any]) -> dict[str, Any]:
     return flipped
 
 
+# ── Generic V2T option-block swap ────────────────────────────────────────────
+
+# Matches an option block: "A.\n   1. foo\n   2. bar" up to the next option
+# marker or the "Think step by step" line.
+_OPTION_BLOCK_RE = re.compile(
+    r'(?P<letter>[A-C])\.\n(?P<content>.*?)(?=\n\n[A-C]\.\n|\n\nThink )',
+    re.DOTALL,
+)
+
+
+def _swap_v2t_option_blocks(prompt: str, letter1: str, letter2: str) -> str:
+    """Swap two option text blocks in a V2T prompt (binary or 3-way).
+
+    The prompt must contain sections like ``A.\\n{text}``, ``B.\\n{text}``, etc.
+    Only the text content is swapped; the letter labels stay in place.
+    """
+    matches = {m.group("letter"): m for m in _OPTION_BLOCK_RE.finditer(prompt)}
+    if letter1 not in matches or letter2 not in matches:
+        return prompt  # can't swap, return as-is
+
+    m1, m2 = matches[letter1], matches[letter2]
+    content1 = m1.group("content")
+    content2 = m2.group("content")
+
+    # Replace from end to start to preserve positions
+    if m1.start("content") > m2.start("content"):
+        m1, m2 = m2, m1
+        content1, content2 = content2, content1
+
+    result = (
+        prompt[: m1.start("content")]
+        + content2
+        + prompt[m1.end("content") : m2.start("content")]
+        + content1
+        + prompt[m2.end("content") :]
+    )
+    return result
+
+
 def permute_3way_v2t_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
-    """Move the correct answer of a 3-way V2T record to `new_letter` by swapping two slots."""
+    """Move the correct answer of a 3-way V2T record to `new_letter` by swapping two slots.
+
+    Works for legacy aot_3way_v2t and new seg_aot_*_v2t types.
+    """
     old_letter = record["answer"]
     if old_letter == new_letter:
         return copy.deepcopy(record)
 
     result = copy.deepcopy(record)
     metadata = result.setdefault("metadata", {})
+    pt = result.get("problem_type", "")
 
-    # Swap option caption texts
-    old_cap = metadata.get(f"option_{old_letter}", "")
-    new_cap = metadata.get(f"option_{new_letter}", "")
-    metadata[f"option_{old_letter}"] = new_cap
-    metadata[f"option_{new_letter}"] = old_cap
-
-    # Swap semantic type tags
-    ot = dict(metadata.get("option_types") or {})
-    ot[old_letter], ot[new_letter] = ot.get(new_letter, ""), ot.get(old_letter, "")
-    metadata["option_types"] = ot
-
-    # Rebuild prompt from updated option texts
-    new_prompt = get_3way_v2t_prompt(
-        metadata.get("option_A", ""),
-        metadata.get("option_B", ""),
-        metadata.get("option_C", ""),
-    )
-    sync_prompt(result, new_prompt)
+    if pt == "aot_3way_v2t":
+        # Legacy: swap option caption texts stored in metadata
+        old_cap = metadata.get(f"option_{old_letter}", "")
+        new_cap = metadata.get(f"option_{new_letter}", "")
+        metadata[f"option_{old_letter}"] = new_cap
+        metadata[f"option_{new_letter}"] = old_cap
+        ot = dict(metadata.get("option_types") or {})
+        ot[old_letter], ot[new_letter] = ot.get(new_letter, ""), ot.get(old_letter, "")
+        metadata["option_types"] = ot
+        new_prompt = get_3way_v2t_prompt(
+            metadata.get("option_A", ""),
+            metadata.get("option_B", ""),
+            metadata.get("option_C", ""),
+        )
+        sync_prompt(result, new_prompt)
+    else:
+        # New seg_aot V2T types: swap option blocks in prompt text
+        new_prompt = _swap_v2t_option_blocks(result["prompt"], old_letter, new_letter)
+        sync_prompt(result, new_prompt)
+        # Swap option_*_type metadata
+        key_old = f"option_{old_letter.lower()}_type"
+        key_new = f"option_{new_letter.lower()}_type"
+        metadata[key_old], metadata[key_new] = metadata.get(key_new, ""), metadata.get(key_old, "")
 
     result["answer"] = new_letter
     metadata["answer_rebalanced"] = True
@@ -150,7 +244,10 @@ def permute_3way_v2t_record(record: dict[str, Any], new_letter: str) -> dict[str
 
 
 def permute_3way_t2v_record(record: dict[str, Any], new_letter: str) -> dict[str, Any]:
-    """Move the correct answer of a 3-way T2V record to `new_letter` by swapping two video slots."""
+    """Move the correct answer of a 3-way T2V record to `new_letter` by swapping two video slots.
+
+    Works for legacy aot_3way_t2v and new seg_aot_*_t2v types.
+    """
     old_letter = record["answer"]
     if old_letter == new_letter:
         return copy.deepcopy(record)
@@ -166,12 +263,13 @@ def permute_3way_t2v_record(record: dict[str, Any], new_letter: str) -> dict[str
         videos[old_i], videos[new_i] = videos[new_i], videos[old_i]
         result["videos"] = videos
 
-    # Swap semantic type tags
+    # Swap semantic type tags (legacy uses video_types, seg_aot uses target/distractor metadata)
     vt = dict(metadata.get("video_types") or {})
-    vt[old_letter], vt[new_letter] = vt.get(new_letter, ""), vt.get(old_letter, "")
-    metadata["video_types"] = vt
+    if vt:
+        vt[old_letter], vt[new_letter] = vt.get(new_letter, ""), vt.get(old_letter, "")
+        metadata["video_types"] = vt
 
-    # Prompt text is generic ("Video A / Video B / Video C / Video D") — no rebuild needed
+    # Prompt text is generic ("Clip A / Clip B / Clip C") — no rebuild needed
     result["answer"] = new_letter
     metadata["answer_rebalanced"] = True
     metadata["original_answer_before_rebalance"] = old_letter
@@ -270,7 +368,7 @@ def _rebalance_3way_group(
     flipped = 0
     for (sample_idx, _old), new_letter in zip(surplus, deficit):
         pt = output[sample_idx]["problem_type"]
-        if pt == "aot_3way_v2t":
+        if pt in _V2T_TYPES:
             output[sample_idx] = permute_3way_v2t_record(output[sample_idx], new_letter)
         else:
             output[sample_idx] = permute_3way_t2v_record(output[sample_idx], new_letter)
@@ -321,7 +419,7 @@ def main() -> None:
     parser.add_argument("--output-jsonl", required=True, help="Balanced JSONL output")
     parser.add_argument(
         "--problem-types",
-        default="aot_t2v,aot_v2t,aot_3way_v2t,aot_3way_t2v",
+        default=",".join(SUPPORTED_PROBLEM_TYPES),
         help="Comma-separated AoT problem types to rebalance",
     )
     parser.add_argument(
