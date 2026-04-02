@@ -556,6 +556,18 @@ def check_clip(
                     else:
                         stats["parents_unchanged"] += 1
 
+                    # Write back order distinguishability metadata to parent
+                    if result.get("order_distinguishable") is not None:
+                        order_meta = {
+                            "_order_distinguishable": result["order_distinguishable"],
+                            "_order_cue": result["order_cue"],
+                            "_order_confidence": result["order_confidence"],
+                        }
+                        if pt == "event" and pid in events_by_id:
+                            events_by_id[pid].update(order_meta)
+                        elif pt == "phase" and pid in phases_by_id:
+                            phases_by_id[pid].update(order_meta)
+
                 # Sort and renumber all L3 action_ids
                 all_checked_l3.sort(key=lambda r: (r.get("start_time", 0), r.get("end_time", 0)))
                 for i, r in enumerate(all_checked_l3, 1):

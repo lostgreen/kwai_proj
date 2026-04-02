@@ -1568,16 +1568,19 @@ def _check_leaf_node(
     clip_key_str: str = "",
 ) -> dict[str, Any]:
     """
-    Leaf-node check: combined L3 review + parent boundary shrinkage.
+    Leaf-node check: combined L3 review + parent boundary shrinkage + order judgment.
 
-    For ONE leaf (an event or an eventless phase), reviews its L3 micro-actions
-    and optionally shrinks the parent's boundaries.
+    For ONE leaf (an event or an eventless phase), reviews its L3 micro-actions,
+    optionally shrinks the parent's boundaries, and judges order distinguishability.
 
     Returns dict with keys:
         checked_l3  – list of L3 results after keep/revise/remove/supplement
         was_shrunk  – bool
         shrunk_start – int
         shrunk_end   – int
+        order_distinguishable – bool | None
+        order_cue    – str
+        order_confidence – float
         call_info    – dict (API call metadata)
     """
     from prompts import get_leaf_check_prompt
@@ -1587,6 +1590,9 @@ def _check_leaf_node(
         "was_shrunk": False,
         "shrunk_start": leaf_parent_start,
         "shrunk_end": leaf_parent_end,
+        "order_distinguishable": None,
+        "order_cue": "",
+        "order_confidence": 0.0,
         "call_info": {
             "parent_type": leaf_parent_type,
             "parent_id": leaf_parent_id,
@@ -1686,6 +1692,14 @@ def _check_leaf_node(
             result["was_shrunk"] = True
             result["shrunk_start"] = shrunk_s
             result["shrunk_end"] = shrunk_e
+
+    # Order distinguishability
+    od = parsed.get("order_distinguishable")
+    if isinstance(od, bool):
+        result["order_distinguishable"] = od
+        result["order_cue"] = str(parsed.get("order_cue", ""))
+        oc = parsed.get("order_confidence")
+        result["order_confidence"] = float(oc) if isinstance(oc, (int, float)) else 0.0
 
     return result
 

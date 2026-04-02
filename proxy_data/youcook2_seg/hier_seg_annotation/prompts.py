@@ -878,7 +878,7 @@ Original splitting criterion: "{micro_split_criterion}"
 Below are the EXISTING L3 atomic action annotations within this {parent_type}:
 {existing_annotations}
 
-You have TWO tasks:
+You have THREE tasks:
 
 ## TASK 1 — L3 MICRO-ACTION REVIEW (Granularity & Completeness)
 
@@ -957,6 +957,32 @@ and shrunk_end = {parent_end} (no change).
 - Shrinkage must preserve ALL kept/revised/supplemented L3 actions within bounds.
 - Use integer seconds.
 
+## TASK 3 — TEMPORAL ORDER DISTINGUISHABILITY JUDGMENT
+
+Consider the sequence of L3 micro-actions (after applying your TASK 1 verdicts) in their \
+temporal order within this {parent_type}.
+
+Question: If the temporal order of these micro-actions were REVERSED (last action played \
+first, first action played last), could a viewer reliably distinguish the forward \
+video from the reversed video based purely on visual cues?
+
+Consider these factors:
+- Causal dependency: Does each action rely on the visible output of the previous \
+action (e.g., material is cut in action 1, then the cut pieces are assembled in action 2)?
+- Progressive state change: Do objects visibly evolve in a direction that cannot \
+be mistaken for the reverse (e.g., whole → pieces, empty → full, raw → processed)?
+- Tool/material availability: Does a tool or material appear only after a prior \
+action produces or reveals it?
+- Irreversibility: Are the physical transformations clearly one-way (breaking, \
+mixing, applying adhesive) vs. reversible (placing/removing, opening/closing)?
+- Symmetry: Are the actions largely interchangeable without visual inconsistency?
+
+Output:
+- order_distinguishable: true if a viewer CAN reliably tell forward from reversed; \
+false if the actions are largely symmetric or interchangeable.
+- order_cue: ONE sentence explaining the primary visual cue (or lack thereof).
+- order_confidence: Float 0.0–1.0 reflecting how certain you are.
+
 ## OUTPUT FORMAT
 
 {{{{
@@ -994,7 +1020,10 @@ and shrunk_end = {parent_end} (no change).
     }}}}
   ],
   "shrunk_start": {parent_start},
-  "shrunk_end": {parent_end}
+  "shrunk_end": {parent_end},
+  "order_distinguishable": true,
+  "order_cue": "Action 1 cuts raw material into pieces that Action 3 then assembles — the assembled state cannot precede the cutting.",
+  "order_confidence": 0.9
 }}}}
 
 IMPORTANT:
@@ -1004,7 +1033,9 @@ IMPORTANT:
 - Always include the "issue" field for revise/remove verdicts.
 - shrunk_start/shrunk_end MUST satisfy: shrunk_start <= min(L3 start_times) \
 and shrunk_end >= max(L3 end_times) for all kept/revised/supplemented L3 actions.
-- Be strict: vague, non-physical, or multi-step annotations should be revised or removed."""
+- Be strict: vague, non-physical, or multi-step annotations should be revised or removed.
+- For order distinguishability, judge based on the FINAL set of L3 actions after your review, \
+not the original input."""
 
 
 def get_leaf_check_prompt(
