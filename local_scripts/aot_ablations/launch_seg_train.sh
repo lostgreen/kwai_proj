@@ -16,6 +16,22 @@ DATA_DIR="${DATA_DIR:-${SEG_AOT_DATA_ROOT}/${EXP_NAME}}"
 TRAIN_FILE="${TRAIN_FILE:-${DATA_DIR}/train.jsonl}"
 TEST_FILE="${TEST_FILE:-${DATA_DIR}/val.jsonl}"
 
+# ---- Step 0: 视频切分（clips 不存在时自动触发）----
+SKIP_CLIPS="${SKIP_CLIPS:-false}"
+if [[ "${SKIP_CLIPS}" != "true" ]]; then
+  _need_clips=false
+  for _lvl in L1 L2 L3; do
+    _dir="${CLIP_ROOT}/${_lvl}"
+    if [[ ! -d "${_dir}" ]] || [[ -z "$(ls -A "${_dir}" 2>/dev/null)" ]]; then
+      _need_clips=true; break
+    fi
+  done
+  if [[ "${_need_clips}" == "true" ]]; then
+    echo "[seg-aot] Clip dirs incomplete, running prepare_all_clips.py ..."
+    bash "${SCRIPT_DIR}/prepare_clips.sh"
+  fi
+fi
+
 # ---- Step A: 数据构建（首次自动触发）----
 if [[ ! -f "${TRAIN_FILE}" ]]; then
   echo "[seg-aot] Building data for tasks: ${SEG_TASKS} ..."
