@@ -937,6 +937,8 @@ def main():
     parser.add_argument("--max-events", type=int, default=999)
     parser.add_argument("--min-actions", type=int, default=3)
     parser.add_argument("--max-actions", type=int, default=999)
+    parser.add_argument("--max-t2v-duration", type=int, default=85,
+                        help="T2V 最大单视频时长(s)，超过则跳过 (3视频×85帧=255≤MAX_FRAMES)")
     parser.add_argument("--total-val", type=int, default=200)
     parser.add_argument("--train-total", type=int, default=-1,
                         help="总训练样本数上限 (-1=不限制)")
@@ -949,6 +951,7 @@ def main():
     rng = random.Random(args.seed)
     concat_dir = args.concat_dir or os.path.join(args.output_dir, "concat_videos")
     tasks = set(args.tasks)
+    max_t2v_dur = args.max_t2v_duration
 
     need_phase_v2t = "phase_v2t" in tasks
     need_phase_t2v = "phase_t2v" in tasks
@@ -1060,7 +1063,7 @@ def main():
             rec = _build_event_v2t(info, random.Random(rng.random()))
             if rec:
                 task_records["event_v2t"].append(rec)
-        if need_event_t2v:
+        if need_event_t2v and info["total_duration"] <= max_t2v_dur:
             if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
                 text_order = _T2V_TEXT_ORDERS[t2v_order_idx % 3]
                 rec = _build_event_t2v(info, random.Random(rng.random()), text_order)
@@ -1075,7 +1078,7 @@ def main():
             rec = _build_action_v2t(info, random.Random(rng.random()))
             if rec:
                 task_records["action_v2t"].append(rec)
-        if need_action_t2v:
+        if need_action_t2v and info["total_duration"] <= max_t2v_dur:
             if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
                 text_order = _T2V_TEXT_ORDERS[t2v_order_idx % 3]
                 rec = _build_action_t2v(info, random.Random(rng.random()), text_order)
@@ -1114,31 +1117,72 @@ def main():
     all_train: list[dict] = []
     all_val: list[dict] = []
 
+    # ---- Collect per-task pools (separate val first) ----
+    task_pools: dict[str, tuple[list[dict], list[dict]]] = {}  # task → (train_pool, val)
+    task_to_level: dict[str, str] = {}
     for level, tasks_in_level in level_tasks.items():
-        if not tasks_in_level:
-            continue
-
-        # Per-level budget (split equally among tasks within same level)
-        if train_total > 0:
-            level_budget = int(train_total * level_weights[level])
-            per_task_budget = max(1, level_budget // len(tasks_in_level))
-        else:
-            per_task_budget = None
-
         for task in tasks_in_level:
             records = task_records.get(task, [])
             rng.shuffle(records)
             n_val = min(val_per_task, max(1, len(records) // 5))
-            val = records[:n_val]
-            train_pool = records[n_val:]
-            # Domain-balanced sampling
+            task_pools[task] = (records[n_val:], records[:n_val])
+            task_to_level[task] = level
+
+    # ---- Weighted quota with overflow redistribution ----
+    if train_total > 0:
+        # Compute available pool sizes per level
+        level_pool_sizes: dict[str, int] = {}
+        for level, tasks_in_level in level_tasks.items():
+            if not tasks_in_level:
+                continue
+            level_pool_sizes[level] = sum(len(task_pools[t][0]) for t in tasks_in_level)
+
+        # Iterative redistribution: levels below their quota release excess
+        remaining_budget = train_total
+        level_budgets: dict[str, int] = {}
+        active_levels = {lv: w for lv, w in level_weights.items() if lv in level_pool_sizes}
+        while active_levels and remaining_budget > 0:
+            w_sum = sum(active_levels.values())
+            if w_sum <= 0:
+                break
+            done_this_round = True
+            next_active = {}
+            for lv, w in active_levels.items():
+                quota = int(remaining_budget * w / w_sum)
+                pool_sz = level_pool_sizes[lv] - level_budgets.get(lv, 0)
+                if pool_sz <= quota:
+                    # This level can't fill its quota → take all, redistribute remainder
+                    level_budgets[lv] = level_pool_sizes[lv]
+                    remaining_budget -= pool_sz
+                    done_this_round = False
+                else:
+                    next_active[lv] = w
+            if done_this_round:
+                # All active levels can fill their quota
+                w_sum = sum(next_active.values())
+                for lv, w in next_active.items():
+                    level_budgets[lv] = level_budgets.get(lv, 0) + int(remaining_budget * w / w_sum)
+                remaining_budget = 0
+                break
+            active_levels = next_active
+    else:
+        level_budgets = {}
+
+    # ---- Sample per task ----
+    for level, tasks_in_level in level_tasks.items():
+        if not tasks_in_level:
+            continue
+        lb = level_budgets.get(level)
+        per_task_budget = max(1, lb // len(tasks_in_level)) if lb else None
+
+        for task in tasks_in_level:
+            train_pool, val = task_pools[task]
             if per_task_budget is not None and len(train_pool) > per_task_budget:
                 train = _balanced_sample_by_domain(train_pool, per_task_budget, rng)
             else:
                 train = train_pool
             all_val.extend(val)
             all_train.extend(train)
-            # Report domain distribution
             l1_dist = Counter(r.get("metadata", {}).get("domain_l1", "other") for r in train)
             l1_str = ", ".join(f"{d}={c}" for d, c in sorted(l1_dist.items()))
             print(f"  {task}: {len(train)} train + {len(val)} val"

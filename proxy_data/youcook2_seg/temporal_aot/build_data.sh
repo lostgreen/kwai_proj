@@ -131,7 +131,7 @@ echo "=== Step 1a: Building V2T data ==="
 _build_data "seg_aot_v2t" phase_v2t event_v2t action_v2t
 
 echo ""
-echo "=== Step 1b: Building T2V data ==="
+echo "=== Step 1b: Building T2V data (L2+L3 only) ==="
 _build_data "seg_aot_t2v" event_t2v action_t2v
 
 # ---- 数据统计 ----
