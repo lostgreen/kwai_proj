@@ -63,56 +63,78 @@ def _balanced_sample_by_domain(
     records: list[dict],
     budget: int,
     rng: random.Random,
-    domain_key: str = "domain_l1",
 ) -> list[dict]:
-    """按 domain 均衡采样 records，使各 domain 尽量等量。
+    """按 domain_l1 → domain_l2 两级嵌套均衡采样。
 
     策略:
-      1. 按 domain_key 分组
-      2. base_quota = budget // n_domains
-      3. 不足 quota 的域全部保留，多余名额重分配给大域
-      4. 大域内随机采样
+      1. 按 domain_l1 分组，均分 budget 给各 L1 域
+      2. 各 L1 域内再按 domain_l2 均衡采样
+      3. 不足 quota 的域全部保留，多余名额重分配
     """
     if len(records) <= budget:
         rng.shuffle(records)
         return records
 
-    by_domain: dict[str, list[dict]] = defaultdict(list)
+    # ---- L1 层均衡 ----
+    by_l1: dict[str, list[dict]] = defaultdict(list)
     for rec in records:
-        d = rec.get(domain_key, "other")
-        by_domain[d].append(rec)
+        by_l1[rec.get("domain_l1", "other")].append(rec)
 
-    n_domains = len(by_domain)
-    if n_domains == 0:
-        return []
-
-    base_quota = budget // n_domains
-    remaining = budget
-
-    # 第一轮: 不足 quota 的域全部保留
-    small_domains: dict[str, list[dict]] = {}
-    large_domains: dict[str, list[dict]] = {}
-    for d, recs in by_domain.items():
-        rng.shuffle(recs)
-        if len(recs) <= base_quota:
-            small_domains[d] = recs
-            remaining -= len(recs)
-        else:
-            large_domains[d] = recs
+    l1_quotas = _distribute_quota(budget, {d: len(recs) for d, recs in by_l1.items()})
 
     sampled: list[dict] = []
-    for recs in small_domains.values():
-        sampled.extend(recs)
+    for d1, l1_recs in by_l1.items():
+        q1 = l1_quotas.get(d1, 0)
+        if q1 <= 0:
+            continue
+        if len(l1_recs) <= q1:
+            rng.shuffle(l1_recs)
+            sampled.extend(l1_recs)
+            continue
 
-    # 第二轮: 大域均分剩余名额
-    if large_domains:
-        quota_each = remaining // len(large_domains)
-        extra = remaining - quota_each * len(large_domains)
-        for idx, (d, recs) in enumerate(sorted(large_domains.items())):
-            q = quota_each + (1 if idx < extra else 0)
-            sampled.extend(recs[:q])
+        # ---- L2 层均衡 (within this L1 domain) ----
+        by_l2: dict[str, list[dict]] = defaultdict(list)
+        for rec in l1_recs:
+            by_l2[rec.get("domain_l2", "other")].append(rec)
+
+        l2_quotas = _distribute_quota(q1, {d: len(recs) for d, recs in by_l2.items()})
+        for d2, l2_recs in by_l2.items():
+            q2 = l2_quotas.get(d2, 0)
+            rng.shuffle(l2_recs)
+            sampled.extend(l2_recs[:q2])
 
     return sampled
+
+
+def _distribute_quota(
+    total: int,
+    group_sizes: dict[str, int],
+) -> dict[str, int]:
+    """均分 total 到各 group，不足均额的 group 全部保留，多余名额重分配。"""
+    if not group_sizes:
+        return {}
+
+    n = len(group_sizes)
+    base = total // n
+    remaining = total
+
+    small: dict[str, int] = {}
+    large: list[str] = []
+    for g, sz in group_sizes.items():
+        if sz <= base:
+            small[g] = sz
+            remaining -= sz
+        else:
+            large.append(g)
+
+    result = dict(small)
+    if large:
+        q = remaining // len(large)
+        extra = remaining - q * len(large)
+        for idx, g in enumerate(sorted(large)):
+            result[g] = q + (1 if idx < extra else 0)
+
+    return result
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -1114,11 +1136,11 @@ def main():
             all_val.extend(val)
             all_train.extend(train)
             # Report domain distribution
-            domain_dist = Counter(r.get("domain_l1", "other") for r in train)
-            domain_str = ", ".join(f"{d}={c}" for d, c in sorted(domain_dist.items()))
+            l1_dist = Counter(r.get("domain_l1", "other") for r in train)
+            l1_str = ", ".join(f"{d}={c}" for d, c in sorted(l1_dist.items()))
             print(f"  {task}: {len(train)} train + {len(val)} val"
                   f"  (level={level}, budget={per_task_budget or 'unlimited'},"
-                  f" domains: {domain_str})")
+                  f" L1: {l1_str})")
 
     rng.shuffle(all_train)
     rng.shuffle(all_val)
@@ -1142,8 +1164,10 @@ def main():
         "val_total": len(all_val),
         "train_by_type": dict(Counter(r["problem_type"] for r in all_train)),
         "val_by_type": dict(Counter(r["problem_type"] for r in all_val)),
-        "train_by_domain": dict(Counter(r.get("domain_l1", "other") for r in all_train)),
-        "val_by_domain": dict(Counter(r.get("domain_l1", "other") for r in all_val)),
+        "train_by_domain_l1": dict(Counter(r.get("domain_l1", "other") for r in all_train)),
+        "train_by_domain_l2": dict(Counter(r.get("domain_l2", "other") for r in all_train)),
+        "val_by_domain_l1": dict(Counter(r.get("domain_l1", "other") for r in all_val)),
+        "val_by_domain_l2": dict(Counter(r.get("domain_l2", "other") for r in all_val)),
     }
     stats_path = os.path.join(args.output_dir, "stats.json")
     with open(stats_path, "w", encoding="utf-8") as f:
