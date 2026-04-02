@@ -632,6 +632,8 @@ def _build_phase_v2t(info: dict, rng: random.Random) -> dict | None:
             "domain_l1": info["domain_l1"],
             "domain_l2": info["domain_l2"],
             "source": "seg_annotation",
+            "level": 1,
+            "l1_fps": 1,
         },
     }
 
@@ -692,6 +694,8 @@ def _build_phase_t2v(info: dict, rng: random.Random, text_order: str = "forward"
             "domain_l1": info["domain_l1"],
             "domain_l2": info["domain_l2"],
             "source": "seg_annotation",
+            "level": 1,
+            "l1_fps": 1,
         },
     }
 

@@ -9,10 +9,12 @@
 
 2 组实验，每组包含全部 3 层粒度，L1:L2:L3 = 1:2:2 采样比例（侧重 L2/L3）：
 
-| 实验 | 方向 | 任务 | 总训练量 |
-|------|------|------|---------|
-| `seg_aot_v2t` | V2T | `phase_v2t` + `event_v2t` + `action_v2t` | 1000 (200+400+400) |
-| `seg_aot_t2v` | T2V | `phase_t2v` + `event_t2v` + `action_t2v` | 1000 (200+400+400) |
+| 实验 | 方向 | 卡数 | 任务 | 备注 |
+|------|------|------|------|------|
+| `seg_aot_v2t` | V2T | 8 | `phase_v2t` + `event_v2t` + `action_v2t` | |
+| `seg_aot_t2v` | T2V | 8 | `phase_t2v` + `event_t2v` + `action_t2v` | |
+| `seg_aot_v2t_2gpu_dapo` | V2T | 2 | 同上 | DAPO 动态过滤 |
+| `seg_aot_t2v_2gpu_dapo` | T2V | 2 | 同上 | DAPO 动态过滤 |
 
 ---
 
@@ -42,15 +44,15 @@ bash local_scripts/aot_ablations/prepare_clips.sh
 ### Step 1: 训练（数据首次运行时自动构建）
 
 ```bash
-# V2T 实验
+# V2T 实验 (8卡)
 bash local_scripts/aot_ablations/exp_v2t.sh
 
-# T2V 实验
+# T2V 实验 (8卡)
 bash local_scripts/aot_ablations/exp_t2v.sh
 
-# 自定义
-EXP_NAME=my_exp SEG_TASKS="phase_v2t event_v2t action_v2t" TRAIN_TOTAL=500 \
-  bash local_scripts/aot_ablations/launch_seg_train.sh
+# 2卡 DAPO 快速验证
+bash local_scripts/aot_ablations/exp_v2t_2gpu_dapo.sh
+bash local_scripts/aot_ablations/exp_t2v_2gpu_dapo.sh
 ```
 
 ---
@@ -62,9 +64,11 @@ local_scripts/aot_ablations/
 ├── README.md
 ├── common.sh                # 共用超参数
 ├── prepare_clips.sh         # 独立视频切分
-├── launch_seg_train.sh      # 统一训练入口 (concat + build + train)
-├── exp_v2t.sh               # V2T 实验 (L1+L2+L3)
-└── exp_t2v.sh               # T2V 实验 (L1+L2+L3)
+├── launch_seg_train.sh      # 统一训练入口
+├── exp_v2t.sh               # V2T 8卡实验
+├── exp_t2v.sh               # T2V 8卡实验
+├── exp_v2t_2gpu_dapo.sh     # V2T 2卡 DAPO
+└── exp_t2v_2gpu_dapo.sh     # T2V 2卡 DAPO
 
 proxy_data/youcook2_seg/
 ├── prepare_all_clips.py     # 切分原子 clips (三条流水线通用)
@@ -83,8 +87,5 @@ proxy_data/youcook2_seg/
 | LR | 5e-7 (cosine) |
 | MAX_STEPS | 60 |
 | ROLLOUT_N | 8 |
-| Train total | 1000 |
-| Level ratio | 1:2:2 (L1:L2:L3) |
-| Val total | 200 |
 
 完整参数见 [common.sh](common.sh)。

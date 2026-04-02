@@ -35,18 +35,6 @@ SOURCE_VIDEO_DIR="${SOURCE_VIDEO_DIR:-}"  # 空则从标注内 source_video_path
 # ---- 数据根目录 ----
 SEG_AOT_DATA_ROOT="${SEG_AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg_aot}"
 
-# ---- 数据采样量 ----
-TOTAL_VAL="${TOTAL_VAL:-200}"
-TRAIN_TOTAL="${TRAIN_TOTAL:-1000}"
-LEVEL_RATIO="${LEVEL_RATIO:-1:2:2}"   # L1:L2:L3 采样比例
-MIN_PHASES="${MIN_PHASES:-3}"
-MAX_PHASES="${MAX_PHASES:-6}"
-MIN_EVENTS="${MIN_EVENTS:-3}"
-MAX_EVENTS="${MAX_EVENTS:-8}"
-MIN_ACTIONS="${MIN_ACTIONS:-3}"
-MAX_ACTIONS="${MAX_ACTIONS:-10}"
-CONCAT_WORKERS="${CONCAT_WORKERS:-8}"
-
 # ---- 视频 & 分辨率 ----
 VIDEO_FPS=2.0
 MAX_FRAMES=256
