@@ -23,8 +23,9 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-seg-aot-ablation}"
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- Seg Annotation 数据路径 ----
-ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
-CLIP_ROOT="${CLIP_ROOT:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips}"
+HIER_SEG_ROOT="${HIER_SEG_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation}"
+ANNOTATION_DIR="${ANNOTATION_DIR:-${HIER_SEG_ROOT}/annotations_checked}"
+CLIP_ROOT="${CLIP_ROOT:-${HIER_SEG_ROOT}/clips}"
 # 原子 clips（prepare_all_clips.py 产出）: {CLIP_ROOT}/L1/, L2/, L3/
 CLIP_DIR_L1="${CLIP_DIR_L1:-${CLIP_ROOT}/L1}"
 CLIP_DIR_L2="${CLIP_DIR_L2:-${CLIP_ROOT}/L2}"
