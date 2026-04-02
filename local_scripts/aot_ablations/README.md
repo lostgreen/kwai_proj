@@ -102,11 +102,10 @@ local_scripts/aot_ablations/
 └── exp_seg_event_t2v.sh             # exp4: event T2V 3-way
 
 proxy_data/temporal_aot/
-├── build_aot_from_seg.py            # [ACTIVE] 从 seg annotation JSON 构建 4 种 MCQ
-├── build_event_aot_data.py          # [Archive] 旧视频变体构造
-├── annotate_event_captions.py       # [Archive] 旧 VLM captioning
-├── build_aot_mcq.py                 # [Archive] 旧 MCQ 构建 (依赖 VLM captions)
-└── ...                              # 其他旧工具（已不在主流程中使用）
+├── build_aot_from_seg.py            # [ACTIVE] 从 seg annotation JSON 构建 6 种 MCQ（L1/L2/L3）
+├── rebalance_aot_answers.py         # [ACTIVE] 答案重平衡
+├── prompts.py                       # [ACTIVE] prompt 模板（旧版管线用）
+└── legacy/                          # [Archive] 旧管线脚本（已废弃）
 
 verl/reward_function/
 └── mixed_proxy_reward.py            # seg_aot_* → _choice_reward (A/B/C 精确匹配)

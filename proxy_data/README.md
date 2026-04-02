@@ -38,7 +38,7 @@ youcook2_seg/hier_seg_annotation/annotations/*.json (共享标注源)
        │
        ├─► [hier_seg]    build_hier_data.py      → L1/L2/L3/L3_seg 时序分割任务
        │
-       ├─► [temporal_aot] build_aot_from_seg.py  → action/event 顺序判断 MCQ 任务
+       ├─► [temporal_aot] build_aot_from_seg.py  → L1/L2/L3 顺序判断 MCQ 任务（6 种）
        │
        └─► [event_logic]  build_l2_event_logic.py → add/replace/sort 事件逻辑任务
 ```
@@ -64,7 +64,7 @@ youcook2_seg/hier_seg_annotation/annotations/*.json (共享标注源)
 | Proxy 类型 | 目录 | 任务描述 | problem_type | 状态 |
 |-----------|------|---------|-------------|------|
 | **Hierarchical Seg** | `youcook2_seg/hier_seg_annotation/` + `local_scripts/hier_seg_ablations/` | 三层分层视频分割（阶段/活动/动作） | `temporal_seg_hier_L1/L2/L3/L3_seg` | ✅ 可用 |
-| **Temporal AoT (from seg)** | `youcook2_seg/temporal_aot/` | 从 seg 标注构建 action/event 顺序判断 MCQ | `seg_aot_action_v2t/t2v`, `seg_aot_event_v2t/t2v` | ✅ 可用 |
+| **Temporal AoT (from seg)** | `youcook2_seg/temporal_aot/` | 从 seg 标注构建 L1/L2/L3 三层顺序判断 MCQ | `seg_aot_phase_v2t/t2v`, `seg_aot_action_v2t/t2v`, `seg_aot_event_v2t/t2v` | ✅ 可用 |
 | **Event Logic** | `youcook2_seg/event_logic/` | 基于 L2 事件的 add/replace/sort 推理 | `add` / `replace` / `sort` | ✅ 可用 |
 | **Temporal Grounding** | `temporal_grounding/` | 独立来源（TimeRFT），时序定位 | `temporal_grounding` | ✅ 可用 |
 
@@ -149,25 +149,28 @@ python prepare_clips.py --input train.jsonl --output train_l2.jsonl \
 
 **构建入口**：`youcook2_seg/temporal_aot/build_aot_from_seg.py`
 
-直接复用 seg annotation 的 L2 events 和 L3 grounding_results，无需独立 VLM captioning。
+直接复用 seg annotation 的 L1 macro_phases、L2 events 和 L3 grounding_results，无需独立 VLM captioning。
 
-#### 四种任务类型（2×2 factorial）
+#### 六种任务类型（3 粒度 × 2 方向）
 
 | 任务 | problem_type | 粒度 | 形式 |
 |------|-------------|------|------|
-| **action V2T** | `seg_aot_action_v2t` | L3 (action) | 给 L3 event clip，判断哪个动作列表顺序正确（A/B 二选一） |
-| **action T2V** | `seg_aot_action_t2v` | L3 (action) | 给 forward 动作列表，从两个 L3 clip 中选匹配的（A/B 二选一） |
-| **event V2T** | `seg_aot_event_v2t` | L2 (event) | 给 L2 window clip，判断哪个事件列表顺序正确（A/B/C 三选一） |
-| **event T2V** | `seg_aot_event_t2v` | L2 (event) | 给 forward 事件列表，从三个 L2 clip 中选匹配的（A/B/C 三选一） |
+| **phase V2T** | `seg_aot_phase_v2t` | L1 (phase) | 给 L1 全视频，判断哪个阶段列表顺序正确（A/B/C 三选一）|
+| **phase T2V** | `seg_aot_phase_t2v` | L1 (phase) | 给 forward 阶段列表，从三个 L1 clip 中选匹配的（A/B/C 三选一）|
+| **event V2T** | `seg_aot_event_v2t` | L2 (event) | 给 L2 window clip，判断哪个事件列表顺序正确（A/B/C 三选一）|
+| **event T2V** | `seg_aot_event_t2v` | L2 (event) | 给 forward 事件列表，从三个 L2 clip 中选匹配的（A/B/C 三选一）|
+| **action V2T** | `seg_aot_action_v2t` | L3 (action) | 给 L3 event clip，判断哪个动作列表顺序正确（A/B 二选一）|
+| **action T2V** | `seg_aot_action_t2v` | L3 (action) | 给 forward 动作列表，从两个 L3 clip 中选匹配的（A/B 二选一）|
 
 **用法**：
 ```bash
 python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
     --annotation-dir /path/to/youcook2_seg/hier_seg_annotation/annotations \
+    --clip-dir-l1 /path/to/clips/L1 \
     --clip-dir-l2 /path/to/clips/L2 \
     --clip-dir-l3 /path/to/clips/L3 \
     --output-dir /path/to/output \
-    --tasks action_v2t action_t2v event_v2t event_t2v \
+    --tasks phase_v2t phase_t2v action_v2t action_t2v event_v2t event_t2v \
     --complete-only
 ```
 
@@ -260,13 +263,11 @@ proxy_data/
 │   │   └── run_build.sh                #   [DEPRECATED]
 │   │
 │   ├── temporal_aot/                    # AOT 时序方向判断任务（从 seg 标注构建）
-│   │   ├── build_aot_from_seg.py       #   ★ 主入口：从 seg 标注构建 4 种 AOT 任务
-│   │   ├── build_event_aot_data.py     #   旧版：基于独立 VLM captioning（不推荐）
-│   │   ├── annotate_event_captions.py  #   旧版：VLM caption 生成
-│   │   ├── build_aot_mcq.py            #   旧版：MCQ 构建
+│   │   ├── build_aot_from_seg.py       #   ★ 主入口：从 seg 标注构建 6 种 AOT 任务（L1/L2/L3）
 │   │   ├── rebalance_aot_answers.py    #   答案重平衡工具
-│   │   ├── prompts.py                  #   AOT prompt 模板
-│   │   └── data/                       #   生成数据
+│   │   ├── prompts.py                  #   AOT prompt 模板（旧版 VLM captioning 管线用）
+│   │   ├── data/                       #   生成数据
+│   │   └── legacy/                     #   ⚠️ 旧版管线（已废弃，需独立 VLM captioning）
 │   │
 │   └── event_logic/                     # 事件逻辑推理任务（从 L2 标注构建）
 │       ├── build_l2_event_logic.py     #   ★ 主入口：V2T 任务（add/replace/sort）
@@ -342,9 +343,10 @@ python local_scripts/hier_seg_ablations/build_hier_data.py \
     --output-dir /data/output/hier_seg \
     --levels L1 L2 L3 L3_seg
 
-# AOT（4 种任务）
+# AOT（6 种任务，覆盖 L1/L2/L3）
 python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \
     --annotation-dir /data/youcook2_seg/hier_seg_annotation/annotations \
+    --clip-dir-l1 /data/clips/L1 \
     --clip-dir-l2 /data/clips/L2 \
     --clip-dir-l3 /data/clips/L3 \
     --output-dir /data/output/aot

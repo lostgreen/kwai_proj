@@ -31,10 +31,10 @@ def get_forward_reverse_caption_prompt() -> str:
         "2. Mention the visible start state and the visible end state when possible.\n"
         "3. Focus on what is actually seen changing over time, not just the overall task category.\n"
         "4. If the clip appears temporally reversed or visually unnatural, describe that observed reversed order instead of rewriting it as a normal forward action.\n"
-        "5. Avoid generic descriptions like 'someone is cooking'.\n"
+        "5. Avoid generic descriptions like 'someone is doing something'.\n"
         "6. Keep it to one sentence.\n"
         "7. Also judge whether this clip has a visually clear temporal direction: set direction_clear to true only if "
-        "the action involves an observable state change (e.g. empty→filled, uncut→sliced, raw→cooked) such that "
+        "the action involves an observable state change (e.g. empty→filled, uncut→sliced, closed→open) such that "
         "reversing the video would look noticeably different. Set it to false for cyclic or oscillatory actions "
         "where the reversed video looks nearly identical (e.g. stirring, mixing, kneading, shaking, whisking).\n"
         "8. Output valid JSON with keys: caption, confidence, direction_clear.\n"
@@ -110,8 +110,8 @@ def get_shuffle_caption_prompt(n_segments: int = 0, segment_sec: float = 2.0) ->
         "Requirements:\n"
         "1. Write ONE concise sentence using temporal markers ('first', 'then', 'next', 'finally') "
         "to describe the key action transitions you observe. Cover the main phases but keep it brief.\n"
-        "2. If the sequence appears logically inconsistent (e.g. the food is plated before it is "
-        "cooked), describe it that way—do not reorder to make it plausible.\n"
+        "2. If the sequence appears logically inconsistent (e.g. the result appears before the "
+        "process), describe it that way—do not reorder to make it plausible.\n"
         "3. Mention the visible start and end states.\n"
         "4. Focus on concrete state changes (shape, color, position, quantity) rather than "
         "generic activity labels.\n"
@@ -119,8 +119,8 @@ def get_shuffle_caption_prompt(n_segments: int = 0, segment_sec: float = 2.0) ->
         "6. Set direction_clear to false, since the temporal order has been deliberately disrupted.\n"
         "7. Output valid JSON with keys: caption, confidence, direction_clear.\n"
         "Example:\n"
-        "{\"caption\": \"First the pan appears empty, then food is tossed in oil, "
-        "next diced onions sit on the board, and finally raw ingredients are placed down.\", "
+        "{\"caption\": \"First the container appears empty, then items are placed inside, "
+        "next loose parts sit on the surface, and finally the container is sealed.\", "
         "\"confidence\": 0.75, \"direction_clear\": false}"
     )
 
@@ -186,7 +186,7 @@ def get_check_and_refine_prompt(
         )
 
     return (
-        "You are reviewing temporal captions for a cooking video clip.\n\n"
+        "You are reviewing temporal captions for a video clip.\n\n"
         "Three versions of the same clip are shown above:\n"
         "- **Forward video**: the original clip in natural chronological order.\n"
         "- **Reverse video**: the same clip played backwards frame-by-frame.\n"
@@ -199,8 +199,8 @@ def get_check_and_refine_prompt(
         "## Task\n\n"
         "1. **Check**: Can a reader distinguish the forward caption from the reverse "
         "caption based on text alone — without seeing the video? A good pair should "
-        "describe opposite state transitions (e.g., 'empty pan → full of food' vs. "
-        "'food disappears from pan → pan is empty'). A bad pair uses vague or "
+        "describe opposite state transitions (e.g., 'empty container → filled' vs. "
+        "'items removed → container empty'). A bad pair uses vague or "
         "symmetric descriptions that could fit either direction.\n\n"
         "2. **Refine** (only if the pair is NOT clearly distinguishable): "
         "Rewrite the captions so they are clearly distinguishable.\n\n"
@@ -210,11 +210,11 @@ def get_check_and_refine_prompt(
         "(within 30% of each other).\n"
         "- Use explicit start→end state transitions: mention the visible starting "
         "state and the visible ending state.\n"
-        "- Focus on concrete, directional changes: filling/emptying, cutting/assembling, "
-        "heating/cooling, raw→cooked, whole→sliced, etc.\n"
+        "- Focus on concrete, directional changes: filling/emptying, assembling/disassembling, "
+        "opening/closing, whole→divided, etc.\n"
         "- Use temporal markers (first, then, finally) to anchor the sequence.\n"
-        "- Do NOT use generic descriptions like 'someone is cooking' or "
-        "'a person prepares food'.\n"
+        "- Do NOT use generic descriptions like 'someone is doing something' or "
+        "'a person performs a task'.\n"
         "- The reverse caption must describe the actual observed reversed sequence, "
         "not just negate the forward caption."
         + shuffle_rule
@@ -233,15 +233,15 @@ def get_check_and_refine_prompt(
         "Ensure every string value is on a single line (no embedded newlines).\n"
         "Output ONLY the JSON object — no thinking, no explanations, no markdown fences.\n\n"
         "Example output:\n"
-        '{"distinguishable": false, "reason": "Both captions just say ingredients are '
-        'being mixed without describing direction of change.", '
-        '"forward_caption": "First, raw diced onions are placed into an empty pan, '
-        'then oil is added, and finally the onions turn translucent as they cook.", '
-        '"reverse_caption": "First, translucent cooked onions sit in an oily pan, '
-        'then they gradually appear raw and uncooked, and finally the empty pan is '
-        'shown with no ingredients."'
-        + (', "shuffle_caption": "First, onions appear partially cooked in oil, '
-           'then raw diced onions sit on an empty pan, and finally the onions are '
-           'fully translucent."' if shuffle_caption else "")
+        '{"distinguishable": false, "reason": "Both captions just say items are '
+        'being moved without describing direction of change.", '
+        '"forward_caption": "First, loose parts are placed into an empty container, '
+        'then fasteners are added, and finally the assembly is complete.", '
+        '"reverse_caption": "First, a fully assembled structure is shown, '
+        'then pieces are gradually removed, and finally the empty container is '
+        'shown with no parts."'
+        + (', "shuffle_caption": "First, a partially assembled structure appears, '
+           'then loose parts sit in an empty container, and finally the structure is '
+           'fully complete."' if shuffle_caption else "")
         + "}"
     )

@@ -272,6 +272,8 @@ _TASK_REWARD_DISPATCH = {
     "aot_t2v":              _choice_reward,
     "aot_3way_v2t":         _choice_reward,
     "aot_3way_t2v":         _choice_reward,
+    "seg_aot_phase_v2t":      _choice_reward,
+    "seg_aot_phase_t2v":      _choice_reward,
     "seg_aot_action_v2t":     _choice_reward,
     "seg_aot_action_t2v":     _choice_reward,
     "seg_aot_event_v2t":      _choice_reward,
