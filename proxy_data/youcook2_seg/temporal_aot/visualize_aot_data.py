@@ -201,8 +201,9 @@ def plot_task_domain_stacked(records: list[dict], ax: plt.Axes):
     ax.legend(title="domain_l1", loc="upper right", fontsize=8)
 
 
-# ── Fig 4: Duration distribution per level (overlaid histogram with stats) ──
-def plot_duration_histogram(records: list[dict], ax: plt.Axes):
+# ── Fig 4: Duration distribution — one subplot per level ──
+def plot_duration_per_level(records: list[dict], axes: list[plt.Axes]):
+    """每个 level 独立子图，避免因时长差异大导致柱子堆积。"""
     by_level: dict[str, list[float]] = defaultdict(list)
     for r in records:
         dur = _get_duration(r)
@@ -211,39 +212,28 @@ def plot_duration_histogram(records: list[dict], ax: plt.Axes):
         level = _get_level(r)
         by_level[level].append(dur)
 
-    if not by_level:
-        ax.set_title("Duration Distribution (no data)")
-        ax.axis("off")
-        return
-
-    all_durs = [d for durs in by_level.values() for d in durs]
-    bins = np.linspace(0, max(all_durs) * 1.05, 40)
-
-    for level in ("phase", "event", "action"):
+    for ax, level in zip(axes, ("phase", "event", "action")):
         durs = by_level.get(level, [])
-        if durs:
-            ax.hist(durs, bins=bins, alpha=0.55,
-                    label=f"{level} (n={len(durs)})",
-                    color=LEVEL_COLORS.get(level, "#999"),
-                    edgecolor="white", linewidth=0.3)
+        color = LEVEL_COLORS.get(level, "#999")
+        if not durs:
+            ax.set_title(f"{level} (no data)")
+            ax.axis("off")
+            continue
 
-    ax.set_xlabel("Input Duration (sec)")
-    ax.set_ylabel("Count")
-    ax.set_title("Input Duration Distribution per Level")
-    ax.legend(fontsize=9)
+        bins = np.linspace(0, max(durs) * 1.05, 30)
+        ax.hist(durs, bins=bins, alpha=0.7, color=color, edgecolor="white", linewidth=0.3)
+        ax.set_xlabel("Duration (sec)")
+        ax.set_ylabel("Count")
+        ax.set_title(f"{level.capitalize()} Duration (n={len(durs)})")
 
-    # 统计量文字
-    text_lines = []
-    for level in ("phase", "event", "action"):
-        durs = by_level.get(level, [])
-        if durs:
-            text_lines.append(
-                f"{level}: avg={np.mean(durs):.0f}s, med={np.median(durs):.0f}s, "
-                f"[{min(durs):.0f}, {max(durs):.0f}]"
-            )
-    if text_lines:
-        ax.text(0.97, 0.95, "\n".join(text_lines),
-                transform=ax.transAxes, ha="right", va="top", fontsize=9,
+        # 统计量文字
+        stats_text = (
+            f"avg={np.mean(durs):.0f}s\n"
+            f"med={np.median(durs):.0f}s\n"
+            f"[{min(durs):.0f}, {max(durs):.0f}]"
+        )
+        ax.text(0.95, 0.92, stats_text,
+                transform=ax.transAxes, ha="right", va="top", fontsize=8,
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
 
 
@@ -277,18 +267,21 @@ def main():
         output_path = os.path.join(os.path.dirname(jsonl_path), "aot_data_dist.png")
 
     # ── Plot ──
-    fig = plt.figure(figsize=(16, 12), constrained_layout=True)
-    gs = fig.add_gridspec(2, 2)
+    fig = plt.figure(figsize=(18, 10), constrained_layout=True)
+    gs = fig.add_gridspec(2, 3)
 
+    # Top row: task/domain distribution
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[0, 1])
-    ax3 = fig.add_subplot(gs[1, 0])
-    ax4 = fig.add_subplot(gs[1, 1])
+    ax3 = fig.add_subplot(gs[0, 2])
 
     plot_task_counts(records, ax1)
     plot_domain_donut(records, ax2)
     plot_task_domain_stacked(records, ax3)
-    plot_duration_histogram(records, ax4)
+
+    # Bottom row: duration histograms per level
+    ax_dur = [fig.add_subplot(gs[1, i]) for i in range(3)]
+    plot_duration_per_level(records, ax_dur)
 
     fig.suptitle(f"AoT Training Data Distribution  ({len(records)} records)", fontsize=14, y=1.02)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
