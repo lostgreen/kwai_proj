@@ -6,6 +6,7 @@ visualize_aot_data.py — 可视化 AoT 训练数据的 domain / task 分布。
   Fig 1: 每个 problem_type 的 record 数量 (bar)
   Fig 2: domain_l1 × domain_l2 嵌套饼图（所有 task 合并）
   Fig 3: 每个 problem_type 按 domain_l1 分布 (stacked bar)
+  Fig 4: 按 level 分组的输入视频时长分布 (overlaid histogram)
 
 用法:
     python visualize_aot_data.py --train-jsonl /path/to/train.jsonl
@@ -172,6 +173,46 @@ def plot_task_domain_stacked(records: list[dict], ax: plt.Axes):
     ax.legend(title="domain_l1", loc="upper right", fontsize=8)
 
 
+# ── Fig 4: Duration distribution per task level ──
+def plot_duration_histogram(records: list[dict], ax: plt.Axes):
+    """按 level (phase/event/action) 分组绘制输入时长直方图。"""
+    LEVEL_COLORS = {
+        "phase": "#4C72B0",
+        "event": "#55A868",
+        "action": "#C44E52",
+    }
+
+    by_level: dict[str, list[float]] = defaultdict(list)
+    for r in records:
+        dur = r.get("total_duration_sec")
+        if dur is None:
+            continue
+        ptype = r.get("problem_type", "")
+        # seg_aot_phase_v2t → phase
+        parts = ptype.replace("seg_aot_", "").split("_")
+        level = parts[0] if parts else "other"
+        by_level[level].append(float(dur))
+
+    if not by_level:
+        ax.set_title("Duration Distribution (no data)")
+        ax.axis("off")
+        return
+
+    all_durs = [d for durs in by_level.values() for d in durs]
+    bins = np.linspace(0, max(all_durs) * 1.05, 30)
+
+    for level in ("phase", "event", "action"):
+        durs = by_level.get(level, [])
+        if durs:
+            ax.hist(durs, bins=bins, alpha=0.5, label=f"{level} (n={len(durs)}, μ={np.mean(durs):.0f}s)",
+                    color=LEVEL_COLORS.get(level, "#999"), edgecolor="white")
+
+    ax.set_xlabel("Input Duration (seconds)")
+    ax.set_ylabel("Count")
+    ax.set_title("Input Duration Distribution by Level")
+    ax.legend(fontsize=8)
+
+
 def main():
     parser = argparse.ArgumentParser(description="可视化 AoT 训练数据分布")
     parser.add_argument("--train-jsonl", help="train.jsonl 文件路径")
@@ -202,16 +243,18 @@ def main():
         output_path = os.path.join(os.path.dirname(jsonl_path), "aot_data_dist.png")
 
     # ── Plot ──
-    fig = plt.figure(figsize=(18, 6), constrained_layout=True)
-    gs = fig.add_gridspec(1, 3, width_ratios=[1, 1.2, 1.2])
+    fig = plt.figure(figsize=(16, 12), constrained_layout=True)
+    gs = fig.add_gridspec(2, 2)
 
-    ax1 = fig.add_subplot(gs[0])
-    ax2 = fig.add_subplot(gs[1])
-    ax3 = fig.add_subplot(gs[2])
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax4 = fig.add_subplot(gs[1, 1])
 
     plot_task_counts(records, ax1)
     plot_domain_donut(records, ax2)
     plot_task_domain_stacked(records, ax3)
+    plot_duration_histogram(records, ax4)
 
     fig.suptitle(f"AoT Training Data Distribution  ({len(records)} records)", fontsize=14, y=1.02)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
