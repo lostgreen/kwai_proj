@@ -60,7 +60,10 @@ from PIL import Image
 # Global thread-safe token usage tracker
 # ─────────────────────────────────────────────────────────────────────────────
 _token_lock = threading.Lock()
-_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "api_calls": 0}
+_token_usage = {
+    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "api_calls": 0,
+    "est_text_chars": 0, "est_image_b64_bytes": 0, "n_images": 0,
+}
 
 
 def get_token_usage() -> dict[str, int]:
@@ -76,7 +79,7 @@ def reset_token_usage() -> None:
             _token_usage[k] = 0
 
 
-def _accumulate_usage(usage) -> None:
+def _accumulate_usage(usage, text_chars: int = 0, image_b64_bytes: int = 0, n_images: int = 0) -> None:
     """Accumulate token usage from an API response."""
     if usage is None:
         return
@@ -85,6 +88,9 @@ def _accumulate_usage(usage) -> None:
         _token_usage["completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
         _token_usage["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
         _token_usage["api_calls"] += 1
+        _token_usage["est_text_chars"] += text_chars
+        _token_usage["est_image_b64_bytes"] += image_b64_bytes
+        _token_usage["n_images"] += n_images
 
 
 from prompts import (
@@ -286,6 +292,10 @@ def call_vlm(
         {"role": "user",   "content": content},
     ]
 
+    # Pre-compute text/image sizes for usage tracking
+    text_chars = len(system_prompt) + len(user_text) + sum(len(l) for l in frame_labels)
+    image_b64_bytes = sum(len(b) for b in frame_b64_list)
+
     last_error: Exception | None = None
     for attempt in range(retries):
         try:
@@ -296,7 +306,7 @@ def call_vlm(
                 temperature=temperature,
                 response_format={"type": "json_object"},
             )
-            _accumulate_usage(resp.usage)
+            _accumulate_usage(resp.usage, text_chars, image_b64_bytes, len(frame_b64_list))
             return resp.choices[0].message.content
         except Exception as e:
             last_error = e
@@ -1768,6 +1778,16 @@ def main() -> None:
         print(f"  Total tokens:     {usage['total_tokens']:,}")
         if ok_count > 0:
             print(f"  Avg per clip:     {usage['total_tokens'] // ok_count:,} tokens")
+        # Estimate text vs image token breakdown
+        est_text_tokens = usage["est_text_chars"] // 4  # ~4 chars/token
+        est_image_tokens = usage["prompt_tokens"] - est_text_tokens
+        n_img = usage["n_images"]
+        img_b64_mb = usage["est_image_b64_bytes"] / 1_048_576
+        print(f"  ── Breakdown (estimated) ──")
+        print(f"  Text chars sent:  {usage['est_text_chars']:,}  (~{est_text_tokens:,} tokens)")
+        print(f"  Images sent:      {n_img:,}  ({img_b64_mb:.1f} MB base64)")
+        if est_image_tokens > 0 and n_img > 0:
+            print(f"  Image tokens:     ~{est_image_tokens:,}  (~{est_image_tokens // n_img:,} per image)")
 
 
 if __name__ == "__main__":
