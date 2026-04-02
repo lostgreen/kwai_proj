@@ -280,22 +280,19 @@ A.
 B.
 {option_b}
 
-C.
-{option_c}
-
 Think step by step inside <think></think> tags, then provide your final answer \
-(A, B, or C) inside <answer></answer> tags."""
+(A or B) inside <answer></answer> tags."""
 
 _ACTION_T2V_PROMPT = """\
-Here are three video clips (Clip A, Clip B, and Clip C).
+Here are two video clips (Clip A and Clip B).
 
 The atomic actions below were performed in this exact order:
 {forward_list}
 
-Which clip (A, B, or C) shows these actions in the listed order?
+Which clip (A or B) shows these actions in the listed order?
 
 Think step by step inside <think></think> tags, then provide your final answer \
-(A, B, or C) inside <answer></answer> tags."""
+(A or B) inside <answer></answer> tags."""
 
 
 def _format_list(items: list[str]) -> str:
@@ -552,23 +549,10 @@ def _collect_action_groups(
         if need_v2t or need_t2v:
             jobs.append((fwd_paths, fwd_out))
 
-        shuf_out = rev_out = None
-        shuf_actions = None
+        # L3 actions: binary (forward vs reversed) only — no shuffle
+        # Fine-grained atomic actions become visually meaningless when shuffled.
+        rev_out = None
         if need_v2t or need_t2v:
-            # Shuffled order
-            indices = list(range(len(child_actions)))
-            shuf_idx = indices[:]
-            for _ in range(20):
-                rng.shuffle(shuf_idx)
-                if shuf_idx != indices:
-                    break
-            if shuf_idx == indices:
-                continue  # can't produce distinct shuffle
-
-            shuf_out = _action_concat_path(clip_key, ev_id, "shuf", concat_dir)
-            jobs.append(([fwd_paths[i] for i in shuf_idx], shuf_out))
-            shuf_actions = [sub_actions[i] for i in shuf_idx]
-
             rev_out = _action_concat_path(clip_key, ev_id, "rev", concat_dir)
             jobs.append((list(reversed(fwd_paths)), rev_out))
 
@@ -579,9 +563,7 @@ def _collect_action_groups(
             "n_actions": len(child_actions),
             "total_duration": total_dur,
             "fwd_video": fwd_out,
-            "shuf_video": shuf_out,
             "rev_video": rev_out,
-            "shuf_actions": shuf_actions,
             "domain_l1": ann.get("domain_l1", "other"),
             "domain_l2": ann.get("domain_l2", "other"),
         })
@@ -805,23 +787,17 @@ def _build_event_t2v(info: dict, rng: random.Random, text_order: str = "forward"
 
 def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
     acts = info["sub_actions"]
-    shuffled = acts[:]
-    for _ in range(20):
-        rng.shuffle(shuffled)
-        if shuffled != acts:
-            break
-    if shuffled == acts:
-        return None
-
     reversed_acts = list(reversed(acts))
-    options = [("forward", acts), ("shuffled", shuffled), ("reversed", reversed_acts)]
+    if acts == reversed_acts:
+        return None  # palindromic — can't distinguish
+
+    options = [("forward", acts), ("reversed", reversed_acts)]
     rng.shuffle(options)
     correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
 
     body = _ACTION_V2T_PROMPT.format(
         option_a=_format_list(options[0][1]),
         option_b=_format_list(options[1][1]),
-        option_c=_format_list(options[2][1]),
     )
     prompt = f"<video>\n\n{body}"
 
@@ -840,7 +816,6 @@ def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
             "forward_descriptions": acts,
             "option_a_type": options[0][0],
             "option_b_type": options[1][0],
-            "option_c_type": options[2][0],
             "domain_l1": info["domain_l1"],
             "domain_l2": info["domain_l2"],
             "source": "seg_annotation",
@@ -849,19 +824,17 @@ def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
 
 
 def _build_action_t2v(info: dict, rng: random.Random, text_order: str = "forward") -> dict | None:
-    """Build one T2V record using *text_order* as the ground-truth text ordering."""
-    if not info.get("shuf_video") or not info.get("rev_video"):
+    """Build one binary T2V record (forward vs reversed)."""
+    if not info.get("rev_video"):
         return None
 
     acts = info["sub_actions"]
     text_map = {
         "forward": acts,
-        "shuffled": info.get("shuf_actions") or acts,
         "reversed": list(reversed(acts)),
     }
     video_map = {
         "forward": info["fwd_video"],
-        "shuffled": info["shuf_video"],
         "reversed": info["rev_video"],
     }
 
@@ -870,7 +843,6 @@ def _build_action_t2v(info: dict, rng: random.Random, text_order: str = "forward
 
     video_opts = [
         ("forward", video_map["forward"]),
-        ("shuffled", video_map["shuffled"]),
         ("reversed", video_map["reversed"]),
     ]
     rng.shuffle(video_opts)
@@ -897,7 +869,6 @@ def _build_action_t2v(info: dict, rng: random.Random, text_order: str = "forward
             "text_order": text_order,
             "video_a_type": video_opts[0][0],
             "video_b_type": video_opts[1][0],
-            "video_c_type": video_opts[2][0],
             "correct_position": correct,
             "domain_l1": info["domain_l1"],
             "domain_l2": info["domain_l2"],
@@ -1071,6 +1042,9 @@ def main():
                     task_records["event_t2v"].append(rec)
                     t2v_order_idx += 1
 
+    _ACTION_T2V_TEXT_ORDERS = ["forward", "reversed"]
+    action_t2v_idx = 0
+
     for info in action_groups:
         if info["fwd_video"] in failed_paths:
             continue
@@ -1079,12 +1053,12 @@ def main():
             if rec:
                 task_records["action_v2t"].append(rec)
         if need_action_t2v and info["total_duration"] <= max_t2v_dur:
-            if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
-                text_order = _T2V_TEXT_ORDERS[t2v_order_idx % 3]
+            if info.get("rev_video") not in failed_paths:
+                text_order = _ACTION_T2V_TEXT_ORDERS[action_t2v_idx % 2]
                 rec = _build_action_t2v(info, random.Random(rng.random()), text_order)
                 if rec:
                     task_records["action_t2v"].append(rec)
-                    t2v_order_idx += 1
+                    action_t2v_idx += 1
 
     # ---- Stats ----
     print("\n=== Extraction Stats ===")

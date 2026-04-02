@@ -49,6 +49,7 @@ from annotate import (
     SYSTEM_PROMPT,
     _apply_l2_check_results,
     _apply_l3_check_results,
+    _check_l2_with_shrinkage,
     _check_leaf_node,
     _check_level2,
     _check_level3,
@@ -180,6 +181,7 @@ def check_clip(
     Run quality checks on a single clip's annotation.
 
     Supports levels: "merged_c" (L1+L2 simultaneous), "2c" (L2 only, legacy),
+    "2c_shrink" (L2 review + L1 shrinkage + order distinguishability),
     "3c" (L3 with optional per-event 2fps frames).
 
     Returns status dict: {clip_key, ok, error, skipped, stats}.
@@ -286,6 +288,129 @@ def check_clip(
                 if len(cleaned) != len(old_l3):
                     ann["level3"]["grounding_results"] = cleaned
                     combined_stats["l2_orphans_removed"] = len(old_l3) - len(cleaned)
+
+    # ---- L2 Shrink Check (L2 review + L1 boundary shrinkage + order judge) ----
+    if "2c_shrink" in levels:
+        l1 = ann.get("level1")
+        l2 = ann.get("level2")
+        if l1 is None or l2 is None:
+            return {"clip_key": clip_key, "ok": False,
+                    "error": "level1+level2 required for 2c_shrink check",
+                    "skipped": False, "stats": {}}
+
+        already_checked = l1.get("_2c_shrink_stats") is not None
+        if not overwrite and already_checked:
+            combined_stats["2c_shrink"] = l1["_2c_shrink_stats"]
+        elif dry_run:
+            n_phases = len(l1.get("macro_phases", []))
+            n_events = len(l2.get("events", []))
+            combined_stats["2c_shrink"] = {
+                "dry_run": True, "n_phases": n_phases, "n_events": n_events,
+            }
+        else:
+            phases = sorted(
+                [p for p in l1.get("macro_phases", []) if isinstance(p, dict)],
+                key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)),
+            )
+            existing_events = l2.get("events", [])
+
+            all_checked_events: list[dict] = []
+            check_calls_2c: list[dict] = []
+            stats_2c: dict[str, int] = {
+                "kept": 0, "revised": 0, "removed": 0, "supplemented": 0,
+                "phases_shrunk": 0, "phases_unchanged": 0,
+                "order_distinguishable": 0, "order_indistinguishable": 0,
+            }
+
+            phases_by_id = {p.get("phase_id"): p for p in phases}
+
+            for phase in phases:
+                phase_id = phase.get("phase_id")
+                # Gather events belonging to this phase
+                phase_events = [
+                    e for e in existing_events
+                    if isinstance(e, dict) and e.get("parent_phase_id") == phase_id
+                ]
+
+                result = _check_l2_with_shrinkage(
+                    frame_dir, clip_duration,
+                    phase, phase_events,
+                    api_base, api_key, model,
+                    max_frames, resize_max_width, jpeg_quality,
+                )
+
+                all_checked_events.extend(result["checked_events"])
+                check_calls_2c.append(result["call_info"])
+
+                # Count L2 event stats
+                n_before = len(phase_events)
+                for r in result["checked_events"]:
+                    tag = r.get("_checked")
+                    if tag == "revised":
+                        stats_2c["revised"] += 1
+                    elif tag == "supplemented":
+                        stats_2c["supplemented"] += 1
+                    else:
+                        stats_2c["kept"] += 1
+                stats_2c["removed"] += n_before - sum(
+                    1 for r in result["checked_events"]
+                    if r.get("_checked") != "supplemented"
+                )
+
+                # Write back L1 phase shrinkage
+                if result["was_shrunk"]:
+                    stats_2c["phases_shrunk"] += 1
+                    ph = phases_by_id.get(phase_id)
+                    if ph is not None:
+                        ph["_shrunk_from"] = [ph.get("start_time"), ph.get("end_time")]
+                        ph["start_time"] = result["shrunk_start"]
+                        ph["end_time"] = result["shrunk_end"]
+                        ph["_shrunk"] = True
+                else:
+                    stats_2c["phases_unchanged"] += 1
+
+                # Write back order distinguishability to L1 phase
+                ph = phases_by_id.get(phase_id)
+                if ph is not None:
+                    ph["_order_distinguishable"] = result["order_distinguishable"]
+                    ph["_order_cue"] = result["order_cue"]
+                    ph["_order_confidence"] = result["order_confidence"]
+
+                if result["order_distinguishable"]:
+                    stats_2c["order_distinguishable"] += 1
+                else:
+                    stats_2c["order_indistinguishable"] += 1
+
+            # Sort and re-number events
+            all_checked_events.sort(
+                key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)),
+            )
+            for i, e in enumerate(all_checked_events, 1):
+                e["event_id"] = i
+
+            # Also re-collect events that belong to phases NOT in the check
+            # (e.g., phases with no events were skipped)
+            remaining = [
+                e for e in existing_events
+                if e.get("parent_phase_id") not in {p.get("phase_id") for p in phases}
+            ]
+            all_checked_events.extend(remaining)
+
+            ann["level2"]["events"] = all_checked_events
+            ann["level2"]["_2c_shrink_calls"] = check_calls_2c
+            ann["level2"]["_2c_shrink_stats"] = stats_2c
+            ann["level1"]["_2c_shrink_stats"] = stats_2c
+            combined_stats["2c_shrink"] = stats_2c
+
+            # Orphan cleanup: remove L3 results for deleted L2 events
+            if ann.get("level3") is not None:
+                valid_ids = {e.get("event_id") for e in all_checked_events}
+                old_l3 = ann["level3"].get("grounding_results", [])
+                cleaned = _remove_orphaned_l3_results(old_l3, valid_ids)
+                cleaned = _remove_out_of_bounds_l3(cleaned, all_checked_events)
+                if len(cleaned) != len(old_l3):
+                    ann["level3"]["grounding_results"] = cleaned
+                    combined_stats["2c_shrink_orphans_removed"] = len(old_l3) - len(cleaned)
 
     # ---- L3 Check ----
     if "3c" in levels:
@@ -472,7 +597,7 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True,
                         help="Output directory for checked annotations (separate from input)")
     parser.add_argument("--levels", default="merged_c,3c",
-                        help="Comma-separated checks to run: merged_c, 2c, 3c, leaf_c")
+                        help="Comma-separated checks to run: merged_c, 2c, 2c_shrink, 3c, leaf_c")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -497,7 +622,7 @@ def main() -> None:
 
     # Validate levels
     levels = [l.strip() for l in args.levels.split(",")]
-    valid_levels = {"merged_c", "2c", "3c", "leaf_c"}
+    valid_levels = {"merged_c", "2c", "2c_shrink", "3c", "leaf_c"}
     for l in levels:
         if l not in valid_levels:
             print(f"ERROR: unsupported level '{l}', must be one of {valid_levels}", file=sys.stderr)

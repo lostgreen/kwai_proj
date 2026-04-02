@@ -93,6 +93,15 @@ run_step "STEP5_LEAF_AUDIT" \
         --levels leaf_c \
         --model "$CHECK_MODEL" --workers "$WORKERS"
 
+# ── Step 6: L2 Review + L1 Shrinkage + Order Distinguishability ──
+run_step "STEP6_L2_SHRINK_CHECK" \
+    python "$SCRIPT_DIR/annotate_check.py" \
+        --frames-dir "$DATA_ROOT/frames" \
+        --annotation-dir "$CHECK_OUTPUT" \
+        --output-dir "$CHECK_OUTPUT" \
+        --levels 2c_shrink \
+        --model "$CHECK_MODEL" --workers "$WORKERS"
+
 # ── Summary ─────────────────────────────────────────────────────────
 log "========== PIPELINE COMPLETE =========="
 log "Annotations:         $DATA_ROOT/annotations/"

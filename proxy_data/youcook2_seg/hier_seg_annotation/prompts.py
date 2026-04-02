@@ -157,6 +157,18 @@ A macro phase is a broad stage of activity organized by overall intent.
 - Do NOT split by camera cuts.
 - It is valid to output only 1 macro phase if the entire video is one continuous routine.
 
+CAPTION QUALITY (CRITICAL):
+- phase_name MUST be a descriptive phrase of 5–15 words that conveys the specific \
+goal, key objects, and outcome of the stage. One-or-two-word labels like \
+"Preparation" or "Assembly" are NOT acceptable.
+  Good: "Preparing and measuring dry ingredients for the base mixture"
+  Bad:  "Material Preparation"
+- narrative_summary MUST be 2–3 sentences describing the key actions performed, \
+the objects/materials involved, and the visible state changes during this phase.
+  Good: "The person measures flour and sugar into a large mixing bowl. Both dry \
+ingredients are whisked together until the mixture appears uniform."
+  Bad:  "Gather and organize all required materials."
+
 Then explain your phase segmentation logic in one sentence (global_phase_criterion): \
 what criterion distinguishes one phase from the next. Focus on the structural or \
 intentional boundary (e.g., shift of goal, change of activity type, transition between \
@@ -195,6 +207,15 @@ General L2 rules:
 - Use absolute integer seconds.
 - It is valid for a phase to contain zero events.
 - Do not force extra events to make the hierarchy deeper.
+
+EVENT CAPTION QUALITY (CRITICAL):
+- instruction MUST be a descriptive sentence of 8–20 words that clearly states \
+WHAT is being done, with WHICH objects/materials, and toward WHAT outcome.
+  Good: "Whisk dry flour and sugar together in a large bowl until evenly blended"
+  Bad:  "Mix ingredients"
+  Bad:  "Sort and measure the raw materials"
+- visual_keywords MUST include specific visible objects, tools, and materials \
+(not abstract concepts).
 - For each macro phase, provide an event_split_criterion: a one-sentence explanation \
 of WHY this phase does or does not contain sub-events. \
 If events exist, explain the boundary logic (e.g., "segmented by logical progression \
@@ -216,16 +237,16 @@ Output JSON:
       "phase_id": 1,
       "start_time": 5,
       "end_time": 60,
-      "phase_name": "Material Preparation",
-      "narrative_summary": "Gather and organize all required materials.",
+      "phase_name": "Preparing and measuring dry ingredients for the base mixture",
+      "narrative_summary": "The person retrieves flour and sugar from storage containers. Both dry ingredients are measured using a scale and poured into a large mixing bowl.",
       "event_split_criterion": "<one sentence explaining WHY this phase does/does not have events>",
       "events": [
         {{
           "event_id": 1,
           "start_time": 8,
           "end_time": 25,
-          "instruction": "Sort and measure the raw materials",
-          "visual_keywords": ["hands", "materials", "measuring tool"]
+          "instruction": "Measure flour and sugar on a kitchen scale and transfer into a mixing bowl",
+          "visual_keywords": ["flour bag", "sugar container", "digital scale", "mixing bowl"]
         }}
       ]
     }}
@@ -366,9 +387,19 @@ NOT a summary of the actions found.
 For each micro-action, provide:
 - action_id: Sequential integer starting from 1.
 - start_time / end_time: Timestamps in integer seconds (absolute within the full video).
-- sub_action: Brief description of the specific physical interaction or repetition.
-- pre_state: The EXPLICIT visual state BEFORE the interaction.
-- post_state: The EXPLICIT visual state AFTER the interaction.
+- sub_action: A complete action phrase (5–15 words) describing the specific \
+physical interaction, the object(s) involved, and the resulting change. \
+One-or-two-word labels like "pouring" or "cutting" are NOT acceptable. \
+  Good: "Pour measured flour from the bag into the steel mixing bowl" \
+  Bad: "Pour flour"
+- pre_state: An EXPLICIT, visually specific description of the scene BEFORE \
+the interaction — mention the exact objects, their positions, and appearance. \
+  Good: "A sealed bag of flour sits on the counter next to an empty mixing bowl" \
+  Bad: "Empty container with prepared surface"
+- post_state: An EXPLICIT, visually specific description of the scene AFTER \
+the interaction — describe the new positions, appearance, and state of objects. \
+  Good: "White flour fills the bottom of the mixing bowl; the bag sits open beside it" \
+  Bad: "Material A distributed across the container surface"
 
 Output JSON:
 {{
@@ -379,9 +410,9 @@ Output JSON:
       "action_id": 1,
       "start_time": 42,
       "end_time": 47,
-      "sub_action": "Transfer material A into container B",
-      "pre_state": "Empty container with prepared surface",
-      "post_state": "Material A distributed across the container surface"
+      "sub_action": "Pour measured flour from the bag into the steel mixing bowl",
+      "pre_state": "A sealed bag of flour sits on the counter next to an empty mixing bowl",
+      "post_state": "White flour fills the bottom of the mixing bowl; the bag sits open beside it"
     }}
   ]
 }}"""
@@ -1017,6 +1048,223 @@ def get_leaf_check_prompt(
         parent_end=parent_end,
         micro_type=micro_type,
         micro_split_criterion=micro_split_criterion,
+        existing_annotations=annotations_str,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# L2 Shrink Check: Per-phase L2 review + L1 boundary shrinkage + order judge
+# Input:  frames within an L1 phase + existing L2 event annotations
+# Output: L2 verdicts, L1 shrunk boundaries, order distinguishability
+# ─────────────────────────────────────────────────────────────────────────────
+_L2_SHRINK_CHECK_BASE = """\
+You are a quality reviewer for hierarchical video annotations. You are viewing \
+frames from a macro phase spanning [{phase_start}s – {phase_end}s].
+
+Phase: "{phase_name}"
+Summary: "{narrative_summary}"
+
+Below are the EXISTING L2 event annotations within this phase:
+{existing_annotations}
+
+You have THREE tasks:
+
+## TASK 1 — L2 EVENT REVIEW (Granularity & Completeness)
+
+Review each existing L2 event AND identify any MISSING events.
+
+GRANULARITY SPECTRUM — use this to judge every annotation:
+
+  L1 Phase (ABOVE — too coarse for L2):
+    A broad activity stage spanning the entire phase you are reviewing. \
+If an "event" essentially restates or summarizes the whole phase, it is \
+NOT a valid L2 event — it belongs at L1.
+    Example of TOO COARSE: "Prepare all materials" when the phase IS \
+"Material Preparation".
+
+  L2 Event (THIS LEVEL — correct granularity):
+    A multi-second, goal-directed workflow that transforms materials/objects \
+or completes a meaningful process sub-goal. It typically involves a sequence \
+of physical interactions unified by a single intent.
+    Duration guide: typically 10-60 seconds.
+    Examples: "Assemble components by fitting and securing parts", \
+"Process materials until target state reached", "Shape raw material into desired form".
+
+  L3 Atomic Action (BELOW — too fine for L2):
+    A single momentary physical interaction (2-6s) that changes one object's \
+state once. If an annotation describes a single hand motion, a single pour, \
+or a single cut stroke, it is TOO FINE for L2.
+    Examples of TOO FINE: "Place part onto surface", "Pick up tool", \
+"Pour liquid into container", "Flip one piece".
+
+L2 REVIEW CRITERIA:
+
+1. [Granularity — Not Too Coarse]: Does the event describe something more \
+specific than the phase itself? An event that merely paraphrases the phase \
+name/summary should be REMOVED or REVISED to be more specific.
+
+2. [Granularity — Not Too Fine]: Does the event encompass a multi-step workflow \
+rather than a single atomic motion? If it describes only one brief physical \
+interaction (< 5 seconds, single object state change), it should be MERGED \
+with adjacent actions into a proper event, or REMOVED.
+
+3. [Temporal Accuracy]: Do start_time/end_time match the visible activity? \
+The event should start when the first contributing action begins and end \
+when the goal is achieved.
+
+4. [Description Quality]: Does the instruction clearly convey the goal \
+being accomplished in 8–20 words? It should describe WHAT is being achieved, \
+with WHICH objects/materials, toward WHAT outcome. Vague or overly brief \
+instructions (< 5 words) must be REVISED.
+
+5. [Activity Relevance]: Does the event involve actual physical object/material \
+transformation? Exclude narration, idle waiting, tool-only movements, \
+non-activity content, or reactions without physical manipulation.
+
+6. [Temporal Overlap]: Do multiple events cover the same time span with the \
+same intent? If so, the duplicate should be removed.
+
+7. [Completeness]: Are there any visible activity workflows in the frames that \
+are NOT covered by existing annotations?
+
+For each existing event, output a verdict:
+- "keep": Event is correct as-is.
+- "revise": Event has issues — provide corrected fields.
+- "remove": Event is invalid (wrong granularity, not relevant, or duplicate).
+
+Then list any MISSING events.
+
+## TASK 2 — L1 PHASE BOUNDARY SHRINKAGE (Critical)
+
+Examine the frames near the START and END of the phase's time range.
+
+Determine: does the phase's [{phase_start}s – {phase_end}s] contain "dead zones" \
+— stretches of time at the beginning or end where NO meaningful physical action occurs?
+
+Rules:
+- If actual physical activity starts AFTER {phase_start}s (e.g., idle, talking, \
+static frames at the beginning), output a tighter shrunk_start.
+- If actual physical activity ends BEFORE {phase_end}s (e.g., idle tail, \
+static frames at the end), output a tighter shrunk_end.
+- The shrunk boundaries should tightly wrap the FIRST and LAST visible physical \
+actions (aligned with L2 event boundaries when possible).
+- If the boundaries are already tight, output shrunk_start = {phase_start} \
+and shrunk_end = {phase_end} (no change).
+- Shrinkage must preserve ALL kept/revised/supplemented L2 events within bounds.
+- Use integer seconds.
+
+## TASK 3 — TEMPORAL ORDER DISTINGUISHABILITY JUDGMENT
+
+Consider the sequence of L2 events (after applying your TASK 1 verdicts) in their \
+temporal order within this phase.
+
+Question: If the temporal order of these events were REVERSED (last event played \
+first, first event played last), could a viewer reliably distinguish the forward \
+video from the reversed video based purely on visual cues?
+
+Consider these factors:
+- Causal dependency: Does each event rely on the visible output of the previous \
+event (e.g., material is prepared in event 1, then assembled in event 2)?
+- Progressive state change: Do objects visibly evolve in a direction that cannot \
+be mistaken for the reverse (e.g., raw → cooked, scattered → organized)?
+- Tool/material availability: Does a tool or material appear only after a prior \
+event produces or reveals it?
+- Symmetry: Are the events largely interchangeable without visual inconsistency?
+
+Output:
+- order_distinguishable: true if a viewer CAN reliably tell forward from reversed; \
+false if the events are largely symmetric or interchangeable.
+- order_cue: ONE sentence explaining the primary visual cue (or lack thereof).
+- order_confidence: Float 0.0–1.0 reflecting how certain you are.
+
+## OUTPUT FORMAT
+
+{{{{
+  "event_reviews": [
+    {{{{
+      "event_id": 1,
+      "verdict": "keep"
+    }}}},
+    {{{{
+      "event_id": 2,
+      "verdict": "revise",
+      "issue": "too_fine|too_coarse|bad_boundary|bad_description|overlap",
+      "revised": {{{{
+        "start_time": 35,
+        "end_time": 58,
+        "instruction": "Corrected event description with specific objects and outcome",
+        "visual_keywords": ["keyword1", "keyword2"]
+      }}}}
+    }}}},
+    {{{{
+      "event_id": 3,
+      "verdict": "remove",
+      "issue": "too_fine|too_coarse|not_relevant|duplicate",
+      "reason": "Brief explanation"
+    }}}}
+  ],
+  "event_supplements": [
+    {{{{
+      "start_time": 70,
+      "end_time": 90,
+      "instruction": "Description of missed activity event",
+      "visual_keywords": ["keyword1", "keyword2"]
+    }}}}
+  ],
+  "shrunk_start": {phase_start},
+  "shrunk_end": {phase_end},
+  "order_distinguishable": true,
+  "order_cue": "Event 1 produces raw pieces that Event 2 then assembles — the assembled state cannot precede the raw state.",
+  "order_confidence": 0.9
+}}}}
+
+IMPORTANT:
+- You MUST review every existing event by event_id.
+- "event_supplements" can be an empty list if nothing is missing.
+- Do NOT invent events not visible in the provided frames.
+- Always include the "issue" field for revise/remove verdicts.
+- shrunk_start/shrunk_end MUST satisfy: shrunk_start <= min(L2 start_times) \
+and shrunk_end >= max(L2 end_times) for all kept/revised/supplemented L2 events.
+- Be strict: vague, non-physical, or wrong-granularity annotations should be revised or removed.
+- For order distinguishability, judge based on the FINAL set of events after your review, \
+not the original input."""
+
+
+def get_l2_shrink_check_prompt(
+    phase_name: str,
+    phase_start: int,
+    phase_end: int,
+    narrative_summary: str,
+    existing_events: list[dict],
+) -> str:
+    """
+    Build the L2 Shrink Check prompt: L2 event review + L1 boundary shrinkage
+    + temporal order distinguishability.
+
+    Args:
+        phase_name: The L1 phase name.
+        phase_start: Phase start time in seconds.
+        phase_end: Phase end time in seconds.
+        narrative_summary: The L1 phase narrative summary.
+        existing_events: List of L2 events within this phase.
+    """
+    import json as _json
+    display_events = []
+    for ev in existing_events:
+        display_events.append({
+            "event_id": ev.get("event_id"),
+            "start_time": ev.get("start_time"),
+            "end_time": ev.get("end_time"),
+            "instruction": ev.get("instruction"),
+            "visual_keywords": ev.get("visual_keywords"),
+        })
+    annotations_str = _json.dumps(display_events, ensure_ascii=False, indent=2)
+
+    return _L2_SHRINK_CHECK_BASE.format(
+        phase_name=phase_name,
+        phase_start=phase_start,
+        phase_end=phase_end,
+        narrative_summary=narrative_summary,
         existing_annotations=annotations_str,
     )
 

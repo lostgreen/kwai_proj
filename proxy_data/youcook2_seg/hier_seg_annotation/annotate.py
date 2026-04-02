@@ -275,8 +275,22 @@ def call_vlm(
     except ImportError:
         raise ImportError("openai is required: pip install openai")
 
-    key = api_key or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
-    client = OpenAI(api_key=key, base_url=api_base)
+    key = api_key or os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+
+    # Azure OpenAI endpoint detection
+    _is_azure = (
+        os.environ.get("USE_AZURE", "").lower() in ("1", "true", "yes")
+        or "azure" in api_base.lower()
+    )
+    if _is_azure:
+        from openai import AzureOpenAI
+        client = AzureOpenAI(
+            azure_endpoint=api_base,
+            api_key=key,
+            api_version=os.environ.get("AZURE_API_VERSION", "2025-01-01-preview"),
+        )
+    else:
+        client = OpenAI(api_key=key, base_url=api_base)
 
     content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
     for i, b64 in enumerate(frame_b64_list):
@@ -299,18 +313,21 @@ def call_vlm(
     last_error: Exception | None = None
     for attempt in range(retries):
         try:
-            resp = client.chat.completions.create(
+            create_kwargs: dict[str, Any] = dict(
                 model=model,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 response_format={"type": "json_object"},
-                extra_body={
+            )
+            # Gemini-specific low-res hint — skip for Azure / non-Gemini endpoints
+            if not _is_azure:
+                create_kwargs["extra_body"] = {
                     "generation_config": {
                         "media_resolution": "MEDIA_RESOLUTION_LOW",
                     }
-                },
-            )
+                }
+            resp = client.chat.completions.create(**create_kwargs)
             _accumulate_usage(resp.usage, text_chars, image_b64_bytes, len(frame_b64_list))
             if resp.usage:
                 pt = getattr(resp.usage, "prompt_tokens", 0) or 0
@@ -1164,6 +1181,137 @@ def _check_level2(
         "_check_calls": check_calls,
         "_check_stats": stats,
     }
+
+
+def _check_l2_with_shrinkage(
+    frame_dir: Path,
+    clip_duration: float,
+    phase: dict[str, Any],
+    existing_events: list[dict[str, Any]],
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+) -> dict[str, Any]:
+    """
+    Per-phase L2 check + L1 boundary shrinkage + order distinguishability.
+
+    This is the "2c_shrink" analog of ``_check_leaf_node``, but one level up:
+    it reviews L2 events within a single L1 phase, shrinks the L1 phase
+    boundaries, and judges temporal-order distinguishability.
+
+    Returns a dict with keys:
+        checked_events  – list of events after keep/revise/remove/supplement
+        was_shrunk      – bool
+        shrunk_start    – int
+        shrunk_end      – int
+        order_distinguishable – bool
+        order_cue       – str
+        order_confidence – float
+        call_info       – dict (API call metadata)
+    """
+    from prompts import get_l2_shrink_check_prompt
+
+    phase_id = phase.get("phase_id")
+    phase_name = phase.get("phase_name", "")
+    narrative = phase.get("narrative_summary", "")
+    phase_start = int(phase.get("start_time", 0))
+    phase_end = int(phase.get("end_time", 0))
+
+    result: dict[str, Any] = {
+        "checked_events": list(existing_events),
+        "was_shrunk": False,
+        "shrunk_start": phase_start,
+        "shrunk_end": phase_end,
+        "order_distinguishable": False,
+        "order_cue": "",
+        "order_confidence": 0.0,
+        "call_info": {
+            "phase_id": phase_id,
+            "phase_name": phase_name,
+            "start_time": phase_start,
+            "end_time": phase_end,
+        },
+    }
+
+    if not existing_events:
+        result["call_info"]["skipped"] = True
+        result["call_info"]["skip_reason"] = "no existing L2 events"
+        return result
+
+    ph_frames = get_frames_in_time_range(frame_dir, phase_start, phase_end)
+    if not ph_frames:
+        result["call_info"]["skipped"] = True
+        result["call_info"]["skip_reason"] = "no frames"
+        return result
+
+    sampled = sample_uniform(ph_frames, max_frames)
+    frame_b64 = encode_frame_files(
+        sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
+    )
+    frame_labels = []
+    for fp in sampled:
+        idx = frame_stem_to_index(fp, 0)
+        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+
+    prompt_text = get_l2_shrink_check_prompt(
+        phase_name=phase_name,
+        phase_start=phase_start,
+        phase_end=phase_end,
+        narrative_summary=narrative,
+        existing_events=existing_events,
+    )
+
+    parsed = call_and_parse(
+        api_base, api_key, model, SYSTEM_PROMPT,
+        prompt_text, frame_b64, frame_labels,
+    )
+
+    if parsed is None:
+        result["call_info"]["skipped"] = True
+        result["call_info"]["skip_reason"] = "check parse failed"
+        return result
+
+    # ---- TASK 1: Apply L2 event verdicts ----
+    # The new prompt uses "event_reviews" / "event_supplements" keys
+    check_for_apply = {
+        "reviews": parsed.get("event_reviews", []),
+        "supplements": parsed.get("event_supplements", []),
+    }
+    n_before = len(existing_events)
+    checked = _apply_l2_check_results(
+        existing_events, check_for_apply, phase_id, phase_start, phase_end,
+    )
+    result["checked_events"] = checked
+    result["call_info"]["n_before"] = n_before
+    result["call_info"]["n_after"] = len(checked)
+    result["call_info"]["n_supplements"] = sum(
+        1 for r in checked if r.get("_checked") == "supplemented"
+    )
+
+    # ---- TASK 2: L1 boundary shrinkage ----
+    shrunk_s = parsed.get("shrunk_start")
+    shrunk_e = parsed.get("shrunk_end")
+    if (
+        isinstance(shrunk_s, (int, float))
+        and isinstance(shrunk_e, (int, float))
+        and int(shrunk_s) < int(shrunk_e)
+    ):
+        shrunk_s = int(shrunk_s)
+        shrunk_e = int(shrunk_e)
+        if shrunk_s != phase_start or shrunk_e != phase_end:
+            result["was_shrunk"] = True
+            result["shrunk_start"] = shrunk_s
+            result["shrunk_end"] = shrunk_e
+
+    # ---- TASK 3: Order distinguishability ----
+    result["order_distinguishable"] = bool(parsed.get("order_distinguishable", False))
+    result["order_cue"] = str(parsed.get("order_cue", ""))
+    oc = parsed.get("order_confidence", 0.0)
+    result["order_confidence"] = float(oc) if isinstance(oc, (int, float)) else 0.0
+
+    result["call_info"]["order_distinguishable"] = result["order_distinguishable"]
+    result["call_info"]["order_confidence"] = result["order_confidence"]
+
+    return result
 
 
 def _apply_l3_check_results(
