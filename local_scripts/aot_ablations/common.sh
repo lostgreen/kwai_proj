@@ -24,9 +24,12 @@ MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- Seg Annotation 数据路径 ----
 ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/annotations}"
-CLIP_DIR_L1="${CLIP_DIR_L1:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L1}"
-CLIP_DIR_L2="${CLIP_DIR_L2:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L2}"
-CLIP_DIR_L3="${CLIP_DIR_L3:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips/L3}"
+CLIP_ROOT="${CLIP_ROOT:-/m2v_intern/xuboshen/zgw/data/hier_seg_annotation/clips}"
+# 原子 clips（prepare_all_clips.py 产出）: {CLIP_ROOT}/L1/, L2/, L3/
+CLIP_DIR_L1="${CLIP_DIR_L1:-${CLIP_ROOT}/L1}"
+CLIP_DIR_L2="${CLIP_DIR_L2:-${CLIP_ROOT}/L2}"
+CLIP_DIR_L3="${CLIP_DIR_L3:-${CLIP_ROOT}/L3}"
+SOURCE_VIDEO_DIR="${SOURCE_VIDEO_DIR:-}"  # 空则从标注内 source_video_path 解析
 
 # ---- 数据根目录 ----
 SEG_AOT_DATA_ROOT="${SEG_AOT_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg_aot}"

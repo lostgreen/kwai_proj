@@ -231,3 +231,43 @@ def get_l3_clip_path(
     return str(
         Path(clip_dir_l3) / f"{clip_key}_L3_ev{event_id}_{clip_start}_{clip_end}.mp4"
     )
+
+
+# ── Atomic clip-path naming (prepare_all_clips.py output) ───────────────────
+# 三层原子片段：按标注时间戳直接切出的最小单元，供 aot / event_logic 共用。
+
+def get_l1_phase_atomic_path(
+    clip_key: str,
+    phase_id: int,
+    start: int,
+    end: int,
+    clip_dir: str | Path,
+) -> str:
+    """Atomic L1 phase clip: ``{clip_dir}/L1/{clip_key}_L1_ph{id}_{start}_{end}.mp4``"""
+    return str(Path(clip_dir) / "L1" / f"{clip_key}_L1_ph{phase_id}_{start}_{end}.mp4")
+
+
+def get_l2_event_atomic_path(
+    clip_key: str,
+    event_id: int,
+    start: int,
+    end: int,
+    clip_dir: str | Path,
+) -> str:
+    """Atomic L2 event clip: ``{clip_dir}/L2/{clip_key}_L2_ev{id}_{start}_{end}.mp4``"""
+    return str(Path(clip_dir) / "L2" / f"{clip_key}_L2_ev{event_id}_{start}_{end}.mp4")
+
+
+def get_l3_action_atomic_path(
+    clip_key: str,
+    action_id: int,
+    parent_event_id: int,
+    start: int,
+    end: int,
+    clip_dir: str | Path,
+) -> str:
+    """Atomic L3 action clip: ``{clip_dir}/L3/{clip_key}_L3_act{id}_ev{parent}_{start}_{end}.mp4``"""
+    return str(
+        Path(clip_dir) / "L3"
+        / f"{clip_key}_L3_act{action_id}_ev{parent_event_id}_{start}_{end}.mp4"
+    )
