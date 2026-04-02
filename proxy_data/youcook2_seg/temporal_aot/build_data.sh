@@ -49,6 +49,7 @@ WORKERS="${WORKERS:-8}"
 CONCAT_WORKERS="${CONCAT_WORKERS:-8}"
 
 SKIP_CLIPS="${SKIP_CLIPS:-false}"
+FORCE_REBUILD="${FORCE_REBUILD:-false}"
 
 echo "============================================================"
 echo "Seg-AOT Data Builder"
@@ -59,6 +60,7 @@ echo "  TRAIN_TOTAL    : ${TRAIN_TOTAL}"
 echo "  LEVEL_RATIO    : ${LEVEL_RATIO} (L1:L2:L3)"
 echo "  FILTER         : phases=[${MIN_PHASES},${MAX_PHASES}] events=[${MIN_EVENTS},${MAX_EVENTS}] actions=[${MIN_ACTIONS},${MAX_ACTIONS}]"
 echo "  SKIP_CLIPS     : ${SKIP_CLIPS}"
+echo "  FORCE_REBUILD  : ${FORCE_REBUILD}"
 echo "============================================================"
 
 # ---- Step 0: 切原子 clips ----
@@ -95,9 +97,17 @@ _build_data() {
   local tasks=("$@")
   local out_dir="${OUTPUT_ROOT}/${exp_name}"
 
-  if [[ -f "${out_dir}/train.jsonl" ]]; then
-    echo "  ${exp_name} already exists ($(wc -l < "${out_dir}/train.jsonl") train), skipping."
+  if [[ "${FORCE_REBUILD}" != "true" && -f "${out_dir}/train.jsonl" ]]; then
+    echo "  ${exp_name} already exists ($(wc -l < "${out_dir}/train.jsonl") train), skipping. Set FORCE_REBUILD=true to regenerate."
     return
+  fi
+
+  # 如果强制重建，先备份旧文件
+  if [[ "${FORCE_REBUILD}" == "true" && -f "${out_dir}/train.jsonl" ]]; then
+    local _bak="${out_dir}/train.jsonl.bak.$(date +%Y%m%d_%H%M%S)"
+    echo "  ${exp_name}: backing up old train.jsonl -> ${_bak}"
+    mv "${out_dir}/train.jsonl" "${_bak}"
+    [[ -f "${out_dir}/val.jsonl" ]] && mv "${out_dir}/val.jsonl" "${out_dir}/val.jsonl.bak.$(date +%Y%m%d_%H%M%S)"
   fi
 
   python3 "${REPO_ROOT}/proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py" \
