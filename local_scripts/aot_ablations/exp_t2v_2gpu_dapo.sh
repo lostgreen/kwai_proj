@@ -30,7 +30,7 @@ export VAL_FREQ="${VAL_FREQ:-10}"
 export SAVE_FREQ="${SAVE_FREQ:-15}"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-SEG_TASKS="${SEG_TASKS:-phase_t2v event_t2v action_t2v}"
+SEG_TASKS="${SEG_TASKS:-event_t2v action_t2v}"
 EXP_NAME="${EXP_NAME:-seg_aot_t2v_2gpu_dapo}"
 DATA_DIR="${DATA_DIR:-${SEG_AOT_DATA_ROOT}/seg_aot_t2v}"
 
