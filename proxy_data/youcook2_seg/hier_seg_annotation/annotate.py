@@ -1550,6 +1550,146 @@ def _check_level3(
     }
 
 
+def _check_leaf_node(
+    frame_dir: Path,
+    clip_duration: float,
+    *,
+    leaf_parent_type: str,
+    leaf_parent_id: int,
+    leaf_parent_name: str,
+    leaf_parent_start: int,
+    leaf_parent_end: int,
+    existing_l3: list[dict[str, Any]],
+    micro_type: str,
+    micro_split_criterion: str,
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+    l3_base: Path | None = None,
+    clip_key_str: str = "",
+) -> dict[str, Any]:
+    """
+    Leaf-node check: combined L3 review + parent boundary shrinkage.
+
+    For ONE leaf (an event or an eventless phase), reviews its L3 micro-actions
+    and optionally shrinks the parent's boundaries.
+
+    Returns dict with keys:
+        checked_l3  – list of L3 results after keep/revise/remove/supplement
+        was_shrunk  – bool
+        shrunk_start – int
+        shrunk_end   – int
+        call_info    – dict (API call metadata)
+    """
+    from prompts import get_leaf_check_prompt
+
+    result: dict[str, Any] = {
+        "checked_l3": list(existing_l3),
+        "was_shrunk": False,
+        "shrunk_start": leaf_parent_start,
+        "shrunk_end": leaf_parent_end,
+        "call_info": {
+            "parent_type": leaf_parent_type,
+            "parent_id": leaf_parent_id,
+            "parent_name": leaf_parent_name,
+        },
+    }
+
+    if not existing_l3:
+        result["call_info"]["skipped"] = True
+        result["call_info"]["skip_reason"] = "no existing L3 results"
+        return result
+
+    # Try per-event / per-phase L3 frames first
+    if leaf_parent_type == "event":
+        ev_dir = (l3_base / f"{clip_key_str}_ev{leaf_parent_id}") if (l3_base and clip_key_str) else None
+    else:
+        ev_dir = (l3_base / f"{clip_key_str}_ph{leaf_parent_id}") if (l3_base and clip_key_str) else None
+
+    using_per_leaf = ev_dir is not None and ev_dir.exists() and len(list(ev_dir.glob("*.jpg"))) > 0
+
+    if using_per_leaf:
+        meta = load_frame_meta(ev_dir)
+        ev_fps = float(meta.get("fps", 2.0))
+        ev_start = float(meta.get("event_start_sec", leaf_parent_start))
+        ev_frames = get_all_frame_files(ev_dir)
+
+        def make_labels(frames: list[Path], _fps: float = ev_fps, _start: float = ev_start) -> list[str]:
+            labels = []
+            for fp in frames:
+                idx = frame_stem_to_index(fp, 0)
+                t_abs = _start + frame_index_to_sec(idx, _fps)
+                labels.append(f"[Timestamp {format_mmss(t_abs)} | Frame {idx}]")
+            return labels
+    else:
+        meta = load_frame_meta(frame_dir)
+        fps = float(meta.get("fps", 1.0))
+        ev_frames = get_frames_in_time_range(frame_dir, leaf_parent_start, leaf_parent_end, fps)
+
+        def make_labels(frames: list[Path], _fps: float = fps) -> list[str]:
+            labels = []
+            for fp in frames:
+                idx = frame_stem_to_index(fp, 0)
+                t = frame_index_to_sec(idx, _fps)
+                labels.append(f"[Timestamp {format_mmss(t)} | Frame {idx}]")
+            return labels
+
+    if not ev_frames:
+        result["call_info"]["skipped"] = True
+        result["call_info"]["skip_reason"] = "no frames"
+        return result
+
+    sampled = sample_uniform(ev_frames, max_frames)
+    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+    frame_labels = make_labels(sampled)
+
+    prompt_text = get_leaf_check_prompt(
+        parent_type=leaf_parent_type,
+        parent_name=leaf_parent_name,
+        parent_start=leaf_parent_start,
+        parent_end=leaf_parent_end,
+        existing_results=existing_l3,
+        micro_type=micro_type,
+        micro_split_criterion=micro_split_criterion,
+    )
+    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+
+    if parsed is None:
+        result["call_info"]["skipped"] = True
+        result["call_info"]["skip_reason"] = "check parse failed"
+        return result
+
+    # Apply L3 verdicts
+    check_for_apply = {
+        "reviews": parsed.get("l3_reviews", []),
+        "supplements": parsed.get("l3_supplements", []),
+    }
+    parent_id = leaf_parent_id
+    checked = _apply_l3_check_results(
+        existing_l3, check_for_apply, parent_id,
+        leaf_parent_start, leaf_parent_end,
+    )
+    result["checked_l3"] = checked
+    result["call_info"]["n_before"] = len(existing_l3)
+    result["call_info"]["n_after"] = len(checked)
+
+    # Shrinkage
+    shrunk_s = parsed.get("shrunk_start")
+    shrunk_e = parsed.get("shrunk_end")
+    if (
+        isinstance(shrunk_s, (int, float))
+        and isinstance(shrunk_e, (int, float))
+        and int(shrunk_s) < int(shrunk_e)
+    ):
+        shrunk_s = int(shrunk_s)
+        shrunk_e = int(shrunk_e)
+        if shrunk_s != leaf_parent_start or shrunk_e != leaf_parent_end:
+            result["was_shrunk"] = True
+            result["shrunk_start"] = shrunk_s
+            result["shrunk_end"] = shrunk_e
+
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Merged L1+L2 Check: Simultaneous Phase + Event Quality Review
 # ─────────────────────────────────────────────────────────────────────────────
