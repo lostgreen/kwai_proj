@@ -58,6 +58,62 @@ from shared.seg_source import (  # noqa: E402
     get_l3_action_atomic_path,
 )
 
+
+def _balanced_sample_by_domain(
+    records: list[dict],
+    budget: int,
+    rng: random.Random,
+    domain_key: str = "domain_l1",
+) -> list[dict]:
+    """按 domain 均衡采样 records，使各 domain 尽量等量。
+
+    策略:
+      1. 按 domain_key 分组
+      2. base_quota = budget // n_domains
+      3. 不足 quota 的域全部保留，多余名额重分配给大域
+      4. 大域内随机采样
+    """
+    if len(records) <= budget:
+        rng.shuffle(records)
+        return records
+
+    by_domain: dict[str, list[dict]] = defaultdict(list)
+    for rec in records:
+        d = rec.get(domain_key, "other")
+        by_domain[d].append(rec)
+
+    n_domains = len(by_domain)
+    if n_domains == 0:
+        return []
+
+    base_quota = budget // n_domains
+    remaining = budget
+
+    # 第一轮: 不足 quota 的域全部保留
+    small_domains: dict[str, list[dict]] = {}
+    large_domains: dict[str, list[dict]] = {}
+    for d, recs in by_domain.items():
+        rng.shuffle(recs)
+        if len(recs) <= base_quota:
+            small_domains[d] = recs
+            remaining -= len(recs)
+        else:
+            large_domains[d] = recs
+
+    sampled: list[dict] = []
+    for recs in small_domains.values():
+        sampled.extend(recs)
+
+    # 第二轮: 大域均分剩余名额
+    if large_domains:
+        quota_each = remaining // len(large_domains)
+        extra = remaining - quota_each * len(large_domains)
+        for idx, (d, recs) in enumerate(sorted(large_domains.items())):
+            q = quota_each + (1 if idx < extra else 0)
+            sampled.extend(recs[:q])
+
+    return sampled
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -1050,11 +1106,19 @@ def main():
             n_val = min(val_per_task, max(1, len(records) // 5))
             val = records[:n_val]
             train_pool = records[n_val:]
-            train = train_pool[:per_task_budget] if per_task_budget is not None else train_pool
+            # Domain-balanced sampling
+            if per_task_budget is not None and len(train_pool) > per_task_budget:
+                train = _balanced_sample_by_domain(train_pool, per_task_budget, rng)
+            else:
+                train = train_pool
             all_val.extend(val)
             all_train.extend(train)
+            # Report domain distribution
+            domain_dist = Counter(r.get("domain_l1", "other") for r in train)
+            domain_str = ", ".join(f"{d}={c}" for d, c in sorted(domain_dist.items()))
             print(f"  {task}: {len(train)} train + {len(val)} val"
-                  f"  (level={level}, budget={per_task_budget or 'unlimited'})")
+                  f"  (level={level}, budget={per_task_budget or 'unlimited'},"
+                  f" domains: {domain_str})")
 
     rng.shuffle(all_train)
     rng.shuffle(all_val)
@@ -1078,6 +1142,8 @@ def main():
         "val_total": len(all_val),
         "train_by_type": dict(Counter(r["problem_type"] for r in all_train)),
         "val_by_type": dict(Counter(r["problem_type"] for r in all_val)),
+        "train_by_domain": dict(Counter(r.get("domain_l1", "other") for r in all_train)),
+        "val_by_domain": dict(Counter(r.get("domain_l1", "other") for r in all_val)),
     }
     stats_path = os.path.join(args.output_dir, "stats.json")
     with open(stats_path, "w", encoding="utf-8") as f:
