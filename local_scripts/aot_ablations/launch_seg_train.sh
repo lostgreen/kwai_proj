@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# launch_seg_train.sh — Seg-AOT 消融实验统一训练入口
+# launch_seg_train.sh — Seg-AOT 消融实验统一训练入口（纯训练）
+#
+# 前置条件: 数据已通过 proxy_data/.../build_data.sh 构造完毕
 #
 # 调用前必须在各实验脚本里已 source common.sh 并设置:
 #   EXP_NAME       实验名称
-#   SEG_TASKS      空格分隔的任务列表 (phase_v2t phase_t2v action_v2t action_t2v event_v2t event_t2v)
+#   SEG_TASKS      空格分隔的任务列表
 # =============================================================
 set -euo pipefail
 set -x
@@ -16,46 +18,10 @@ DATA_DIR="${DATA_DIR:-${SEG_AOT_DATA_ROOT}/${EXP_NAME}}"
 TRAIN_FILE="${TRAIN_FILE:-${DATA_DIR}/train.jsonl}"
 TEST_FILE="${TEST_FILE:-${DATA_DIR}/val.jsonl}"
 
-# ---- Step 0: 视频切分（clips 不存在时自动触发）----
-SKIP_CLIPS="${SKIP_CLIPS:-false}"
-if [[ "${SKIP_CLIPS}" != "true" ]]; then
-  _need_clips=false
-  for _lvl in L1 L2 L3; do
-    _dir="${CLIP_ROOT}/${_lvl}"
-    if [[ ! -d "${_dir}" ]] || [[ -z "$(ls -A "${_dir}" 2>/dev/null)" ]]; then
-      _need_clips=true; break
-    fi
-  done
-  if [[ "${_need_clips}" == "true" ]]; then
-    echo "[seg-aot] Clip dirs incomplete, running prepare_all_clips.py ..."
-    bash "${SCRIPT_DIR}/prepare_clips.sh"
-  fi
-fi
-
-# ---- Step A: 数据构建（首次自动触发）----
 if [[ ! -f "${TRAIN_FILE}" ]]; then
-  echo "[seg-aot] Building data for tasks: ${SEG_TASKS} ..."
-  mkdir -p "${DATA_DIR}"
-  # shellcheck disable=SC2086
-  python3 "${REPO_ROOT}/proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py" \
-    --annotation-dir "${ANNOTATION_DIR}" \
-    --clip-dir "${CLIP_ROOT}" \
-    --output-dir "${DATA_DIR}" \
-    --concat-dir "${DATA_DIR}/concat_videos" \
-    --concat-workers "${CONCAT_WORKERS}" \
-    --tasks ${SEG_TASKS} \
-    --min-phases "${MIN_PHASES}" --max-phases "${MAX_PHASES}" \
-    --min-events "${MIN_EVENTS}" --max-events "${MAX_EVENTS}" \
-    --min-actions "${MIN_ACTIONS}" --max-actions "${MAX_ACTIONS}" \
-    --total-val "${TOTAL_VAL}" \
-    --train-total "${TRAIN_TOTAL}" \
-    --level-ratio "${LEVEL_RATIO}" \
-    --seed 42 \
-    --complete-only
-fi
-
-if [[ ! -f "${TRAIN_FILE}" ]]; then
-  echo "[seg-aot] ERROR: TRAIN_FILE not found after build: ${TRAIN_FILE}" >&2
+  echo "[seg-aot] ERROR: TRAIN_FILE not found: ${TRAIN_FILE}" >&2
+  echo "[seg-aot] Please run build_data.sh first:" >&2
+  echo "[seg-aot]   bash proxy_data/youcook2_seg/temporal_aot/build_data.sh" >&2
   exit 1
 fi
 
