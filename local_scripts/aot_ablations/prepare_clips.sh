@@ -42,6 +42,9 @@ CMD=(
   --l1-fps "${L1_FPS}"
   --l2l3-fps "${L2L3_FPS}"
   --workers "${WORKERS}"
+  --min-phases "${MIN_PHASES}"
+  --min-events "${MIN_EVENTS}"
+  --min-actions "${MIN_ACTIONS}"
   --complete-only
 )
 

@@ -238,6 +238,12 @@ def main():
                         help="只列出要切分的 jobs，不实际执行")
     parser.add_argument("--complete-only", action="store_true",
                         help="只处理标注完整的视频")
+    parser.add_argument("--min-phases", type=int, default=0,
+                        help="只切 L1 phases ≥ 此数量的标注 (0=不过滤)")
+    parser.add_argument("--min-events", type=int, default=0,
+                        help="只切含 ≥ 此数量 events 的 phase 组 (0=不过滤)")
+    parser.add_argument("--min-actions", type=int, default=0,
+                        help="只切含 ≥ 此数量 actions 的 event 组 (0=不过滤)")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -257,11 +263,41 @@ def main():
             skipped_videos += 1
             continue
 
-        if "L1" in levels:
+        # ---- 过滤: 只切满足最低数量要求的标注 ----
+        l1 = ann.get("level1", {})
+        l2 = ann.get("level2", {})
+        l3 = ann.get("level3", {})
+        phases = [p for p in l1.get("macro_phases", [])
+                  if isinstance(p, dict) and isinstance(p.get("start_time"), (int, float))
+                  and p.get("phase_name", "").strip()]
+        events = [e for e in l2.get("events", [])
+                  if isinstance(e, dict) and isinstance(e.get("start_time"), (int, float))
+                  and e.get("instruction", "").strip()]
+        actions = [a for a in l3.get("grounding_results", [])
+                   if isinstance(a, dict) and isinstance(a.get("start_time"), (int, float))
+                   and a.get("sub_action", "").strip()]
+
+        cut_l1 = "L1" in levels and len(phases) >= max(args.min_phases, 1)
+        # L2: 至少有一个 phase 拥有 >= min_events 个 child events
+        events_by_phase = {}
+        for e in events:
+            events_by_phase.setdefault(e.get("parent_phase_id"), []).append(e)
+        cut_l2 = "L2" in levels and any(
+            len(evs) >= max(args.min_events, 1) for evs in events_by_phase.values()
+        )
+        # L3: 至少有一个 event 拥有 >= min_actions 个 child actions
+        actions_by_event = {}
+        for a in actions:
+            actions_by_event.setdefault(a.get("parent_event_id"), []).append(a)
+        cut_l3 = "L3" in levels and any(
+            len(acts) >= max(args.min_actions, 1) for acts in actions_by_event.values()
+        )
+
+        if cut_l1:
             all_jobs.extend(_generate_l1_jobs(ann, src_video, output_dir, args.l1_fps))
-        if "L2" in levels:
+        if cut_l2:
             all_jobs.extend(_generate_l2_jobs(ann, src_video, output_dir, args.l2l3_fps))
-        if "L3" in levels:
+        if cut_l3:
             all_jobs.extend(_generate_l3_jobs(ann, src_video, output_dir, args.l2l3_fps))
 
     log.info(
