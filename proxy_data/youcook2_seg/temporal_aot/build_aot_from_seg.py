@@ -2,27 +2,31 @@
 """
 build_aot_from_seg.py — 从三层分割标注 JSON 构建 AOT (Action Ordering Task) MCQ 数据。
 
-直接复用 seg annotation 的 L1 macro_phases、L2 events 和 L3 grounding_results，
-消除独立的 VLM captioning 步骤。使用 prepare_all_clips.py 产出的原子 clips。
+使用 prepare_all_clips.py 产出的原子 clips，按不同顺序拼接后作为视频输入，
+消除时长差异和未标注间隙导致的 shortcut。
 
 六种任务类型（3 粒度 × 2 方向）:
 
-  L1 (phase) 层 — 视频输入：全视频（L1 fps-resampled）
-  - seg_aot_phase_v2t:  给全视频，判断哪个阶段列表顺序正确        (A/B/C)
-  - seg_aot_phase_t2v:  给 forward 阶段列表，从三个全视频中选匹配的 (A/B/C)
+  L1 (phase) — 原子 clips: 各 phase clip
+  - seg_aot_phase_v2t:  给 forward-concat phase 视频，判断哪个阶段列表顺序正确   (A/B/C)
+  - seg_aot_phase_t2v:  给 forward 阶段列表，从 fwd/shuf/rev 拼接视频中选正确的  (A/B/C)
 
-  L2 (event) 层 — 视频输入：L1 phase clip（包含子 events）
-  - seg_aot_event_v2t:  给 phase clip，判断哪个事件列表顺序正确    (A/B/C)
-  - seg_aot_event_t2v:  给 forward 事件列表，从三个 phase clips 中选匹配的 (A/B/C)
+  L2 (event) — 原子 clips: 各 event clip (按 parent_phase_id 分组)
+  - seg_aot_event_v2t:  给 forward-concat event 视频，判断哪个事件列表顺序正确   (A/B/C)
+  - seg_aot_event_t2v:  给 forward 事件列表，从 fwd/shuf/rev 拼接视频中选正确的  (A/B/C)
 
-  L3 (action) 层 — 视频输入：L2 event clip（包含子 sub_actions）
-  - seg_aot_action_v2t: 给 event clip，判断哪个动作列表顺序正确    (A/B)
-  - seg_aot_action_t2v: 给 forward 动作列表，从两个 event clips 中选匹配的 (A/B)
+  L3 (action) — 原子 clips: 各 action clip (按 parent_event_id 分组)
+  - seg_aot_action_v2t: 给 forward-concat action 视频，判断哪个动作列表顺序正确  (A/B)
+  - seg_aot_action_t2v: 给 forward 动作列表，从 fwd/rev 拼接视频中选正确的       (A/B)
+
+流程:
+    1. 加载标注 → 收集 concat jobs + group metadata
+    2. 并行 ffmpeg concat (demuxer, no re-encode)
+    3. 从 group metadata 构建 JSONL records
 
 用法:
     python proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py \\
         --annotation-dir /path/to/annotations \\
-        --clip-dir-l1 /path/to/clips/L1_fullvideo \\
         --clip-dir /path/to/clips \\
         --output-dir /path/to/output \\
         --tasks phase_v2t phase_t2v action_v2t action_t2v event_v2t event_t2v \\
@@ -31,83 +35,103 @@ build_aot_from_seg.py — 从三层分割标注 JSON 构建 AOT (Action Ordering
 
 import argparse
 import json
+import logging
 import os
 import random
+import shutil
+import subprocess
 import sys
-from collections import defaultdict
+import tempfile
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # 添加 proxy_data 父目录到 sys.path 以便 import shared
-# 脚本位于 proxy_data/youcook2_seg/temporal_aot/，需上溯三级到 proxy_data/
 _PROXY_DATA_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROXY_DATA_DIR not in sys.path:
     sys.path.insert(0, _PROXY_DATA_DIR)
 
-from shared.seg_source import (
+from shared.seg_source import (  # noqa: E402
     load_annotations,
-    get_l1_clip_path,
     get_l1_phase_atomic_path,
     get_l2_event_atomic_path,
     get_l3_action_atomic_path,
 )
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
+
 ANSWER_LETTERS = ["A", "B", "C"]
 
 
 # =====================================================================
-# Domain-balanced sampling
+# ffmpeg concat utility
 # =====================================================================
-def _balanced_sample_by_domain(
-    records: list[dict],
-    target: int,
-    rng: random.Random,
-) -> list[dict]:
-    """按 domain_l2 均衡采样。
+def ffmpeg_concat_clips(
+    clip_paths: list[str],
+    output_path: str,
+    overwrite: bool = False,
+) -> bool:
+    """Concatenate atomic clips using ffmpeg concat demuxer (stream copy, no re-encode).
 
-    1. 按 domain_l2 分组
-    2. 每域 quota = target // n_domains
-    3. 不足 quota 的域全选, 多余名额重分配
+    All clips must share codec, resolution, and frame rate (guaranteed when
+    produced by prepare_all_clips.py from the same source video).
     """
-    by_domain: dict[str, list[dict]] = defaultdict(list)
-    for r in records:
-        d = r.get("metadata", {}).get("domain_l2", "other")
-        by_domain[d].append(r)
+    if not clip_paths:
+        return False
+    if os.path.exists(output_path) and not overwrite:
+        return True
 
-    domains = sorted(by_domain.keys())
-    n_domains = len(domains)
-    if n_domains == 0 or target <= 0:
-        return records[:target] if target > 0 else records
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    base_quota = target // n_domains
-    remaining = target
-    sampled: list[dict] = []
+    if len(clip_paths) == 1:
+        shutil.copy2(clip_paths[0], output_path)
+        return True
 
-    # Round 1: small domains
-    large_domains = []
-    for d in domains:
-        pool = by_domain[d]
-        rng.shuffle(pool)
-        if len(pool) <= base_quota:
-            sampled.extend(pool)
-            remaining -= len(pool)
-        else:
-            large_domains.append(d)
+    list_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False,
+            dir=os.path.dirname(output_path),
+        ) as f:
+            for p in clip_paths:
+                escaped = p.replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+            list_path = f.name
 
-    # Round 2: redistribute among large domains
-    if large_domains and remaining > 0:
-        extra_quota = remaining // len(large_domains)
-        leftover = remaining - extra_quota * len(large_domains)
-        for i, d in enumerate(large_domains):
-            q = extra_quota + (1 if i < leftover else 0)
-            pool = by_domain[d]
-            sampled.extend(pool[:q])
-
-    rng.shuffle(sampled)
-    return sampled
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", list_path, "-c", "copy", "-an", output_path],
+            check=True, capture_output=True, timeout=120,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        log.warning("Concat failed for %s: %s", output_path, exc)
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+        return False
+    finally:
+        if list_path and os.path.exists(list_path):
+            os.unlink(list_path)
 
 
 # =====================================================================
-# Prompt 模板  (AOT-specific, not in shared)
+# Concat path naming
+# =====================================================================
+def _phase_concat_path(clip_key: str, order: str, concat_dir: str) -> str:
+    return os.path.join(concat_dir, "phase", f"{clip_key}_{order}.mp4")
+
+
+def _event_concat_path(clip_key: str, phase_id: int, order: str, concat_dir: str) -> str:
+    return os.path.join(concat_dir, "event", f"{clip_key}_ph{phase_id}_{order}.mp4")
+
+
+def _action_concat_path(clip_key: str, event_id: int, order: str, concat_dir: str) -> str:
+    return os.path.join(concat_dir, "action", f"{clip_key}_ev{event_id}_{order}.mp4")
+
+
+# =====================================================================
+# Prompt templates
 # =====================================================================
 _PHASE_V2T_PROMPT = """\
 Watch this {duration}s video.
@@ -126,7 +150,6 @@ C.
 Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
 
-
 _PHASE_T2V_PROMPT = """\
 Here are three video clips (Clip A, Clip B, and Clip C).
 
@@ -137,34 +160,6 @@ Which clip (A, B, or C) shows these phases in the listed order?
 
 Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
-
-
-_ACTION_V2T_PROMPT = """\
-Watch this {duration}s video clip.
-
-Which numbered list correctly describes the temporal order of atomic actions in this video?
-
-A.
-{option_a}
-
-B.
-{option_b}
-
-Think step by step inside <think></think> tags, then provide your final answer \
-(A or B) inside <answer></answer> tags."""
-
-
-_ACTION_T2V_PROMPT = """\
-Here are two {duration}s video clips (Clip A and Clip B).
-
-The atomic actions below were performed in this exact order:
-{forward_list}
-
-Which clip (A or B) shows these actions in the listed order?
-
-Think step by step inside <think></think> tags, then provide your final answer \
-(A or B) inside <answer></answer> tags."""
-
 
 _EVENT_V2T_PROMPT = """\
 Watch this {duration}s video.
@@ -183,7 +178,6 @@ C.
 Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
 
-
 _EVENT_T2V_PROMPT = """\
 Here are three video clips (Clip A, Clip B, and Clip C).
 
@@ -195,13 +189,38 @@ Which clip (A, B, or C) shows these events in the listed order?
 Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
 
+_ACTION_V2T_PROMPT = """\
+Watch this {duration}s video clip.
+
+Which numbered list correctly describes the temporal order of atomic actions in this video?
+
+A.
+{option_a}
+
+B.
+{option_b}
+
+Think step by step inside <think></think> tags, then provide your final answer \
+(A or B) inside <answer></answer> tags."""
+
+_ACTION_T2V_PROMPT = """\
+Here are two video clips (Clip A and Clip B).
+
+The atomic actions below were performed in this exact order:
+{forward_list}
+
+Which clip (A or B) shows these actions in the listed order?
+
+Think step by step inside <think></think> tags, then provide your final answer \
+(A or B) inside <answer></answer> tags."""
+
 
 def _format_list(items: list[str]) -> str:
     return "\n".join(f"   {i + 1}. {item}" for i, item in enumerate(items))
 
 
 # =====================================================================
-# JSONL 写入
+# JSONL IO
 # =====================================================================
 def write_jsonl(records: list[dict], path: str) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -211,704 +230,695 @@ def write_jsonl(records: list[dict], path: str) -> None:
 
 
 # =====================================================================
-# Task 0a: seg_aot_phase_v2t (L1-based, V2T 3-way)
+# Phase 1: Collect concat jobs + group metadata
 # =====================================================================
-def build_phase_v2t_records(
+def _collect_phase_groups(
     ann: dict,
-    clip_dir_l1: str,
-    l1_fps: int = 1,
-    min_phases: int = 3,
-    complete_only: bool = False,
-    rng: random.Random | None = None,
-) -> list[dict]:
-    """每个 L1 annotation 构建一条 phase-order V2T 三选一记录。
+    clip_dir: str,
+    concat_dir: str,
+    need_v2t: bool,
+    need_t2v: bool,
+    min_phases: int,
+    complete_only: bool,
+    rng: random.Random,
+) -> tuple[dict | None, list[tuple[list[str], str]]]:
+    """Collect phase-level concat jobs.
 
-    给视频，判断 forward / shuffled / reversed 阶段列表哪个正确。
+    Returns (group_info, [(clip_paths, output_path), ...]) or (None, []).
     """
-    if rng is None:
-        rng = random.Random(42)
-
     l1 = ann.get("level1")
     if not l1 or l1.get("_parse_error"):
-        return []
+        return None, []
 
-    clip_duration = float(ann.get("clip_duration_sec") or 0)
-    if clip_duration <= 0:
-        return []
-
-    phases = l1.get("macro_phases", [])
-    clip_key = ann.get("clip_key", "")
-
-    # 按 start_time 排序，提取 phase_name
-    sorted_phases = sorted(
-        [p for p in phases if isinstance(p, dict)
-         and isinstance(p.get("start_time"), (int, float))
+    phases = sorted(
+        [p for p in l1.get("macro_phases", [])
+         if isinstance(p, dict) and isinstance(p.get("start_time"), (int, float))
          and p.get("phase_name", "").strip()],
         key=lambda p: p["start_time"],
     )
-    phase_names = [p["phase_name"].strip() for p in sorted_phases]
+    if len(phases) < min_phases:
+        return None, []
 
-    if len(phase_names) < min_phases:
-        return []
+    clip_key = ann.get("clip_key", "")
+    fwd_paths = []
+    for ph in phases:
+        path = get_l1_phase_atomic_path(
+            clip_key, ph["phase_id"],
+            int(ph["start_time"]), int(ph["end_time"]), clip_dir,
+        )
+        if complete_only and not os.path.exists(path):
+            return None, []
+        fwd_paths.append(path)
 
-    # 生成 shuffled (保证 ≠ forward)
-    shuffled = phase_names[:]
-    for _ in range(10):
-        rng.shuffle(shuffled)
-        if shuffled != phase_names:
-            break
-    if shuffled == phase_names:
-        return []
+    phase_names = [p["phase_name"].strip() for p in phases]
+    total_dur = sum(int(p["end_time"]) - int(p["start_time"]) for p in phases)
 
-    reversed_phases = list(reversed(phase_names))
+    jobs: list[tuple[list[str], str]] = []
+    fwd_out = _phase_concat_path(clip_key, "fwd", concat_dir)
+    if need_v2t or need_t2v:
+        jobs.append((fwd_paths, fwd_out))
 
-    # video path
-    vp = get_l1_clip_path(clip_key, clip_dir_l1, l1_fps) if clip_dir_l1 else ann.get("source_video_path", ann.get("video_path", ""))
-    if complete_only and clip_dir_l1 and not os.path.exists(vp):
-        return []
+    shuf_out = rev_out = None
+    shuf_names = None
+    if need_t2v:
+        # Shuffled order
+        indices = list(range(len(phases)))
+        shuf_idx = indices[:]
+        for _ in range(20):
+            rng.shuffle(shuf_idx)
+            if shuf_idx != indices:
+                break
+        if shuf_idx == indices:
+            return None, []  # can't produce distinct shuffle
 
-    duration = int(clip_duration)
+        shuf_out = _phase_concat_path(clip_key, "shuf", concat_dir)
+        jobs.append(([fwd_paths[i] for i in shuf_idx], shuf_out))
+        shuf_names = [phase_names[i] for i in shuf_idx]
 
-    # 三选一：随机排列 forward/shuffled/reversed 到 A/B/C
-    options = [
-        ("forward", phase_names),
-        ("shuffled", shuffled),
-        ("reversed", reversed_phases),
-    ]
-    rng.shuffle(options)
-    correct_letter = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
+        rev_out = _phase_concat_path(clip_key, "rev", concat_dir)
+        jobs.append((list(reversed(fwd_paths)), rev_out))
 
-    prompt_body = _PHASE_V2T_PROMPT.format(
-        duration=duration,
-        option_a=_format_list(options[0][1]),
-        option_b=_format_list(options[1][1]),
-        option_c=_format_list(options[2][1]),
-    )
-    prompt = f"<video>\n\n{prompt_body}"
-
-    return [{
-        "messages": [{"role": "user", "content": prompt}],
-        "prompt": prompt,
-        "answer": correct_letter,
-        "videos": [vp],
-        "data_type": "video",
-        "problem_type": "seg_aot_phase_v2t",
-        "metadata": {
-            "clip_key": clip_key,
-            "clip_duration_sec": duration,
-            "n_phases": len(phase_names),
-            "forward_descriptions": phase_names,
-            "option_a_type": options[0][0],
-            "option_b_type": options[1][0],
-            "option_c_type": options[2][0],
-            "l1_fps": l1_fps,
-            "domain_l1": ann.get("domain_l1", "other"),
-            "domain_l2": ann.get("domain_l2", "other"),
-            "source": "seg_annotation",
-        },
-    }]
+    info = {
+        "clip_key": clip_key,
+        "phase_names": phase_names,
+        "n_phases": len(phases),
+        "total_duration": total_dur,
+        "fwd_video": fwd_out,
+        "shuf_video": shuf_out,
+        "rev_video": rev_out,
+        "shuf_names": shuf_names,
+        "domain_l1": ann.get("domain_l1", "other"),
+        "domain_l2": ann.get("domain_l2", "other"),
+    }
+    return info, jobs
 
 
-# =====================================================================
-# Task 0b: seg_aot_phase_t2v (L1-based, T2V 3-way)
-# =====================================================================
-def build_phase_t2v_records(
-    v2t_pool: list[dict],
-    train_per_task: int,
+def _collect_event_groups(
+    ann: dict,
+    clip_dir: str,
+    concat_dir: str,
+    need_v2t: bool,
+    need_t2v: bool,
+    min_events: int,
+    max_events: int,
+    complete_only: bool,
     rng: random.Random,
-) -> list[dict]:
-    """从全局 phase_v2t 池组合三选一 T2V 记录。
-
-    每次取 3 条来自不同 clip_key 的 v2t 记录，
-    以第 1 条的 forward 阶段描述为问题，3 条的 L1 clip 为选项。
-    """
-    by_clip: dict[str, list[dict]] = defaultdict(list)
-    for rec in v2t_pool:
-        by_clip[rec["metadata"]["clip_key"]].append(rec)
-
-    clip_keys = list(by_clip.keys())
-    if len(clip_keys) < 3:
-        return []
-
-    records = []
-    rng.shuffle(clip_keys)
-
-    max_records = max(len(v2t_pool), train_per_task if train_per_task > 0 else len(v2t_pool))
-    attempts = 0
-
-    while len(records) < max_records and attempts < max_records * 3:
-        attempts += 1
-        sampled_keys = rng.sample(clip_keys, k=3)
-        recs_3 = [rng.choice(by_clip[k]) for k in sampled_keys]
-
-        target_rec = recs_3[0]
-        target_clip = target_rec["videos"][0]
-        distractor_clips = [recs_3[1]["videos"][0], recs_3[2]["videos"][0]]
-        forward_phases = target_rec["metadata"]["forward_descriptions"]
-
-        clips = [target_clip] + distractor_clips
-        slot_order = [0, 1, 2]
-        rng.shuffle(slot_order)
-        arranged_clips = [clips[s] for s in slot_order]
-        correct_pos = ANSWER_LETTERS[slot_order.index(0)]
-
-        forward_list_str = _format_list(forward_phases)
-        prompt_body = _PHASE_T2V_PROMPT.format(forward_list=forward_list_str)
-        video_tags = "".join("<video>" for _ in arranged_clips)
-        prompt = f"{video_tags}\n\n{prompt_body}"
-
-        records.append({
-            "messages": [{"role": "user", "content": prompt}],
-            "prompt": prompt,
-            "answer": correct_pos,
-            "videos": arranged_clips,
-            "data_type": "video",
-            "problem_type": "seg_aot_phase_t2v",
-            "metadata": {
-                "target_clip_key": target_rec["metadata"]["clip_key"],
-                "distractor_clip_keys": [recs_3[1]["metadata"]["clip_key"], recs_3[2]["metadata"]["clip_key"]],
-                "n_phases": len(forward_phases),
-                "forward_descriptions": forward_phases,
-                "correct_position": correct_pos,
-                "domain_l1": target_rec["metadata"].get("domain_l1", "other"),
-                "domain_l2": target_rec["metadata"].get("domain_l2", "other"),
-                "source": "seg_annotation",
-            },
-        })
-
-    return records
-
-
-# =====================================================================
-# Task 1: seg_aot_action_v2t (L3-based, V2T binary)
-# =====================================================================
-def build_action_v2t_records(
-    ann: dict,
-    clip_dir: str,
-    min_actions: int = 3,
-    complete_only: bool = False,
-    rng: random.Random | None = None,
-) -> list[dict]:
-    """每个 L2 event 构建一条 action-order V2T 二选一记录。
-
-    以 event clip 为视频输入（包含该 event 的所有 sub_actions），
-    给视频，判断 forward 还是 reversed 动作列表正确。
-    """
-    if rng is None:
-        rng = random.Random(42)
-
-    l2 = ann.get("level2")
-    l3 = ann.get("level3")
-    if not l2 or not l3 or l3.get("_parse_error"):
-        return []
-
-    clip_duration = float(ann.get("clip_duration_sec") or 0)
-    if clip_duration <= 0:
-        return []
-
-    clip_key = ann.get("clip_key", "")
-    events = l2.get("events", [])
-    all_results = l3.get("grounding_results", [])
-
-    records = []
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        event_id = event.get("event_id")
-        ev_start = int(event.get("start_time", 0))
-        ev_end = int(event.get("end_time", 0))
-        if ev_end <= ev_start:
-            continue
-
-        raw = sorted(
-            [r for r in all_results
-             if isinstance(r, dict) and r.get("parent_event_id") == event_id],
-            key=lambda r: r.get("start_time", 0),
-        )
-        sub_actions = [r.get("sub_action", "").strip() for r in raw if r.get("sub_action", "").strip()]
-        if len(sub_actions) < min_actions:
-            continue
-
-        reversed_actions = list(reversed(sub_actions))
-        duration = ev_end - ev_start
-
-        vp = get_l2_event_atomic_path(clip_key, event_id, ev_start, ev_end, clip_dir) if clip_dir else ann.get("video_path", "")
-        if complete_only and clip_dir and not os.path.exists(vp):
-            continue
-
-        if rng.random() < 0.5:
-            option_a_type, option_a_descs, option_b_descs = "forward", sub_actions, reversed_actions
-        else:
-            option_a_type, option_a_descs, option_b_descs = "reversed", reversed_actions, sub_actions
-
-        answer = "A" if option_a_type == "forward" else "B"
-        prompt_body = _ACTION_V2T_PROMPT.format(
-            duration=duration,
-            option_a=_format_list(option_a_descs),
-            option_b=_format_list(option_b_descs),
-        )
-        prompt = f"<video>\n\n{prompt_body}"
-
-        records.append({
-            "messages": [{"role": "user", "content": prompt}],
-            "prompt": prompt,
-            "answer": answer,
-            "videos": [vp],
-            "data_type": "video",
-            "problem_type": "seg_aot_action_v2t",
-            "metadata": {
-                "clip_key": clip_key,
-                "parent_event_id": event_id,
-                "event_start_sec": ev_start,
-                "event_end_sec": ev_end,
-                "n_actions": len(sub_actions),
-                "forward_descriptions": sub_actions,
-                "alt_descriptions": reversed_actions,
-                "option_a_type": option_a_type,
-                "domain_l1": ann.get("domain_l1", "other"),
-                "domain_l2": ann.get("domain_l2", "other"),
-                "source": "seg_annotation",
-            },
-        })
-
-    return records
-
-
-# =====================================================================
-# Task 2: seg_aot_action_t2v (L3-based, T2V binary)
-# =====================================================================
-def build_action_t2v_records(
-    ann: dict,
-    clip_dir: str,
-    min_actions: int = 3,
-    complete_only: bool = False,
-    rng: random.Random | None = None,
-) -> list[dict]:
-    """同 clip_key 内两个 L2 event clips 构成一条 action T2V 二选一记录。
-
-    以 event clip 为视频选项（每个 event clip 包含其 sub_actions），
-    给 forward 动作列表（来自 event_i），从 event_i clip 和 event_j clip 中选匹配的。
-    干扰项：同 clip_key 内另一 L2 event 的 clip。
-    """
-    if rng is None:
-        rng = random.Random(42)
-
-    l2 = ann.get("level2")
-    l3 = ann.get("level3")
-    if not l2 or not l3 or l3.get("_parse_error"):
-        return []
-
-    clip_duration = float(ann.get("clip_duration_sec") or 0)
-    if clip_duration <= 0:
-        return []
-
-    clip_key = ann.get("clip_key", "")
-    events = l2.get("events", [])
-    all_results = l3.get("grounding_results", [])
-
-    # 先收集所有有效 event 的 actions + clip path
-    valid_events = []
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        event_id = event.get("event_id")
-        ev_start = int(event.get("start_time", 0))
-        ev_end = int(event.get("end_time", 0))
-        if ev_end <= ev_start:
-            continue
-
-        raw = sorted(
-            [r for r in all_results
-             if isinstance(r, dict) and r.get("parent_event_id") == event_id],
-            key=lambda r: r.get("start_time", 0),
-        )
-        sub_actions = [r.get("sub_action", "").strip() for r in raw if r.get("sub_action", "").strip()]
-        if len(sub_actions) < min_actions:
-            continue
-
-        duration = ev_end - ev_start
-        vp = get_l2_event_atomic_path(clip_key, event_id, ev_start, ev_end, clip_dir) if clip_dir else ann.get("video_path", "")
-        if complete_only and clip_dir and not os.path.exists(vp):
-            continue
-
-        valid_events.append({
-            "event_id": event_id,
-            "sub_actions": sub_actions,
-            "clip_path": vp,
-            "duration": duration,
-        })
-
-    # 需要至少 2 个有效 event 才能构建 T2V 对
-    if len(valid_events) < 2:
-        return []
-
-    records = []
-    for i, target_ev in enumerate(valid_events):
-        other_indices = [j for j in range(len(valid_events)) if j != i]
-        j = rng.choice(other_indices)
-        distractor_ev = valid_events[j]
-
-        target_clip = target_ev["clip_path"]
-        distractor_clip = distractor_ev["clip_path"]
-        forward_actions = target_ev["sub_actions"]
-        avg_duration = (target_ev["duration"] + distractor_ev["duration"]) // 2
-
-        if rng.random() < 0.5:
-            correct_pos, videos = "A", [target_clip, distractor_clip]
-        else:
-            correct_pos, videos = "B", [distractor_clip, target_clip]
-
-        forward_list_str = _format_list(forward_actions)
-        prompt_body = _ACTION_T2V_PROMPT.format(
-            duration=avg_duration,
-            forward_list=forward_list_str,
-        )
-        video_tags = "".join("<video>" for _ in videos)
-        prompt = f"{video_tags}\n\n{prompt_body}"
-
-        records.append({
-            "messages": [{"role": "user", "content": prompt}],
-            "prompt": prompt,
-            "answer": correct_pos,
-            "videos": videos,
-            "data_type": "video",
-            "problem_type": "seg_aot_action_t2v",
-            "metadata": {
-                "clip_key": clip_key,
-                "target_event_id": target_ev["event_id"],
-                "distractor_event_id": distractor_ev["event_id"],
-                "n_actions": len(forward_actions),
-                "forward_descriptions": forward_actions,
-                "correct_position": correct_pos,
-                "domain_l1": ann.get("domain_l1", "other"),
-                "domain_l2": ann.get("domain_l2", "other"),
-                "source": "seg_annotation",
-            },
-        })
-
-    return records
-
-
-# =====================================================================
-# Task 3: seg_aot_event_v2t (L2-based, V2T 3-way)
-# =====================================================================
-def build_event_v2t_records(
-    ann: dict,
-    clip_dir: str,
-    min_events: int = 3,
-    max_events: int = 999,
-    complete_only: bool = False,
-    rng: random.Random | None = None,
-) -> list[dict]:
-    """每个 L1 phase 构建一条 event-order V2T 三选一记录。
-
-    以 phase clip 为视频输入（包含该 phase 下所有 events），
-    三个选项: forward / shuffle / reversed。
-    """
-    if rng is None:
-        rng = random.Random(42)
-
+) -> tuple[list[dict], list[tuple[list[str], str]]]:
+    """Collect event-level concat jobs (one group per phase)."""
     l1 = ann.get("level1")
     l2 = ann.get("level2")
     if not l1 or not l2 or l2.get("_parse_error"):
-        return []
+        return [], []
 
-    clip_duration = float(ann.get("clip_duration_sec") or 0)
-    if clip_duration <= 0:
-        return []
-
+    clip_key = ann.get("clip_key", "")
     phases = l1.get("macro_phases", [])
     events = l2.get("events", [])
-    clip_key = ann.get("clip_key", "")
 
-    records = []
+    groups: list[dict] = []
+    jobs: list[tuple[list[str], str]] = []
+
     for phase in phases:
         if not isinstance(phase, dict):
             continue
         ph_id = phase.get("phase_id")
-        ph_start = int(phase.get("start_time", 0))
-        ph_end = int(phase.get("end_time", 0))
-        if ph_end <= ph_start:
-            continue
 
-        duration = ph_end - ph_start
-
-        # 收集属于此 phase 的 events
-        matched_events = []
-        for ev in events:
-            if not isinstance(ev, dict):
-                continue
-            if ev.get("parent_phase_id") != ph_id:
-                continue
-            instruction = ev.get("instruction", "").strip()
-            if instruction:
-                matched_events.append(instruction)
-
-        if len(matched_events) < min_events or len(matched_events) > max_events:
-            continue
-
-        # 生成 shuffled (Fisher-Yates, 保证 ≠ forward)
-        shuffled = matched_events[:]
-        for _ in range(10):
-            rng.shuffle(shuffled)
-            if shuffled != matched_events:
-                break
-        if shuffled == matched_events:
-            continue
-
-        reversed_events = list(reversed(matched_events))
-
-        vp = get_l1_phase_atomic_path(clip_key, ph_id, ph_start, ph_end, clip_dir) if clip_dir else ann.get("video_path", "")
-        if complete_only and clip_dir and not os.path.exists(vp):
-            continue
-
-        # 三选一：随机排列 forward/shuffled/reversed 到 A/B/C
-        options = [
-            ("forward", matched_events),
-            ("shuffled", shuffled),
-            ("reversed", reversed_events),
-        ]
-        rng.shuffle(options)
-        correct_letter = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
-
-        prompt_body = _EVENT_V2T_PROMPT.format(
-            duration=duration,
-            option_a=_format_list(options[0][1]),
-            option_b=_format_list(options[1][1]),
-            option_c=_format_list(options[2][1]),
+        # Gather child events sorted by start_time
+        child_events = sorted(
+            [ev for ev in events
+             if isinstance(ev, dict) and ev.get("parent_phase_id") == ph_id
+             and ev.get("instruction", "").strip()
+             and isinstance(ev.get("start_time"), (int, float))],
+            key=lambda ev: ev["start_time"],
         )
-        prompt = f"<video>\n\n{prompt_body}"
+        if len(child_events) < min_events or len(child_events) > max_events:
+            continue
 
-        records.append({
-            "messages": [{"role": "user", "content": prompt}],
-            "prompt": prompt,
-            "answer": correct_letter,
-            "videos": [vp],
-            "data_type": "video",
-            "problem_type": "seg_aot_event_v2t",
-            "metadata": {
-                "clip_key": clip_key,
-                "parent_phase_id": ph_id,
-                "phase_start_sec": ph_start,
-                "phase_end_sec": ph_end,
-                "n_events": len(matched_events),
-                "forward_descriptions": matched_events,
-                "option_a_type": options[0][0],
-                "option_b_type": options[1][0],
-                "option_c_type": options[2][0],
-                "domain_l1": ann.get("domain_l1", "other"),
-                "domain_l2": ann.get("domain_l2", "other"),
-                "source": "seg_annotation",
-            },
+        fwd_paths = []
+        for ev in child_events:
+            path = get_l2_event_atomic_path(
+                clip_key, ev["event_id"],
+                int(ev["start_time"]), int(ev["end_time"]), clip_dir,
+            )
+            if complete_only and not os.path.exists(path):
+                fwd_paths = None
+                break
+            fwd_paths.append(path)
+        if fwd_paths is None:
+            continue
+
+        instructions = [ev["instruction"].strip() for ev in child_events]
+        total_dur = sum(int(ev["end_time"]) - int(ev["start_time"]) for ev in child_events)
+
+        fwd_out = _event_concat_path(clip_key, ph_id, "fwd", concat_dir)
+        if need_v2t or need_t2v:
+            jobs.append((fwd_paths, fwd_out))
+
+        shuf_out = rev_out = None
+        shuf_instructions = None
+        if need_t2v:
+            indices = list(range(len(child_events)))
+            shuf_idx = indices[:]
+            for _ in range(20):
+                rng.shuffle(shuf_idx)
+                if shuf_idx != indices:
+                    break
+            if shuf_idx == indices:
+                continue
+
+            shuf_out = _event_concat_path(clip_key, ph_id, "shuf", concat_dir)
+            jobs.append(([fwd_paths[i] for i in shuf_idx], shuf_out))
+            shuf_instructions = [instructions[i] for i in shuf_idx]
+
+            rev_out = _event_concat_path(clip_key, ph_id, "rev", concat_dir)
+            jobs.append((list(reversed(fwd_paths)), rev_out))
+
+        groups.append({
+            "clip_key": clip_key,
+            "phase_id": ph_id,
+            "instructions": instructions,
+            "n_events": len(child_events),
+            "total_duration": total_dur,
+            "fwd_video": fwd_out,
+            "shuf_video": shuf_out,
+            "rev_video": rev_out,
+            "shuf_instructions": shuf_instructions,
+            "domain_l1": ann.get("domain_l1", "other"),
+            "domain_l2": ann.get("domain_l2", "other"),
         })
 
-    return records
+    return groups, jobs
 
 
-# =====================================================================
-# Task 4: seg_aot_event_t2v (L2-based, T2V 3-way)
-# =====================================================================
-def build_event_t2v_records(
-    v2t_pool: list[dict],
-    train_per_task: int,
+def _collect_action_groups(
+    ann: dict,
+    clip_dir: str,
+    concat_dir: str,
+    need_v2t: bool,
+    need_t2v: bool,
+    min_actions: int,
+    complete_only: bool,
     rng: random.Random,
-) -> list[dict]:
-    """从全局 event_v2t 池组合三选一 T2V 记录。
+) -> tuple[list[dict], list[tuple[list[str], str]]]:
+    """Collect action-level concat jobs (one group per event)."""
+    l2 = ann.get("level2")
+    l3 = ann.get("level3")
+    if not l2 or not l3 or l3.get("_parse_error"):
+        return [], []
 
-    每次取 3 条来自不同 clip_key 的 v2t 记录，
-    以第 1 条的 forward 事件描述为问题，3 条的 L2 window clip 为选项。
-    """
-    # 按 clip_key 分组
-    by_clip: dict[str, list[dict]] = defaultdict(list)
-    for rec in v2t_pool:
-        by_clip[rec["metadata"]["clip_key"]].append(rec)
+    clip_key = ann.get("clip_key", "")
+    events = l2.get("events", [])
+    all_results = l3.get("grounding_results", [])
 
-    clip_keys = list(by_clip.keys())
-    if len(clip_keys) < 3:
-        return []
+    groups: list[dict] = []
+    jobs: list[tuple[list[str], str]] = []
 
-    records = []
-    # 随机三元组
-    rng.shuffle(clip_keys)
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        ev_id = event.get("event_id")
 
-    # 最多生成 train_per_task 条（避免过多组合）
-    max_records = max(len(v2t_pool), train_per_task if train_per_task > 0 else len(v2t_pool))
-    attempts = 0
+        child_actions = sorted(
+            [r for r in all_results
+             if isinstance(r, dict) and r.get("parent_event_id") == ev_id
+             and r.get("sub_action", "").strip()
+             and isinstance(r.get("start_time"), (int, float))],
+            key=lambda r: r["start_time"],
+        )
+        if len(child_actions) < min_actions:
+            continue
 
-    while len(records) < max_records and attempts < max_records * 3:
-        attempts += 1
-        # 不放回随机取 3 个不同的 clip_key
-        sampled_keys = rng.sample(clip_keys, k=3)
-        recs_3 = [rng.choice(by_clip[k]) for k in sampled_keys]
+        fwd_paths = []
+        for act in child_actions:
+            path = get_l3_action_atomic_path(
+                clip_key, act["action_id"], ev_id,
+                int(act["start_time"]), int(act["end_time"]), clip_dir,
+            )
+            if complete_only and not os.path.exists(path):
+                fwd_paths = None
+                break
+            fwd_paths.append(path)
+        if fwd_paths is None:
+            continue
 
-        target_rec = recs_3[0]
-        target_clip = target_rec["videos"][0]
-        distractor_clips = [recs_3[1]["videos"][0], recs_3[2]["videos"][0]]
-        forward_events = target_rec["metadata"]["forward_descriptions"]
+        sub_actions = [r["sub_action"].strip() for r in child_actions]
+        total_dur = sum(int(r["end_time"]) - int(r["start_time"]) for r in child_actions)
 
-        # 随机化 A/B/C 位置
-        clips = [target_clip] + distractor_clips
-        slot_order = [0, 1, 2]
-        rng.shuffle(slot_order)
-        arranged_clips = [clips[s] for s in slot_order]
-        correct_pos = ANSWER_LETTERS[slot_order.index(0)]
+        fwd_out = _action_concat_path(clip_key, ev_id, "fwd", concat_dir)
+        if need_v2t or need_t2v:
+            jobs.append((fwd_paths, fwd_out))
 
-        forward_list_str = _format_list(forward_events)
-        prompt_body = _EVENT_T2V_PROMPT.format(forward_list=forward_list_str)
-        video_tags = "".join("<video>" for _ in arranged_clips)
-        prompt = f"{video_tags}\n\n{prompt_body}"
+        rev_out = None
+        if need_t2v:
+            rev_out = _action_concat_path(clip_key, ev_id, "rev", concat_dir)
+            jobs.append((list(reversed(fwd_paths)), rev_out))
 
-        records.append({
-            "messages": [{"role": "user", "content": prompt}],
-            "prompt": prompt,
-            "answer": correct_pos,
-            "videos": arranged_clips,
-            "data_type": "video",
-            "problem_type": "seg_aot_event_t2v",
-            "metadata": {
-                "target_clip_key": target_rec["metadata"]["clip_key"],
-                "distractor_clip_keys": [recs_3[1]["metadata"]["clip_key"], recs_3[2]["metadata"]["clip_key"]],
-                "n_events": len(forward_events),
-                "forward_descriptions": forward_events,
-                "correct_position": correct_pos,
-                "domain_l1": target_rec["metadata"].get("domain_l1", "other"),
-                "domain_l2": target_rec["metadata"].get("domain_l2", "other"),
-                "source": "seg_annotation",
-            },
+        groups.append({
+            "clip_key": clip_key,
+            "event_id": ev_id,
+            "sub_actions": sub_actions,
+            "n_actions": len(child_actions),
+            "total_duration": total_dur,
+            "fwd_video": fwd_out,
+            "rev_video": rev_out,
+            "domain_l1": ann.get("domain_l1", "other"),
+            "domain_l2": ann.get("domain_l2", "other"),
         })
 
-    return records
+    return groups, jobs
+
+
+# =====================================================================
+# Phase 3: Build records from group metadata
+# =====================================================================
+def _build_phase_v2t(info: dict, rng: random.Random) -> dict | None:
+    names = info["phase_names"]
+    shuffled = names[:]
+    for _ in range(20):
+        rng.shuffle(shuffled)
+        if shuffled != names:
+            break
+    if shuffled == names:
+        return None
+
+    reversed_names = list(reversed(names))
+    options = [("forward", names), ("shuffled", shuffled), ("reversed", reversed_names)]
+    rng.shuffle(options)
+    correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
+
+    body = _PHASE_V2T_PROMPT.format(
+        duration=info["total_duration"],
+        option_a=_format_list(options[0][1]),
+        option_b=_format_list(options[1][1]),
+        option_c=_format_list(options[2][1]),
+    )
+    prompt = f"<video>\n\n{body}"
+
+    return {
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": correct,
+        "videos": [info["fwd_video"]],
+        "data_type": "video",
+        "problem_type": "seg_aot_phase_v2t",
+        "metadata": {
+            "clip_key": info["clip_key"],
+            "total_duration_sec": info["total_duration"],
+            "n_phases": info["n_phases"],
+            "forward_descriptions": names,
+            "option_a_type": options[0][0],
+            "option_b_type": options[1][0],
+            "option_c_type": options[2][0],
+            "domain_l1": info["domain_l1"],
+            "domain_l2": info["domain_l2"],
+            "source": "seg_annotation",
+        },
+    }
+
+
+def _build_phase_t2v(info: dict, rng: random.Random) -> dict | None:
+    if not info.get("shuf_video") or not info.get("rev_video"):
+        return None
+
+    names = info["phase_names"]
+    fwd_list = _format_list(names)
+
+    video_opts = [
+        ("forward", info["fwd_video"]),
+        ("shuffled", info["shuf_video"]),
+        ("reversed", info["rev_video"]),
+    ]
+    rng.shuffle(video_opts)
+    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index("forward")]
+    videos = [v for _, v in video_opts]
+
+    tags = "".join("<video>" for _ in videos)
+    body = _PHASE_T2V_PROMPT.format(forward_list=fwd_list)
+    prompt = f"{tags}\n\n{body}"
+
+    return {
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": correct,
+        "videos": videos,
+        "data_type": "video",
+        "problem_type": "seg_aot_phase_t2v",
+        "metadata": {
+            "clip_key": info["clip_key"],
+            "total_duration_sec": info["total_duration"],
+            "n_phases": info["n_phases"],
+            "forward_descriptions": names,
+            "video_a_type": video_opts[0][0],
+            "video_b_type": video_opts[1][0],
+            "video_c_type": video_opts[2][0],
+            "correct_position": correct,
+            "domain_l1": info["domain_l1"],
+            "domain_l2": info["domain_l2"],
+            "source": "seg_annotation",
+        },
+    }
+
+
+def _build_event_v2t(info: dict, rng: random.Random) -> dict | None:
+    instr = info["instructions"]
+    shuffled = instr[:]
+    for _ in range(20):
+        rng.shuffle(shuffled)
+        if shuffled != instr:
+            break
+    if shuffled == instr:
+        return None
+
+    reversed_instr = list(reversed(instr))
+    options = [("forward", instr), ("shuffled", shuffled), ("reversed", reversed_instr)]
+    rng.shuffle(options)
+    correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
+
+    body = _EVENT_V2T_PROMPT.format(
+        duration=info["total_duration"],
+        option_a=_format_list(options[0][1]),
+        option_b=_format_list(options[1][1]),
+        option_c=_format_list(options[2][1]),
+    )
+    prompt = f"<video>\n\n{body}"
+
+    return {
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": correct,
+        "videos": [info["fwd_video"]],
+        "data_type": "video",
+        "problem_type": "seg_aot_event_v2t",
+        "metadata": {
+            "clip_key": info["clip_key"],
+            "phase_id": info["phase_id"],
+            "total_duration_sec": info["total_duration"],
+            "n_events": info["n_events"],
+            "forward_descriptions": instr,
+            "option_a_type": options[0][0],
+            "option_b_type": options[1][0],
+            "option_c_type": options[2][0],
+            "domain_l1": info["domain_l1"],
+            "domain_l2": info["domain_l2"],
+            "source": "seg_annotation",
+        },
+    }
+
+
+def _build_event_t2v(info: dict, rng: random.Random) -> dict | None:
+    if not info.get("shuf_video") or not info.get("rev_video"):
+        return None
+
+    instr = info["instructions"]
+    fwd_list = _format_list(instr)
+
+    video_opts = [
+        ("forward", info["fwd_video"]),
+        ("shuffled", info["shuf_video"]),
+        ("reversed", info["rev_video"]),
+    ]
+    rng.shuffle(video_opts)
+    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index("forward")]
+    videos = [v for _, v in video_opts]
+
+    tags = "".join("<video>" for _ in videos)
+    body = _EVENT_T2V_PROMPT.format(forward_list=fwd_list)
+    prompt = f"{tags}\n\n{body}"
+
+    return {
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": correct,
+        "videos": videos,
+        "data_type": "video",
+        "problem_type": "seg_aot_event_t2v",
+        "metadata": {
+            "clip_key": info["clip_key"],
+            "phase_id": info["phase_id"],
+            "total_duration_sec": info["total_duration"],
+            "n_events": info["n_events"],
+            "forward_descriptions": instr,
+            "video_a_type": video_opts[0][0],
+            "video_b_type": video_opts[1][0],
+            "video_c_type": video_opts[2][0],
+            "correct_position": correct,
+            "domain_l1": info["domain_l1"],
+            "domain_l2": info["domain_l2"],
+            "source": "seg_annotation",
+        },
+    }
+
+
+def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
+    acts = info["sub_actions"]
+    reversed_acts = list(reversed(acts))
+
+    if rng.random() < 0.5:
+        a_type, a_desc, b_desc = "forward", acts, reversed_acts
+    else:
+        a_type, a_desc, b_desc = "reversed", reversed_acts, acts
+
+    answer = "A" if a_type == "forward" else "B"
+    body = _ACTION_V2T_PROMPT.format(
+        duration=info["total_duration"],
+        option_a=_format_list(a_desc),
+        option_b=_format_list(b_desc),
+    )
+    prompt = f"<video>\n\n{body}"
+
+    return {
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": answer,
+        "videos": [info["fwd_video"]],
+        "data_type": "video",
+        "problem_type": "seg_aot_action_v2t",
+        "metadata": {
+            "clip_key": info["clip_key"],
+            "event_id": info["event_id"],
+            "total_duration_sec": info["total_duration"],
+            "n_actions": info["n_actions"],
+            "forward_descriptions": acts,
+            "option_a_type": a_type,
+            "domain_l1": info["domain_l1"],
+            "domain_l2": info["domain_l2"],
+            "source": "seg_annotation",
+        },
+    }
+
+
+def _build_action_t2v(info: dict, rng: random.Random) -> dict | None:
+    if not info.get("rev_video"):
+        return None
+
+    acts = info["sub_actions"]
+    fwd_list = _format_list(acts)
+
+    video_opts = [
+        ("forward", info["fwd_video"]),
+        ("reversed", info["rev_video"]),
+    ]
+    rng.shuffle(video_opts)
+    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index("forward")]
+    videos = [v for _, v in video_opts]
+
+    tags = "".join("<video>" for _ in videos)
+    body = _ACTION_T2V_PROMPT.format(forward_list=fwd_list)
+    prompt = f"{tags}\n\n{body}"
+
+    return {
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": correct,
+        "videos": videos,
+        "data_type": "video",
+        "problem_type": "seg_aot_action_t2v",
+        "metadata": {
+            "clip_key": info["clip_key"],
+            "event_id": info["event_id"],
+            "total_duration_sec": info["total_duration"],
+            "n_actions": info["n_actions"],
+            "forward_descriptions": acts,
+            "video_a_type": video_opts[0][0],
+            "video_b_type": video_opts[1][0],
+            "correct_position": correct,
+            "domain_l1": info["domain_l1"],
+            "domain_l2": info["domain_l2"],
+            "source": "seg_annotation",
+        },
+    }
 
 
 # =====================================================================
 # Main
 # =====================================================================
 def main():
-    ALL_TASKS = ["phase_v2t", "phase_t2v", "action_v2t", "action_t2v", "event_v2t", "event_t2v"]
+    ALL_TASKS = [
+        "phase_v2t", "phase_t2v",
+        "event_v2t", "event_t2v",
+        "action_v2t", "action_t2v",
+    ]
 
     parser = argparse.ArgumentParser(
-        description="从三层分割标注 JSON 构建 AOT MCQ 训练数据 (6 种 problem_type)",
+        description="从三层分割标注构建 AOT MCQ 数据（原子 clip 拼接版）",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--annotation-dir", required=True,
-                        help="标注 JSON 目录 (annotations/*.json)")
-    parser.add_argument("--clip-dir-l1", default="",
-                        help="L1 全视频 clips 目录，留空则用原始视频路径")
-    parser.add_argument("--clip-dir", default="",
-                        help="原子 clips 根目录（下设 L1/ L2/ L3/），由 prepare_all_clips.py 产出")
-    parser.add_argument("--output-dir", required=True,
-                        help="输出目录，生成 train.jsonl / val.jsonl / stats.json")
-    parser.add_argument(
-        "--tasks", nargs="+",
-        choices=ALL_TASKS,
-        default=ALL_TASKS,
-        help="要构建的任务类型",
-    )
-    parser.add_argument("--l1-fps", type=int, default=1,
-                        help="L1 视频帧率（默认: 1）")
-    parser.add_argument("--min-phases", type=int, default=3,
-                        help="phase_*: 每视频最少 phase 数")
-    parser.add_argument("--min-events", type=int, default=3,
-                        help="event_*: 每 phase 最少事件数")
-    parser.add_argument("--max-events", type=int, default=999,
-                        help="event_*: 每 phase 最多事件数")
-    parser.add_argument("--min-actions", type=int, default=3,
-                        help="action_*: 每事件最少 action 数")
-    parser.add_argument("--total-val", type=int, default=200,
-                        help="总验证集样本数（按 task 均分）")
-    parser.add_argument("--train-per-task", type=int, default=-1,
-                        help="每个任务最多 train 条数 (-1 = 无限制)")
-    parser.add_argument("--complete-only", action="store_true",
-                        help="跳过 clip 文件不存在的记录")
-    parser.add_argument("--balance-per-task", type=int, default=-1,
-                        help="每 task 按 domain_l2 均衡采样的目标数 (-1 = 不均衡)")
+    parser.add_argument("--annotation-dir", required=True)
+    parser.add_argument("--clip-dir", required=True,
+                        help="原子 clips 根目录（含 L1/ L2/ L3/），由 prepare_all_clips.py 产出")
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--concat-dir", default="",
+                        help="拼接视频输出目录（默认: {output-dir}/concat_videos）")
+    parser.add_argument("--concat-workers", type=int, default=8,
+                        help="并发 ffmpeg 拼接线程数")
+    parser.add_argument("--overwrite-concat", action="store_true",
+                        help="强制重新生成已存在的拼接视频")
+    parser.add_argument("--tasks", nargs="+", choices=ALL_TASKS, default=ALL_TASKS)
+    parser.add_argument("--min-phases", type=int, default=3)
+    parser.add_argument("--min-events", type=int, default=3)
+    parser.add_argument("--max-events", type=int, default=999)
+    parser.add_argument("--min-actions", type=int, default=3)
+    parser.add_argument("--total-val", type=int, default=200)
+    parser.add_argument("--train-per-task", type=int, default=-1)
+    parser.add_argument("--complete-only", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
-    ann_dir = Path(args.annotation_dir)
-    if not ann_dir.exists():
-        print(f"ERROR: annotation-dir not found: {ann_dir}")
-        return
+    concat_dir = args.concat_dir or os.path.join(args.output_dir, "concat_videos")
+    tasks = set(args.tasks)
 
-    # 使用 shared 统一加载接口
-    ann_list = load_annotations(ann_dir, complete_only=False)
-    print(f"Found {len(ann_list)} annotation files")
+    need_phase_v2t = "phase_v2t" in tasks
+    need_phase_t2v = "phase_t2v" in tasks
+    need_event_v2t = "event_v2t" in tasks
+    need_event_t2v = "event_t2v" in tasks
+    need_action_v2t = "action_v2t" in tasks
+    need_action_t2v = "action_t2v" in tasks
 
-    # 逐文件构建记录（T2V 后处理）
-    task_records: dict[str, list[dict]] = {t: [] for t in args.tasks}
+    # ---- 1. Load annotations ----
+    ann_list = load_annotations(args.annotation_dir, complete_only=False)
+    log.info("Loaded %d annotations", len(ann_list))
+
+    # ---- 2. Collect concat jobs + group metadata ----
+    all_jobs: dict[str, tuple[list[str], str]] = {}  # keyed by output_path (dedup)
+    phase_groups: list[dict] = []
+    event_groups: list[dict] = []
+    action_groups: list[dict] = []
 
     for ann in ann_list:
+        ann_rng = random.Random(rng.random())
 
-        # L1 phase tasks
-        if "phase_v2t" in args.tasks or "phase_t2v" in args.tasks:
-            task_records.setdefault("phase_v2t", []).extend(
-                build_phase_v2t_records(
-                    ann, args.clip_dir_l1, args.l1_fps, args.min_phases,
-                    args.complete_only,
-                    random.Random(rng.random()),
-                )
+        if need_phase_v2t or need_phase_t2v:
+            info, jobs = _collect_phase_groups(
+                ann, args.clip_dir, concat_dir,
+                need_phase_v2t, need_phase_t2v,
+                args.min_phases, args.complete_only, ann_rng,
             )
+            if info:
+                phase_groups.append(info)
+                for j in jobs:
+                    all_jobs.setdefault(j[1], j)
 
-        # L3 action tasks (use L2 event clips as video input)
-        if "action_v2t" in args.tasks:
-            task_records["action_v2t"].extend(
-                build_action_v2t_records(
-                    ann, args.clip_dir, args.min_actions, args.complete_only,
-                    random.Random(rng.random()),
-                )
+        if need_event_v2t or need_event_t2v:
+            infos, jobs = _collect_event_groups(
+                ann, args.clip_dir, concat_dir,
+                need_event_v2t, need_event_t2v,
+                args.min_events, args.max_events,
+                args.complete_only, ann_rng,
             )
-        if "action_t2v" in args.tasks:
-            task_records["action_t2v"].extend(
-                build_action_t2v_records(
-                    ann, args.clip_dir, args.min_actions, args.complete_only,
-                    random.Random(rng.random()),
-                )
+            event_groups.extend(infos)
+            for j in jobs:
+                all_jobs.setdefault(j[1], j)
+
+        if need_action_v2t or need_action_t2v:
+            infos, jobs = _collect_action_groups(
+                ann, args.clip_dir, concat_dir,
+                need_action_v2t, need_action_t2v,
+                args.min_actions, args.complete_only, ann_rng,
             )
+            action_groups.extend(infos)
+            for j in jobs:
+                all_jobs.setdefault(j[1], j)
 
-        # L2 event tasks (use L1 phase clips as video input)
-        if "event_v2t" in args.tasks or "event_t2v" in args.tasks:
-            task_records.setdefault("event_v2t", []).extend(
-                build_event_v2t_records(
-                    ann, args.clip_dir, args.min_events, args.max_events,
-                    args.complete_only,
-                    random.Random(rng.random()),
-                )
-            )
+    log.info(
+        "Collected %d concat jobs (phase=%d, event=%d, action=%d groups)",
+        len(all_jobs), len(phase_groups), len(event_groups), len(action_groups),
+    )
 
-    # phase_t2v 后处理：从 phase_v2t 池组合
-    if "phase_t2v" in args.tasks:
-        v2t_pool = task_records.get("phase_v2t", [])
-        print(f"  Building phase_t2v from {len(v2t_pool)} phase_v2t records ...")
-        task_records["phase_t2v"] = build_phase_t2v_records(
-            v2t_pool,
-            args.train_per_task,
-            random.Random(rng.random()),
-        )
-        if "phase_v2t" not in args.tasks:
-            del task_records["phase_v2t"]
+    # ---- 3. Execute concat jobs in parallel ----
+    success = 0
+    failed_paths: set[str] = set()
 
-    # event_t2v 后处理：从 event_v2t 池组合
-    if "event_t2v" in args.tasks:
-        v2t_pool = task_records.get("event_v2t", [])
-        print(f"  Building event_t2v from {len(v2t_pool)} event_v2t records ...")
-        task_records["event_t2v"] = build_event_t2v_records(
-            v2t_pool,
-            args.train_per_task,
-            random.Random(rng.random()),
-        )
-        if "event_v2t" not in args.tasks:
-            del task_records["event_v2t"]
+    with ThreadPoolExecutor(max_workers=args.concat_workers) as pool:
+        futures = {
+            pool.submit(
+                ffmpeg_concat_clips, clip_paths, out_path,
+                overwrite=args.overwrite_concat,
+            ): out_path
+            for clip_paths, out_path in all_jobs.values()
+        }
+        for fut in as_completed(futures):
+            out = futures[fut]
+            try:
+                if fut.result():
+                    success += 1
+                else:
+                    failed_paths.add(out)
+            except Exception:
+                failed_paths.add(out)
 
-    # 统计
-    print(f"\n=== Extraction Stats ===")
+    log.info("Concat done: %d success, %d failed", success, len(failed_paths))
+
+    # ---- 4. Build records ----
+    task_records: dict[str, list[dict]] = {t: [] for t in args.tasks}
+
+    for info in phase_groups:
+        if info["fwd_video"] in failed_paths:
+            continue
+        if need_phase_v2t:
+            rec = _build_phase_v2t(info, random.Random(rng.random()))
+            if rec:
+                task_records["phase_v2t"].append(rec)
+        if need_phase_t2v:
+            if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
+                rec = _build_phase_t2v(info, random.Random(rng.random()))
+                if rec:
+                    task_records["phase_t2v"].append(rec)
+
+    for info in event_groups:
+        if info["fwd_video"] in failed_paths:
+            continue
+        if need_event_v2t:
+            rec = _build_event_v2t(info, random.Random(rng.random()))
+            if rec:
+                task_records["event_v2t"].append(rec)
+        if need_event_t2v:
+            if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
+                rec = _build_event_t2v(info, random.Random(rng.random()))
+                if rec:
+                    task_records["event_t2v"].append(rec)
+
+    for info in action_groups:
+        if info["fwd_video"] in failed_paths:
+            continue
+        if need_action_v2t:
+            rec = _build_action_v2t(info, random.Random(rng.random()))
+            if rec:
+                task_records["action_v2t"].append(rec)
+        if need_action_t2v:
+            if info.get("rev_video") not in failed_paths:
+                rec = _build_action_t2v(info, random.Random(rng.random()))
+                if rec:
+                    task_records["action_t2v"].append(rec)
+
+    # ---- Stats ----
+    print("\n=== Extraction Stats ===")
     for task in args.tasks:
         print(f"  {task}: {len(task_records.get(task, []))} records")
 
-    # 分割 train / val
+    # ---- 5. Train/val split ----
     n_tasks = len(args.tasks)
     val_per_task = max(1, args.total_val // n_tasks)
-    train_per_task = None if args.train_per_task < 0 else args.train_per_task
+    train_limit = None if args.train_per_task < 0 else args.train_per_task
 
     all_train: list[dict] = []
     all_val: list[dict] = []
@@ -916,12 +926,10 @@ def main():
     for task in args.tasks:
         records = task_records.get(task, [])
         rng.shuffle(records)
-
         n_val = min(val_per_task, max(1, len(records) // 5))
         val = records[:n_val]
         train_pool = records[n_val:]
-        train = train_pool[:train_per_task] if train_per_task is not None else train_pool
-
+        train = train_pool[:train_limit] if train_limit is not None else train_pool
         all_val.extend(val)
         all_train.extend(train)
         print(f"  {task}: {len(train)} train + {len(val)} val")
@@ -929,24 +937,23 @@ def main():
     rng.shuffle(all_train)
     rng.shuffle(all_val)
 
-    # 写出
+    # ---- Write ----
     os.makedirs(args.output_dir, exist_ok=True)
     train_path = os.path.join(args.output_dir, "train.jsonl")
     val_path = os.path.join(args.output_dir, "val.jsonl")
     write_jsonl(all_train, train_path)
     write_jsonl(all_val, val_path)
 
-    # stats.json
-    from collections import Counter
-    train_types = dict(Counter(r["problem_type"] for r in all_train))
-    val_types = dict(Counter(r["problem_type"] for r in all_val))
     stats = {
-        "total_annotation_files": len(ann_list),
+        "total_annotations": len(ann_list),
         "tasks": args.tasks,
+        "concat_dir": concat_dir,
+        "concat_total": len(all_jobs),
+        "concat_failed": len(failed_paths),
         "train_total": len(all_train),
         "val_total": len(all_val),
-        "train_by_type": train_types,
-        "val_by_type": val_types,
+        "train_by_type": dict(Counter(r["problem_type"] for r in all_train)),
+        "val_by_type": dict(Counter(r["problem_type"] for r in all_val)),
     }
     stats_path = os.path.join(args.output_dir, "stats.json")
     with open(stats_path, "w", encoding="utf-8") as f:
@@ -955,6 +962,7 @@ def main():
     print(f"\n=== Output ===")
     print(f"  Train: {len(all_train)}  →  {train_path}")
     print(f"  Val:   {len(all_val)}  →  {val_path}")
+    print(f"  Concat: {success}/{len(all_jobs)} success  →  {concat_dir}")
     print(f"  Stats: {stats_path}")
 
     if all_train:
@@ -962,8 +970,7 @@ def main():
         print(f"\n=== Example record ===")
         print(f"  problem_type: {ex['problem_type']}")
         print(f"  answer: {ex['answer']}")
-        n_vids = len(ex.get("videos", []))
-        print(f"  videos ({n_vids}): {ex['videos'][0] if ex['videos'] else 'N/A'}")
+        print(f"  videos ({len(ex['videos'])}): {ex['videos'][0]}")
         print(f"  prompt (first 300 chars):\n  {ex['prompt'][:300]}")
 
 

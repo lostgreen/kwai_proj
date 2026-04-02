@@ -39,11 +39,11 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
   # shellcheck disable=SC2086
   python3 "${REPO_ROOT}/proxy_data/youcook2_seg/temporal_aot/build_aot_from_seg.py" \
     --annotation-dir "${ANNOTATION_DIR}" \
-    --clip-dir-l1 "${CLIP_DIR_L1}" \
     --clip-dir "${CLIP_ROOT}" \
     --output-dir "${DATA_DIR}" \
+    --concat-dir "${DATA_DIR}/concat_videos" \
+    --concat-workers "${CONCAT_WORKERS}" \
     --tasks ${SEG_TASKS} \
-    --l1-fps "${L1_FPS}" \
     --min-phases "${MIN_PHASES}" \
     --min-events "${MIN_EVENTS}" \
     --min-actions "${MIN_ACTIONS}" \
