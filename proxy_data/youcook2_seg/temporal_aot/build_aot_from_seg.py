@@ -9,15 +9,15 @@ build_aot_from_seg.py — 从三层分割标注 JSON 构建 AOT (Action Ordering
 
   L1 (phase) — 原子 clips: 各 phase clip
   - seg_aot_phase_v2t:  给 forward-concat phase 视频，判断哪个阶段列表顺序正确   (A/B/C)
-  - seg_aot_phase_t2v:  给 forward 阶段列表，从 fwd/shuf/rev 拼接视频中选正确的  (A/B/C)
+  - seg_aot_phase_t2v:  给 fwd/shuf/rev 阶段列表，从 3 个拼接视频中选出匹配的   (A/B/C, round-robin)
 
   L2 (event) — 原子 clips: 各 event clip (按 parent_phase_id 分组)
   - seg_aot_event_v2t:  给 forward-concat event 视频，判断哪个事件列表顺序正确   (A/B/C)
-  - seg_aot_event_t2v:  给 forward 事件列表，从 fwd/shuf/rev 拼接视频中选正确的  (A/B/C)
+  - seg_aot_event_t2v:  给 fwd/shuf/rev 事件列表，从 3 个拼接视频中选出匹配的   (A/B/C, round-robin)
 
   L3 (action) — 原子 clips: 各 action clip (按 parent_event_id 分组)
-  - seg_aot_action_v2t: 给 forward-concat action 视频，判断哪个动作列表顺序正确  (A/B)
-  - seg_aot_action_t2v: 给 forward 动作列表，从 fwd/rev 拼接视频中选正确的       (A/B)
+  - seg_aot_action_v2t: 给 forward-concat action 视频，判断哪个动作列表顺序正确  (A/B/C)
+  - seg_aot_action_t2v: 给 fwd/shuf/rev 动作列表，从 3 个拼接视频中选出匹配的   (A/B/C, round-robin)
 
 流程:
     1. 加载标注 → 收集 concat jobs + group metadata
@@ -200,19 +200,22 @@ A.
 B.
 {option_b}
 
+C.
+{option_c}
+
 Think step by step inside <think></think> tags, then provide your final answer \
-(A or B) inside <answer></answer> tags."""
+(A, B, or C) inside <answer></answer> tags."""
 
 _ACTION_T2V_PROMPT = """\
-Here are two video clips (Clip A and Clip B).
+Here are three video clips (Clip A, Clip B, and Clip C).
 
 The atomic actions below were performed in this exact order:
 {forward_list}
 
-Which clip (A or B) shows these actions in the listed order?
+Which clip (A, B, or C) shows these actions in the listed order?
 
 Think step by step inside <think></think> tags, then provide your final answer \
-(A or B) inside <answer></answer> tags."""
+(A, B, or C) inside <answer></answer> tags."""
 
 
 def _format_list(items: list[str]) -> str:
@@ -467,8 +470,23 @@ def _collect_action_groups(
         if need_v2t or need_t2v:
             jobs.append((fwd_paths, fwd_out))
 
-        rev_out = None
-        if need_t2v:
+        shuf_out = rev_out = None
+        shuf_actions = None
+        if need_v2t or need_t2v:
+            # Shuffled order
+            indices = list(range(len(child_actions)))
+            shuf_idx = indices[:]
+            for _ in range(20):
+                rng.shuffle(shuf_idx)
+                if shuf_idx != indices:
+                    break
+            if shuf_idx == indices:
+                continue  # can't produce distinct shuffle
+
+            shuf_out = _action_concat_path(clip_key, ev_id, "shuf", concat_dir)
+            jobs.append(([fwd_paths[i] for i in shuf_idx], shuf_out))
+            shuf_actions = [sub_actions[i] for i in shuf_idx]
+
             rev_out = _action_concat_path(clip_key, ev_id, "rev", concat_dir)
             jobs.append((list(reversed(fwd_paths)), rev_out))
 
@@ -479,7 +497,9 @@ def _collect_action_groups(
             "n_actions": len(child_actions),
             "total_duration": total_dur,
             "fwd_video": fwd_out,
+            "shuf_video": shuf_out,
             "rev_video": rev_out,
+            "shuf_actions": shuf_actions,
             "domain_l1": ann.get("domain_l1", "other"),
             "domain_l2": ann.get("domain_l2", "other"),
         })
@@ -535,20 +555,36 @@ def _build_phase_v2t(info: dict, rng: random.Random) -> dict | None:
     }
 
 
-def _build_phase_t2v(info: dict, rng: random.Random) -> dict | None:
+_T2V_TEXT_ORDERS = ["forward", "shuffled", "reversed"]
+
+
+def _build_phase_t2v(info: dict, rng: random.Random, text_order: str = "forward") -> dict | None:
+    """Build one T2V record using *text_order* as the ground-truth text ordering."""
     if not info.get("shuf_video") or not info.get("rev_video"):
         return None
 
     names = info["phase_names"]
-    fwd_list = _format_list(names)
+    text_map = {
+        "forward": names,
+        "shuffled": info.get("shuf_names") or names,
+        "reversed": list(reversed(names)),
+    }
+    video_map = {
+        "forward": info["fwd_video"],
+        "shuffled": info["shuf_video"],
+        "reversed": info["rev_video"],
+    }
+
+    text_list = text_map[text_order]
+    fwd_list = _format_list(text_list)
 
     video_opts = [
-        ("forward", info["fwd_video"]),
-        ("shuffled", info["shuf_video"]),
-        ("reversed", info["rev_video"]),
+        ("forward", video_map["forward"]),
+        ("shuffled", video_map["shuffled"]),
+        ("reversed", video_map["reversed"]),
     ]
     rng.shuffle(video_opts)
-    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index("forward")]
+    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index(text_order)]
     videos = [v for _, v in video_opts]
 
     tags = "".join("<video>" for _ in videos)
@@ -567,6 +603,7 @@ def _build_phase_t2v(info: dict, rng: random.Random) -> dict | None:
             "total_duration_sec": info["total_duration"],
             "n_phases": info["n_phases"],
             "forward_descriptions": names,
+            "text_order": text_order,
             "video_a_type": video_opts[0][0],
             "video_b_type": video_opts[1][0],
             "video_c_type": video_opts[2][0],
@@ -624,20 +661,33 @@ def _build_event_v2t(info: dict, rng: random.Random) -> dict | None:
     }
 
 
-def _build_event_t2v(info: dict, rng: random.Random) -> dict | None:
+def _build_event_t2v(info: dict, rng: random.Random, text_order: str = "forward") -> dict | None:
+    """Build one T2V record using *text_order* as the ground-truth text ordering."""
     if not info.get("shuf_video") or not info.get("rev_video"):
         return None
 
     instr = info["instructions"]
-    fwd_list = _format_list(instr)
+    text_map = {
+        "forward": instr,
+        "shuffled": info.get("shuf_instructions") or instr,
+        "reversed": list(reversed(instr)),
+    }
+    video_map = {
+        "forward": info["fwd_video"],
+        "shuffled": info["shuf_video"],
+        "reversed": info["rev_video"],
+    }
+
+    text_list = text_map[text_order]
+    fwd_list = _format_list(text_list)
 
     video_opts = [
-        ("forward", info["fwd_video"]),
-        ("shuffled", info["shuf_video"]),
-        ("reversed", info["rev_video"]),
+        ("forward", video_map["forward"]),
+        ("shuffled", video_map["shuffled"]),
+        ("reversed", video_map["reversed"]),
     ]
     rng.shuffle(video_opts)
-    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index("forward")]
+    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index(text_order)]
     videos = [v for _, v in video_opts]
 
     tags = "".join("<video>" for _ in videos)
@@ -657,6 +707,7 @@ def _build_event_t2v(info: dict, rng: random.Random) -> dict | None:
             "total_duration_sec": info["total_duration"],
             "n_events": info["n_events"],
             "forward_descriptions": instr,
+            "text_order": text_order,
             "video_a_type": video_opts[0][0],
             "video_b_type": video_opts[1][0],
             "video_c_type": video_opts[2][0],
@@ -670,25 +721,31 @@ def _build_event_t2v(info: dict, rng: random.Random) -> dict | None:
 
 def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
     acts = info["sub_actions"]
+    shuffled = acts[:]
+    for _ in range(20):
+        rng.shuffle(shuffled)
+        if shuffled != acts:
+            break
+    if shuffled == acts:
+        return None
+
     reversed_acts = list(reversed(acts))
+    options = [("forward", acts), ("shuffled", shuffled), ("reversed", reversed_acts)]
+    rng.shuffle(options)
+    correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
 
-    if rng.random() < 0.5:
-        a_type, a_desc, b_desc = "forward", acts, reversed_acts
-    else:
-        a_type, a_desc, b_desc = "reversed", reversed_acts, acts
-
-    answer = "A" if a_type == "forward" else "B"
     body = _ACTION_V2T_PROMPT.format(
         duration=info["total_duration"],
-        option_a=_format_list(a_desc),
-        option_b=_format_list(b_desc),
+        option_a=_format_list(options[0][1]),
+        option_b=_format_list(options[1][1]),
+        option_c=_format_list(options[2][1]),
     )
     prompt = f"<video>\n\n{body}"
 
     return {
         "messages": [{"role": "user", "content": prompt}],
         "prompt": prompt,
-        "answer": answer,
+        "answer": correct,
         "videos": [info["fwd_video"]],
         "data_type": "video",
         "problem_type": "seg_aot_action_v2t",
@@ -698,7 +755,9 @@ def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
             "total_duration_sec": info["total_duration"],
             "n_actions": info["n_actions"],
             "forward_descriptions": acts,
-            "option_a_type": a_type,
+            "option_a_type": options[0][0],
+            "option_b_type": options[1][0],
+            "option_c_type": options[2][0],
             "domain_l1": info["domain_l1"],
             "domain_l2": info["domain_l2"],
             "source": "seg_annotation",
@@ -706,19 +765,33 @@ def _build_action_v2t(info: dict, rng: random.Random) -> dict | None:
     }
 
 
-def _build_action_t2v(info: dict, rng: random.Random) -> dict | None:
-    if not info.get("rev_video"):
+def _build_action_t2v(info: dict, rng: random.Random, text_order: str = "forward") -> dict | None:
+    """Build one T2V record using *text_order* as the ground-truth text ordering."""
+    if not info.get("shuf_video") or not info.get("rev_video"):
         return None
 
     acts = info["sub_actions"]
-    fwd_list = _format_list(acts)
+    text_map = {
+        "forward": acts,
+        "shuffled": info.get("shuf_actions") or acts,
+        "reversed": list(reversed(acts)),
+    }
+    video_map = {
+        "forward": info["fwd_video"],
+        "shuffled": info["shuf_video"],
+        "reversed": info["rev_video"],
+    }
+
+    text_list = text_map[text_order]
+    fwd_list = _format_list(text_list)
 
     video_opts = [
-        ("forward", info["fwd_video"]),
-        ("reversed", info["rev_video"]),
+        ("forward", video_map["forward"]),
+        ("shuffled", video_map["shuffled"]),
+        ("reversed", video_map["reversed"]),
     ]
     rng.shuffle(video_opts)
-    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index("forward")]
+    correct = ANSWER_LETTERS[[o[0] for o in video_opts].index(text_order)]
     videos = [v for _, v in video_opts]
 
     tags = "".join("<video>" for _ in videos)
@@ -738,8 +811,10 @@ def _build_action_t2v(info: dict, rng: random.Random) -> dict | None:
             "total_duration_sec": info["total_duration"],
             "n_actions": info["n_actions"],
             "forward_descriptions": acts,
+            "text_order": text_order,
             "video_a_type": video_opts[0][0],
             "video_b_type": video_opts[1][0],
+            "video_c_type": video_opts[2][0],
             "correct_position": correct,
             "domain_l1": info["domain_l1"],
             "domain_l2": info["domain_l2"],
@@ -869,7 +944,9 @@ def main():
     log.info("Concat done: %d success, %d failed", success, len(failed_paths))
 
     # ---- 4. Build records ----
+    # T2V uses round-robin text_order (fwd/shuf/rev) for balanced distribution
     task_records: dict[str, list[dict]] = {t: [] for t in args.tasks}
+    t2v_order_idx = 0  # round-robin counter across all T2V groups
 
     for info in phase_groups:
         if info["fwd_video"] in failed_paths:
@@ -880,9 +957,11 @@ def main():
                 task_records["phase_v2t"].append(rec)
         if need_phase_t2v:
             if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
-                rec = _build_phase_t2v(info, random.Random(rng.random()))
+                text_order = _T2V_TEXT_ORDERS[t2v_order_idx % 3]
+                rec = _build_phase_t2v(info, random.Random(rng.random()), text_order)
                 if rec:
                     task_records["phase_t2v"].append(rec)
+                    t2v_order_idx += 1
 
     for info in event_groups:
         if info["fwd_video"] in failed_paths:
@@ -893,9 +972,11 @@ def main():
                 task_records["event_v2t"].append(rec)
         if need_event_t2v:
             if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
-                rec = _build_event_t2v(info, random.Random(rng.random()))
+                text_order = _T2V_TEXT_ORDERS[t2v_order_idx % 3]
+                rec = _build_event_t2v(info, random.Random(rng.random()), text_order)
                 if rec:
                     task_records["event_t2v"].append(rec)
+                    t2v_order_idx += 1
 
     for info in action_groups:
         if info["fwd_video"] in failed_paths:
@@ -905,10 +986,12 @@ def main():
             if rec:
                 task_records["action_v2t"].append(rec)
         if need_action_t2v:
-            if info.get("rev_video") not in failed_paths:
-                rec = _build_action_t2v(info, random.Random(rng.random()))
+            if info.get("shuf_video") not in failed_paths and info.get("rev_video") not in failed_paths:
+                text_order = _T2V_TEXT_ORDERS[t2v_order_idx % 3]
+                rec = _build_action_t2v(info, random.Random(rng.random()), text_order)
                 if rec:
                     task_records["action_t2v"].append(rec)
+                    t2v_order_idx += 1
 
     # ---- Stats ----
     print("\n=== Extraction Stats ===")
