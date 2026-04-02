@@ -711,6 +711,14 @@ def _annotate_merged_l1l2(
     sampled = sample_uniform(all_frames, max_frames)
     frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
 
+    # Log original frame size (before resize) for cost analysis
+    with Image.open(sampled[0]) as _img:
+        orig_w, orig_h = _img.size
+    avg_b64_len = sum(len(b) for b in frame_b64) // max(len(frame_b64), 1)
+    avg_jpeg_kb = avg_b64_len * 3 // 4 // 1024
+    print(f"  frames: {len(sampled)}/{len(all_frames)} orig={orig_w}x{orig_h} "
+          f"resize_max={resize_max_width} q={jpeg_quality} avg_jpeg={avg_jpeg_kb}KB", flush=True)
+
     # Real-time labels (same format as L2)
     frame_labels = []
     for fp in sampled:
