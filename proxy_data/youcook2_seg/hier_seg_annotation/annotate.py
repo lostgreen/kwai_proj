@@ -307,6 +307,10 @@ def call_vlm(
                 response_format={"type": "json_object"},
             )
             _accumulate_usage(resp.usage, text_chars, image_b64_bytes, len(frame_b64_list))
+            if resp.usage:
+                pt = getattr(resp.usage, "prompt_tokens", 0) or 0
+                ct = getattr(resp.usage, "completion_tokens", 0) or 0
+                print(f"    [call] prompt={pt:,} compl={ct:,} imgs={len(frame_b64_list)} b64={image_b64_bytes//1024}KB", flush=True)
             return resp.choices[0].message.content
         except Exception as e:
             last_error = e
