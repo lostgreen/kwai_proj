@@ -46,6 +46,7 @@ import base64
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -55,6 +56,37 @@ from typing import Any
 
 from PIL import Image
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Global thread-safe token usage tracker
+# ─────────────────────────────────────────────────────────────────────────────
+_token_lock = threading.Lock()
+_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "api_calls": 0}
+
+
+def get_token_usage() -> dict[str, int]:
+    """Return a snapshot of accumulated token usage."""
+    with _token_lock:
+        return dict(_token_usage)
+
+
+def reset_token_usage() -> None:
+    """Reset accumulated token usage counters."""
+    with _token_lock:
+        for k in _token_usage:
+            _token_usage[k] = 0
+
+
+def _accumulate_usage(usage) -> None:
+    """Accumulate token usage from an API response."""
+    if usage is None:
+        return
+    with _token_lock:
+        _token_usage["prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+        _token_usage["completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+        _token_usage["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+        _token_usage["api_calls"] += 1
+
+
 from prompts import (
     SYSTEM_PROMPT,
     DOMAIN_TAXONOMY,
@@ -62,7 +94,6 @@ from prompts import (
     TOPOLOGY_TYPES,
     TOPOLOGY_TO_L2_MODE,
     TOPOLOGY_TO_L3_MODE,
-    get_leaf_check_prompt,
     get_level2_check_prompt,
     get_level3_prompt,
     get_level3_check_prompt,
@@ -265,6 +296,7 @@ def call_vlm(
                 temperature=temperature,
                 response_format={"type": "json_object"},
             )
+            _accumulate_usage(resp.usage)
             return resp.choices[0].message.content
         except Exception as e:
             last_error = e
@@ -1344,207 +1376,6 @@ def _check_level3(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Leaf-Node Check: Per-leaf L3 review + parent boundary shrinkage
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _apply_parent_shrinkage(
-    parsed: dict[str, Any],
-    original_start: int,
-    original_end: int,
-    kept_l3: list[dict[str, Any]],
-) -> tuple[int, int, bool]:
-    """Apply parent boundary shrinkage from VLM output.
-
-    Returns (new_start, new_end, was_shrunk).
-    On validation failure, returns original bounds unchanged.
-    """
-    shrunk_start = parsed.get("shrunk_start")
-    shrunk_end = parsed.get("shrunk_end")
-
-    if not isinstance(shrunk_start, (int, float)) or not isinstance(shrunk_end, (int, float)):
-        return original_start, original_end, False
-
-    shrunk_start = int(shrunk_start)
-    shrunk_end = int(shrunk_end)
-
-    # Basic sanity
-    if shrunk_start < 0 or shrunk_end <= shrunk_start:
-        return original_start, original_end, False
-
-    # Ensure all kept L3 actions are within shrunk bounds
-    for r in kept_l3:
-        rs = r.get("start_time", 0)
-        re = r.get("end_time", 0)
-        if isinstance(rs, (int, float)) and rs < shrunk_start:
-            return original_start, original_end, False
-        if isinstance(re, (int, float)) and re > shrunk_end:
-            return original_start, original_end, False
-
-    changed = (shrunk_start != original_start or shrunk_end != original_end)
-    return shrunk_start, shrunk_end, changed
-
-
-def _check_leaf_node(
-    frame_dir: Path,
-    clip_duration: float,
-    leaf_parent_type: str,
-    leaf_parent_id: int,
-    leaf_parent_name: str,
-    leaf_parent_start: int,
-    leaf_parent_end: int,
-    existing_l3: list[dict[str, Any]],
-    micro_type: str,
-    micro_split_criterion: str,
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-    l3_base: Path | None = None,
-    clip_key_str: str = "",
-) -> dict[str, Any]:
-    """
-    Leaf-Node Check: L3 review + parent boundary shrinkage for a single leaf.
-
-    Returns dict with keys:
-        checked_l3: list of checked L3 results
-        shrunk_start, shrunk_end: new parent boundaries
-        was_shrunk: bool
-        call_info: metadata about this check call
-    """
-    start_time = leaf_parent_start
-    end_time = leaf_parent_end
-
-    meta = load_frame_meta(frame_dir)
-    fps = float(meta.get("fps", 1.0))
-
-    # --- Load frames (try per-leaf dir first, fallback to 1fps range) ---
-    if leaf_parent_type == "event":
-        leaf_dir_name = f"{clip_key_str}_ev{leaf_parent_id}"
-    else:
-        leaf_dir_name = f"{clip_key_str}_ph{leaf_parent_id}"
-
-    leaf_dir = (l3_base / leaf_dir_name) if (l3_base and clip_key_str) else None
-    using_leaf_dir = leaf_dir is not None and leaf_dir.exists() and len(list(leaf_dir.glob("*.jpg"))) > 0
-
-    if using_leaf_dir:
-        leaf_meta = load_frame_meta(leaf_dir)
-        leaf_fps = float(leaf_meta.get("fps", 2.0))
-        leaf_start = float(leaf_meta.get("event_start_sec", start_time))
-        leaf_frames = get_all_frame_files(leaf_dir)
-
-        def make_labels(frames: list[Path], _fps: float = leaf_fps, _start: float = leaf_start) -> list[str]:
-            labels = []
-            for fp in frames:
-                idx = frame_stem_to_index(fp, 0)
-                t_abs = _start + frame_index_to_sec(idx, _fps)
-                labels.append(f"[Timestamp {format_mmss(t_abs)} | Frame {idx}]")
-            return labels
-    else:
-        leaf_frames = get_frames_in_time_range(frame_dir, start_time, end_time, fps)
-
-        def make_labels(frames: list[Path], _fps: float = fps) -> list[str]:
-            labels = []
-            for fp in frames:
-                idx = frame_stem_to_index(fp, 0)
-                t = frame_index_to_sec(idx, _fps)
-                labels.append(f"[Timestamp {format_mmss(t)} | Frame {idx}]")
-            return labels
-
-    if not leaf_frames:
-        return {
-            "checked_l3": list(existing_l3),
-            "shrunk_start": start_time,
-            "shrunk_end": end_time,
-            "was_shrunk": False,
-            "call_info": {
-                "parent_type": leaf_parent_type,
-                "parent_id": leaf_parent_id,
-                "parent_name": leaf_parent_name,
-                "skipped": True,
-                "skip_reason": "no frames",
-            },
-        }
-
-    sampled = sample_uniform(leaf_frames, max_frames)
-    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-    frame_labels = make_labels(sampled)
-
-    # --- Build prompt ---
-    prompt_text = get_leaf_check_prompt(
-        parent_type=leaf_parent_type,
-        parent_name=leaf_parent_name,
-        parent_start=int(start_time),
-        parent_end=int(end_time),
-        existing_results=existing_l3,
-        micro_type=micro_type,
-        micro_split_criterion=micro_split_criterion,
-    )
-    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
-
-    if parsed is None:
-        return {
-            "checked_l3": list(existing_l3),
-            "shrunk_start": start_time,
-            "shrunk_end": end_time,
-            "was_shrunk": False,
-            "call_info": {
-                "parent_type": leaf_parent_type,
-                "parent_id": leaf_parent_id,
-                "parent_name": leaf_parent_name,
-                "skipped": True,
-                "skip_reason": "check parse failed",
-            },
-        }
-
-    # --- Apply L3 verdicts (reuse existing logic) ---
-    # Remap keys: leaf_c uses "l3_reviews"/"l3_supplements" vs old "reviews"/"supplements"
-    adapted_parsed = {
-        "reviews": parsed.get("l3_reviews", []),
-        "supplements": parsed.get("l3_supplements", []),
-    }
-
-    parent_id_for_l3 = leaf_parent_id
-    checked_l3 = _apply_l3_check_results(
-        existing_l3, adapted_parsed,
-        parent_id_for_l3, int(start_time), int(end_time),
-    )
-
-    # Fix parent linkage: _apply_l3_check_results sets parent_event_id, but
-    # for phase-based leaves we need parent_phase_id instead
-    if leaf_parent_type == "phase":
-        for r in checked_l3:
-            if "parent_event_id" in r:
-                r["parent_phase_id"] = r.pop("parent_event_id")
-
-    # --- Apply parent shrinkage ---
-    new_start, new_end, was_shrunk = _apply_parent_shrinkage(
-        parsed, int(start_time), int(end_time), checked_l3,
-    )
-
-    n_before = len(existing_l3)
-    call_info = {
-        "parent_type": leaf_parent_type,
-        "parent_id": leaf_parent_id,
-        "parent_name": leaf_parent_name,
-        "start_time": start_time,
-        "end_time": end_time,
-        "n_before": n_before,
-        "n_after": len(checked_l3),
-        "n_supplements": sum(1 for r in checked_l3 if r.get("_checked") == "supplemented"),
-        "shrunk": was_shrunk,
-    }
-    if was_shrunk:
-        call_info["shrunk_from"] = [int(start_time), int(end_time)]
-        call_info["shrunk_to"] = [new_start, new_end]
-
-    return {
-        "checked_l3": checked_l3,
-        "shrunk_start": new_start,
-        "shrunk_end": new_end,
-        "was_shrunk": was_shrunk,
-        "call_info": call_info,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Merged L1+L2 Check: Simultaneous Phase + Event Quality Review
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1909,7 +1740,8 @@ def main() -> None:
                 print(f"\r[{i}/{total}] skip={skipped_count} ok={ok_count} err={error_count}", end="", flush=True)
             elif res["ok"]:
                 ok_count += 1
-                print(f"\n[{i}/{total}] OK     {res['clip_key']}", flush=True)
+                u = get_token_usage()
+                print(f"\n[{i}/{total}] OK     {res['clip_key']}  (tokens: in={u['prompt_tokens']:,} out={u['completion_tokens']:,} calls={u['api_calls']})", flush=True)
             else:
                 error_count += 1
                 print(f"\n[{i}/{total}] ERROR  {res['clip_key']}: {res['error']}", flush=True)
@@ -1917,6 +1749,17 @@ def main() -> None:
     print(f"\n\nFinished: {ok_count} annotated, {skipped_count} skipped, {error_count} errors", flush=True)
     if error_count > 0:
         print("Re-run with --overwrite to retry failed clips.")
+
+    # Token usage summary
+    usage = get_token_usage()
+    if usage["api_calls"] > 0:
+        print(f"\n── Token Usage ──")
+        print(f"  API calls:        {usage['api_calls']}")
+        print(f"  Prompt tokens:    {usage['prompt_tokens']:,}")
+        print(f"  Completion tokens:{usage['completion_tokens']:,}")
+        print(f"  Total tokens:     {usage['total_tokens']:,}")
+        if ok_count > 0:
+            print(f"  Avg per clip:     {usage['total_tokens'] // ok_count:,} tokens")
 
 
 if __name__ == "__main__":

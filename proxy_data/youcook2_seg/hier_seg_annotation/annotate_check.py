@@ -60,6 +60,7 @@ from annotate import (
     frame_stem_to_index,
     get_all_frame_files,
     get_frames_in_time_range,
+    get_token_usage,
     load_frame_meta,
     sample_uniform,
 )
@@ -579,6 +580,8 @@ def main() -> None:
                             if isinstance(v, (int, float)):
                                 agg_stats[f"{level_key}.{k}"] = agg_stats.get(f"{level_key}.{k}", 0) + v
                 print(f"[{i}/{total}] OK     {res['clip_key']}")
+                u = get_token_usage()
+                print(f"  tokens: in={u['prompt_tokens']:,} out={u['completion_tokens']:,} calls={u['api_calls']}")
             else:
                 error_count += 1
                 print(f"[{i}/{total}] ERROR  {res['clip_key']}: {res['error']}")
@@ -588,6 +591,17 @@ def main() -> None:
         print("\nAggregate stats:")
         for k, v in sorted(agg_stats.items()):
             print(f"  {k}: {v}")
+
+    # Token usage summary
+    usage = get_token_usage()
+    if usage["api_calls"] > 0:
+        print(f"\n── Token Usage ──")
+        print(f"  API calls:        {usage['api_calls']}")
+        print(f"  Prompt tokens:    {usage['prompt_tokens']:,}")
+        print(f"  Completion tokens:{usage['completion_tokens']:,}")
+        print(f"  Total tokens:     {usage['total_tokens']:,}")
+        if ok_count > 0:
+            print(f"  Avg per clip:     {usage['total_tokens'] // ok_count:,} tokens")
 
 
 if __name__ == "__main__":
