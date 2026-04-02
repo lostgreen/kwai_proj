@@ -1676,9 +1676,9 @@ def main() -> None:
                         help="Model name to pass to the API")
     parser.add_argument("--max-frames-per-call", type=int, default=0,
                         help="Max frames per API call (0 = no limit, send all frames)")
-    parser.add_argument("--resize-max-width", type=int, default=384,
+    parser.add_argument("--resize-max-width", type=int, default=256,
                         help="Resize frames before upload; <=0 disables resizing")
-    parser.add_argument("--jpeg-quality", type=int, default=60,
+    parser.add_argument("--jpeg-quality", type=int, default=40,
                         help="JPEG quality for recompressing frames before upload")
     parser.add_argument("--workers", type=int, default=2,
                         help="Parallel annotation workers")
