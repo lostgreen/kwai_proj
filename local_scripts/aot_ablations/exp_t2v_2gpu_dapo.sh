@@ -28,9 +28,6 @@ export ONLINE_FILTERING=true
 export MAX_STEPS="${MAX_STEPS:-30}"
 export VAL_FREQ="${VAL_FREQ:-10}"
 export SAVE_FREQ="${SAVE_FREQ:-15}"
-export TRAIN_TOTAL="${TRAIN_TOTAL:-200}"
-export TOTAL_VAL="${TOTAL_VAL:-50}"
-
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 SEG_TASKS="${SEG_TASKS:-phase_t2v event_t2v action_t2v}"

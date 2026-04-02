@@ -45,22 +45,6 @@ _ray_tmpdir="/tmp/ray_${_exp_short}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 
-# ---- 自动计算 task weights ----
-TASK_WEIGHTS=$(python3 -c "
-import json, sys
-from collections import Counter
-types = Counter()
-with open('${TRAIN_FILE}') as f:
-    for line in f:
-        types[json.loads(line)['problem_type']] += 1
-n = len(types)
-if n == 0:
-    sys.exit(1)
-w = {t: round(1.0/n, 4) for t in sorted(types)}
-print(json.dumps(w))
-")
-echo "[seg-aot] Task weights: ${TASK_WEIGHTS}"
-
 # ---- Step B: 训练 ----
 echo "[seg-aot] Starting training: ${EXP_NAME}"
 
@@ -82,8 +66,6 @@ python3 -m verl.trainer.main \
   data.rollout_batch_size="${ROLLOUT_BS}" \
   data.format_prompt="" \
   data.filter_overlong_prompts=false \
-  data.task_homogeneous_batching=true \
-  data.task_weights="${TASK_WEIGHTS}" \
   data.task_key="problem_type" \
   algorithm.adv_estimator="${ADV_ESTIMATOR}" \
   algorithm.disable_kl="${DISABLE_KL}" \
