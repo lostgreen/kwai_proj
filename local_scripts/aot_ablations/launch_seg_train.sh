@@ -44,9 +44,9 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
     --concat-dir "${DATA_DIR}/concat_videos" \
     --concat-workers "${CONCAT_WORKERS}" \
     --tasks ${SEG_TASKS} \
-    --min-phases "${MIN_PHASES}" \
-    --min-events "${MIN_EVENTS}" \
-    --min-actions "${MIN_ACTIONS}" \
+    --min-phases "${MIN_PHASES}" --max-phases "${MAX_PHASES}" \
+    --min-events "${MIN_EVENTS}" --max-events "${MAX_EVENTS}" \
+    --min-actions "${MIN_ACTIONS}" --max-actions "${MAX_ACTIONS}" \
     --total-val "${TOTAL_VAL}" \
     --train-total "${TRAIN_TOTAL}" \
     --level-ratio "${LEVEL_RATIO}" \

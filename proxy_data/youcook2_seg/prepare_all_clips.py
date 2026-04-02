@@ -240,10 +240,16 @@ def main():
                         help="只处理标注完整的视频")
     parser.add_argument("--min-phases", type=int, default=0,
                         help="只切 L1 phases ≥ 此数量的标注 (0=不过滤)")
+    parser.add_argument("--max-phases", type=int, default=999,
+                        help="只切 L1 phases ≤ 此数量的标注")
     parser.add_argument("--min-events", type=int, default=0,
                         help="只切含 ≥ 此数量 events 的 phase 组 (0=不过滤)")
+    parser.add_argument("--max-events", type=int, default=999,
+                        help="只切含 ≤ 此数量 events 的 phase 组")
     parser.add_argument("--min-actions", type=int, default=0,
                         help="只切含 ≥ 此数量 actions 的 event 组 (0=不过滤)")
+    parser.add_argument("--max-actions", type=int, default=999,
+                        help="只切含 ≤ 此数量 actions 的 event 组")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -277,20 +283,22 @@ def main():
                    if isinstance(a, dict) and isinstance(a.get("start_time"), (int, float))
                    and a.get("sub_action", "").strip()]
 
-        cut_l1 = "L1" in levels and len(phases) >= max(args.min_phases, 1)
-        # L2: 至少有一个 phase 拥有 >= min_events 个 child events
+        cut_l1 = "L1" in levels and args.min_phases <= len(phases) <= args.max_phases
+        # L2: 至少有一个 phase 拥有 [min_events, max_events] 个 child events
         events_by_phase = {}
         for e in events:
             events_by_phase.setdefault(e.get("parent_phase_id"), []).append(e)
         cut_l2 = "L2" in levels and any(
-            len(evs) >= max(args.min_events, 1) for evs in events_by_phase.values()
+            args.min_events <= len(evs) <= args.max_events
+            for evs in events_by_phase.values()
         )
-        # L3: 至少有一个 event 拥有 >= min_actions 个 child actions
+        # L3: 至少有一个 event 拥有 [min_actions, max_actions] 个 child actions
         actions_by_event = {}
         for a in actions:
             actions_by_event.setdefault(a.get("parent_event_id"), []).append(a)
         cut_l3 = "L3" in levels and any(
-            len(acts) >= max(args.min_actions, 1) for acts in actions_by_event.values()
+            args.min_actions <= len(acts) <= args.max_actions
+            for acts in actions_by_event.values()
         )
 
         if cut_l1:

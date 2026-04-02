@@ -242,6 +242,7 @@ def _collect_phase_groups(
     need_v2t: bool,
     need_t2v: bool,
     min_phases: int,
+    max_phases: int,
     complete_only: bool,
     rng: random.Random,
 ) -> tuple[dict | None, list[tuple[list[str], str]]]:
@@ -259,7 +260,7 @@ def _collect_phase_groups(
          and p.get("phase_name", "").strip()],
         key=lambda p: p["start_time"],
     )
-    if len(phases) < min_phases:
+    if len(phases) < min_phases or len(phases) > max_phases:
         return None, []
 
     clip_key = ann.get("clip_key", "")
@@ -419,6 +420,7 @@ def _collect_action_groups(
     need_v2t: bool,
     need_t2v: bool,
     min_actions: int,
+    max_actions: int,
     complete_only: bool,
     rng: random.Random,
 ) -> tuple[list[dict], list[tuple[list[str], str]]]:
@@ -447,7 +449,7 @@ def _collect_action_groups(
              and isinstance(r.get("start_time"), (int, float))],
             key=lambda r: r["start_time"],
         )
-        if len(child_actions) < min_actions:
+        if len(child_actions) < min_actions or len(child_actions) > max_actions:
             continue
 
         fwd_paths = []
@@ -849,9 +851,11 @@ def main():
                         help="强制重新生成已存在的拼接视频")
     parser.add_argument("--tasks", nargs="+", choices=ALL_TASKS, default=ALL_TASKS)
     parser.add_argument("--min-phases", type=int, default=3)
+    parser.add_argument("--max-phases", type=int, default=999)
     parser.add_argument("--min-events", type=int, default=3)
     parser.add_argument("--max-events", type=int, default=999)
     parser.add_argument("--min-actions", type=int, default=3)
+    parser.add_argument("--max-actions", type=int, default=999)
     parser.add_argument("--total-val", type=int, default=200)
     parser.add_argument("--train-total", type=int, default=-1,
                         help="总训练样本数上限 (-1=不限制)")
@@ -889,7 +893,8 @@ def main():
             info, jobs = _collect_phase_groups(
                 ann, args.clip_dir, concat_dir,
                 need_phase_v2t, need_phase_t2v,
-                args.min_phases, args.complete_only, ann_rng,
+                args.min_phases, args.max_phases,
+                args.complete_only, ann_rng,
             )
             if info:
                 phase_groups.append(info)
@@ -911,7 +916,8 @@ def main():
             infos, jobs = _collect_action_groups(
                 ann, args.clip_dir, concat_dir,
                 need_action_v2t, need_action_t2v,
-                args.min_actions, args.complete_only, ann_rng,
+                args.min_actions, args.max_actions,
+                args.complete_only, ann_rng,
             )
             action_groups.extend(infos)
             for j in jobs:
