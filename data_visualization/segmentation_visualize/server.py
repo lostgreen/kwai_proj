@@ -4,6 +4,7 @@ import io
 import json
 import mimetypes
 import re
+import shutil
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,7 +51,7 @@ def format_mmss(total_seconds: Any) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def image_to_data_url(image: Image.Image, max_width: int = 160) -> str:
+def image_to_data_url(image: Image.Image, max_width: int = 320) -> str:
     image = image.convert("RGB")
     if max_width > 0 and image.width > max_width:
         ratio = max_width / float(image.width)
@@ -512,15 +513,49 @@ class SegmentationStore:
         try:
             with Image.open(frame_path) as image:
                 image = image.convert("RGB")
-                if mode != "full" and image.width > 160:
-                    ratio = 160 / float(image.width)
-                    image = image.resize((160, max(1, int(image.height * ratio))))
+                if mode != "full" and image.width > 320:
+                    ratio = 320 / float(image.width)
+                    image = image.resize((320, max(1, int(image.height * ratio))))
                 buf = io.BytesIO()
                 image.save(buf, format="JPEG", quality=85)
                 payload = buf.getvalue()
         except Exception:
             return None
         return payload
+
+    def approve_clip(self, clip_key: str) -> dict[str, Any]:
+        """Move annotation JSON to a sibling 'checked_human' directory."""
+        with self._lock:
+            clip = self.clips.get(clip_key)
+            if clip is None:
+                return {"ok": False, "error": f"clip not found: {clip_key}"}
+
+            file_path: Path = clip.get("file_path")
+            if file_path is None or not file_path.exists():
+                return {"ok": False, "error": f"annotation file not found for {clip_key}"}
+
+            if self.data_kind != "annotation_json":
+                return {"ok": False, "error": "approve is only supported for annotation JSON mode"}
+
+            # Destination: sibling directory named 'checked_human'
+            src_dir = file_path.parent
+            dest_dir = src_dir.parent / "checked_human"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = dest_dir / file_path.name
+
+            shutil.move(str(file_path), str(dest_path))
+
+            # Remove from store
+            del self.clips[clip_key]
+            self.clip_order = sorted(self.clips.keys())
+            self.frame_cache.pop(clip_key, None)
+
+            return {
+                "ok": True,
+                "clip_key": clip_key,
+                "moved_to": str(dest_path),
+                "remaining": len(self.clips),
+            }
 
     def _load_dataset_jsonl(self, file_path: Path) -> dict[str, dict[str, Any]]:
         clips: dict[str, dict[str, Any]] = {}
@@ -889,7 +924,7 @@ class SegmentationStore:
                 if frame_path is not None and frame_path.exists():
                     try:
                         with Image.open(frame_path) as image:
-                            src = image_to_data_url(image, max_width=160)
+                            src = image_to_data_url(image, max_width=320)
                     except Exception:
                         src = None
                 strip.append({
@@ -907,7 +942,7 @@ class SegmentationStore:
             if frame_path is not None and frame_path.exists():
                 try:
                     with Image.open(frame_path) as image:
-                        src = image_to_data_url(image, max_width=160)
+                        src = image_to_data_url(image, max_width=320)
                 except Exception:
                     src = None
             strip.append(
@@ -982,6 +1017,16 @@ class SegmentationHandler(BaseHTTPRequestHandler):
             self._handle_api(parsed)
             return
         self._serve_static(parsed.path)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/approve/"):
+            clip_key = unquote(parsed.path[len("/api/approve/"):])
+            result = self.store.approve_clip(clip_key)
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+            self._json(result, status)
+            return
+        self._json({"error": f"unknown POST path: {parsed.path}"}, HTTPStatus.NOT_FOUND)
 
     def _handle_api(self, parsed) -> None:  # type: ignore[no-untyped-def]
         query = parse_qs(parsed.query)

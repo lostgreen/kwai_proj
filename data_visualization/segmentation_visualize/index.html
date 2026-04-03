@@ -18,7 +18,7 @@
   --danger:#dc2626;
   --shadow:0 18px 42px rgba(18,34,58,.08);
   --radius:18px;
-  --frame-w:88px;
+  --frame-w:160px;
   --frame-gap:6px;
 }
 *{box-sizing:border-box}
@@ -64,6 +64,18 @@ button,input,textarea{font:inherit}
   cursor:pointer;
 }
 .btn:disabled{opacity:.55;cursor:not-allowed}
+.btn-approve{
+  border:none;border-radius:13px;padding:11px 16px;
+  background:linear-gradient(135deg,#34d399,#06b6d4);color:#042f2e;font-weight:700;cursor:pointer;
+}
+.btn-approve:disabled{opacity:.55;cursor:not-allowed}
+.btn-skip{
+  border:none;border-radius:13px;padding:11px 16px;
+  background:rgba(71,85,105,.12);color:var(--text);font-weight:700;cursor:pointer;
+}
+.btn-skip:disabled{opacity:.55;cursor:not-allowed}
+.review-bar{display:flex;gap:10px;align-items:center;margin-top:10px}
+.review-status{font-size:12px;color:var(--teal);min-height:18px}
 .status{margin-top:10px;font-size:12px;color:var(--blue);min-height:18px}
 .helper-note{margin-top:8px;font-size:12px;color:var(--muted)}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
@@ -114,7 +126,7 @@ button,input,textarea{font:inherit}
 .frame-card{width:var(--frame-w);flex:0 0 auto;display:grid;gap:5px;cursor:pointer}
 .frame-thumb{
   width:var(--frame-w);
-  height:56px;
+  height:100px;
   border-radius:12px;
   border:2px solid rgba(71,85,105,.14);
   overflow:hidden;
@@ -299,7 +311,7 @@ const COLORS = {
   level3: "#d4577c",
 };
 
-const STRIDE = 94;
+const STRIDE = 166;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -488,6 +500,11 @@ function renderHeader() {
         <label class="toggle"><input type="checkbox" checked onchange="toggleLevel('level3', this.checked)"> L3</label>
       </div>
     </div>
+    <div class="review-bar" id="reviewBar">
+      <button class="btn-approve" id="approveBtn" onclick="approveClip()">OK / Approve</button>
+      <button class="btn-skip" id="skipBtn" onclick="skipToNext()">Skip</button>
+      <span class="review-status" id="reviewStatus"></span>
+    </div>
     <div class="meta-grid">
       <div class="meta-box"><div class="meta-k">Base Clip</div><div class="meta-v">${escapeHtml(clip.base_clip_key || clip.clip_key)}</div></div>
       <div class="meta-box"><div class="meta-k">Duration</div><div class="meta-v">${escapeHtml(mmss(clip.clip_duration_sec))}</div></div>
@@ -633,9 +650,9 @@ function openFrameModal(event, frameIdx) {
   event.stopPropagation();
   const modal = document.getElementById("frameModal");
   const img = document.getElementById("frameModalImg");
-  const frame = (UI.activeClip.frame_strip || []).find((item) => item.frame_idx === frameIdx);
-  if (!frame || !frame.src) return;
-  img.src = frame.src;
+  if (!UI.activeClipKey) return;
+  // Use full-resolution frame from API
+  img.src = `/api/frame/${encodeURIComponent(UI.activeClipKey)}/${frameIdx}?mode=full`;
   modal.classList.add("active");
 }
 
@@ -853,6 +870,51 @@ function initTimelineScroll() {
 
   shell.addEventListener("scroll", syncFromScroll, { passive: true });
   syncFromScroll();
+}
+
+async function approveClip() {
+  if (!UI.activeClipKey) return;
+  const clipKey = UI.activeClipKey;
+  const btn = document.getElementById("approveBtn");
+  const statusEl = document.getElementById("reviewStatus");
+  btn.disabled = true;
+  statusEl.textContent = "Moving...";
+  try {
+    const resp = await fetch(`/api/approve/${encodeURIComponent(clipKey)}`, { method: "POST" });
+    const result = await resp.json();
+    if (!result.ok) {
+      statusEl.textContent = result.error || "Failed";
+      statusEl.style.color = "var(--danger)";
+      btn.disabled = false;
+      return;
+    }
+    statusEl.textContent = `Approved: ${clipKey} → checked_human (${result.remaining} remaining)`;
+    statusEl.style.color = "var(--teal)";
+    // Remove from local lists
+    UI.clips = UI.clips.filter((c) => c.clip_key !== clipKey);
+    UI.filteredClips = UI.filteredClips.filter((c) => c.clip_key !== clipKey);
+    delete UI.allDetails[clipKey];
+    document.getElementById("statClips").textContent = UI.clips.length;
+    // Auto-advance to next clip
+    skipToNext();
+  } catch (error) {
+    statusEl.textContent = error.message;
+    statusEl.style.color = "var(--danger)";
+    btn.disabled = false;
+  }
+}
+
+function skipToNext() {
+  if (!UI.filteredClips.length) {
+    renderClipList();
+    document.getElementById("clipHeader").innerHTML = `<div class="clip-title">All clips reviewed!</div>`;
+    document.getElementById("timelineCard").innerHTML = `<div class="section-title">Timeline</div><div class="detail-empty">No more clips.</div>`;
+    return;
+  }
+  // Find current index, advance to next (or wrap to first)
+  const curIdx = UI.filteredClips.findIndex((c) => c.clip_key === UI.activeClipKey);
+  const nextIdx = (curIdx >= 0 && curIdx + 1 < UI.filteredClips.length) ? curIdx + 1 : 0;
+  selectClip(UI.filteredClips[nextIdx].clip_key);
 }
 
 bootPreloaded();
