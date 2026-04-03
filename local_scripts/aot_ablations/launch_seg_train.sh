@@ -71,6 +71,8 @@ python3 -m verl.trainer.main \
   algorithm.disable_kl="${DISABLE_KL}" \
   algorithm.use_kl_loss=true \
   algorithm.online_filtering="${ONLINE_FILTERING}" \
+  algorithm.filter_low="${FILTER_LOW}" \
+  algorithm.filter_high="${FILTER_HIGH}" \
   worker.actor.global_batch_size="${GLOBAL_BS}" \
   worker.actor.micro_batch_size_per_device_for_update="${MB_PER_UPDATE}" \
   worker.actor.micro_batch_size_per_device_for_experience="${MB_PER_EXP}" \
