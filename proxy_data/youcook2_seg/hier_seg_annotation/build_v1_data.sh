@@ -40,7 +40,7 @@ REPO_ROOT="$(cd -- "${HIER_SEG_DIR}/../../.." && pwd)"
 
 # ---- 数据根目录 (annotations 所在目录) ----
 DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation}"
-ANNOTATION_DIR="${ANNOTATION_DIR:-${DATA_ROOT}/annotations}"
+ANNOTATION_DIR="${ANNOTATION_DIR:-${DATA_ROOT}/annotations_checked_gmn25}"
 OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/train}"
 
 # ---- 筛选参数 (与 visualize_annotations.py 对齐) ----

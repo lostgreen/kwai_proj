@@ -38,15 +38,28 @@ from prompts import get_v2t_prompt, get_t2v_prompt, get_3way_v2t_prompt
 # ── Legacy (VLM-captioning pipeline) ──────────────────────────────────────────
 SUPPORTED_PROBLEM_TYPES = (
     "aot_t2v", "aot_v2t", "aot_3way_v2t", "aot_3way_t2v",
+    # Legacy seg_aot (kept for old data)
     "seg_aot_action_v2t", "seg_aot_action_t2v",
     "seg_aot_event_v2t", "seg_aot_event_t2v",
     "seg_aot_phase_v2t", "seg_aot_phase_t2v",
+    # New explicit binary/3-way types
+    "seg_aot_event_v2t_binary", "seg_aot_event_t2v_binary",
+    "seg_aot_event_v2t_3way", "seg_aot_event_t2v_3way",
+    "seg_aot_action_v2t_binary", "seg_aot_action_t2v_binary",
+    "seg_aot_action_v2t_3way", "seg_aot_action_t2v_3way",
 )
-BINARY_PROBLEM_TYPES = {"aot_t2v", "aot_v2t", "seg_aot_action_v2t", "seg_aot_action_t2v"}
+BINARY_PROBLEM_TYPES = {
+    "aot_t2v", "aot_v2t",
+    "seg_aot_action_v2t", "seg_aot_action_t2v",
+    "seg_aot_event_v2t_binary", "seg_aot_event_t2v_binary",
+    "seg_aot_action_v2t_binary", "seg_aot_action_t2v_binary",
+}
 THREEWAY_PROBLEM_TYPES = {
     "aot_3way_v2t", "aot_3way_t2v",
     "seg_aot_event_v2t", "seg_aot_event_t2v",
     "seg_aot_phase_v2t", "seg_aot_phase_t2v",
+    "seg_aot_event_v2t_3way", "seg_aot_event_t2v_3way",
+    "seg_aot_action_v2t_3way", "seg_aot_action_t2v_3way",
 }
 _THREEWAY_LETTERS = ("A", "B", "C")
 
@@ -54,10 +67,14 @@ _THREEWAY_LETTERS = ("A", "B", "C")
 _V2T_TYPES = {
     "aot_v2t", "aot_3way_v2t",
     "seg_aot_action_v2t", "seg_aot_event_v2t", "seg_aot_phase_v2t",
+    "seg_aot_event_v2t_binary", "seg_aot_event_v2t_3way",
+    "seg_aot_action_v2t_binary", "seg_aot_action_v2t_3way",
 }
 _T2V_TYPES = {
     "aot_t2v", "aot_3way_t2v",
     "seg_aot_action_t2v", "seg_aot_event_t2v", "seg_aot_phase_t2v",
+    "seg_aot_event_t2v_binary", "seg_aot_event_t2v_3way",
+    "seg_aot_action_t2v_binary", "seg_aot_action_t2v_3way",
 }
 
 
@@ -152,6 +169,24 @@ def flip_record(record: dict[str, Any]) -> dict[str, Any]:
         distractor = metadata.get("distractor_event_id")
         metadata["target_event_id"] = distractor
         metadata["distractor_event_id"] = target
+    elif problem_type in (
+        "seg_aot_event_v2t_binary", "seg_aot_action_v2t_binary",
+    ):
+        new_prompt = _swap_v2t_option_blocks(flipped["prompt"], "A", "B")
+        sync_prompt(flipped, new_prompt)
+        cur_a = metadata.get("option_a_type", "forward")
+        metadata["option_a_type"] = metadata.get("option_b_type", "reversed")
+        metadata["option_b_type"] = cur_a
+    elif problem_type in (
+        "seg_aot_event_t2v_binary", "seg_aot_action_t2v_binary",
+    ):
+        videos = list(flipped.get("videos") or [])
+        if len(videos) == 2:
+            videos[0], videos[1] = videos[1], videos[0]
+            flipped["videos"] = videos
+        cur_a = metadata.get("video_a_type", "forward")
+        metadata["video_a_type"] = metadata.get("video_b_type", "reversed")
+        metadata["video_b_type"] = cur_a
     else:
         raise ValueError(f"Unsupported problem_type for flipping: {problem_type!r}")
 

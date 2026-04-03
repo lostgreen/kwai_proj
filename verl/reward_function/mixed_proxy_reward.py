@@ -278,6 +278,15 @@ _TASK_REWARD_DISPATCH = {
     "seg_aot_action_t2v":     _choice_reward,
     "seg_aot_event_v2t":      _choice_reward,
     "seg_aot_event_t2v":      _choice_reward,
+    # New explicit binary/3-way types
+    "seg_aot_event_v2t_binary":   _choice_reward,
+    "seg_aot_event_t2v_binary":   _choice_reward,
+    "seg_aot_event_v2t_3way":    _choice_reward,
+    "seg_aot_event_t2v_3way":    _choice_reward,
+    "seg_aot_action_v2t_binary":  _choice_reward,
+    "seg_aot_action_t2v_binary":  _choice_reward,
+    "seg_aot_action_v2t_3way":   _choice_reward,
+    "seg_aot_action_t2v_3way":   _choice_reward,
     "sort":         _sort_reward,
     "temporal_seg": _temporal_seg_reward,
     "temporal_grounding": None,  # 特殊处理：需要 metadata
