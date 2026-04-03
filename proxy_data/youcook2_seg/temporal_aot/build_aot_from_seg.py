@@ -33,6 +33,8 @@ build_aot_from_seg.py — 从三层分割标注 JSON 构建 AOT (Action Ordering
         --complete-only
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -98,7 +100,8 @@ def _balanced_sample_by_domain(
             # L2 balanced sampling within this L1 domain
             l2_pool = _balanced_sample_l2(pool, base_per_l1, rng)
             sampled.extend(l2_pool)
-            leftover = [r for r in pool if r not in set(map(id, l2_pool))]
+            _selected_ids = set(id(r) for r in l2_pool)
+            leftover = [r for r in pool if id(r) not in _selected_ids]
             if leftover:
                 l1_overflows.append((d, leftover))
 
