@@ -543,7 +543,7 @@ class SegmentationStore:
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_path = dest_dir / file_path.name
 
-            shutil.move(str(file_path), str(dest_path))
+            shutil.copy2(str(file_path), str(dest_path))
 
             # Remove from store
             del self.clips[clip_key]
