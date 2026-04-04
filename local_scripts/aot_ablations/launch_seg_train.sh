@@ -91,7 +91,7 @@ python3 -m verl.trainer.main \
   worker.rollout.temperature=0.7 \
   worker.rollout.top_p=0.9 \
   worker.rollout.tensor_parallel_size="${TP_SIZE}" \
-  worker.rollout.gpu_memory_utilization=0.35 \
+  worker.rollout.gpu_memory_utilization="${GPU_MEM_UTIL}" \
   worker.reward.reward_function="${REWARD_FUNCTION}" \
   worker.reward.reward_type=batch \
   trainer.project_name="${PROJECT_NAME}" \
