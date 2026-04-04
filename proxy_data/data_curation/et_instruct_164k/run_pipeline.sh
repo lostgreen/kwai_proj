@@ -2,16 +2,21 @@
 # ── ET-Instruct-164K: Duration Filter + Local VLM Screening Pipeline ──
 #
 # 流程:
-#   Step 1: text_filter (仅时长过滤，去掉 event 数限制)
-#   Step 2: sample_per_source (每个 source 抽 N 条)
+#   Step 1: text_filter (仅时长过滤)
+#   Step 2: sample_per_source (格式转换 + 可选采样)
 #   Step 3: local_screen Stage 1 (L1/L2 score + domain + quality)
 #   Step 4: local_screen Stage 2 (prog_type + visual_diversity + order_dependency)
+#
+# 自动跳过已完成的步骤：
+#   - screen_keep.jsonl 存在 → 跳过 Stage 1
+#   - screen_keep.jsonl 含 _screen_2 字段 → 跳过 Stage 2
 #
 # 用法:
 #   bash run_pipeline.sh              # 全量：Step 1-4
 #   SKIP_STAGE2=1 bash run_pipeline.sh  # 只跑到 Stage 1
+#   FORCE=1 bash run_pipeline.sh        # 强制全量重跑
 #
-# 环境变量 (可选覆盖):
+# 环境变量:
 #   ET_JSON_PATH   — et_instruct_164k_txt.json 路径
 #   VIDEO_ROOT     — ET-Instruct 视频根目录
 #   LOCAL_MODEL    — 本地 VLM 模型路径
@@ -19,7 +24,7 @@
 #   PER_SOURCE     — 每个 source 采样条数 (0 = 全量)
 #   OUTPUT_ROOT    — 输出目录
 #   SKIP_STAGE2    — 跳过 Stage 2 (1 = 跳过, 默认 0)
-#   RESUME         — 断点续跑 (1 = 跳过已有结果, 默认 1)
+#   FORCE          — 强制重跑所有步骤 (1 = 强制, 默认 0)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,7 +40,7 @@ NUM_GPUS="${NUM_GPUS:-2}"
 PER_SOURCE="${PER_SOURCE:-0}"
 SEED="${SEED:-42}"
 SKIP_STAGE2="${SKIP_STAGE2:-0}"
-RESUME="${RESUME:-1}"
+FORCE="${FORCE:-0}"
 
 echo "============================================="
 echo " ET-Instruct: Duration Filter + Local VLM Screening"
@@ -44,8 +49,8 @@ echo " Video Root: $VIDEO_ROOT"
 echo " Output:     $OUTPUT_ROOT"
 echo " Local VLM:  $LOCAL_MODEL (${NUM_GPUS} GPUs)"
 echo " Per Source: $PER_SOURCE (0 = all)"
-echo " Skip S2:   $SKIP_STAGE2 (1 = skip)"
-echo " Resume:     $RESUME (1 = skip done)"
+echo " Skip S2:   $SKIP_STAGE2"
+echo " Force:     $FORCE"
 echo "============================================="
 
 # ── Step 1: 时长过滤 ──
@@ -84,45 +89,36 @@ SCREEN_COMMON=(
     --input_jsonl "$OUTPUT_ROOT/sample_dev.jsonl"
     --model_path "$LOCAL_MODEL"
 )
-if [ "$RESUME" = "1" ]; then
-    SCREEN_COMMON+=(--resume)
-    # Multi-GPU: each shard reads the merged results file to know what's done
-    SCREEN_COMMON+=(--resume_from "$OUTPUT_ROOT/screen_results.jsonl")
-fi
 
-# ── Step 3: Stage 1 — L1/L2 + domain + quality ──
-echo ""
-echo "=== Step 3: local_screen Stage 1 (${NUM_GPUS} GPUs) ==="
+# ── Step 3: Stage 1 ──
+_run_stage1() {
+    echo ""
+    echo "=== Step 3: local_screen Stage 1 (${NUM_GPUS} GPUs) ==="
 
-if [ "$NUM_GPUS" -gt 1 ]; then
-    for i in $(seq 0 $((NUM_GPUS-1))); do
-        CUDA_VISIBLE_DEVICES=$i python ../shared/local_screen.py \
+    if [ "$NUM_GPUS" -gt 1 ]; then
+        for i in $(seq 0 $((NUM_GPUS-1))); do
+            CUDA_VISIBLE_DEVICES=$i python ../shared/local_screen.py \
+                "${SCREEN_COMMON[@]}" \
+                --output_jsonl "$OUTPUT_ROOT/screen_shard${i}.jsonl" \
+                --keep_jsonl "$OUTPUT_ROOT/keep_shard${i}.jsonl" \
+                --reject_jsonl "$OUTPUT_ROOT/reject_shard${i}.jsonl" \
+                --shard_id "$i" --num_shards "$NUM_GPUS" &
+        done
+        wait
+        cat "$OUTPUT_ROOT"/keep_shard*.jsonl > "$OUTPUT_ROOT/screen_keep.jsonl"
+        cat "$OUTPUT_ROOT"/reject_shard*.jsonl > "$OUTPUT_ROOT/screen_reject.jsonl"
+        cat "$OUTPUT_ROOT"/screen_shard*.jsonl > "$OUTPUT_ROOT/screen_results.jsonl"
+    else
+        python ../shared/local_screen.py \
             "${SCREEN_COMMON[@]}" \
-            --output_jsonl "$OUTPUT_ROOT/screen_shard${i}.jsonl" \
-            --keep_jsonl "$OUTPUT_ROOT/keep_shard${i}.jsonl" \
-            --reject_jsonl "$OUTPUT_ROOT/reject_shard${i}.jsonl" \
-            --shard_id "$i" --num_shards "$NUM_GPUS" &
-    done
-    wait
-    cat "$OUTPUT_ROOT"/keep_shard*.jsonl > "$OUTPUT_ROOT/screen_keep.jsonl"
-    cat "$OUTPUT_ROOT"/reject_shard*.jsonl > "$OUTPUT_ROOT/screen_reject.jsonl"
-    cat "$OUTPUT_ROOT"/screen_shard*.jsonl > "$OUTPUT_ROOT/screen_results.jsonl"
-    # Keep shard files for --resume to work on re-runs
-    # (merged file is the source of truth via --resume_from)
-else
-    python ../shared/local_screen.py \
-        "${SCREEN_COMMON[@]}" \
-        --output_jsonl "$OUTPUT_ROOT/screen_results.jsonl" \
-        --keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \
-        --reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl"
-fi
+            --output_jsonl "$OUTPUT_ROOT/screen_results.jsonl" \
+            --keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \
+            --reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl"
+    fi
+}
 
-KEEP_S1=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
-REJECT_S1=$(wc -l < "$OUTPUT_ROOT/screen_reject.jsonl" | tr -d ' ')
-echo "  Stage 1 → kept=$KEEP_S1  rejected=$REJECT_S1"
-
-# ── Step 4: Stage 2 — prog_type + visual_diversity + order_dependency ──
-if [ "$SKIP_STAGE2" != "1" ] && [ "$KEEP_S1" -gt 0 ]; then
+# ── Step 4: Stage 2 ──
+_run_stage2() {
     echo ""
     echo "=== Step 4: local_screen Stage 2 (${NUM_GPUS} GPUs) ==="
 
@@ -140,11 +136,8 @@ if [ "$SKIP_STAGE2" != "1" ] && [ "$KEEP_S1" -gt 0 ]; then
         done
         wait
         cat "$OUTPUT_ROOT"/s2_keep_shard*.jsonl > "$OUTPUT_ROOT/screen_keep.jsonl"
-        # Stage 2 reject = Stage 1 reject + Stage 2 new reject
-        # (--secondary_screen_only already merges s1 rejects into reject output)
         cat "$OUTPUT_ROOT"/s2_reject_shard*.jsonl > "$OUTPUT_ROOT/screen_reject.jsonl"
         cat "$OUTPUT_ROOT"/s2_shard*.jsonl > "$OUTPUT_ROOT/screen_results.jsonl"
-        # Keep shard files for potential re-runs
     else
         python ../shared/local_screen.py \
             "${SCREEN_COMMON[@]}" \
@@ -153,8 +146,41 @@ if [ "$SKIP_STAGE2" != "1" ] && [ "$KEEP_S1" -gt 0 ]; then
             --reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl" \
             --secondary_screen_only
     fi
+}
 
-    KEEP_S2=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
+# ── 执行逻辑：检测已有结果，自动跳过 ──
+
+# Stage 1: screen_keep.jsonl 存在且非空 → 已完成
+S1_DONE=0
+if [ "$FORCE" != "1" ] && [ -s "$OUTPUT_ROOT/screen_keep.jsonl" ]; then
+    KEEP_S1=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
+    echo ""
+    echo "  [Stage 1 已完成: screen_keep.jsonl 存在, $KEEP_S1 kept — 跳过]"
+    S1_DONE=1
+else
+    _run_stage1
+    KEEP_S1=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
+fi
+REJECT_S1=$(wc -l < "$OUTPUT_ROOT/screen_reject.jsonl" | tr -d ' ')
+echo "  Stage 1 → kept=$KEEP_S1  rejected=$REJECT_S1"
+
+# Stage 2
+if [ "$SKIP_STAGE2" != "1" ] && [ "$KEEP_S1" -gt 0 ]; then
+    # Stage 2 done check: first line of screen_keep.jsonl has _screen_2 field
+    S2_DONE=0
+    if [ "$FORCE" != "1" ] && [ "$S1_DONE" = "1" ]; then
+        if head -1 "$OUTPUT_ROOT/screen_keep.jsonl" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if '_screen_2' in d else 1)" 2>/dev/null; then
+            KEEP_S2=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
+            echo ""
+            echo "  [Stage 2 已完成: _screen_2 field present, $KEEP_S2 kept — 跳过]"
+            S2_DONE=1
+        fi
+    fi
+
+    if [ "$S2_DONE" = "0" ]; then
+        _run_stage2
+        KEEP_S2=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
+    fi
     echo "  Stage 2 → kept=$KEEP_S2 (from $KEEP_S1)"
 else
     if [ "$SKIP_STAGE2" = "1" ]; then
