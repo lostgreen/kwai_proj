@@ -1,121 +1,111 @@
 #!/usr/bin/env bash
-# ── ET-Instruct-164K: 两阶段 LLM 筛选 pipeline ──
+# ── ET-Instruct-164K: Duration Filter + Local VLM Screening Pipeline ──
 #
-# 前提: 已运行 text_filter.py 产出 results/passed.jsonl
+# 新流程:
+#   Step 1: text_filter (仅时长过滤，去掉 event 数限制)
+#   Step 2: sample_per_source (每个 source 抽 N 条)
+#   Step 3: local_screen (本地 Qwen3-VL-4B 预筛选)
 #
 # 用法:
-#   # 抽样试跑 (Stage A 200条)
-#   bash run_pipeline.sh --sample
+#   bash run_pipeline.sh
 #
-#   # 全量运行 (Stage A + B, 断点续评)
-#   bash run_pipeline.sh --full
-#
-#   # 仅 Stage B (Stage A 已完成)
-#   bash run_pipeline.sh --stage-b-only
-
+# 环境变量 (可选覆盖):
+#   ET_JSON_PATH   — et_instruct_164k_txt.json 路径
+#   VIDEO_ROOT     — ET-Instruct 视频根目录
+#   LOCAL_MODEL    — 本地 VLM 模型路径 (默认 Qwen3-VL-4B-Instruct)
+#   NUM_GPUS       — local_screen 数据并行 GPU 数 (默认 1)
+#   PER_SOURCE     — 每个 source 采样条数 (0 = 全量，不采样)
+#   OUTPUT_ROOT    — 输出目录
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ── 配置 ──
-API_BASE="${API_BASE:-https://api.novita.ai/v3/openai}"
-MODEL="${MODEL:-pa/gmn-2.5-pr}"
-WORKERS="${WORKERS:-8}"
-INPUT="${INPUT:-../results/et_instruct_164k/passed.jsonl}"
-RESULTS_DIR="${RESULTS_DIR:-../results/et_instruct_164k}"
-
-# ── 参数解析 ──
-MODE="${1:---sample}"
+ET_JSON_PATH="${ET_JSON_PATH:-/m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/et_instruct_164k_txt.json}"
+VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos}"
+CONFIG="${CONFIG:-../configs/et_instruct_164k.yaml}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-../results/et_instruct_164k}"
+LOCAL_MODEL="${LOCAL_MODEL:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
+NUM_GPUS="${NUM_GPUS:-1}"
+PER_SOURCE="${PER_SOURCE:-0}"
+SEED="${SEED:-42}"
 
 echo "============================================="
-echo " ET-Instruct-164K: 两阶段 LLM 筛选"
-echo " Mode: $MODE"
-echo " API: $API_BASE"
-echo " Model: $MODEL"
-echo " Workers: $WORKERS"
-echo " Input: $INPUT"
+echo " ET-Instruct: Duration Filter + Local VLM Screening"
+echo " JSON:       $ET_JSON_PATH"
+echo " Video Root: $VIDEO_ROOT"
+echo " Output:     $OUTPUT_ROOT"
+echo " Local VLM:  $LOCAL_MODEL (${NUM_GPUS} GPUs)"
+echo " Per Source: $PER_SOURCE (0 = all)"
 echo "============================================="
 
-if [ ! -f "$INPUT" ]; then
-    echo "Error: $INPUT 不存在"
-    echo "请先运行 text_filter.py 产出 passed.jsonl:"
-    echo "  python text_filter.py \\"
-    echo "      --json_path /path/to/et_instruct_164k_txt.json \\"
-    echo "      --output_dir ../results/et_instruct_164k \\"
-    echo "      --config ../configs/et_instruct_164k.yaml"
-    exit 1
+# ── Step 1: 时长过滤 ──
+echo ""
+echo "=== Step 1: text_filter (duration-only) ==="
+python text_filter.py \
+    --json_path "$ET_JSON_PATH" \
+    --output_dir "$OUTPUT_ROOT" \
+    --config "$CONFIG" \
+    --no_event_filter
+
+echo "  → $OUTPUT_ROOT/passed.jsonl"
+
+# ── Step 2: 采样 + 格式转换 ──
+echo ""
+echo "=== Step 2: sample_per_source ==="
+SAMPLE_ARGS=(
+    --input "$OUTPUT_ROOT/passed.jsonl"
+    --output "$OUTPUT_ROOT/sample_dev.jsonl"
+    --video-root "$VIDEO_ROOT"
+    --seed "$SEED"
+)
+if [ "$PER_SOURCE" -gt 0 ]; then
+    SAMPLE_ARGS+=(--per-source "$PER_SOURCE")
+    echo "  Sampling $PER_SOURCE per source..."
+else
+    SAMPLE_ARGS+=(--per-source 999999)
+    echo "  Using all records (no sampling cap)..."
 fi
 
-# ── Stage A: L2 粒度粗筛 ──
-run_stage_a() {
-    local sample_args=""
-    if [[ "$MODE" == "--sample" ]]; then
-        sample_args="--sample-n 200"
-        echo ""
-        echo "[Stage A] 抽样 200 条粗筛..."
-    else
-        sample_args="--no-sample --resume"
-        echo ""
-        echo "[Stage A] 全量粗筛 (断点续评)..."
-    fi
+python sample_per_source.py "${SAMPLE_ARGS[@]}"
+echo "  → $OUTPUT_ROOT/sample_dev.jsonl"
 
-    python stage_a_coarse_filter.py \
-        --input "$INPUT" \
-        --output "$RESULTS_DIR/stage_a_results.jsonl" \
-        --api-base "$API_BASE" \
-        --model "$MODEL" \
-        --workers "$WORKERS" \
-        $sample_args
+# ── Step 3: Local VLM 预筛选 ──
+echo ""
+echo "=== Step 3: local_screen (${NUM_GPUS} GPUs) ==="
+if [ "$NUM_GPUS" -gt 1 ]; then
+    for i in $(seq 0 $((NUM_GPUS-1))); do
+        CUDA_VISIBLE_DEVICES=$i python local_screen.py \
+            --input_jsonl "$OUTPUT_ROOT/sample_dev.jsonl" \
+            --output_jsonl "$OUTPUT_ROOT/screen_shard${i}.jsonl" \
+            --keep_jsonl "$OUTPUT_ROOT/keep_shard${i}.jsonl" \
+            --reject_jsonl "$OUTPUT_ROOT/reject_shard${i}.jsonl" \
+            --model_path "$LOCAL_MODEL" \
+            --shard_id "$i" --num_shards "$NUM_GPUS" &
+    done
+    wait
+    cat "$OUTPUT_ROOT"/keep_shard*.jsonl > "$OUTPUT_ROOT/screen_keep.jsonl"
+    cat "$OUTPUT_ROOT"/reject_shard*.jsonl > "$OUTPUT_ROOT/screen_reject.jsonl"
+    cat "$OUTPUT_ROOT"/screen_shard*.jsonl > "$OUTPUT_ROOT/screen_results.jsonl"
+    # Clean up shard files
+    rm -f "$OUTPUT_ROOT"/keep_shard*.jsonl "$OUTPUT_ROOT"/reject_shard*.jsonl "$OUTPUT_ROOT"/screen_shard*.jsonl
+else
+    python local_screen.py \
+        --input_jsonl "$OUTPUT_ROOT/sample_dev.jsonl" \
+        --output_jsonl "$OUTPUT_ROOT/screen_results.jsonl" \
+        --keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \
+        --reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl" \
+        --model_path "$LOCAL_MODEL"
+fi
 
-    echo ""
-    echo "[Stage A] 完成。查看结果:"
-    echo "  keep:   $RESULTS_DIR/stage_a_results_keep.jsonl"
-    echo "  maybe:  $RESULTS_DIR/stage_a_results_maybe.jsonl"
-    echo "  reject: $RESULTS_DIR/stage_a_results_reject.jsonl"
-}
-
-# ── 可选: 用硬规则校正 Stage A decision ──
-run_stage_a_rules() {
-    if [ -f "$RESULTS_DIR/stage_a_results.jsonl" ]; then
-        echo ""
-        echo "[Rules] 应用 Stage A 程序化决策规则..."
-        python ../shared/decision_rules.py \
-            --input "$RESULTS_DIR/stage_a_results.jsonl" \
-            --output "$RESULTS_DIR/stage_a_ruled.jsonl" \
-            --stage A --override
-    fi
-}
-
-# ── Stage B: 层次潜力精筛 (已移除) ──
-run_stage_b() {
-    echo ""
-    echo "[Stage B] SKIPPED: stage_b_fine_filter.py 已移除"
-    echo "  直接使用 Stage A keep 结果"
-}
-
-# ── 执行 ──
-case "$MODE" in
-    --sample)
-        run_stage_a
-        echo ""
-        echo "抽样完成。检查 Stage A 分布后，用 --full 运行全量。"
-        ;;
-    --full)
-        run_stage_a
-        run_stage_a_rules
-        run_stage_b
-        echo ""
-        echo "========== Pipeline 完成 =========="
-        if [ -f "$RESULTS_DIR/stage_a_results_keep.jsonl" ]; then
-            final_count=$(wc -l < "$RESULTS_DIR/stage_a_results_keep.jsonl" | tr -d ' ')
-            echo "最终保留 (Stage A keep): $final_count 条样本"
-        fi
-        ;;
-    --stage-b-only)
-        run_stage_b
-        ;;
-    *)
-        echo "用法: bash run_pipeline.sh [--sample|--full|--stage-b-only]"
-        exit 1
-        ;;
-esac
+# ── Summary ──
+echo ""
+echo "=========================================="
+echo " Pipeline 完成!"
+KEEP_COUNT=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
+REJECT_COUNT=$(wc -l < "$OUTPUT_ROOT/screen_reject.jsonl" | tr -d ' ')
+echo " Kept:     $OUTPUT_ROOT/screen_keep.jsonl ($KEEP_COUNT records)"
+echo " Rejected: $OUTPUT_ROOT/screen_reject.jsonl ($REJECT_COUNT records)"
+echo " Full:     $OUTPUT_ROOT/screen_results.jsonl"
+echo "=========================================="
