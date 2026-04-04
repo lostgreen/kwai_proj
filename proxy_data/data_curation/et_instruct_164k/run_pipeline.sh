@@ -27,7 +27,7 @@ VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos}
 CONFIG="${CONFIG:-../configs/et_instruct_164k.yaml}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-../results/et_instruct_164k}"
 LOCAL_MODEL="${LOCAL_MODEL:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
-NUM_GPUS="${NUM_GPUS:-1}"
+NUM_GPUS="${NUM_GPUS:-2}"
 PER_SOURCE="${PER_SOURCE:-0}"
 SEED="${SEED:-42}"
 
@@ -76,7 +76,7 @@ echo ""
 echo "=== Step 3: local_screen (${NUM_GPUS} GPUs) ==="
 if [ "$NUM_GPUS" -gt 1 ]; then
     for i in $(seq 0 $((NUM_GPUS-1))); do
-        CUDA_VISIBLE_DEVICES=$i python local_screen.py \
+        CUDA_VISIBLE_DEVICES=$i python ../shared/local_screen.py \
             --input_jsonl "$OUTPUT_ROOT/sample_dev.jsonl" \
             --output_jsonl "$OUTPUT_ROOT/screen_shard${i}.jsonl" \
             --keep_jsonl "$OUTPUT_ROOT/keep_shard${i}.jsonl" \
@@ -91,7 +91,7 @@ if [ "$NUM_GPUS" -gt 1 ]; then
     # Clean up shard files
     rm -f "$OUTPUT_ROOT"/keep_shard*.jsonl "$OUTPUT_ROOT"/reject_shard*.jsonl "$OUTPUT_ROOT"/screen_shard*.jsonl
 else
-    python local_screen.py \
+    python ../shared/local_screen.py \
         --input_jsonl "$OUTPUT_ROOT/sample_dev.jsonl" \
         --output_jsonl "$OUTPUT_ROOT/screen_results.jsonl" \
         --keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \

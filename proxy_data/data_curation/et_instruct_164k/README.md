@@ -121,7 +121,7 @@ python sample_per_source.py \
     --per-source 5
 
 # Step 3: 本地 VLM 筛选 (单 GPU)
-python local_screen.py \
+python ../shared/local_screen.py \
     --input_jsonl results/sample_dev.jsonl \
     --output_jsonl results/screen_results.jsonl \
     --keep_jsonl results/screen_keep.jsonl \
@@ -130,7 +130,7 @@ python local_screen.py \
 
 # Step 3: 多 GPU 数据并行 (8 卡)
 for i in $(seq 0 7); do
-    CUDA_VISIBLE_DEVICES=$i python local_screen.py \
+        CUDA_VISIBLE_DEVICES=$i python ../shared/local_screen.py \
         --input_jsonl results/sample_dev.jsonl \
         --output_jsonl results/screen_shard${i}.jsonl \
         --keep_jsonl results/keep_shard${i}.jsonl \
@@ -158,6 +158,6 @@ cat results/keep_shard*.jsonl > results/screen_keep.jsonl
 |------|------|
 | `text_filter.py` | Step 1: 文本/元数据筛选 (时长、去重、域均衡) |
 | `sample_per_source.py` | Step 2: 格式转换 + 每源采样 |
-| `local_screen.py` | Step 3: 本地 VLM 视觉预筛选 (vLLM batch inference) |
+| `../shared/local_screen.py` | Step 3: 本地 VLM 视觉预筛选 (vLLM batch inference) |
 | `run_pipeline.sh` | 一键运行三步流程 |
 | `explore_data.py` | 数据探索工具 (查看分布、统计) |

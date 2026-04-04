@@ -347,9 +347,9 @@ def parse_args() -> argparse.Namespace:
 
     # vLLM params
     parser.add_argument("--tensor_parallel_size", type=int, default=1)
-    parser.add_argument("--gpu_memory_utilization", type=float, default=0.85)
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.80)
     parser.add_argument("--max_model_len", type=int, default=0)
-    parser.add_argument("--max_num_batched_tokens", type=int, default=16384)
+    parser.add_argument("--max_num_batched_tokens", type=int, default=32768)
     parser.add_argument("--dtype", default="bfloat16")
 
     # Video params
@@ -374,7 +374,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_shards", type=int, default=1)
 
     parser.add_argument("--log_every", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=32)
 
     return parser.parse_args()
 
