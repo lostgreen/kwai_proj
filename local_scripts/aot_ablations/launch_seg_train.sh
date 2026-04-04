@@ -50,7 +50,7 @@ echo "[seg-aot] Starting training: ${EXP_NAME}"
 
 TENSORBOARD_DIR="${CHECKPOINT_ROOT}/tensorboard" \
 python3 -m verl.trainer.main \
-  config=examples/config_ema_grpo_64.yaml \
+  config="${REPO_ROOT}/examples/config_ema_grpo_64.yaml" \
   data.train_files="${TRAIN_FILE}" \
   data.val_files="${TEST_FILE}" \
   data.image_dir="" \
