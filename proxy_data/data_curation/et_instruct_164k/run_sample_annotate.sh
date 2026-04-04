@@ -9,8 +9,10 @@
 # 环境变量 (可选覆盖):
 #   ET_JSON_PATH   — et_instruct_164k_txt.json 路径
 #   VIDEO_ROOT     — ET-Instruct 视频根目录
-#   API_BASE       — VLM API base URL
-#   MODEL          — VLM 模型名
+#   API_BASE       — VLM API base URL (支持 OpenRouter: https://openrouter.ai/api/v1)
+#   MODEL          — VLM 模型名 (OpenRouter 示例: qwen/qwen3.6-plus:free)
+#   OPENROUTER_API_KEY — OpenRouter API key (或 OPENAI_API_KEY / NOVITA_API_KEY)
+#   OPENROUTER_REASONING — 设为 1 启用 OpenRouter reasoning 模式
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

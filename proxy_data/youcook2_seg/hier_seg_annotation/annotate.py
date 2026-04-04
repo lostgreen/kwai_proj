@@ -276,13 +276,26 @@ def call_vlm(
     except ImportError:
         raise ImportError("openai is required: pip install openai")
 
-    key = api_key or os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
-
-    # Azure OpenAI endpoint detection
+    # Provider detection
     _is_azure = (
         os.environ.get("USE_AZURE", "").lower() in ("1", "true", "yes")
         or "azure" in api_base.lower()
     )
+    _is_openrouter = "openrouter.ai" in api_base.lower()
+    _is_novita = "novita.ai" in api_base.lower()
+
+    # API key: prefer explicit arg, then provider-specific env var, then generic fallback
+    if api_key:
+        key = api_key
+    elif _is_azure:
+        key = os.environ.get("AZURE_OPENAI_API_KEY", "")
+    elif _is_openrouter:
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+    elif _is_novita:
+        key = os.environ.get("NOVITA_API_KEY", "")
+    else:
+        key = os.environ.get("OPENAI_API_KEY", "")
+
     if _is_azure:
         from openai import AzureOpenAI
         client = AzureOpenAI(
@@ -319,15 +332,20 @@ def call_vlm(
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                response_format={"type": "json_object"},
             )
-            # Gemini-specific low-res hint — skip for Azure / non-Gemini endpoints
-            if not _is_azure:
+            # json_object mode — skip for providers that may not support it
+            if not _is_openrouter:
+                create_kwargs["response_format"] = {"type": "json_object"}
+            # Gemini-specific low-res hint — skip for Azure / OpenRouter / non-Gemini
+            if not _is_azure and not _is_openrouter:
                 create_kwargs["extra_body"] = {
                     "generation_config": {
                         "media_resolution": "MEDIA_RESOLUTION_LOW",
                     }
                 }
+            # OpenRouter: pass reasoning config if enabled via env
+            if _is_openrouter and os.environ.get("OPENROUTER_REASONING", "").lower() in ("1", "true", "yes"):
+                create_kwargs.setdefault("extra_body", {})["reasoning"] = {"enabled": True}
             resp = client.chat.completions.create(**create_kwargs)
             _accumulate_usage(resp.usage, text_chars, image_b64_bytes, len(frame_b64_list))
             if resp.usage:
@@ -1996,7 +2014,8 @@ def main() -> None:
                         help="Re-annotate even if the level is already done")
     args = parser.parse_args()
 
-    api_key = args.api_key or os.environ.get("NOVITA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    # api_key resolved per-provider inside call_vlm(); pass through args.api_key
+    api_key = args.api_key
 
     frames_base = Path(args.frames_dir)
     if not frames_base.exists():
