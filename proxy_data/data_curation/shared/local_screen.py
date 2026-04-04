@@ -336,34 +336,17 @@ def _build_vllm_request(
         )
         for v in videos
     ]
-    # Separate frames and metadata (matching verl dataset.py line 607-612)
-    frames = [item[0] for item in loaded]       # tensor[T,C,H,W]
-    metadatas = [item[1] for item in loaded]    # dict with fps, etc.
+    # Build (tensor, metadata) tuples for vLLM multi_modal_data
+    mm_tuples = [(t, m) for t, m, _fps in loaded]
 
-    # Use full HF processor to get correct token IDs + pixel_values.
-    # tokenizer.encode() produces 1 <|video_pad|> from template text;
-    # the processor computes the real count from video grid dimensions.
-    messages = build_screen_messages(example)
-    prompt_text = processor.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=False,
-    )
-    encoded = processor(
-        text=[prompt_text],
-        videos=frames,
-        video_metadata=metadatas,
-        add_special_tokens=False,
-        return_tensors="pt",
-        do_resize=False,
-        do_sample_frames=False,
-    )
-    prompt_token_ids = encoded["input_ids"][0].tolist()
-
-    # Build the vLLM request. Pass (tensor, metadata) tuples so vLLM can
-    # re-use pre-processed data via mm_processor_kwargs.
-    mm_tuples = [(t, m) for t, m in zip(frames, metadatas)]
+    # Pass text prompt (not token_ids) so vLLM runs the full
+    # _apply_hf_processor_text_mm path end-to-end:
+    # correct pad-token expansion + pixel-value computation in one shot,
+    # avoiding any mismatch between local and vLLM-internal HF processor.
+    prompt = build_prompt(example, processor)
 
     return {
-        "prompt_token_ids": prompt_token_ids,
+        "prompt": prompt,
         "multi_modal_data": {"video": mm_tuples},
         "mm_processor_kwargs": {
             "do_sample_frames": False,
