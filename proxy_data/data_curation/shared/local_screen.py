@@ -584,10 +584,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--secondary_screen", action="store_true",
                         help="Run a second-pass screening on stage-1 kept videos "
                              "to filter out repetitive-loop false positives")
+    parser.add_argument("--secondary_screen_only", action="store_true",
+                        help="Stage-2 only: read s1_keep_jsonl from a previous Stage-1 run, "
+                             "run secondary screening, and rewrite outputs. "
+                             "Skips Stage 1 entirely.")
+    parser.add_argument("--s1_keep_jsonl", default="",
+                        help="Stage-1 keep file to read for --secondary_screen_only. "
+                             "Defaults to --keep_jsonl if not set.")
+    parser.add_argument("--s1_reject_jsonl", default="",
+                        help="Stage-1 reject file to read for --secondary_screen_only. "
+                             "Defaults to --reject_jsonl if not set.")
     parser.add_argument("--max_samples", type=int, default=0,
                         help="Process at most N samples (0 = all)")
     parser.add_argument("--resume", action="store_true",
                         help="Skip videos already in output_jsonl (by clip_key)")
+    parser.add_argument("--resume_from", default="",
+                        help="Read already-processed results from this file instead of "
+                             "output_jsonl. Useful for multi-GPU: point to the merged "
+                             "screen_results.jsonl so each shard knows what was done.")
 
     # Data-parallel sharding
     parser.add_argument("--shard_id", type=int, default=0)
@@ -699,6 +713,60 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
+    # ── Secondary-screen-only mode ──
+    if args.secondary_screen_only:
+        print(f"[screen] Stage-2 only mode: reading Stage-1 results", flush=True)
+
+        # Stage 2 input: read the merged Stage 1 keep/reject files.
+        # --s1_keep_jsonl / --s1_reject_jsonl specify the input explicitly
+        # (needed for multi-GPU: input=merged, output=per-shard).
+        # Falls back to --keep_jsonl / --reject_jsonl for single-GPU.
+        s1_keep_path = args.s1_keep_jsonl or args.keep_jsonl
+        s1_reject_path = args.s1_reject_jsonl or args.reject_jsonl
+
+        if not os.path.exists(s1_keep_path):
+            print(f"[screen] ERROR: --secondary_screen_only requires existing {s1_keep_path}",
+                  flush=True)
+            sys.exit(1)
+        s1_kept = load_jsonl(s1_keep_path)
+        s1_rejected = load_jsonl(s1_reject_path) if os.path.exists(s1_reject_path) else []
+        print(f"[screen] Loaded {len(s1_kept)} kept + {len(s1_rejected)} rejected from Stage 1",
+              flush=True)
+
+        # Apply sharding to Stage 2 input (for multi-GPU parallelism)
+        if args.num_shards > 1:
+            s1_kept = s1_kept[args.shard_id :: args.num_shards]
+            s1_rejected = s1_rejected[args.shard_id :: args.num_shards]
+            print(f"[screen] Shard {args.shard_id}/{args.num_shards}: "
+                  f"{len(s1_kept)} kept + {len(s1_rejected)} rejected", flush=True)
+
+        if not s1_kept:
+            print("[screen] No kept items to screen. Done.", flush=True)
+            return
+
+        # Init vLLM
+        print(f"[screen] Initializing vLLM (model={args.model_path}, "
+              f"tp={args.tensor_parallel_size})", flush=True)
+        processor, llm, sampling_params = init_vllm_backend(args)
+
+        print(f"\n[screen] ═══ Stage 2: Secondary screening ({len(s1_kept)} videos) ═══",
+              flush=True)
+        s2_kept, s2_rejected = _run_secondary_screen(s1_kept, processor, llm, sampling_params, args)
+        final_kept = s2_kept
+        final_rejected = s1_rejected + s2_rejected
+
+        _write_outputs(final_kept, final_rejected, args)
+
+        total = len(final_kept) + len(final_rejected)
+        print(f"\n[screen] Done. total={total} kept={len(final_kept)} rejected={len(final_rejected)}")
+        print(f"[screen] Stage 2: {len(final_kept)}/{len(s1_kept)} kept "
+              f"({100.0 * len(final_kept) / len(s1_kept):.1f}%)")
+        _print_source_summary(final_kept, final_rejected)
+        print(f"\n[screen] Kept:   {args.keep_jsonl} ({len(final_kept)} records)")
+        print(f"[screen] Reject: {args.reject_jsonl} ({len(final_rejected)} records)")
+        return
+
+    # ── Normal mode (Stage 1 + optional Stage 2) ──
     print(f"[screen] Loading: {args.input_jsonl}", flush=True)
     items = load_jsonl(args.input_jsonl)
     print(f"[screen] Loaded {len(items)} samples", flush=True)
@@ -716,7 +784,8 @@ def main() -> None:
     existing_kept: list[dict[str, Any]] = []
     existing_rejected: list[dict[str, Any]] = []
     if args.resume:
-        done_keys, existing_items = _load_existing_results(args.output_jsonl)
+        resume_path = args.resume_from or args.output_jsonl
+        done_keys, existing_items = _load_existing_results(resume_path)
         if done_keys:
             before = len(items)
             items = [it for it in items if _get_item_key(it) not in done_keys]
@@ -730,7 +799,7 @@ def main() -> None:
                     existing_kept.append(ex)
                 else:
                     existing_rejected.append(ex)
-            print(f"[screen] Resume: {len(done_keys)} already done, "
+            print(f"[screen] Resume from {resume_path}: {len(done_keys)} already done, "
                   f"{before - len(items)} skipped, {len(items)} remaining", flush=True)
 
     if not items:
