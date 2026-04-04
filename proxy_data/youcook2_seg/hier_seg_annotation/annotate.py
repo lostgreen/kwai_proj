@@ -8,7 +8,8 @@ Annotation levels:
   3:      L3 grounding — topology-routed:
           procedural → per-event frames → state_change micro-actions
           periodic   → per-phase frames → repetition_unit micro-actions
-          sequence/flat → skipped automatically
+          sequence   → per-event frames → interaction_unit micro-actions (v2)
+          flat       → skipped automatically
   2c/3c:  Quality check & supplement for L2/L3 results respectively
 
 Recommended workflow:
@@ -27,7 +28,7 @@ Recommended workflow:
         --original-video-root /path/to/videos \\
         --output-dir frames_l3/ --fps 2
 
-    # Step 3: L3 annotation (auto-skips sequence/flat)
+    # Step 3: L3 annotation (auto-skips flat; sequence now supported in v2)
     python annotate.py \\
         --frames-dir frames/ \\
         --l3-frames-dir frames_l3/ \\
@@ -479,7 +480,7 @@ def annotate_clip(
                 max_frames_per_call, resize_max_width, jpeg_quality,
             )
         elif level == "3":
-            # ── Topology-aware L3 routing ──
+            # ── Topology-aware L3 routing (v2: sequence now enabled) ──
             topology_type = existing.get("topology_type", "procedural")
             topology_confidence = existing.get("topology_confidence", 1.0)
             l3_mode = existing.get("l3_mode") or TOPOLOGY_TO_L3_MODE.get(topology_type, "state_change")

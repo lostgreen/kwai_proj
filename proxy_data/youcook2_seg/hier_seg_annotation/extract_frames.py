@@ -503,14 +503,15 @@ def run_l3_extraction(
     Topology-aware routing:
       - procedural: extract from L2 events → {clip_key}_ev{id}/
       - periodic:   extract from L1 phases → {clip_key}_ph{id}/
-      - sequence/flat: skip (L3 not applicable)
+      - sequence:   extract from L2 events → {clip_key}_ev{id}/ (v2: interaction_unit)
+      - flat: skip (L3 not applicable)
 
     Falls back to procedural (event-based) when topology_type is absent.
     """
     _TOPO_TO_L3 = {
         "procedural": "state_change",
         "periodic": "repetition_unit",
-        "sequence": "skip",
+        "sequence": "interaction_unit",
         "flat": "skip",
     }
 

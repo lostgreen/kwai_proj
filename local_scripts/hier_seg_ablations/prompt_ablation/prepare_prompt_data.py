@@ -18,6 +18,9 @@ from prompt_variants_v3 import (
     PROMPT_VARIANTS_V3 as PROMPT_VARIANTS,
     VARIANT_DESCRIPTIONS_V3 as VARIANT_DESCRIPTIONS,
     RESPONSE_LEN_HINTS,
+    PROMPT_VARIANTS_UNIVERSAL,
+    VARIANT_DESCRIPTIONS_UNIVERSAL,
+    RESPONSE_LEN_HINTS_UNIVERSAL,
 )
 
 
@@ -85,7 +88,11 @@ def extract_duration_from_prompt(prompt_text: str) -> int:
 
 def rewrite_prompt(record: dict, level: str, variant: str) -> dict:
     """
-    重写一条记录的 prompt 为指定 V2 变体。
+    重写一条记录的 prompt 为指定变体。
+
+    支持两套变体:
+    - V1-V4: 旧范式 (boundary-criterion × CoT)
+    - U1-U4: v2-Universal (information-delta × intent-progression)
 
     L1/L2/L3 全部统一使用 duration 参数。
     L3 特殊处理：problem_type 改为 L3_seg（自由分割）。
@@ -93,7 +100,11 @@ def rewrite_prompt(record: dict, level: str, variant: str) -> dict:
     record = dict(record)
     old_prompt = record.get("prompt", "")
 
-    template = PROMPT_VARIANTS[level][variant]
+    # 根据变体前缀选择对应的 registry
+    if variant.startswith("U"):
+        template = PROMPT_VARIANTS_UNIVERSAL[level][variant]
+    else:
+        template = PROMPT_VARIANTS[level][variant]
     duration = extract_duration_from_prompt(old_prompt)
     new_prompt_body = template.format(duration=duration)
 
@@ -183,7 +194,7 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prompt Ablation 数据准备（V3 prompt 模板）")
+    parser = argparse.ArgumentParser(description="Prompt Ablation 数据准备（V3 / Universal prompt 模板）")
     parser.add_argument(
         "--levels", nargs="+", required=True,
         choices=["L1", "L2", "L3"],
@@ -191,8 +202,8 @@ def main():
     )
     parser.add_argument(
         "--variant", type=str, required=True,
-        choices=["V1", "V2", "V3", "V4", "all"],
-        help="Prompt 变体 (V1-V4) 或 all",
+        choices=["V1", "V2", "V3", "V4", "U1", "U2", "U3", "U4", "all", "all_universal"],
+        help="Prompt 变体 (V1-V4 旧范式 / U1-U4 v2-Universal) 或 all / all_universal",
     )
     parser.add_argument(
         "--val-per-level", type=int, default=100,
@@ -209,12 +220,20 @@ def main():
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
-    variants = ["V1", "V2", "V3", "V4"] if args.variant == "all" else [args.variant]
+    if args.variant == "all":
+        variants = ["V1", "V2", "V3", "V4"]
+    elif args.variant == "all_universal":
+        variants = ["U1", "U2", "U3", "U4"]
+    else:
+        variants = [args.variant]
     train_per_level = None if args.train_per_level < 0 else args.train_per_level
+
+    # Build combined description lookup
+    all_descriptions = {**VARIANT_DESCRIPTIONS, **VARIANT_DESCRIPTIONS_UNIVERSAL}
 
     for variant in variants:
         print(f"\n{'=' * 60}")
-        print(f"  Variant {variant}: {VARIANT_DESCRIPTIONS[variant]}")
+        print(f"  Variant {variant}: {all_descriptions.get(variant, 'unknown')}")
         print(f"  val_per_level={args.val_per_level}, train_per_level={train_per_level or 'all'}")
         print(f"{'=' * 60}")
 

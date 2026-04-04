@@ -93,7 +93,7 @@ def get_gpt_text(sample: dict) -> str:
     return ""
 
 
-def filter_sample(sample: dict, cfg: dict) -> tuple[bool, str]:
+def filter_sample(sample: dict, cfg: dict, *, skip_event_filter: bool = False) -> tuple[bool, str]:
     """
     判断单个样本是否通过筛选。
     Returns: (passed: bool, reason: str)
@@ -107,9 +107,10 @@ def filter_sample(sample: dict, cfg: dict) -> tuple[bool, str]:
         return False, f"duration_too_long:{duration:.1f}s"
 
     # 2. 事件密度
-    n_events = count_events(sample)
-    if n_events < cfg["min_events"]:
-        return False, f"too_few_events:{n_events}"
+    if not skip_event_filter:
+        n_events = count_events(sample)
+        if n_events < cfg["min_events"]:
+            return False, f"too_few_events:{n_events}"
 
     # 3. 任务类型
     if PREFERRED_TASKS is not None:
@@ -161,9 +162,14 @@ def main():
     parser.add_argument("--output_dir", default="results", help="输出目录")
     parser.add_argument("--config", default=None, help="YAML 配置文件路径")
     parser.add_argument("--dry_run", action="store_true", help="仅统计，不写文件")
+    parser.add_argument("--no_event_filter", action="store_true",
+                        help="跳过事件密度过滤，只按时长筛选")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    skip_events = args.no_event_filter
+    if skip_events:
+        print("⚠️  --no_event_filter: 跳过事件密度过滤，只按时长筛选")
     print(f"筛选配置: {json.dumps(cfg, indent=2)}")
 
     # 加载数据
@@ -177,7 +183,7 @@ def main():
     reject_reasons = defaultdict(int)
 
     for sample in data:
-        ok, reason = filter_sample(sample, cfg)
+        ok, reason = filter_sample(sample, cfg, skip_event_filter=skip_events)
         if ok:
             sample["_n_events"] = count_events(sample)
             passed.append(sample)
