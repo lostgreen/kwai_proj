@@ -80,22 +80,24 @@ SCREEN_PROMPT_TEMPLATE = """\
 <video>
 Watch this video clip ({duration:.0f}s) and evaluate its temporal structure at two levels.
 
+**IMPORTANT RULE:** A "phase" must be a largely continuous block of time dedicated to a specific goal or stage. If the video is a **montage** that frequently cuts between many short, different scenes (like a sports highlight reel or a music video), it lacks a true phase structure and should receive a low L1_SCORE (1 or 2), even if it contains a variety of content.
+
 Q1 — L1 Phase Structure (L1_SCORE, integer 1-5):
-  Can the FULL video be segmented into distinct high-level phases (major stages)?
-  5 = 4+ clearly distinct phases with different goals (e.g., prep → cook → plate → serve)
-  4 = 3 phases identifiable, transitions clear
-  3 = 2 phases or stages visible, some structure
-  2 = Content shifts slightly but no real phase boundaries
-  1 = Single continuous activity / no phase structure
+  Does the video progress through distinct, logically ordered high-level phases?
+  5 = 4+ clearly distinct and continuous phases with different goals or narrative functions (e.g., procedural: prep → cook → plate; narrative: setup → conflict → resolution).
+  4 = 3 distinct, continuous phases are identifiable.
+  3 = 2 distinct, continuous phases are visible.
+  2 = The activity has some variation, but no clear phase boundaries or logical progression.
+  1 = A single continuous activity, or a montage of short clips with no overarching temporal order.
   Also estimate: how many phases? (EST_PHASES: integer)
 
 Q2 — L2 Event Structure (L2_SCORE, integer 1-5):
-  Within each phase, can you identify distinct sub-events or actions?
-  5 = Most phases contain 3+ distinct sub-events with clear start/end
-  4 = Most phases have 2+ identifiable sub-events
-  3 = Some phases have sub-events, others are monolithic
-  2 = Sub-events barely distinguishable within phases
-  1 = No sub-event structure / each phase is a single action
+  Within potential phases, can you identify distinct sub-events or actions?
+  5 = Most segments contain 3+ distinct sub-events.
+  4 = Most segments have 2+ identifiable sub-events.
+  3 = Some segments have sub-events, others are monolithic.
+  2 = Sub-events are barely distinguishable.
+  1 = No clear sub-event structure.
   Also estimate: total events across all phases? (EST_EVENTS: integer)
 
 Q3 — Domain classification:
@@ -114,7 +116,7 @@ EST_EVENTS: <integer>
 DOMAIN_L1: <one word from the list>
 DOMAIN_L2: <one word from the list>
 QUALITY: <good or bad>
-REASON: <one sentence explaining your assessment>"""
+REASON: <one sentence explaining your assessment, especially your reasoning for the L1_SCORE>"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
