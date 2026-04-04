@@ -281,6 +281,7 @@ def _load_video_frames(
     video_fps: float,
     max_pixels: int,
     min_pixels: int,
+    image_patch_size: int = 14,
 ):
     """Load video and return pre-processed frames + metadata for vLLM.
 
@@ -297,9 +298,11 @@ def _load_video_frames(
         "fps": video_fps,
     }
     # fetch_video returns ((tensor[T,C,H,W], metadata_dict), sample_fps)
+    # image_patch_size must match the HF processor's patch_size so that
+    # the resize factor (patch_size * merge_size) is consistent.
     result = fetch_video(
         vision_info,
-        image_patch_size=16,
+        image_patch_size=image_patch_size,
         return_video_sample_fps=True,
         return_video_metadata=True,
     )
@@ -320,10 +323,16 @@ def _build_vllm_request(
             "prompt_token_ids": processor.tokenizer.encode(prompt, add_special_tokens=False),
         }
 
+    # Read patch_size from the HF processor so fetch_video uses the same
+    # resize factor (patch_size * merge_size).  Default 14 for Qwen2.5-VL.
+    video_proc = getattr(processor, "video_processor", None) or processor.image_processor
+    patch_size = getattr(video_proc, "patch_size", 14)
+
     # Load video frames → (tensor[T,C,H,W], metadata, sample_fps)
     loaded = [
         _load_video_frames(
             v, args.max_frames, args.video_fps, args.max_pixels, args.min_pixels,
+            image_patch_size=patch_size,
         )
         for v in videos
     ]
