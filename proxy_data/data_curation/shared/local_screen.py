@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Local VLM pre-screening for ET-Instruct annotation pipeline.
+Local VLM pre-screening for hierarchical annotation pipeline.
 
 Uses a local Qwen VL model (via vLLM) to quickly assess whether a video
 is suitable for hierarchical temporal segmentation annotation.
 
-Evaluates three dimensions:
-  1. Hierarchical potential (1-5 score)
-  2. Domain classification (domain_l1 + domain_l2)
-  3. Visual quality (good/bad)
+Evaluates four dimensions:
+  1. L1 Phase structure score (1-5) + estimated phase count
+  2. L2 Event structure score (1-5) + estimated event count
+  3. Domain classification (domain_l1 + domain_l2)
+  4. Visual quality (good/bad)
+
+Decision rule: keep only if L1 >= threshold AND L2 >= threshold,
+ensuring the video has at least two layers of temporal structure.
 
 Architecture: Reuses the vLLM batch inference pattern from
 offline_rollout_filter.py — supports tensor parallelism and
@@ -74,26 +78,39 @@ VALID_DOMAIN_L2 = {
 
 SCREEN_PROMPT_TEMPLATE = """\
 <video>
-Watch this video clip ({duration:.0f}s) and answer three questions.
+Watch this video clip ({duration:.0f}s) and evaluate its temporal structure at two levels.
 
-Q1 — Hierarchical potential (HIER_SCORE, integer 1-5):
-  Does the video have multi-level temporal structure suitable for phase+event annotation?
-  5 = Clear distinct phases, each with sub-events (e.g., prep → cook → plate)
-  4 = Phases visible, some sub-events identifiable
-  3 = Some temporal structure but limited variety
-  2 = Mostly single continuous activity with minor variation
-  1 = Flat/static/single repetitive action/talking head
+Q1 — L1 Phase Structure (L1_SCORE, integer 1-5):
+  Can the FULL video be segmented into distinct high-level phases (major stages)?
+  5 = 4+ clearly distinct phases with different goals (e.g., prep → cook → plate → serve)
+  4 = 3 phases identifiable, transitions clear
+  3 = 2 phases or stages visible, some structure
+  2 = Content shifts slightly but no real phase boundaries
+  1 = Single continuous activity / no phase structure
+  Also estimate: how many phases? (EST_PHASES: integer)
 
-Q2 — Domain classification:
+Q2 — L2 Event Structure (L2_SCORE, integer 1-5):
+  Within each phase, can you identify distinct sub-events or actions?
+  5 = Most phases contain 3+ distinct sub-events with clear start/end
+  4 = Most phases have 2+ identifiable sub-events
+  3 = Some phases have sub-events, others are monolithic
+  2 = Sub-events barely distinguishable within phases
+  1 = No sub-event structure / each phase is a single action
+  Also estimate: total events across all phases? (EST_EVENTS: integer)
+
+Q3 — Domain classification:
   domain_l1 choices: procedural | physical | lifestyle | entertainment | narrative | educational | other
   domain_l2 choices: cooking | construction_building | crafting_diy | repair_maintenance | sports | fitness_exercise | music_performance | beauty_grooming | cleaning_housework | gardening_outdoor | vehicle_operation | movie_scene | reality_show | animation | vlog | interview_talk | documentary | news_report | science_experiment | lecture_tutorial | other
 
-Q3 — Visual quality (QUALITY):
+Q4 — Visual quality (QUALITY):
   good = clear footage with visible physical actions, movements, or narrative content
   bad = dark, blurry, static, screen recording, text-heavy slides, pure talking head, gaming footage
 
 Answer in EXACTLY this format (one field per line):
-HIER_SCORE: <integer 1-5>
+L1_SCORE: <integer 1-5>
+EST_PHASES: <integer>
+L2_SCORE: <integer 1-5>
+EST_EVENTS: <integer>
 DOMAIN_L1: <one word from the list>
 DOMAIN_L2: <one word from the list>
 QUALITY: <good or bad>
@@ -108,8 +125,17 @@ def parse_screen_response(text: str) -> dict[str, Any]:
     """Parse key-value screening response. Robust to 4B model quirks."""
     result: dict[str, Any] = {"_raw": text}
 
-    m = re.search(r"HIER_SCORE:\s*(\d)", text, re.IGNORECASE)
-    result["hier_score"] = int(m.group(1)) if m else None
+    m = re.search(r"L1_SCORE:\s*(\d)", text, re.IGNORECASE)
+    result["l1_score"] = int(m.group(1)) if m else None
+
+    m = re.search(r"EST_PHASES:\s*(\d+)", text, re.IGNORECASE)
+    result["est_phases"] = int(m.group(1)) if m else None
+
+    m = re.search(r"L2_SCORE:\s*(\d)", text, re.IGNORECASE)
+    result["l2_score"] = int(m.group(1)) if m else None
+
+    m = re.search(r"EST_EVENTS:\s*(\d+)", text, re.IGNORECASE)
+    result["est_events"] = int(m.group(1)) if m else None
 
     m = re.search(r"DOMAIN_L1:\s*(\S+)", text, re.IGNORECASE)
     if m:
@@ -134,20 +160,29 @@ def parse_screen_response(text: str) -> dict[str, Any]:
     return result
 
 
-def apply_screening_rules(parsed: dict[str, Any], hier_threshold: int = 3) -> str:
-    """Programmatic decision rules. Returns 'keep' or 'reject'."""
-    hier_score = parsed.get("hier_score")
+def apply_screening_rules(
+    parsed: dict[str, Any],
+    l1_threshold: int = 3,
+    l2_threshold: int = 3,
+) -> str:
+    """Programmatic decision rules. Returns 'keep' or 'reject'.
+
+    Requires BOTH L1 (phase) and L2 (event) scores to meet thresholds,
+    ensuring the video has at least two layers of temporal structure.
+    """
+    l1 = parsed.get("l1_score")
+    l2 = parsed.get("l2_score")
 
     # Parse failure on critical field → reject
-    if hier_score is None:
+    if l1 is None or l2 is None:
         return "reject"
 
     # Bad visual quality → hard reject
     if parsed.get("quality") == "bad":
         return "reject"
 
-    # Hierarchical potential below threshold → reject
-    if hier_score < hier_threshold:
+    # Both levels must meet threshold → at least 2-layer structure
+    if l1 < l1_threshold or l2 < l2_threshold:
         return "reject"
 
     return "keep"
@@ -354,18 +389,20 @@ def parse_args() -> argparse.Namespace:
 
     # Video params
     parser.add_argument("--video_fps", type=float, default=1.0)
-    parser.add_argument("--max_frames", type=int, default=64)
+    parser.add_argument("--max_frames", type=int, default=128)
     parser.add_argument("--max_pixels", type=int, default=49152)
     parser.add_argument("--min_pixels", type=int, default=3136)
 
     # Generation
-    parser.add_argument("--max_new_tokens", type=int, default=200)
+    parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
 
     # Screening
-    parser.add_argument("--hier_threshold", type=int, default=3,
-                        help="Min hierarchical score to keep (1-5)")
+    parser.add_argument("--l1_threshold", type=int, default=3,
+                        help="Min L1 (phase) score to keep (1-5)")
+    parser.add_argument("--l2_threshold", type=int, default=3,
+                        help="Min L2 (event) score to keep (1-5)")
     parser.add_argument("--max_samples", type=int, default=0,
                         help="Process at most N samples (0 = all)")
 
@@ -445,7 +482,7 @@ def main() -> None:
             else:
                 response_text = result[0] if result else ""
                 parsed = parse_screen_response(response_text)
-                decision = apply_screening_rules(parsed, args.hier_threshold)
+                decision = apply_screening_rules(parsed, args.l1_threshold, args.l2_threshold)
                 parsed["decision"] = decision
 
                 item["_screen"] = parsed
@@ -465,7 +502,10 @@ def main() -> None:
                     freport.write(json.dumps({
                         "index": idx, "source": source,
                         "decision": decision,
-                        "hier_score": parsed.get("hier_score"),
+                        "l1_score": parsed.get("l1_score"),
+                        "l2_score": parsed.get("l2_score"),
+                        "est_phases": parsed.get("est_phases"),
+                        "est_events": parsed.get("est_events"),
                         "domain_l1": parsed.get("domain_l1"),
                         "quality": parsed.get("quality"),
                         "reason": parsed.get("reason"),
