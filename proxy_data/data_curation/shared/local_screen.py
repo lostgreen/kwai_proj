@@ -282,11 +282,10 @@ def _load_video_frames(
     max_pixels: int,
     min_pixels: int,
 ):
-    """Load video and return pre-processed numpy frames for vLLM.
+    """Load video and return pre-processed frames + metadata for vLLM.
 
     Uses qwen_vl_utils.fetch_video (same backend as HF processor) to
-    decode, sample, and resize frames.  Returns a (ndarray, metadata)
-    tuple that vLLM Qwen2.5-VL and Qwen3-VL both accept.
+    decode, sample, and resize frames.  Returns (tensor, metadata, fps).
     """
     from qwen_vl_utils.vision_process import fetch_video
 
@@ -297,17 +296,15 @@ def _load_video_frames(
         "max_frames": max_frames,
         "fps": video_fps,
     }
-    # fetch_video returns:
-    #   (video_ndarray, metadata_dict, sample_fps) when both flags are True
+    # fetch_video returns ((tensor[T,C,H,W], metadata_dict), sample_fps)
     result = fetch_video(
         vision_info,
         image_patch_size=16,
         return_video_sample_fps=True,
         return_video_metadata=True,
     )
-    # result = ((video_ndarray, metadata_dict), sample_fps)
-    video_data, _fps = result
-    return video_data  # (ndarray, metadata)
+    (video_tensor, metadata), sample_fps = result
+    return video_tensor, metadata, sample_fps
 
 
 def _build_vllm_request(
@@ -315,27 +312,55 @@ def _build_vllm_request(
     processor,
     args: argparse.Namespace,
 ) -> dict[str, Any] | None:
-    prompt = build_prompt(example, processor)
-    request = {
-        "prompt_token_ids": processor.tokenizer.encode(prompt, add_special_tokens=False),
-    }
     videos = example.get("videos") or []
-    if videos:
-        processed = [
-            _load_video_frames(
-                v, args.max_frames, args.video_fps, args.max_pixels, args.min_pixels,
-            )
-            for v in videos
-        ]
-        # Match the exact format from verl's _process_multi_modal_data:
-        # multi_modal_data = {"video": [(ndarray, metadata), ...]}
-        # mm_processor_kwargs = {"do_sample_frames": False, "do_resize": False}
-        request["multi_modal_data"] = {"video": processed}
-        request["mm_processor_kwargs"] = {
+
+    if not videos:
+        prompt = build_prompt(example, processor)
+        return {
+            "prompt_token_ids": processor.tokenizer.encode(prompt, add_special_tokens=False),
+        }
+
+    # Load video frames → (tensor[T,C,H,W], metadata, sample_fps)
+    loaded = [
+        _load_video_frames(
+            v, args.max_frames, args.video_fps, args.max_pixels, args.min_pixels,
+        )
+        for v in videos
+    ]
+    # Separate frames and metadata (matching verl dataset.py line 607-612)
+    frames = [item[0] for item in loaded]       # tensor[T,C,H,W]
+    metadatas = [item[1] for item in loaded]    # dict with fps, etc.
+
+    # Use full HF processor to get correct token IDs + pixel_values.
+    # tokenizer.encode() produces 1 <|video_pad|> from template text;
+    # the processor computes the real count from video grid dimensions.
+    messages = build_screen_messages(example)
+    prompt_text = processor.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=False,
+    )
+    encoded = processor(
+        text=[prompt_text],
+        videos=frames,
+        video_metadata=metadatas,
+        add_special_tokens=False,
+        return_tensors="pt",
+        do_resize=False,
+        do_sample_frames=False,
+    )
+    prompt_token_ids = encoded["input_ids"][0].tolist()
+
+    # Build the vLLM request. Pass (tensor, metadata) tuples so vLLM can
+    # re-use pre-processed data via mm_processor_kwargs.
+    mm_tuples = [(t, m) for t, m in zip(frames, metadatas)]
+
+    return {
+        "prompt_token_ids": prompt_token_ids,
+        "multi_modal_data": {"video": mm_tuples},
+        "mm_processor_kwargs": {
             "do_sample_frames": False,
             "do_resize": False,
-        }
-    return request
+        },
+    }
 
 
 def iter_vllm_batches(
@@ -367,6 +392,9 @@ def iter_vllm_batches(
                 requests.append(req)
                 req_positions.append(local_idx)
             except Exception as exc:
+                import traceback
+                print(f"[screen] ERROR building request idx={start+local_idx}: {exc}", flush=True)
+                traceback.print_exc()
                 errors[local_idx] = exc
 
         for local_idx, exc in errors.items():
