@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoProcessor
 
 # ── Domain taxonomy (imported from annotation prompts) ──
 # We inline the valid values here to avoid fragile cross-package imports.
@@ -235,19 +235,6 @@ def build_prompt(example: dict[str, Any], processor) -> str:
     )
 
 
-def build_multi_modal_data(example: dict[str, Any], args: argparse.Namespace) -> dict[str, Any] | None:
-    videos = example.get("videos") or []
-    if not videos:
-        return None
-    return {
-        "videos": videos,
-        "min_pixels": args.min_pixels,
-        "max_pixels": args.max_pixels,
-        "max_frames": args.max_frames,
-        "video_fps": args.video_fps,
-    }
-
-
 def init_vllm_backend(args: argparse.Namespace):
     from vllm import LLM, SamplingParams
     from verl.workers.rollout.vllm_rollout_spmd import _get_logit_bias
@@ -293,24 +280,22 @@ def _build_vllm_request(
     processor,
     args: argparse.Namespace,
 ) -> dict[str, Any] | None:
-    from verl.workers.rollout.vllm_rollout_spmd import _process_multi_modal_data
-
     prompt = build_prompt(example, processor)
     request = {
         "prompt_token_ids": processor.tokenizer.encode(prompt, add_special_tokens=False),
     }
-    multi_modal_data = build_multi_modal_data(example, args)
-    if multi_modal_data is not None:
-        mm_data, mm_kwargs = _process_multi_modal_data(
-            multi_modal_data,
-            args.min_pixels,
-            args.max_pixels,
-            args.video_fps,
-        )
-        if mm_data is not None:
-            request["multi_modal_data"] = mm_data
-        if mm_kwargs is not None:
-            request["mm_processor_kwargs"] = mm_kwargs
+    videos = example.get("videos") or []
+    if videos:
+        # Pass raw video file paths to vLLM — let its internal processor
+        # handle frame sampling, resizing, etc.  This works for both
+        # Qwen2.5-VL and Qwen3-VL backends.
+        request["multi_modal_data"] = {"video": videos}
+        request["mm_processor_kwargs"] = {
+            "max_pixels": args.max_pixels,
+            "min_pixels": args.min_pixels,
+            "fps": args.video_fps,
+            "max_frames": args.max_frames,
+        }
     return request
 
 
