@@ -6,11 +6,11 @@
 #   Machine 2: t2v_3way → t2v_binary
 #
 # 用法:
-#   # 机器 A
-#   nohup bash run_fulldata_batch.sh 1 > batch_1.log 2>&1 &
+#   # 机器 A (log 自动保存到 checkpoint 目录)
+#   nohup bash run_fulldata_batch.sh 1 &
 #
 #   # 机器 B
-#   nohup bash run_fulldata_batch.sh 2 > batch_2.log 2>&1 &
+#   nohup bash run_fulldata_batch.sh 2 &
 set -uo pipefail
 
 GROUP="${1:-}"
@@ -22,6 +22,16 @@ if [ -z "$GROUP" ] || { [ "$GROUP" != "1" ] && [ "$GROUP" != "2" ]; }; then
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Log 输出到 checkpoint 目录（当前目录可能只读）
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations}"
+LOG_DIR="${CHECKPOINT_ROOT}"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/batch_group${GROUP}_$(date '+%Y%m%d_%H%M%S').log"
+
+# Redirect all output to log file AND terminal
+exec > >(tee -a "${LOG_FILE}") 2>&1
+echo "Log file: ${LOG_FILE}"
 
 run_exp() {
     local script="$1"
