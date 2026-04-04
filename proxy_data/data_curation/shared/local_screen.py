@@ -119,6 +119,39 @@ QUALITY: <good or bad>
 REASON: <one sentence explaining your assessment, especially your reasoning for the L1_SCORE>"""
 
 
+SECONDARY_SCREEN_PROMPT = """\
+<video>
+Watch this video clip ({duration:.0f}s). This video has passed initial quality and structure checks.
+
+Your task is to evaluate the *quality of its temporal progression* — specifically, whether the video showcases diverse, meaningful event transitions (GOOD for training) or just repeats the same action in loops (BAD for training).
+
+Evaluate on three independent dimensions:
+
+Q1 — Progression Type (PROG_TYPE):
+  What is the nature of the progression across the video's major segments? Choose ONE:
+  procedural = Step-by-step physical progression toward a goal (e.g., crafting, cooking, building). The state of objects changes permanently between segments.
+  narrative = Chronological journey or evolving situation (e.g., vlogs, travel, shifting topics). Driven by time, location, or intent shifts.
+  repetitive_loop = The segments are identical or near-identical cycles of the same action (e.g., gym sets, repeated tricks, drilling the same movement).
+
+Q2 — Visual Diversity (VISUAL_DIVERSITY):
+  How much does the visual content change between the video's major segments?
+  high = Drastic changes: different rooms/locations, different objects, different camera setups.
+  medium = Same general setting, but clear shifts in tools, focus, or activity.
+  low = The scene looks almost identical across all segments (typical for gym, static camera, repetitive drills).
+
+Q3 — Order Dependency (ORDER_DEPENDENCY):
+  If you randomly shuffled the chronological order of the major segments, what would happen?
+  strict = The video would become physically impossible or logically absurd (e.g., eating before cooking).
+  loose = It would feel disjointed but not impossible (e.g., showing the beach before breakfast in a vlog).
+  none = Order doesn't matter. Segments are fully interchangeable (e.g., compilation of tricks, gym sets).
+
+Answer in EXACTLY this format (one field per line):
+PROG_TYPE: <procedural | narrative | repetitive_loop>
+VISUAL_DIVERSITY: <high | medium | low>
+ORDER_DEPENDENCY: <strict | loose | none>
+REASON: <One sentence explaining how the visual state evolves (or fails to evolve) between segments.>"""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Response parsing & decision rules
 # ─────────────────────────────────────────────────────────────────────────────
@@ -190,9 +223,90 @@ def apply_screening_rules(
     return "keep"
 
 
+VALID_PROG_TYPES = {"procedural", "narrative", "repetitive_loop"}
+VALID_VISUAL_DIVERSITY = {"high", "medium", "low"}
+VALID_ORDER_DEPENDENCY = {"strict", "loose", "none"}
+
+
+def parse_secondary_response(text: str) -> dict[str, Any]:
+    """Parse key-value secondary screening response."""
+    result: dict[str, Any] = {"_raw": text}
+
+    m = re.search(r"PROG_TYPE:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower().strip().rstrip(".,;:")
+        result["prog_type"] = val if val in VALID_PROG_TYPES else None
+    else:
+        result["prog_type"] = None
+
+    m = re.search(r"VISUAL_DIVERSITY:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower().strip().rstrip(".,;:")
+        result["visual_diversity"] = val if val in VALID_VISUAL_DIVERSITY else None
+    else:
+        result["visual_diversity"] = None
+
+    m = re.search(r"ORDER_DEPENDENCY:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower().strip().rstrip(".,;:")
+        result["order_dependency"] = val if val in VALID_ORDER_DEPENDENCY else None
+    else:
+        result["order_dependency"] = None
+
+    m = re.search(r"REASON:\s*(.+)", text, re.IGNORECASE)
+    result["reason"] = m.group(1).strip() if m else None
+
+    return result
+
+
+def apply_secondary_rules(parsed: dict[str, Any]) -> str:
+    """Decision rules for secondary screening. Returns 'keep' or 'reject'.
+
+    Rules:
+    - repetitive_loop → hard reject
+    - visual_diversity=low AND order_dependency=none → hard reject
+    - procedural/narrative with at least medium diversity OR loose order → keep
+    - Parse failure on critical field → reject
+    """
+    prog = parsed.get("prog_type")
+    vis = parsed.get("visual_diversity")
+    order = parsed.get("order_dependency")
+
+    # Parse failure → reject
+    if prog is None:
+        return "reject"
+
+    # Repetitive loop → hard reject
+    if prog == "repetitive_loop":
+        return "reject"
+
+    # Double-low: no diversity AND no order dependency → reject
+    if vis == "low" and order == "none":
+        return "reject"
+
+    return "keep"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Data loading
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _get_item_key(item: dict[str, Any]) -> str:
+    """Extract a unique key for a video record.
+
+    Priority: metadata.clip_key > metadata.video_id > videos[0] stem > hash.
+    """
+    meta = item.get("metadata") or {}
+    if meta.get("clip_key"):
+        return meta["clip_key"]
+    if meta.get("video_id"):
+        return meta["video_id"]
+    videos = item.get("videos") or []
+    if videos:
+        return Path(videos[0]).stem
+    # Fallback: deterministic hash of the JSON
+    return str(hash(json.dumps(item, sort_keys=True, ensure_ascii=True)))
+
 
 def load_jsonl(path: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
@@ -208,14 +322,26 @@ def load_jsonl(path: str) -> list[dict[str, Any]]:
     return items
 
 
+def _load_existing_results(output_path: str) -> tuple[set[str], list[dict[str, Any]]]:
+    """Load already-processed results. Returns (processed_keys, existing_items)."""
+    if not os.path.exists(output_path):
+        return set(), []
+    existing = load_jsonl(output_path)
+    keys = {_get_item_key(item) for item in existing}
+    return keys, existing
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # vLLM inference (adapted from offline_rollout_filter.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_screen_messages(example: dict[str, Any]) -> list[dict[str, Any]]:
+def build_screen_messages(
+    example: dict[str, Any],
+    prompt_template: str = SCREEN_PROMPT_TEMPLATE,
+) -> list[dict[str, Any]]:
     """Build screening prompt messages with <video> placeholder."""
     duration = example.get("duration", 0)
-    prompt_text = SCREEN_PROMPT_TEMPLATE.format(duration=duration)
+    prompt_text = prompt_template.format(duration=duration)
 
     # Split on <video> to create interleaved content
     content: list[dict[str, str]] = []
@@ -228,8 +354,12 @@ def build_screen_messages(example: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"role": "user", "content": content}]
 
 
-def build_prompt(example: dict[str, Any], processor) -> str:
-    messages = build_screen_messages(example)
+def build_prompt(
+    example: dict[str, Any],
+    processor,
+    prompt_template: str = SCREEN_PROMPT_TEMPLATE,
+) -> str:
+    messages = build_screen_messages(example, prompt_template=prompt_template)
     return processor.apply_chat_template(
         messages, add_generation_prompt=True, tokenize=False,
     )
@@ -314,11 +444,12 @@ def _build_vllm_request(
     example: dict[str, Any],
     processor,
     args: argparse.Namespace,
+    prompt_template: str = SCREEN_PROMPT_TEMPLATE,
 ) -> dict[str, Any] | None:
     videos = example.get("videos") or []
 
     if not videos:
-        prompt = build_prompt(example, processor)
+        prompt = build_prompt(example, processor, prompt_template=prompt_template)
         return {
             "prompt_token_ids": processor.tokenizer.encode(prompt, add_special_tokens=False),
         }
@@ -343,7 +474,7 @@ def _build_vllm_request(
     # _apply_hf_processor_text_mm path end-to-end:
     # correct pad-token expansion + pixel-value computation in one shot,
     # avoiding any mismatch between local and vLLM-internal HF processor.
-    prompt = build_prompt(example, processor)
+    prompt = build_prompt(example, processor, prompt_template=prompt_template)
 
     return {
         "prompt": prompt,
@@ -362,6 +493,7 @@ def iter_vllm_batches(
     sampling_params,
     args: argparse.Namespace,
     batch_size: int = 32,
+    prompt_template: str = SCREEN_PROMPT_TEMPLATE,
 ):
     """Yield (global_idx, item, responses_or_exception) one mini-batch at a time."""
     total_batches = (len(items) + batch_size - 1) // batch_size
@@ -377,7 +509,7 @@ def iter_vllm_batches(
 
         for local_idx, item in enumerate(batch_items):
             try:
-                req = _build_vllm_request(item, processor, args)
+                req = _build_vllm_request(item, processor, args, prompt_template=prompt_template)
                 if req is None:
                     errors[local_idx] = RuntimeError("Failed to build vLLM request")
                     continue
@@ -449,8 +581,13 @@ def parse_args() -> argparse.Namespace:
                         help="Min L1 (phase) score to keep (1-5)")
     parser.add_argument("--l2_threshold", type=int, default=3,
                         help="Min L2 (event) score to keep (1-5)")
+    parser.add_argument("--secondary_screen", action="store_true",
+                        help="Run a second-pass screening on stage-1 kept videos "
+                             "to filter out repetitive-loop false positives")
     parser.add_argument("--max_samples", type=int, default=0,
                         help="Process at most N samples (0 = all)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip videos already in output_jsonl (by clip_key)")
 
     # Data-parallel sharding
     parser.add_argument("--shard_id", type=int, default=0)
@@ -460,6 +597,102 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=32)
 
     return parser.parse_args()
+
+
+def _run_primary_screen(
+    items: list[dict[str, Any]],
+    processor,
+    llm,
+    sampling_params,
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run primary screening. Returns (kept_items, rejected_items)."""
+    kept_items: list[dict[str, Any]] = []
+    rejected_items: list[dict[str, Any]] = []
+    errors = 0
+    processed = 0
+
+    for idx, item, result in iter_vllm_batches(
+        items, processor, llm, sampling_params, args,
+        batch_size=args.batch_size,
+        prompt_template=SCREEN_PROMPT_TEMPLATE,
+    ):
+        if isinstance(result, Exception):
+            errors += 1
+            item["_screen"] = {"error": str(result), "decision": "reject"}
+            rejected_items.append(item)
+        else:
+            response_text = result[0] if result else ""
+            parsed = parse_screen_response(response_text)
+            decision = apply_screening_rules(parsed, args.l1_threshold, args.l2_threshold)
+            parsed["decision"] = decision
+            item["_screen"] = parsed
+
+            if decision == "keep":
+                kept_items.append(item)
+            else:
+                rejected_items.append(item)
+
+        processed += 1
+        if processed % args.log_every == 0 or processed == len(items):
+            print(
+                f"[screen-1] processed={processed}/{len(items)} "
+                f"kept={len(kept_items)} rejected={len(rejected_items)} errors={errors}",
+                flush=True,
+            )
+
+    return kept_items, rejected_items
+
+
+def _run_secondary_screen(
+    items: list[dict[str, Any]],
+    processor,
+    llm,
+    sampling_params,
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run secondary screening on stage-1 kept items. Returns (kept, rejected)."""
+    kept_items: list[dict[str, Any]] = []
+    rejected_items: list[dict[str, Any]] = []
+    errors = 0
+    processed = 0
+
+    for idx, item, result in iter_vllm_batches(
+        items, processor, llm, sampling_params, args,
+        batch_size=args.batch_size,
+        prompt_template=SECONDARY_SCREEN_PROMPT,
+    ):
+        if isinstance(result, Exception):
+            errors += 1
+            item["_screen_2"] = {"error": str(result), "decision": "reject"}
+            rejected_items.append(item)
+        else:
+            response_text = result[0] if result else ""
+            parsed = parse_secondary_response(response_text)
+            decision = apply_secondary_rules(parsed)
+
+            # Contradiction detection: stage-1 said L1>=4 but stage-2 says repetitive
+            s1 = item.get("_screen", {})
+            if parsed.get("prog_type") == "repetitive_loop" and (s1.get("l1_score") or 0) >= 4:
+                parsed["_s1_contradiction"] = True
+
+            parsed["decision"] = decision
+            item["_screen_2"] = parsed
+
+            if decision == "keep":
+                kept_items.append(item)
+            else:
+                rejected_items.append(item)
+
+        processed += 1
+        if processed % args.log_every == 0 or processed == len(items):
+            print(
+                f"[screen-2] processed={processed}/{len(items)} "
+                f"kept={len(kept_items)} rejected={len(rejected_items)} errors={errors}",
+                flush=True,
+            )
+
+    return kept_items, rejected_items
 
 
 def main() -> None:
@@ -479,6 +712,34 @@ def main() -> None:
         print(f"[screen] Shard {args.shard_id}/{args.num_shards}: "
               f"processing {len(items)} samples", flush=True)
 
+    # Resume: skip already-processed videos
+    existing_kept: list[dict[str, Any]] = []
+    existing_rejected: list[dict[str, Any]] = []
+    if args.resume:
+        done_keys, existing_items = _load_existing_results(args.output_jsonl)
+        if done_keys:
+            before = len(items)
+            items = [it for it in items if _get_item_key(it) not in done_keys]
+            # Split existing items back into kept/rejected based on stored decision
+            for ex in existing_items:
+                s1 = ex.get("_screen", {})
+                s2 = ex.get("_screen_2", {})
+                # Final decision: stage-2 overrides stage-1 if present
+                final_decision = s2.get("decision") if s2 else s1.get("decision")
+                if final_decision == "keep":
+                    existing_kept.append(ex)
+                else:
+                    existing_rejected.append(ex)
+            print(f"[screen] Resume: {len(done_keys)} already done, "
+                  f"{before - len(items)} skipped, {len(items)} remaining", flush=True)
+
+    if not items:
+        print("[screen] Nothing to process (all done or empty input).", flush=True)
+        # Still write merged output in case this is a resume with nothing new
+        if args.resume and (existing_kept or existing_rejected):
+            _write_outputs(existing_kept, existing_rejected, args)
+        return
+
     # Init vLLM
     print(f"[screen] Initializing vLLM (model={args.model_path}, "
           f"tp={args.tensor_parallel_size}, "
@@ -492,98 +753,120 @@ def main() -> None:
     if args.report_jsonl:
         Path(args.report_jsonl).parent.mkdir(parents=True, exist_ok=True)
 
-    kept = 0
-    rejected = 0
-    errors = 0
+    # ── Stage 1: Primary screening ──
+    print(f"\n[screen] ═══ Stage 1: Primary screening ({len(items)} videos) ═══", flush=True)
+    s1_kept, s1_rejected = _run_primary_screen(items, processor, llm, sampling_params, args)
+
+    # ── Stage 2: Secondary screening (optional) ──
+    if args.secondary_screen and s1_kept:
+        print(f"\n[screen] ═══ Stage 2: Secondary screening ({len(s1_kept)} videos) ═══", flush=True)
+        s2_kept, s2_rejected = _run_secondary_screen(s1_kept, processor, llm, sampling_params, args)
+        new_kept = s2_kept
+        new_rejected = s1_rejected + s2_rejected
+    else:
+        new_kept = s1_kept
+        new_rejected = s1_rejected
+
+    # Merge with existing results (resume mode)
+    final_kept = existing_kept + new_kept
+    final_rejected = existing_rejected + new_rejected
+
+    _write_outputs(final_kept, final_rejected, args)
+
+    # ── Summary ──
+    total = len(final_kept) + len(final_rejected)
+    print(f"\n[screen] Done. total={total} kept={len(final_kept)} rejected={len(final_rejected)}")
+    if total > 0:
+        print(f"[screen] Keep rate: {100.0 * len(final_kept) / total:.1f}%")
+
+    if args.secondary_screen:
+        all_input = len(items) + len(existing_kept) + len(existing_rejected)
+        s1_all_kept = len([it for it in final_kept + final_rejected
+                          if it.get("_screen", {}).get("decision") == "keep"])
+        print(f"[screen] Stage 1: {s1_all_kept}/{all_input} kept")
+        print(f"[screen] Stage 2: {len(final_kept)}/{s1_all_kept} kept"
+              if s1_all_kept > 0 else "")
+
+    _print_source_summary(final_kept, final_rejected)
+
+    print(f"\n[screen] Output: {args.output_jsonl}")
+    print(f"[screen] Kept:   {args.keep_jsonl} ({len(final_kept)} records)")
+    print(f"[screen] Reject: {args.reject_jsonl} ({len(final_rejected)} records)")
+
+
+def _write_outputs(
+    kept: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> None:
+    """Write final output files.
+
+    Output schema per record:
+      Base fields (for hier_seg_annotation / extract_frames.py):
+        videos, metadata{clip_key, video_id, clip_start, clip_end,
+        clip_duration, original_duration, is_full_video, source},
+        source, dataset, duration
+      Screening fields:
+        _screen{l1_score, est_phases, l2_score, est_events,
+                domain_l1, domain_l2, quality, reason, decision}
+        _screen_2{prog_type, visual_diversity, order_dependency,
+                  reason, decision}  (only if secondary_screen)
+    """
+    def _clean_item(item: dict) -> dict:
+        """Strip verbose _raw from screening dicts before writing."""
+        out = dict(item)
+        for key in ("_screen", "_screen_2"):
+            if key in out and isinstance(out[key], dict):
+                out[key] = {k: v for k, v in out[key].items() if k != "_raw"}
+        return out
+
+    for p in [args.output_jsonl, args.keep_jsonl, args.reject_jsonl]:
+        Path(p).parent.mkdir(parents=True, exist_ok=True)
+
+    with open(args.output_jsonl, "w", encoding="utf-8") as fout, \
+         open(args.keep_jsonl, "w", encoding="utf-8") as fkeep, \
+         open(args.reject_jsonl, "w", encoding="utf-8") as freject:
+        for item in kept + rejected:
+            fout.write(json.dumps(_clean_item(item), ensure_ascii=False) + "\n")
+        for item in kept:
+            fkeep.write(json.dumps(_clean_item(item), ensure_ascii=False) + "\n")
+        for item in rejected:
+            freject.write(json.dumps(_clean_item(item), ensure_ascii=False) + "\n")
+
+    if args.report_jsonl:
+        Path(args.report_jsonl).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.report_jsonl, "w", encoding="utf-8") as freport:
+            for item in kept + rejected:
+                s1 = item.get("_screen", {})
+                s2 = item.get("_screen_2", {})
+                freport.write(json.dumps({
+                    "clip_key": _get_item_key(item),
+                    "source": item.get("source", "unknown"),
+                    "decision_s1": s1.get("decision"),
+                    "l1_score": s1.get("l1_score"),
+                    "l2_score": s1.get("l2_score"),
+                    "domain_l1": s1.get("domain_l1"),
+                    "domain_l2": s1.get("domain_l2"),
+                    "quality": s1.get("quality"),
+                    "decision_s2": s2.get("decision") if s2 else None,
+                    "prog_type": s2.get("prog_type") if s2 else None,
+                    "visual_diversity": s2.get("visual_diversity") if s2 else None,
+                    "order_dependency": s2.get("order_dependency") if s2 else None,
+                }, ensure_ascii=False) + "\n")
+
+
+def _print_source_summary(
+    kept: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+) -> None:
     kept_by_source: dict[str, int] = {}
     rejected_by_source: dict[str, int] = {}
-
-    fout = open(args.output_jsonl, "w", encoding="utf-8")
-    fkeep = open(args.keep_jsonl, "w", encoding="utf-8")
-    freject = open(args.reject_jsonl, "w", encoding="utf-8")
-    freport = open(args.report_jsonl, "w", encoding="utf-8") if args.report_jsonl else None
-
-    try:
-        processed = 0
-        for idx, item, result in iter_vllm_batches(
-            items, processor, llm, sampling_params, args,
-            batch_size=args.batch_size,
-        ):
-            source = item.get("source", "unknown")
-
-            if isinstance(result, Exception):
-                # Error → reject
-                errors += 1
-                rejected += 1
-                rejected_by_source[source] = rejected_by_source.get(source, 0) + 1
-                item["_screen"] = {"error": str(result), "decision": "reject"}
-                line = json.dumps(item, ensure_ascii=False) + "\n"
-                fout.write(line)
-                freject.write(line)
-                if freport:
-                    freport.write(json.dumps({
-                        "index": idx, "source": source,
-                        "error": str(result), "decision": "reject",
-                    }, ensure_ascii=False) + "\n")
-            else:
-                response_text = result[0] if result else ""
-                parsed = parse_screen_response(response_text)
-                decision = apply_screening_rules(parsed, args.l1_threshold, args.l2_threshold)
-                parsed["decision"] = decision
-
-                item["_screen"] = parsed
-                line = json.dumps(item, ensure_ascii=False) + "\n"
-                fout.write(line)
-
-                if decision == "keep":
-                    fkeep.write(line)
-                    kept += 1
-                    kept_by_source[source] = kept_by_source.get(source, 0) + 1
-                else:
-                    freject.write(line)
-                    rejected += 1
-                    rejected_by_source[source] = rejected_by_source.get(source, 0) + 1
-
-                if freport:
-                    freport.write(json.dumps({
-                        "index": idx, "source": source,
-                        "decision": decision,
-                        "l1_score": parsed.get("l1_score"),
-                        "l2_score": parsed.get("l2_score"),
-                        "est_phases": parsed.get("est_phases"),
-                        "est_events": parsed.get("est_events"),
-                        "domain_l1": parsed.get("domain_l1"),
-                        "quality": parsed.get("quality"),
-                        "reason": parsed.get("reason"),
-                        "response": response_text,
-                    }, ensure_ascii=False) + "\n")
-
-            processed += 1
-            fout.flush()
-            fkeep.flush()
-            freject.flush()
-            if freport:
-                freport.flush()
-
-            if processed % args.log_every == 0 or processed == len(items):
-                print(
-                    f"[screen] processed={processed}/{len(items)} "
-                    f"kept={kept} rejected={rejected} errors={errors}",
-                    flush=True,
-                )
-
-    finally:
-        fout.close()
-        fkeep.close()
-        freject.close()
-        if freport:
-            freport.close()
-
-    # Summary
-    total = kept + rejected
-    print(f"\n[screen] Done. total={total} kept={kept} rejected={rejected} errors={errors}")
-    if total > 0:
-        print(f"[screen] Keep rate: {100.0 * kept / total:.1f}%")
+    for item in kept:
+        s = item.get("source", "unknown")
+        kept_by_source[s] = kept_by_source.get(s, 0) + 1
+    for item in rejected:
+        s = item.get("source", "unknown")
+        rejected_by_source[s] = rejected_by_source.get(s, 0) + 1
 
     all_sources = sorted(set(list(kept_by_source) + list(rejected_by_source)))
     if all_sources:
@@ -596,10 +879,6 @@ def main() -> None:
             t = k + r
             pct = f"{100.0 * k / t:.1f}%" if t else "n/a"
             print(f"  {s:<25}  {k:>6}  {r:>8}  {t:>6}  {pct:>7}")
-
-    print(f"\n[screen] Output: {args.output_jsonl}")
-    print(f"[screen] Kept:   {args.keep_jsonl} ({kept} records)")
-    print(f"[screen] Reject: {args.reject_jsonl} ({rejected} records)")
 
 
 if __name__ == "__main__":

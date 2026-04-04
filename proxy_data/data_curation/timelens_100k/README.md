@@ -17,159 +17,106 @@
   "duration": 117.4,
   "events": [
     {
-      "query": "When does the speaker introduce himself and the company?",
+      "query": "When does the speaker introduce himself?",
       "span": [[0.0, 5.0]]
-    },
-    {
-      "query": "Show me a close-up shot of the macadamia nut oil bottle.",
-      "span": [[8.0, 12.0]]
     }
   ]
 }
 ```
 
-### 字段说明
+### 域分布
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `source` | str | 来源域（7 种） |
-| `video_path` | str | 相对于 `video_shards/` 的视频路径 |
-| `duration` | float | 视频时长（秒） |
-| `events` | list | 时序事件列表，每个含 `query`（事件描述）和 `span`（[[start, end]]） |
+| Domain | 数量 | 特点 |
+|--------|------|------|
+| cosmo_cap | 9,549 | 产品演示/YouTube 教程 |
+| internvid_vtime | 4,651 | InternVid 时序标注 |
+| didemo | 2,955 | DiDeMo 短视频检索 |
+| queryd | 1,518 | QuerYD 时序定位 |
+| **hirest_step** | **387** | **HiREST 层次步骤标注** (最高优先级) |
+| hirest_grounding | 249 | HiREST grounding |
+| hirest | 157 | HiREST 基础 |
 
-### 与 ET-Instruct 格式对比
+## 筛选流程
 
-| 维度 | ET-Instruct | TimeLens |
-|------|-------------|---------|
-| 时间戳 | `tgt` 成对列表 | `events[i].span` |
-| 事件描述 | GPT 回复文本中提取 | `events[i].query` |
-| 时长字段 | `duration` ✓ | `duration` ✓ |
-| 已有 L2 结构 | 是（slc/dvc task） | 是（query+span） |
-
-## 域分布与特点
-
-| Domain | 数量 | 特点 | L2 标注适合度 |
-|--------|------|------|--------------|
-| cosmo_cap | 9,549 | 产品演示/YouTube 教程 | ★★★★ |
-| internvid_vtime | 4,651 | InternVid 时序标注，开放域 | ★★★ |
-| didemo | 2,955 | DiDeMo 短视频检索 | ★★ |
-| queryd | 1,518 | QuerYD 时序定位 | ★★ |
-| **hirest_step** | **387** | **HiREST 层次步骤标注** | **★★★★★** |
-| hirest_grounding | 249 | HiREST grounding | ★★★★ |
-| hirest | 157 | HiREST 基础 | ★★★★ |
-
-**hirest 系列为最高优先级**：HiREST (Hierarchical Retrieval with Steps) 本身就是层次结构标注，steps 字段天然对应 L2 事件。
-
-## 统计摘要（原始数据）
-
-- 总条数: 19,466
-- 时长: 5.2s–498.9s，均值 106.3s
-- **60-240s 范围**: 13,568 条 (70%)
-- **events ≥5**: 18,981 条 (97%)
-- events 均值: 5.0
-
-预估筛选后约 **12,000-13,000** 个独立视频。
-
-## 筛选进度
-
-- [x] 数据格式探索
-- [ ] text_filter.py 运行
-- [ ] Stage A: Route D (VLM-Curated 物理过程审查)
-- [ ] VLM Vision Filter (6 帧视觉校验)
-- [ ] 可视化验证
-- [ ] 与 ET-Instruct candidates 合并
+```
+text_filter.py (时长 + 事件过滤)
+    ↓ passed_timelens.jsonl
+sample_per_source.py (格式转换 + 可选采样)
+    ↓ sample_dev.jsonl
+local_screen.py (本地 Qwen3-VL-4B 视觉筛选)
+    ├─ [Stage 1] L1/L2 score + domain + quality → keep/reject
+    └─ [Stage 2, 可选] prog_type + visual_diversity + order_dependency
+    ↓ screen_keep.jsonl / screen_reject.jsonl
+```
 
 ## 运行指令
 
-> **所有命令均从 `train/` (EasyR1) 目录执行**，使用相对路径。
-
-### Step 0: 文本筛选
+### 一键运行 (推荐)
 
 ```bash
-# Dry run（仅看统计，不写文件）
-python proxy_data/data_curation/timelens_100k/text_filter.py \
-    --input /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/timelens-100k.jsonl \
-    --config proxy_data/data_curation/configs/timelens_100k.yaml \
-    --dry-run
+cd proxy_data/data_curation/timelens_100k/
 
-# 正式筛选
-python proxy_data/data_curation/timelens_100k/text_filter.py \
-    --input /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/timelens-100k.jsonl \
-    --output proxy_data/data_curation/results/timelens_100k/passed_timelens.jsonl \
-    --config proxy_data/data_curation/configs/timelens_100k.yaml
+# 全量筛选 (默认 2 GPU, 自动断点续跑)
+bash run_pipeline.sh
+
+# 多 GPU 数据并行
+NUM_GPUS=8 bash run_pipeline.sh
+
+# 先抽样试跑
+PER_SOURCE=5 bash run_pipeline.sh
+
+# 开启二阶段筛选
+SECONDARY=1 bash run_pipeline.sh
+
+# 全量重跑
+RESUME=0 bash run_pipeline.sh
 ```
 
-**产出**：
-- `proxy_data/data_curation/results/timelens_100k/passed_timelens.jsonl`
-- `proxy_data/data_curation/results/timelens_100k/filter_summary.json`
+### 环境变量
 
-### Stage A + Vision Filter: 一键 Pipeline
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `TL_INPUT` | `/m2v_intern/.../timelens-100k.jsonl` | 源数据 JSONL |
+| `VIDEO_ROOT` | `/m2v_intern/.../TimeLens-100K/video_shards` | 视频根目录 |
+| `LOCAL_MODEL` | `/home/xuboshen/models/Qwen3-VL-4B-Instruct` | 本地 VLM 路径 |
+| `NUM_GPUS` | `2` | 数据并行 GPU 数 |
+| `PER_SOURCE` | `0` | 每 source 采样条数 (0 = 全量) |
+| `SECONDARY` | `0` | 二阶段筛选 (1 = 开启) |
+| `RESUME` | `1` | 断点续跑 (1 = 跳过已有结果) |
+| `OUTPUT_ROOT` | `../results/timelens_100k` | 输出目录 |
+
+### 单步运行
 
 ```bash
-# 抽样试跑 (Route D 200 条)
-bash proxy_data/data_curation/timelens_100k/run_pipeline.sh --sample
+# Step 1: 文本筛选
+python text_filter.py \
+    --input /path/to/timelens-100k.jsonl \
+    --output results/passed_timelens.jsonl \
+    --config ../configs/timelens_100k.yaml
 
-# 全量: Stage A (Route D) → Vision Filter → 最终候选
-VIDEO_ROOT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards \
-    bash proxy_data/data_curation/timelens_100k/run_pipeline.sh --full
+# Step 2: 采样 + 格式转换
+python sample_per_source.py \
+    --input results/passed_timelens.jsonl \
+    --output results/sample_dev.jsonl \
+    --video-root /path/to/video_shards \
+    --per-source 5
 
-# Stage A 已完成，只跑 Vision Filter
-bash proxy_data/data_curation/timelens_100k/run_pipeline.sh --vision-only
+# Step 3: 本地 VLM 筛选 (单 GPU, 自动续跑)
+python ../shared/local_screen.py \
+    --input_jsonl results/sample_dev.jsonl \
+    --output_jsonl results/screen_results.jsonl \
+    --keep_jsonl results/screen_keep.jsonl \
+    --reject_jsonl results/screen_reject.jsonl \
+    --model_path /path/to/Qwen3-VL-4B-Instruct \
+    --resume
 ```
 
-> `run_pipeline.sh` 内部会自动 `cd` 到脚本所在目录，因此从 `train/` 直接运行即可。
+## 产出文件
 
-**产出**（均在 `proxy_data/data_curation/results/timelens_100k/` 下）：
-- `stage_a_results_keep.jsonl` — Stage A (Route D) 通过
-- `vision_results_keep.jsonl` — **最终候选**（VLM 视觉校验通过）
-
-### 单步运行 Stage A (Route D)
-
-```bash
-# 抽样 200 条看分布
-python proxy_data/data_curation/timelens_100k/stage_a_coarse_filter.py \
-    --input proxy_data/data_curation/results/timelens_100k/passed_timelens.jsonl \
-    --output proxy_data/data_curation/results/timelens_100k/stage_a_results.jsonl \
-    --sample-n 200
-
-# 全量评估（断点续评）
-python proxy_data/data_curation/timelens_100k/stage_a_coarse_filter.py \
-    --input proxy_data/data_curation/results/timelens_100k/passed_timelens.jsonl \
-    --output proxy_data/data_curation/results/timelens_100k/stage_a_results.jsonl \
-    --no-sample --resume --workers 16
-```
-
-### 单步运行 VLM Vision Filter
-
-```bash
-python proxy_data/data_curation/shared/vision_filter.py \
-    --input proxy_data/data_curation/results/timelens_100k/stage_a_results_keep.jsonl \
-    --output proxy_data/data_curation/results/timelens_100k/vision_results.jsonl \
-    --video-root /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards \
-    --video-field video_path \
-    --workers 4
-```
-
-### 可视化验证（帧 + 时间线）
-
-```bash
-# 转换 keep 样本为 segmentation_visualize 格式（含 1fps 抽帧）
-# --output 建议指向数据集目录，避免大量帧文件进入 git
-python proxy_data/data_curation/shared/convert_to_viz.py \
-    --input proxy_data/data_curation/results/timelens_100k/stage_a_results_keep.jsonl \
-    --output /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/viz_candidates/ \
-    --data-source timelens \
-    --video-root /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards/ \
-    --workers 8
-
-# 仅生成 JSON（不抽帧）
-# python proxy_data/data_curation/shared/convert_to_viz.py \
-#     --input ... --output ... --data-source timelens --no-frames
-
-# 启动可视化服务器
-python data_visualization/segmentation_visualize/server.py \
-    --annotation-dir /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/viz_candidates/ \
-    --port 8765
-
-# 浏览器打开 http://127.0.0.1:8765
-```
+| 文件 | 说明 |
+|------|------|
+| `passed_timelens.jsonl` | 文本过滤后的候选 |
+| `sample_dev.jsonl` | 统一格式 (local_screen 输入) |
+| `screen_keep.jsonl` | **最终候选** → 下游标注 |
+| `screen_reject.jsonl` | 被拒绝的记录 |
+| `screen_results.jsonl` | 全部结果 (含 `_screen` / `_screen_2` 字段) |
