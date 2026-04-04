@@ -275,6 +275,30 @@ def init_vllm_backend(args: argparse.Namespace):
     return processor, engine, sampling_params
 
 
+def _load_video_frames(
+    video_path: str,
+    min_pixels: int,
+    max_pixels: int,
+    max_frames: int,
+    video_fps: float,
+):
+    """Load and pre-process video into numpy frames for vLLM.
+
+    Uses the same qwen_vl_utils pipeline as the training code, but
+    returns raw frames (no metadata tuple) so vLLM's native parser
+    can accept them directly.
+    """
+    from verl.utils.dataset import process_video
+    return process_video(
+        video_path,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
+        max_frames=max_frames,
+        video_fps=video_fps,
+        return_fps=False,
+    )
+
+
 def _build_vllm_request(
     example: dict[str, Any],
     processor,
@@ -286,15 +310,14 @@ def _build_vllm_request(
     }
     videos = example.get("videos") or []
     if videos:
-        # Pass raw video file paths to vLLM — let its internal processor
-        # handle frame sampling, resizing, etc.  This works for both
-        # Qwen2.5-VL and Qwen3-VL backends.
-        request["multi_modal_data"] = {"video": videos}
+        processed = [
+            _load_video_frames(v, args.min_pixels, args.max_pixels, args.max_frames, args.video_fps)
+            for v in videos
+        ]
+        request["multi_modal_data"] = {"video": processed}
         request["mm_processor_kwargs"] = {
-            "max_pixels": args.max_pixels,
-            "min_pixels": args.min_pixels,
-            "fps": args.video_fps,
-            "max_frames": args.max_frames,
+            "do_sample_frames": False,
+            "do_resize": False,
         }
     return request
 
