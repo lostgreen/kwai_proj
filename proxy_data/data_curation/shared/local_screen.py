@@ -277,26 +277,37 @@ def init_vllm_backend(args: argparse.Namespace):
 
 def _load_video_frames(
     video_path: str,
-    min_pixels: int,
-    max_pixels: int,
     max_frames: int,
     video_fps: float,
+    max_pixels: int,
+    min_pixels: int,
 ):
-    """Load and pre-process video into numpy frames for vLLM.
+    """Load video and return pre-processed numpy frames for vLLM.
 
-    Uses the same qwen_vl_utils pipeline as the training code, but
-    returns raw frames (no metadata tuple) so vLLM's native parser
-    can accept them directly.
+    Uses qwen_vl_utils.fetch_video (same backend as HF processor) to
+    decode, sample, and resize frames.  Returns a (ndarray, metadata)
+    tuple that vLLM Qwen2.5-VL and Qwen3-VL both accept.
     """
-    from verl.utils.dataset import process_video
-    return process_video(
-        video_path,
-        min_pixels=min_pixels,
-        max_pixels=max_pixels,
-        max_frames=max_frames,
-        video_fps=video_fps,
-        return_fps=False,
+    from qwen_vl_utils.vision_process import fetch_video
+
+    vision_info = {
+        "video": video_path,
+        "min_pixels": min_pixels,
+        "max_pixels": max_pixels,
+        "max_frames": max_frames,
+        "fps": video_fps,
+    }
+    # fetch_video returns:
+    #   (video_ndarray, metadata_dict, sample_fps) when both flags are True
+    result = fetch_video(
+        vision_info,
+        image_patch_size=16,
+        return_video_sample_fps=True,
+        return_video_metadata=True,
     )
+    # result = ((video_ndarray, metadata_dict), sample_fps)
+    video_data, _fps = result
+    return video_data  # (ndarray, metadata)
 
 
 def _build_vllm_request(
@@ -311,9 +322,14 @@ def _build_vllm_request(
     videos = example.get("videos") or []
     if videos:
         processed = [
-            _load_video_frames(v, args.min_pixels, args.max_pixels, args.max_frames, args.video_fps)
+            _load_video_frames(
+                v, args.max_frames, args.video_fps, args.max_pixels, args.min_pixels,
+            )
             for v in videos
         ]
+        # Match the exact format from verl's _process_multi_modal_data:
+        # multi_modal_data = {"video": [(ndarray, metadata), ...]}
+        # mm_processor_kwargs = {"do_sample_frames": False, "do_resize": False}
         request["multi_modal_data"] = {"video": processed}
         request["mm_processor_kwargs"] = {
             "do_sample_frames": False,
