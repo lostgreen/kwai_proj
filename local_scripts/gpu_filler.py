@@ -177,19 +177,19 @@ def filler_worker(
                 _signal_busy_low_util_since = None
                 with _status_lock:
                     _status[gpu_id] = f"PAUSE(busy,u={util}%)"
-                _STOP.wait(timeout=0.3)
+                _STOP.wait(timeout=0.1)
                 continue
             else:
                 # Signal busy, but GPU has headroom (e.g. vLLM decode ~50%)
-                # Light fill to boost util, use smaller batch to avoid interfering
+                # Medium fill to boost util toward 80%+
                 _signal_busy_low_util_since = None
                 with _status_lock:
-                    _status[gpu_id] = f"FILL(light,u={util}%)"
-                light_batch = max(1, kernel_batch // 5)  # 1/5 intensity
+                    _status[gpu_id] = f"FILL(mid,u={util}%)"
+                mid_batch = max(1, kernel_batch // 2)  # 1/2 intensity
                 with torch.cuda.stream(stream):
-                    for _ in range(light_batch):
+                    for _ in range(mid_batch):
                         torch.matmul(a, b)
-                time.sleep(0.01)  # longer gap in light mode
+                time.sleep(0.003)
                 continue
         else:
             _signal_busy_low_util_since = None
@@ -198,7 +198,7 @@ def filler_worker(
         if util >= pause_threshold:
             with _status_lock:
                 _status[gpu_id] = f"PAUSE(util={util}%)"
-            _STOP.wait(timeout=0.3)
+            _STOP.wait(timeout=0.1)
             continue
 
         # Training is in idle gap → async fill
