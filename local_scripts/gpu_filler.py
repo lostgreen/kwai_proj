@@ -150,46 +150,51 @@ def filler_worker(
             time.sleep(0.002)
             continue
 
-        # === Layer 2: Signal file (with stale signal protection) ===
-        if signal_says_busy():
-            # Check if GPU is actually being used
-            try:
-                util = gpu_utilization(nvml_idx)
-            except Exception:
-                util = 0
+        # === Layer 2: Signal + util combined ===
+        is_busy_signal = signal_says_busy()
 
-            if util >= 20:
-                # Signal busy + GPU active → legit, pause
-                _signal_busy_low_util_since = None
-                with _status_lock:
-                    _status[gpu_id] = f"PAUSE(signal,u={util}%)"
-                _STOP.wait(timeout=0.3)
-                continue
-            else:
-                # Signal busy but GPU idle → possibly stale/crashed
-                if _signal_busy_low_util_since is None:
-                    _signal_busy_low_util_since = time.time()
-                elapsed = time.time() - _signal_busy_low_util_since
-                if elapsed < STALE_SIGNAL_TIMEOUT:
-                    # Still within grace period, wait
-                    with _status_lock:
-                        _status[gpu_id] = f"WAIT(signal,u={util}%,{int(elapsed)}s)"
-                    _STOP.wait(timeout=0.5)
-                    continue
-                else:
-                    # Stale signal! Override and fill
-                    with _status_lock:
-                        _status[gpu_id] = f"FILL(stale,u={util}%)"
-                    # Fall through to fill below
-        else:
-            _signal_busy_low_util_since = None
-
-        # === Layer 3: Utilization check ===
         try:
             util = gpu_utilization(nvml_idx)
         except Exception:
             util = 0
 
+        if is_busy_signal:
+            if util < 20:
+                # Signal busy but GPU idle → possibly stale/crashed
+                if _signal_busy_low_util_since is None:
+                    _signal_busy_low_util_since = time.time()
+                elapsed = time.time() - _signal_busy_low_util_since
+                if elapsed < STALE_SIGNAL_TIMEOUT:
+                    with _status_lock:
+                        _status[gpu_id] = f"WAIT(stale?,u={util}%,{int(elapsed)}s)"
+                    _STOP.wait(timeout=0.5)
+                    continue
+                # else: stale signal, fall through to fill
+                with _status_lock:
+                    _status[gpu_id] = f"FILL(stale,u={util}%)"
+            elif util >= pause_threshold:
+                # Training actively using GPU at high util → pause
+                _signal_busy_low_util_since = None
+                with _status_lock:
+                    _status[gpu_id] = f"PAUSE(busy,u={util}%)"
+                _STOP.wait(timeout=0.3)
+                continue
+            else:
+                # Signal busy, but GPU has headroom (e.g. vLLM decode ~50%)
+                # Light fill to boost util, use smaller batch to avoid interfering
+                _signal_busy_low_util_since = None
+                with _status_lock:
+                    _status[gpu_id] = f"FILL(light,u={util}%)"
+                light_batch = max(1, kernel_batch // 5)  # 1/5 intensity
+                with torch.cuda.stream(stream):
+                    for _ in range(light_batch):
+                        torch.matmul(a, b)
+                time.sleep(0.01)  # longer gap in light mode
+                continue
+        else:
+            _signal_busy_low_util_since = None
+
+        # === Layer 3: No signal, util-based only ===
         if util >= pause_threshold:
             with _status_lock:
                 _status[gpu_id] = f"PAUSE(util={util}%)"
