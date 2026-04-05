@@ -221,7 +221,13 @@ def main():
     print(f"[filler] GPUs: {gpu_ids}  nvml: {[nvml_map[g] for g in gpu_ids]}")
     print(f"[filler] burst={args.burst}s  pause_threshold={args.pause}%")
     print(f"[filler] signal: {SIGNAL_PATH}")
-    print(f"[filler] 3-layer: process→signal→util\n")
+    print(f"[filler] 3-layer: process→signal→util")
+
+    # Clean stale signal file from previous training runs
+    if os.path.exists(SIGNAL_PATH):
+        os.remove(SIGNAL_PATH)
+        print(f"[filler] Cleaned stale signal file")
+    print()
 
     def shutdown(signum, frame):
         print(f"\n[filler] Shutting down...")
