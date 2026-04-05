@@ -14,7 +14,7 @@ set -x
 if [[ -z "${EXP_NAME:-}" ]]; then echo "[seg-aot] EXP_NAME not set" >&2; exit 1; fi
 if [[ -z "${SEG_TASKS:-}" ]]; then echo "[seg-aot] SEG_TASKS not set" >&2; exit 1; fi
 
-DATA_DIR="${DATA_DIR:-${SEG_AOT_DATA_ROOT}/${EXP_NAME}}"
+DATA_DIR="${DATA_DIR:-${SEG_AOT_DATA_ROOT}/${DATA_NAME:-${EXP_NAME}}}"
 TRAIN_FILE="${TRAIN_FILE:-${DATA_DIR}/train.jsonl}"
 TEST_FILE="${TEST_FILE:-${DATA_DIR}/val.jsonl}"
 

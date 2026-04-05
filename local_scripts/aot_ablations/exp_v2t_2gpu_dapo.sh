@@ -32,6 +32,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 SEG_TASKS="${SEG_TASKS:-phase_v2t event_v2t action_v2t}"
 EXP_NAME="${EXP_NAME:-seg_aot_v2t_2gpu_dapo}"
-DATA_DIR="${DATA_DIR:-${SEG_AOT_DATA_ROOT}/seg_aot_v2t}"
+DATA_NAME="${DATA_NAME:-seg_aot_v2t}"
 
 source "$(dirname "${BASH_SOURCE[0]}")/launch_seg_train.sh"

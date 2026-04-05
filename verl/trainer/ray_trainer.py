@@ -299,6 +299,9 @@ class RayPPOTrainer:
         else:
             self.training_steps = len(train_dataloader) * config.trainer.total_epochs
 
+        self._consumed_samples = 0
+        self._dataset_size = len(train_dataloader) * config.data.rollout_batch_size
+
         config.worker.actor.optim.training_steps = self.training_steps
         config.worker.critic.optim.training_steps = self.training_steps
         print(f"Total training steps: {self.training_steps}")
@@ -641,6 +644,10 @@ class RayPPOTrainer:
                 self.data_iterator = iter(self.train_dataloader)
                 batch_dict = next(self.data_iterator)
 
+            # Track consumed samples for epoch monitoring
+            batch_len = len(batch_dict[next(iter(batch_dict))])
+            self._consumed_samples += batch_len
+
             meta_info = {
                 "min_pixels": self.config.data.min_pixels,
                 "max_pixels": self.config.data.max_pixels,
@@ -904,6 +911,8 @@ class RayPPOTrainer:
             # collect metrics
             num_gpus = self.resource_pool_manager.get_num_gpus()
             metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+            metrics["debug/consumed_samples"] = self._consumed_samples
+            metrics["debug/effective_epoch"] = self._consumed_samples / max(self._dataset_size, 1)
             metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
             metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, num_gpus=num_gpus))
             log_timing(step=self.global_step, timing_raw=timing_raw)
