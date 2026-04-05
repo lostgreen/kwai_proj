@@ -246,14 +246,14 @@ def filler_worker(
             time.sleep(0.001)
         else:
             # Mid util (20-pause_threshold), brief → medium matrix moderate batch
-            # 4096² × 20 = 8.8ms compute + 2ms sleep = 81.5% duty cycle
+            # 4096² × 30 = 13.2ms compute + 1ms sleep = 93% duty cycle
             sig_tag = "mid" if is_busy_signal else "nosig-mid"
             with _status_lock:
                 _status[gpu_id] = f"GFILL({sig_tag},u={util}%)"
             with torch.cuda.stream(stream):
-                for _ in range(20):
+                for _ in range(30):
                     torch.matmul(a_med, b_med)
-            time.sleep(0.002)
+            time.sleep(0.001)
 
     del a_big, b_big, a_med, b_med, a_sm, b_sm
     torch.cuda.empty_cache()
