@@ -10,17 +10,17 @@ Three-layer per-GPU decision logic:
       No non-filler process on GPU → big matmul fill 100%
       Training process detected    → go to Layer 2
   Layer 2 — Signal file (/tmp/verl_gpu_phase):
-      Signal says "gen"/"update"   → small matmul fill (low contention)
+      Signal says "gen"/"update"   → light fill (small matrix, long sleep)
       Signal says "idle" or missing → go to Layer 3
   Layer 3 — Utilization fallback:
-      GPU util ≥ threshold → small matmul fill (low contention)
-      GPU util < threshold → small matmul fill (push util up)
+      GPU util ≥ threshold → light fill (don't interfere)
+      GPU util < threshold → medium fill (push util up)
 
   Two-tier matrix strategy:
-    - Idle GPU:     big matrix (8192x8192) — real compute to fill util
-    - Training GPU: small matrix (2048x2048) — each kernel is ~56μs vs ~3.5ms
-      for 8192, so 62x less SM blocking per kernel. High batch count (200)
-      keeps kernels continuously queued → nvidia-smi sees sustained activity.
+    - Idle GPU (no training): big matrix (8192) full blast → 95%+ util
+    - Training GPU: small matrix (1024) with long sleep → ~6-10% extra duty
+      cycle. Each kernel is ~7μs (vs 3.5ms for 8192), negligible compute
+      overhead. But continuously queued to keep nvidia-smi metric up.
 
 Usage:
     python gpu_filler.py                          # all GPUs
@@ -122,27 +122,28 @@ def filler_worker(
     pause_threshold: int,
     train_matrix: int,
     train_batch: int,
+    train_sleep: float,
 ):
     """Async GPU filler with 3-layer training awareness.
 
     Two-tier matrix strategy:
       - Idle GPU:     big matrix (matrix_size) × kernel_batch — full blast
-      - Training GPU: small matrix (train_matrix) × train_batch — low contention
+      - Training GPU: small matrix (train_matrix) × train_batch — light fill
 
-    Small matrix (2048x2048) kernels only block SMs for ~56μs each (vs ~3.5ms
-    for 8192x8192), so training kernels can interleave much more frequently.
-    But with train_batch=200, kernels are queued continuously, keeping nvidia-smi
-    GPU-Util% high.
+    1024x1024 kernel = ~7μs on A100 (vs 3.5ms for 8192x8192 = 500x faster).
+    With train_batch=50, train_sleep=5ms: 0.35ms compute / 5.35ms cycle = 6.5% duty.
+    This adds ~6-10% util on top of training's natural util, with negligible
+    compute overhead (total filler FLOPS during gen < 0.3% of GPU capacity).
     """
     import torch
 
     torch.cuda.set_device(gpu_id)
     device = torch.device(f"cuda:{gpu_id}")
 
-    # Big matrices for idle fill (real compute, no training to compete with)
+    # Big matrices for idle fill (no training → full blast)
     a_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
     b_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
-    # Small matrices for training-concurrent fill (low per-kernel SM blocking)
+    # Small matrices for training-concurrent light fill
     a_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
     b_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
     stream = torch.cuda.Stream(device=device)
@@ -150,12 +151,13 @@ def filler_worker(
     my_pid = os.getpid()
 
     print(f"[filler] GPU {gpu_id} (nvml {nvml_idx}): started  "
-          f"idle={matrix_size}x{kernel_batch}  train={train_matrix}x{train_batch}  "
+          f"idle={matrix_size}x{kernel_batch}  "
+          f"train={train_matrix}x{train_batch}+{train_sleep*1000:.0f}ms  "
           f"pause≥{pause_threshold}%")
 
-    # Stale signal detection: track how long signal says busy with low util
+    # Stale signal detection
     _signal_busy_low_util_since = None
-    STALE_SIGNAL_TIMEOUT = 30  # seconds
+    STALE_SIGNAL_TIMEOUT = 30
 
     while not _STOP.is_set():
         # === Layer 1: Process detection ===
@@ -191,35 +193,44 @@ def filler_worker(
                         _status[gpu_id] = f"WAIT(stale?,u={util}%,{int(elapsed)}s)"
                     _STOP.wait(timeout=0.5)
                     continue
-                # Stale signal confirmed → fill with small matrix
+                # Stale signal → light fill
                 with _status_lock:
                     _status[gpu_id] = f"FILL(stale,u={util}%)"
                 with torch.cuda.stream(stream):
                     for _ in range(train_batch):
                         torch.matmul(a_sm, b_sm)
-                time.sleep(0.001)
+                time.sleep(train_sleep)
                 continue
             else:
-                # Training active → small matmul fill (low contention)
+                # Training active → light fill (small matrix, long sleep)
                 _signal_busy_low_util_since = None
                 with _status_lock:
-                    _status[gpu_id] = f"FILL(train,u={util}%)"
+                    _status[gpu_id] = f"LFILL(sig,u={util}%)"
                 with torch.cuda.stream(stream):
                     for _ in range(train_batch):
                         torch.matmul(a_sm, b_sm)
-                time.sleep(0.001)
+                time.sleep(train_sleep)
                 continue
         else:
             _signal_busy_low_util_since = None
 
         # === Layer 3: No signal, training process present, util-based ===
-        # Use small matmul (training is on this GPU)
-        with _status_lock:
-            _status[gpu_id] = f"FILL(nosig,u={util}%)"
-        with torch.cuda.stream(stream):
-            for _ in range(train_batch):
-                torch.matmul(a_sm, b_sm)
-        time.sleep(0.001)
+        if util >= pause_threshold:
+            # High util → light fill to maintain
+            with _status_lock:
+                _status[gpu_id] = f"LFILL(high,u={util}%)"
+            with torch.cuda.stream(stream):
+                for _ in range(train_batch):
+                    torch.matmul(a_sm, b_sm)
+            time.sleep(train_sleep)
+        else:
+            # Low util → slightly more aggressive fill (2x batch, half sleep)
+            with _status_lock:
+                _status[gpu_id] = f"LFILL(low,u={util}%)"
+            with torch.cuda.stream(stream):
+                for _ in range(train_batch * 2):
+                    torch.matmul(a_sm, b_sm)
+            time.sleep(train_sleep / 2)
 
     del a_big, b_big, a_sm, b_sm
     torch.cuda.empty_cache()
@@ -239,12 +250,14 @@ def main():
                         help="Matrix size for idle fill (default: 8192)")
     parser.add_argument("--batch", type=int, default=50,
                         help="Kernels per batch for idle fill (default: 50)")
-    parser.add_argument("--train-matrix", type=int, default=2048,
-                        help="Matrix size during training (default: 2048, low contention)")
-    parser.add_argument("--train-batch", type=int, default=200,
-                        help="Kernels per batch during training (default: 200)")
+    parser.add_argument("--train-matrix", type=int, default=1024,
+                        help="Matrix size during training (default: 1024)")
+    parser.add_argument("--train-batch", type=int, default=50,
+                        help="Kernels per batch during training (default: 50)")
+    parser.add_argument("--train-sleep", type=float, default=0.005,
+                        help="Sleep between batches during training in sec (default: 0.005)")
     parser.add_argument("--pause", type=int, default=50,
-                        help="Pause threshold for util %% on training GPU (default: 50)")
+                        help="Util threshold for reduced fill (default: 50)")
     args = parser.parse_args()
 
     if args.gpus:
@@ -262,7 +275,7 @@ def main():
 
     print(f"[filler] GPUs: {gpu_ids}  nvml: {[nvml_map[g] for g in gpu_ids]}")
     print(f"[filler] idle: matrix={args.matrix_size} batch={args.batch}")
-    print(f"[filler] train: matrix={args.train_matrix} batch={args.train_batch}")
+    print(f"[filler] train: matrix={args.train_matrix} batch={args.train_batch} sleep={args.train_sleep*1000:.0f}ms")
     print(f"[filler] pause≥{args.pause}%  signal: {SIGNAL_PATH}")
     print(f"[filler] 3-layer: process→signal→util")
 
@@ -284,7 +297,8 @@ def main():
         t = threading.Thread(
             target=filler_worker,
             args=(gid, nvml_map[gid], args.matrix_size, args.batch,
-                  args.pause, args.train_matrix, args.train_batch),
+                  args.pause, args.train_matrix, args.train_batch,
+                  args.train_sleep),
             daemon=True,
         )
         t.start()

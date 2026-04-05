@@ -51,13 +51,14 @@ _filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
 if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]]; then
   # 检查是否已有 filler 在运行
   if ! pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
-    echo "[seg-aot] Starting GPU filler (idle=${FILLER_MATRIX:-8192}, train=${FILLER_TRAIN_MATRIX:-2048})"
+    echo "[seg-aot] Starting GPU filler (idle=${FILLER_MATRIX:-8192}, train=${FILLER_TRAIN_MATRIX:-1024})"
     nohup python3 "${_filler_script}" \
       --pause "${FILLER_PAUSE:-50}" \
       --batch "${FILLER_BATCH:-50}" \
       --matrix-size "${FILLER_MATRIX:-8192}" \
-      --train-matrix "${FILLER_TRAIN_MATRIX:-2048}" \
-      --train-batch "${FILLER_TRAIN_BATCH:-200}" \
+      --train-matrix "${FILLER_TRAIN_MATRIX:-1024}" \
+      --train-batch "${FILLER_TRAIN_BATCH:-50}" \
+      --train-sleep "${FILLER_TRAIN_SLEEP:-0.005}" \
       > /tmp/filler.log 2>&1 &
     echo "[seg-aot] GPU filler started (PID $!), log: /tmp/filler.log"
   else
