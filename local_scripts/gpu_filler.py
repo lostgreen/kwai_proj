@@ -127,16 +127,15 @@ def filler_worker(
     train_matrix: int,
     train_batch: int,
     train_sleep: float,
+    gap_matrix: int,
 ):
     """Async GPU filler with 3-layer training awareness.
 
-    Three-tier fill strategy:
-      - Idle GPU (no training):    big matrix full blast → 95%+ util
-      - Training + low util:       big matrix half-batch → fill the gap aggressively
-      - Training + high util:      small matrix light fill → +6% util, near-zero overhead
-
-    The low-util half-batch worked at ~74% avg without slowing gen.
-    The high-util light fill adds ~6% on top → target ~80%.
+    Four-tier fill strategy:
+      - Idle GPU (no training):    big matrix (8192) full blast → 95%+ util
+      - Training + sustained idle: big matrix half-batch → fill the gap aggressively
+      - Training + low util gap:   medium matrix (4096) → 60-70% util, safe
+      - Training + high util:      small matrix (1024) light fill → +6% util
     """
     import torch
 
@@ -146,6 +145,9 @@ def filler_worker(
     # Big matrices for idle fill and low-util gap fill
     a_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
     b_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
+    # Medium matrices for gap/mid fill during training transitions
+    a_med = torch.randn(gap_matrix, gap_matrix, device=device, dtype=torch.float16)
+    b_med = torch.randn(gap_matrix, gap_matrix, device=device, dtype=torch.float16)
     # Small matrices for light fill during high-util training
     a_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
     b_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
@@ -163,6 +165,7 @@ def filler_worker(
         _pids = []
     print(f"[filler] GPU {gpu_id} (nvml {nvml_idx}): started  "
           f"idle={matrix_size}x{kernel_batch}  "
+          f"gap={gap_matrix}  "
           f"train_light={train_matrix}x{train_batch}+{train_sleep*1000:.0f}ms  "
           f"pause≥{pause_threshold}%  "
           f"my_pid={my_pid} gpu_pids={_pids}")
@@ -232,25 +235,25 @@ def filler_worker(
                     torch.matmul(a_big, b_big)
             time.sleep(0.002)
         elif util < 20:
-            # Brief gap (<2s), very low util → small matrix high batch
+            # Brief gap (<2s), very low util → medium matrix for meaningful SM occupancy
             sig_tag = "gap" if is_busy_signal else "nosig"
             with _status_lock:
-                _status[gpu_id] = f"FILL({sig_tag},u={util}%,{int(elapsed)}s)"
+                _status[gpu_id] = f"GFILL({sig_tag},u={util}%,{int(elapsed)}s)"
             with torch.cuda.stream(stream):
-                for _ in range(train_batch * 4):
-                    torch.matmul(a_sm, b_sm)
+                for _ in range(10):
+                    torch.matmul(a_med, b_med)
             time.sleep(0.001)
         else:
-            # Mid util (20-pause_threshold), brief → small matrix medium batch
+            # Mid util (20-pause_threshold), brief → medium matrix moderate batch
             sig_tag = "mid" if is_busy_signal else "nosig-mid"
             with _status_lock:
-                _status[gpu_id] = f"FILL({sig_tag},u={util}%)"
+                _status[gpu_id] = f"GFILL({sig_tag},u={util}%)"
             with torch.cuda.stream(stream):
-                for _ in range(train_batch * 2):
-                    torch.matmul(a_sm, b_sm)
-            time.sleep(train_sleep / 2)
+                for _ in range(5):
+                    torch.matmul(a_med, b_med)
+            time.sleep(0.002)
 
-    del a_big, b_big, a_sm, b_sm
+    del a_big, b_big, a_med, b_med, a_sm, b_sm
     torch.cuda.empty_cache()
     print(f"[filler] GPU {gpu_id}: stopped")
 
@@ -276,6 +279,8 @@ def main():
                         help="Sleep between batches during training in sec (default: 0.003)")
     parser.add_argument("--pause", type=int, default=50,
                         help="Util threshold for reduced fill (default: 50)")
+    parser.add_argument("--gap-matrix", type=int, default=4096,
+                        help="Matrix size for gap/mid fill during training transitions (default: 4096)")
     args = parser.parse_args()
 
     if args.gpus:
@@ -293,6 +298,7 @@ def main():
 
     print(f"[filler] GPUs: {gpu_ids}  nvml: {[nvml_map[g] for g in gpu_ids]}")
     print(f"[filler] idle: matrix={args.matrix_size} batch={args.batch}")
+    print(f"[filler] gap: matrix={args.gap_matrix}")
     print(f"[filler] train: matrix={args.train_matrix} batch={args.train_batch} sleep={args.train_sleep*1000:.0f}ms")
     print(f"[filler] pause≥{args.pause}%  signal: {SIGNAL_PATH}")
     print(f"[filler] 3-layer: process→signal→util")
@@ -337,7 +343,7 @@ def main():
             target=filler_worker,
             args=(gid, nvml_map[gid], args.matrix_size, args.batch,
                   args.pause, args.train_matrix, args.train_batch,
-                  args.train_sleep),
+                  args.train_sleep, args.gap_matrix),
             daemon=True,
         )
         t.start()
