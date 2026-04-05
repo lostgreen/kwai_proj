@@ -63,6 +63,7 @@ def gpu_utilization(nvml_idx: int) -> int:
 
 
 def other_pids_on_gpu(nvml_idx: int, my_pid: int) -> bool:
+    """Check if any OTHER live process has a CUDA context on this GPU."""
     import pynvml
     _init_nvml()
     h = pynvml.nvmlDeviceGetHandleByIndex(nvml_idx)
@@ -72,7 +73,13 @@ def other_pids_on_gpu(nvml_idx: int, my_pid: int) -> bool:
         return False
     for p in procs:
         if p.pid != my_pid:
-            return True
+            # Verify the process actually exists (guard against zombie CUDA contexts
+            # left behind by killed processes — pynvml still reports them)
+            try:
+                os.kill(p.pid, 0)  # signal 0 = existence check only
+                return True
+            except (ProcessLookupError, PermissionError):
+                pass  # Dead process, zombie CUDA context — ignore
     return False
 
 
@@ -301,6 +308,22 @@ def main():
     if os.path.exists(SIGNAL_PATH):
         os.remove(SIGNAL_PATH)
         print(f"[filler] Cleaned stale signal file")
+
+    # Kill old filler instances (prevent them from being detected as "training")
+    import subprocess
+    my_pid = os.getpid()
+    result = subprocess.run(
+        ["pgrep", "-f", "gpu_filler.py"],
+        capture_output=True, text=True
+    )
+    for line in result.stdout.strip().split("\n"):
+        pid_str = line.strip()
+        if pid_str and int(pid_str) != my_pid:
+            try:
+                os.kill(int(pid_str), signal.SIGTERM)
+                print(f"[filler] Killed old filler PID {pid_str}")
+            except ProcessLookupError:
+                pass
     print()
 
     def shutdown(signum, frame):
