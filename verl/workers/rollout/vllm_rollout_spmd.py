@@ -235,21 +235,21 @@ class vLLMRollout(BaseRollout):
             completions: list[RequestOutput] = self.inference_engine.generate(
                 prompts=vllm_inputs, sampling_params=self.sampling_params, use_tqdm=self.use_tqdm
             )
-        _t2 = _time.time()
-        tlog(f"[vllm][rank={_rank}] engine.generate: {_t2 - _t1:.2f}s")
+            _t2 = _time.time()
+            tlog(f"[vllm][rank={_rank}] engine.generate: {_t2 - _t1:.2f}s")
 
-        response_ids = [output.token_ids for completion in completions for output in completion.outputs]
-        response_ids = VF.pad_2d_list_to_length(
-            response_ids, self.pad_token_id, max_length=self.config.response_length
-        ).to(input_ids.device)
+            response_ids = [output.token_ids for completion in completions for output in completion.outputs]
+            response_ids = VF.pad_2d_list_to_length(
+                response_ids, self.pad_token_id, max_length=self.config.response_length
+            ).to(input_ids.device)
 
-        if self.sampling_params.n > 1:
-            batch_size = batch_size * self.sampling_params.n
-            input_ids = _repeat_interleave(input_ids, self.sampling_params.n)
-            attention_mask = _repeat_interleave(attention_mask, self.sampling_params.n)
-            position_ids = _repeat_interleave(position_ids, self.sampling_params.n)
-            if batch_multi_modal_data is not None:
-                batch_multi_modal_data = _repeat_interleave(batch_multi_modal_data, self.sampling_params.n)
+            if self.sampling_params.n > 1:
+                batch_size = batch_size * self.sampling_params.n
+                input_ids = _repeat_interleave(input_ids, self.sampling_params.n)
+                attention_mask = _repeat_interleave(attention_mask, self.sampling_params.n)
+                position_ids = _repeat_interleave(position_ids, self.sampling_params.n)
+                if batch_multi_modal_data is not None:
+                    batch_multi_modal_data = _repeat_interleave(batch_multi_modal_data, self.sampling_params.n)
 
         sequence_ids = torch.cat([input_ids, response_ids], dim=-1)
         response_length = response_ids.size(1)
