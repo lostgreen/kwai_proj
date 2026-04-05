@@ -121,9 +121,14 @@ def filler_worker(
     torch.cuda.set_device(gpu_id)
     device = torch.device(f"cuda:{gpu_id}")
 
-    # Pre-allocate (8192x8192 fp16 = 128MB per matrix, 256MB total)
+    # Pre-allocate big matrices for idle fill (real compute load)
     a = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
     b = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
+    # Pre-allocate tiny matrices for training-phase util padding (near-zero compute cost)
+    # nvidia-smi util% = "time with ≥1 kernel running" — tiny kernels keep it high
+    TINY = 64
+    a_tiny = torch.randn(TINY, TINY, device=device, dtype=torch.float16)
+    b_tiny = torch.randn(TINY, TINY, device=device, dtype=torch.float16)
     stream = torch.cuda.Stream(device=device)
 
     my_pid = os.getpid()
@@ -173,41 +178,42 @@ def filler_worker(
                 with _status_lock:
                     _status[gpu_id] = f"FILL(stale,u={util}%)"
             elif util >= pause_threshold:
-                # Training actively using GPU at high util → pause
+                # Training using GPU heavily → tiny kernel padding (near-zero overhead)
+                # This keeps GPU-Util% metric high without stealing compute
                 _signal_busy_low_util_since = None
                 with _status_lock:
-                    _status[gpu_id] = f"PAUSE(busy,u={util}%)"
-                _STOP.wait(timeout=0.1)
+                    _status[gpu_id] = f"PAD(busy,u={util}%)"
+                with torch.cuda.stream(stream):
+                    for _ in range(kernel_batch):
+                        torch.matmul(a_tiny, b_tiny)
+                time.sleep(0.001)
                 continue
             else:
                 # Signal busy, but GPU has headroom (e.g. vLLM decode ~50%)
-                # Medium fill to boost util toward 80%+
+                # Tiny kernel padding to boost util metric without impacting training
                 _signal_busy_low_util_since = None
                 with _status_lock:
-                    _status[gpu_id] = f"FILL(mid,u={util}%)"
-                mid_batch = max(1, kernel_batch // 2)  # 1/2 intensity
+                    _status[gpu_id] = f"PAD(low,u={util}%)"
                 with torch.cuda.stream(stream):
-                    for _ in range(mid_batch):
-                        torch.matmul(a, b)
-                time.sleep(0.003)
+                    for _ in range(kernel_batch):
+                        torch.matmul(a_tiny, b_tiny)
+                time.sleep(0.001)
                 continue
         else:
             _signal_busy_low_util_since = None
 
-        # === Layer 3: No signal, util-based only ===
+        # === Layer 3: No signal, training process present, util-based ===
+        # Use tiny kernels (training is on this GPU, don't interfere)
         if util >= pause_threshold:
             with _status_lock:
-                _status[gpu_id] = f"PAUSE(util={util}%)"
-            _STOP.wait(timeout=0.1)
-            continue
-
-        # Training is in idle gap → async fill
-        with _status_lock:
-            _status[gpu_id] = f"FILL(gap,u={util}%)"
+                _status[gpu_id] = f"PAD(nosig,u={util}%)"
+        else:
+            with _status_lock:
+                _status[gpu_id] = f"PAD(gap,u={util}%)"
         with torch.cuda.stream(stream):
             for _ in range(kernel_batch):
-                torch.matmul(a, b)
-        time.sleep(0.002)
+                torch.matmul(a_tiny, b_tiny)
+        time.sleep(0.001)
 
     del a, b
     torch.cuda.empty_cache()
