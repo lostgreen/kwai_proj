@@ -42,6 +42,7 @@ from ..utils.checkpoint import CHECKPOINT_TRACKER, find_latest_ckpt, remove_obso
 from ..utils.logger import Tracker
 from ..utils.py_functional import convert_dict_to_str, timer, unflatten_dict
 from ..utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
+from ..utils.timing_logger import init_timing_log, log_timing, tlog
 from ..workers.fsdp_workers import FSDPWorker
 from ..workers.reward import FunctionRewardManager
 from .config import PPOConfig
@@ -626,9 +627,10 @@ class RayPPOTrainer:
         )
         metrics.update(global_balance_stats)
 
-    def _make_batch_data(self, metrics: dict[str, Any]) -> DataProto:
+    def _make_batch_data(self, metrics: dict[str, Any], timing_raw: dict[str, float] = None) -> DataProto:
         batch = None
         all_metrics = defaultdict(list)
+        filtered_metrics = defaultdict(list)
         num_try_make_batch = 0
         print("Start generating batch...")
         while True:
@@ -657,7 +659,13 @@ class RayPPOTrainer:
             )
 
             # generate a batch
+            import time as _time
+            _gen_t0 = _time.time()
             gen_batch_output = self.actor_rollout_ref_wg.generate_sequences(gen_batch)
+            _gen_t1 = _time.time()
+            if timing_raw is not None:
+                timing_raw[f"gen/iter_{num_try_make_batch}/generate"] = _gen_t1 - _gen_t0
+            tlog(f"[make_batch] iter={num_try_make_batch} generate_sequences: {_gen_t1 - _gen_t0:.2f}s")
 
             if self.config.algorithm.adv_estimator == "remax":
                 gen_baseline_batch = deepcopy(gen_batch)
@@ -679,7 +687,12 @@ class RayPPOTrainer:
 
             # filter group
             if self.config.algorithm.online_filtering:
+                _reward_t0 = _time.time()
                 reward_tensor, reward_metrics = ray.get(self.reward_fn.compute_reward.remote(new_batch))
+                _reward_t1 = _time.time()
+                if timing_raw is not None:
+                    timing_raw[f"gen/iter_{num_try_make_batch}/reward"] = _reward_t1 - _reward_t0
+                tlog(f"[make_batch] iter={num_try_make_batch} reward compute: {_reward_t1 - _reward_t0:.2f}s")
                 new_batch.batch["token_level_scores"] = reward_tensor
                 for k, v in reward_metrics.items():
                     all_metrics[k].extend(v)
@@ -717,6 +730,9 @@ class RayPPOTrainer:
                     )
                 else:
                     new_batch = new_batch[kept_sample_idxs]
+                    # collect filtered reward metrics
+                    for k, v in reward_metrics.items():
+                        filtered_metrics[k].extend([v[i] for i in kept_sample_idxs])
 
             batch = DataProto.concat([batch, new_batch]) if batch is not None else new_batch
             current_batch_size = len(batch) // self.config.worker.rollout.n
@@ -734,6 +750,13 @@ class RayPPOTrainer:
                 print(f"{current_batch_size=} >= {rollout_batch_size=}. Finish generating.")
                 if self.config.algorithm.online_filtering:
                     metrics.update({f"reward/{k}": v for k, v in reduce_metrics(all_metrics).items()})
+                    if filtered_metrics:
+                        metrics.update({f"reward_filtered/{k}": v for k, v in reduce_metrics(filtered_metrics).items()})
+                    n_all = len(all_metrics.get("overall", []))
+                    n_kept = len(filtered_metrics.get("overall", []))
+                    metrics["debug/online_filtering_keep_ratio"] = n_kept / max(n_all, 1)
+                    tlog(f"[make_batch] reward all={n_all} kept={n_kept} "
+                          f"keep_ratio={n_kept / max(n_all, 1):.3f}")
 
                 return batch[: self.config.data.rollout_batch_size * self.config.worker.rollout.n]
 
@@ -744,6 +767,7 @@ class RayPPOTrainer:
         The light-weight advantage computation is done on the driver process.
         """
         self.logger = Tracker(loggers=self.config.trainer.logger, config=self.config.to_dict())
+        init_timing_log(self.config.trainer.save_checkpoint_path)
         self.global_step = 0
         main_tqdm = tqdm(range(self.training_steps), desc="Running step", position=0)
         val_metrics: Optional[dict[str, Any]] = None
@@ -768,9 +792,12 @@ class RayPPOTrainer:
             with timer("step", timing_raw):
                 # make a batch of data
                 with timer("gen", timing_raw):
-                    self.actor_rollout_ref_wg.prepare_rollout_engine()
-                    batch = self._make_batch_data(metrics=metrics)
-                    self.actor_rollout_ref_wg.release_rollout_engine()
+                    with timer("gen/prepare", timing_raw):
+                        self.actor_rollout_ref_wg.prepare_rollout_engine()
+                    with timer("gen/make_batch", timing_raw):
+                        batch = self._make_batch_data(metrics=metrics, timing_raw=timing_raw)
+                    with timer("gen/release", timing_raw):
+                        self.actor_rollout_ref_wg.release_rollout_engine()
 
                 # balance the number of valid tokens on each dp rank.
                 # NOTE: this breaks the order of data inside the batch.
@@ -879,6 +906,7 @@ class RayPPOTrainer:
             metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
             metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
             metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, num_gpus=num_gpus))
+            log_timing(step=self.global_step, timing_raw=timing_raw)
 
             self.logger.log(data=metrics, step=self.global_step)
             main_tqdm.update()

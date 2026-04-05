@@ -117,6 +117,7 @@ def main():
                 "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
+                "VERL_TIMING_LOG_DIR": ppo_config.trainer.save_checkpoint_path,
             }
         }
         # import os

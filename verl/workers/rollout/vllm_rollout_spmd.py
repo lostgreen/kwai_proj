@@ -188,6 +188,11 @@ class vLLMRollout(BaseRollout):
 
     @torch.no_grad()
     def generate_sequences(self, prompts: DataProto) -> DataProto:
+        import time as _time
+        from verl.utils.timing_logger import tlog
+        _rank = torch.distributed.get_rank()
+        _t0 = _time.time()
+
         # left-padded attention_mask
         input_ids: torch.Tensor = prompts.batch["input_ids"]  # (bs, prompt_length)
         attention_mask: torch.Tensor = prompts.batch["attention_mask"]
@@ -200,8 +205,6 @@ class vLLMRollout(BaseRollout):
         batch_multi_modal_data = non_tensor_batch.pop("multi_modal_data", None)
         if batch_size != len(batch_raw_prompt_ids):
             raise RuntimeError("vllm sharding manager is not work properly.")
-
-        # tmp_mm = []
 
         if batch_multi_modal_data is not None:
             vllm_inputs = []
@@ -217,37 +220,36 @@ class vLLMRollout(BaseRollout):
                 }
                 if mm_data is not None:
                     item["multi_modal_data"] = mm_data
-                    # 关键：为 video 场景注入 mm_processor_kwargs（例如逐样本 fps）
                     if mm_kwargs is not None:
                         item["mm_processor_kwargs"] = mm_kwargs
-                        # tmp_mm.append(item["mm_processor_kwargs"])
-                    # print(item)
                 vllm_inputs.append(item)
 
         else:
             vllm_inputs = [{"prompt_token_ids": list(raw_prompt_ids)} for raw_prompt_ids in batch_raw_prompt_ids]
 
-        print("starting vllm", batch_multi_modal_data)
-        # print(tmp_mm)
-        # print(len(tmp_mm))
+        _t1 = _time.time()
+        tlog(f"[vllm][rank={_rank}] prepare_inputs: {_t1 - _t0:.2f}s, n_prompts={batch_size}, n_per_prompt={self.sampling_params.n}")
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**prompts.meta_info):
             completions: list[RequestOutput] = self.inference_engine.generate(
                 prompts=vllm_inputs, sampling_params=self.sampling_params, use_tqdm=self.use_tqdm
             )
-            response_ids = [output.token_ids for completion in completions for output in completion.outputs]
-            response_ids = VF.pad_2d_list_to_length(
-                response_ids, self.pad_token_id, max_length=self.config.response_length
-            ).to(input_ids.device)
+        _t2 = _time.time()
+        tlog(f"[vllm][rank={_rank}] engine.generate: {_t2 - _t1:.2f}s")
 
-            if self.sampling_params.n > 1:
-                batch_size = batch_size * self.sampling_params.n
-                input_ids = _repeat_interleave(input_ids, self.sampling_params.n)
-                attention_mask = _repeat_interleave(attention_mask, self.sampling_params.n)
-                position_ids = _repeat_interleave(position_ids, self.sampling_params.n)
-                if batch_multi_modal_data is not None:
-                    batch_multi_modal_data = _repeat_interleave(batch_multi_modal_data, self.sampling_params.n)
+        response_ids = [output.token_ids for completion in completions for output in completion.outputs]
+        response_ids = VF.pad_2d_list_to_length(
+            response_ids, self.pad_token_id, max_length=self.config.response_length
+        ).to(input_ids.device)
+
+        if self.sampling_params.n > 1:
+            batch_size = batch_size * self.sampling_params.n
+            input_ids = _repeat_interleave(input_ids, self.sampling_params.n)
+            attention_mask = _repeat_interleave(attention_mask, self.sampling_params.n)
+            position_ids = _repeat_interleave(position_ids, self.sampling_params.n)
+            if batch_multi_modal_data is not None:
+                batch_multi_modal_data = _repeat_interleave(batch_multi_modal_data, self.sampling_params.n)
 
         sequence_ids = torch.cat([input_ids, response_ids], dim=-1)
         response_length = response_ids.size(1)
@@ -283,6 +285,7 @@ class vLLMRollout(BaseRollout):
         else:
             non_tensor_batch = {}
 
-        print("ending vllm")
+        _t3 = _time.time()
+        tlog(f"[vllm][rank={_rank}] post_process: {_t3 - _t2:.2f}s, total: {_t3 - _t0:.2f}s")
 
         return DataProto(batch=batch, non_tensor_batch=non_tensor_batch, meta_info=prompts.meta_info)

@@ -579,6 +579,11 @@ class FSDPWorker(Worker):
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         assert self._has_rollout
+        import time as _time
+        from verl.utils.timing_logger import tlog
+        _rank = torch.distributed.get_rank()
+        _tp_rank = self.rollout_sharding_manager.tp_rank
+        _dp_rank = self.rollout_sharding_manager.device_mesh["dp"].get_local_rank() if self.rollout_sharding_manager.device_mesh is not None else 0
 
         meta_info = {
             "eos_token_id": self.generation_config.eos_token_id
@@ -590,11 +595,21 @@ class FSDPWorker(Worker):
         }
         prompts.meta_info.update(meta_info)
 
+        _t0 = _time.time()
         prompts = self.rollout_sharding_manager.preprocess_data(prompts)
-        output = self.rollout.generate_sequences(prompts=prompts)
-        output = self.rollout_sharding_manager.postprocess_data(output)
+        _t1 = _time.time()
+        _bs = len(prompts.batch["input_ids"])
+        tlog(f"[gen][rank={_rank} dp={_dp_rank} tp={_tp_rank}] preprocess: {_t1 - _t0:.2f}s, batch_size={_bs}")
 
+        output = self.rollout.generate_sequences(prompts=prompts)
+        _t2 = _time.time()
+        tlog(f"[gen][rank={_rank} dp={_dp_rank} tp={_tp_rank}] vllm generate: {_t2 - _t1:.2f}s")
+
+        output = self.rollout_sharding_manager.postprocess_data(output)
         output = output.to("cpu")
+        _t3 = _time.time()
+        tlog(f"[gen][rank={_rank} dp={_dp_rank} tp={_tp_rank}] postprocess+to_cpu: {_t3 - _t2:.2f}s, total: {_t3 - _t0:.2f}s")
+
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)

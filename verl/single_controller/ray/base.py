@@ -41,11 +41,21 @@ def get_random_string(length: int) -> str:
 
 def func_generator(self, method_name, dispatch_fn, collect_fn, execute_fn, blocking):
     def func(*args, **kwargs):
+        import time as _time
+        from verl.utils.timing_logger import tlog
+        _t0 = _time.time()
         args, kwargs = dispatch_fn(self, *args, **kwargs)
+        _t1 = _time.time()
         output = execute_fn(method_name, *args, **kwargs)
+        _t2 = _time.time()
         if blocking:
             output = ray.get(output)
+        _t3 = _time.time()
         output = collect_fn(self, output)
+        _t4 = _time.time()
+        if method_name in ("generate_sequences", "prepare_rollout_engine", "release_rollout_engine"):
+            tlog(f"[dispatch/{method_name}] dispatch={_t1 - _t0:.2f}s execute={_t2 - _t1:.2f}s "
+                 f"ray.get={_t3 - _t2:.2f}s collect={_t4 - _t3:.2f}s total={_t4 - _t0:.2f}s")
         return output
 
     return func

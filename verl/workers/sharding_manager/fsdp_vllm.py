@@ -109,6 +109,12 @@ class FSDPVLLMShardingManager(BaseShardingManager):
 
     def load_vllm_and_sync_weights(self):
         """Load vllm engine and sync model weights to vllm model."""
+        import time as _time
+        from verl.utils.timing_logger import tlog
+        _rank = torch.distributed.get_rank()
+        _tp_rank = self.tp_rank
+        _dp_rank = self.device_mesh["dp"].get_local_rank() if self.device_mesh is not None else 0
+
         # NOTE: Basically, we only need `torch.cuda.empty_cache()` before vllm wake_up and
         # after vllm sleep, since vllm has its own caching memory allocator CuMemAllocator.
         # Out of vllm scope, we should avoid empty cache to let pytorch using caching memory
@@ -116,6 +122,7 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         #
         # pytorch: https://pytorch.org/docs/stable/notes/cuda.html#memory-management
         # vllm: https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/device_allocator/cumem.py#L103
+        _t0 = _time.time()
         torch.cuda.empty_cache()
         assert self.loaded is False, "vllm engine has already been loaded"
         self.loaded = True
@@ -125,11 +132,17 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             self.inference_engine.wake_up(tags=["weights"])
         else:
             self.inference_engine.wake_up()
+        _t1 = _time.time()
+        tlog(f"[weight_sync][rank={_rank} dp={_dp_rank} tp={_tp_rank}] wake_up(weights): {_t1 - _t0:.2f}s")
 
         self._sync_weight_to_vllm()
+        _t2 = _time.time()
+        tlog(f"[weight_sync][rank={_rank} dp={_dp_rank} tp={_tp_rank}] sync_weights: {_t2 - _t1:.2f}s")
 
         if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
             self.inference_engine.wake_up(tags=["kv_cache"])
+        _t3 = _time.time()
+        tlog(f"[weight_sync][rank={_rank} dp={_dp_rank} tp={_tp_rank}] wake_up(kv_cache): {_t3 - _t2:.2f}s, total: {_t3 - _t0:.2f}s")
 
         print_gpu_memory_usage("After vllm wake up in sharding manager")
         # important: need to manually set the random states of each tp to be identical.
