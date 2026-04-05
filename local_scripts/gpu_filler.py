@@ -236,20 +236,22 @@ def filler_worker(
             time.sleep(0.002)
         elif util < 20:
             # Brief gap (<2s), very low util → medium matrix for meaningful SM occupancy
+            # 4096² × 40 = 17.6ms compute + 1ms sleep = 94.6% duty cycle
             sig_tag = "gap" if is_busy_signal else "nosig"
             with _status_lock:
                 _status[gpu_id] = f"GFILL({sig_tag},u={util}%,{int(elapsed)}s)"
             with torch.cuda.stream(stream):
-                for _ in range(10):
+                for _ in range(40):
                     torch.matmul(a_med, b_med)
             time.sleep(0.001)
         else:
             # Mid util (20-pause_threshold), brief → medium matrix moderate batch
+            # 4096² × 20 = 8.8ms compute + 2ms sleep = 81.5% duty cycle
             sig_tag = "mid" if is_busy_signal else "nosig-mid"
             with _status_lock:
                 _status[gpu_id] = f"GFILL({sig_tag},u={util}%)"
             with torch.cuda.stream(stream):
-                for _ in range(5):
+                for _ in range(20):
                     torch.matmul(a_med, b_med)
             time.sleep(0.002)
 
