@@ -49,7 +49,12 @@ export RAY_TMPDIR="${_ray_tmpdir}"
 # filler 常驻运行，训练结束后不停止（防止机器被回收）
 _filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
 if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]]; then
-  # filler 启动时会自动杀掉旧实例，直接启动即可
+  # 先杀掉旧 filler 实例（shell 层面，比 Python auto-kill 更可靠）
+  if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
+    echo "[seg-aot] Killing old filler instances..."
+    pkill -f "gpu_filler.py" 2>/dev/null || true
+    sleep 2  # 等旧 filler 释放 GPU 资源
+  fi
   echo "[seg-aot] Starting GPU filler (idle=${FILLER_MATRIX:-8192}, train=${FILLER_TRAIN_MATRIX:-1024})"
   nohup python3 "${_filler_script}" \
     --pause "${FILLER_PAUSE:-50}" \

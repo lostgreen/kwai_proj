@@ -312,6 +312,7 @@ def main():
     # Kill old filler instances (prevent them from being detected as "training")
     import subprocess
     my_pid = os.getpid()
+    killed_any = False
     result = subprocess.run(
         ["pgrep", "-f", "gpu_filler.py"],
         capture_output=True, text=True
@@ -322,8 +323,12 @@ def main():
             try:
                 os.kill(int(pid_str), signal.SIGTERM)
                 print(f"[filler] Killed old filler PID {pid_str}")
+                killed_any = True
             except ProcessLookupError:
                 pass
+    if killed_any:
+        print("[filler] Waiting 3s for old filler to release GPU resources...")
+        time.sleep(3)
     print()
 
     def shutdown(signum, frame):
