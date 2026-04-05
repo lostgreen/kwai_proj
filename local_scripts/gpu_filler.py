@@ -9,17 +9,14 @@ Three-layer per-GPU decision logic:
   Layer 1 — Process detection (pynvml):
       No non-filler process on GPU → big matmul fill 100%
       Training process detected    → go to Layer 2
-  Layer 2 — Signal file (/tmp/verl_gpu_phase):
-      Signal + high util → light fill (small matrix, keeps +6% util)
-      Signal + low util  → medium fill (big matrix half-batch, fills gap)
-      No signal          → go to Layer 3
-  Layer 3 — Utilization fallback:
-      GPU util ≥ threshold → light fill (small matrix)
-      GPU util < threshold → medium fill (big matrix half-batch)
+  Layer 2 — Util-based with escalation:
+      High util (≥threshold)  → light fill (small matrix)
+      Low util, brief (<2s)   → small matrix gap fill
+      Low util, sustained (≥2s) → big matrix (process holds context but idle)
 
   Three-tier fill intensity:
-    - FULL:   big matrix (8192) × full batch  — idle GPU, no competition
-    - MEDIUM: small matrix (1024) × high batch — training gap, no cache thrash
+    - FULL:   big matrix (8192) × full batch  — idle GPU or sustained idle process
+    - MEDIUM: small matrix (1024) × high batch — brief training gap
     - LIGHT:  small matrix (1024) × low batch  — high-util training (+6% util)
 
 Usage:
@@ -170,8 +167,11 @@ def filler_worker(
           f"pause≥{pause_threshold}%  "
           f"my_pid={my_pid} gpu_pids={_pids}")
 
-    # Stale signal detection
-    _signal_busy_low_util_since = None
+    # Unified low-util timer: tracks how long GPU stays at low util
+    # while training process holds CUDA context but isn't computing.
+    # After IDLE_ESCALATION_TIMEOUT, switch to big matrix (safe — GPU is idle).
+    _low_util_since = None
+    IDLE_ESCALATION_TIMEOUT = 2  # seconds before escalating to big matrix
     STALE_SIGNAL_TIMEOUT = 30
 
     while not _STOP.is_set():
@@ -180,7 +180,7 @@ def filler_worker(
 
         if not has_other:
             # No training process → big matmul, full blast
-            _signal_busy_low_util_since = None
+            _low_util_since = None
             with _status_lock:
                 _status[gpu_id] = "FILL(idle)"
             with torch.cuda.stream(stream):
@@ -189,7 +189,7 @@ def filler_worker(
             time.sleep(0.002)
             continue
 
-        # === Layer 2: Signal + util combined ===
+        # === Shared util check ===
         is_busy_signal = signal_says_busy()
 
         try:
@@ -197,61 +197,54 @@ def filler_worker(
         except Exception:
             util = 0
 
-        if is_busy_signal:
-            if util < 20:
-                # Signal busy but GPU idle → gap (DP group finished early).
-                # Use small matrix to avoid L2 cache pollution and queue delay.
-                if _signal_busy_low_util_since is None:
-                    _signal_busy_low_util_since = time.time()
-                elapsed = time.time() - _signal_busy_low_util_since
-                if elapsed >= STALE_SIGNAL_TIMEOUT:
-                    tag = f"FILL(stale,u={util}%)"
-                else:
-                    tag = f"FILL(gap,u={util}%,{int(elapsed)}s)"
-                with _status_lock:
-                    _status[gpu_id] = tag
-                # Small matrix × high batch — high duty, no cache thrash
-                with torch.cuda.stream(stream):
-                    for _ in range(train_batch * 4):
-                        torch.matmul(a_sm, b_sm)
-                time.sleep(0.001)
-                continue
-            elif util >= pause_threshold:
-                # Training using GPU heavily → light fill with small matrix
-                _signal_busy_low_util_since = None
-                with _status_lock:
-                    _status[gpu_id] = f"LFILL(busy,u={util}%)"
-                with torch.cuda.stream(stream):
-                    for _ in range(train_batch):
-                        torch.matmul(a_sm, b_sm)
-                time.sleep(train_sleep)
-                continue
-            else:
-                # Signal busy, GPU has headroom → more small matmul to push util
-                _signal_busy_low_util_since = None
-                with _status_lock:
-                    _status[gpu_id] = f"FILL(mid,u={util}%)"
-                with torch.cuda.stream(stream):
-                    for _ in range(train_batch * 2):
-                        torch.matmul(a_sm, b_sm)
-                time.sleep(train_sleep / 2)
-                continue
-        else:
-            _signal_busy_low_util_since = None
-
-        # === Layer 3: No signal, training process present, util-based ===
+        # --- High util: any process actively computing → light fill ---
         if util >= pause_threshold:
-            # High util → light fill to maintain
+            _low_util_since = None
+            sig_tag = "busy" if is_busy_signal else "nosig"
             with _status_lock:
-                _status[gpu_id] = f"LFILL(nosig,u={util}%)"
+                _status[gpu_id] = f"LFILL({sig_tag},u={util}%)"
             with torch.cuda.stream(stream):
                 for _ in range(train_batch):
                     torch.matmul(a_sm, b_sm)
             time.sleep(train_sleep)
-        else:
-            # Low util, no signal → small matrix high-freq fill
+            continue
+
+        # --- Low util (<pause_threshold): process holds context but may be idle ---
+        if _low_util_since is None:
+            _low_util_since = time.time()
+        elapsed = time.time() - _low_util_since
+
+        if elapsed >= IDLE_ESCALATION_TIMEOUT:
+            # Process has been idle for 2+s → GPU is effectively free.
+            # Big matrix is safe here — no active compute to compete with.
+            # Use fewer kernels than idle path (15 vs 50) so if training
+            # resumes mid-batch, max queue interference is ~50ms not ~175ms.
+            if elapsed >= STALE_SIGNAL_TIMEOUT:
+                tag = f"FILL(stale,u={util}%)"
+            else:
+                sig_tag = "sig" if is_busy_signal else "nosig"
+                tag = f"FILL(idle-esc,{sig_tag},u={util}%,{int(elapsed)}s)"
             with _status_lock:
-                _status[gpu_id] = f"FILL(nosig,u={util}%)"
+                _status[gpu_id] = tag
+            esc_batch = min(kernel_batch, 15)
+            with torch.cuda.stream(stream):
+                for _ in range(esc_batch):
+                    torch.matmul(a_big, b_big)
+            time.sleep(0.002)
+        elif util < 20:
+            # Brief gap (<2s), very low util → small matrix high batch
+            sig_tag = "gap" if is_busy_signal else "nosig"
+            with _status_lock:
+                _status[gpu_id] = f"FILL({sig_tag},u={util}%,{int(elapsed)}s)"
+            with torch.cuda.stream(stream):
+                for _ in range(train_batch * 4):
+                    torch.matmul(a_sm, b_sm)
+            time.sleep(0.001)
+        else:
+            # Mid util (20-pause_threshold), brief → small matrix medium batch
+            sig_tag = "mid" if is_busy_signal else "nosig-mid"
+            with _status_lock:
+                _status[gpu_id] = f"FILL({sig_tag},u={util}%)"
             with torch.cuda.stream(stream):
                 for _ in range(train_batch * 2):
                     torch.matmul(a_sm, b_sm)
