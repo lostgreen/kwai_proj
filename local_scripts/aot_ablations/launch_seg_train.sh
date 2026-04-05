@@ -57,7 +57,7 @@ if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]];
       --batch "${FILLER_BATCH:-50}" \
       --matrix-size "${FILLER_MATRIX:-8192}" \
       --train-matrix "${FILLER_TRAIN_MATRIX:-1024}" \
-      --train-batch "${FILLER_TRAIN_BATCH:-50}" \
+      --train-batch "${FILLER_TRAIN_BATCH:-500}" \
       --train-sleep "${FILLER_TRAIN_SLEEP:-0.005}" \
       > /tmp/filler.log 2>&1 &
     echo "[seg-aot] GPU filler started (PID $!), log: /tmp/filler.log"

@@ -149,10 +149,19 @@ def filler_worker(
 
     my_pid = os.getpid()
 
+    # Diagnostic: show what PIDs are on this GPU at startup
+    import pynvml as _pynvml
+    _h = _pynvml.nvmlDeviceGetHandleByIndex(nvml_idx)
+    try:
+        _procs = _pynvml.nvmlDeviceGetComputeRunningProcesses(_h)
+        _pids = [p.pid for p in _procs]
+    except _pynvml.NVMLError:
+        _pids = []
     print(f"[filler] GPU {gpu_id} (nvml {nvml_idx}): started  "
           f"idle={matrix_size}x{kernel_batch}  "
           f"train_light={train_matrix}x{train_batch}+{train_sleep*1000:.0f}ms  "
-          f"pause≥{pause_threshold}%")
+          f"pause≥{pause_threshold}%  "
+          f"my_pid={my_pid} gpu_pids={_pids}")
 
     # Stale signal detection
     _signal_busy_low_util_since = None
