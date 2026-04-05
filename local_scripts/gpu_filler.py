@@ -183,18 +183,19 @@ def filler_worker(
 
         if is_busy_signal:
             if util < 20:
-                # Signal busy but GPU idle → possibly stale/crashed
+                # Signal busy but GPU idle → likely a gap (DP group finished
+                # gen early, waiting for others). Fill aggressively!
+                # Also track duration for stale signal detection.
                 if _signal_busy_low_util_since is None:
                     _signal_busy_low_util_since = time.time()
                 elapsed = time.time() - _signal_busy_low_util_since
-                if elapsed < STALE_SIGNAL_TIMEOUT:
-                    with _status_lock:
-                        _status[gpu_id] = f"WAIT(stale?,u={util}%,{int(elapsed)}s)"
-                    _STOP.wait(timeout=0.5)
-                    continue
-                # Stale signal → full fill
+                if elapsed >= STALE_SIGNAL_TIMEOUT:
+                    tag = f"FILL(stale,u={util}%)"
+                else:
+                    tag = f"FILL(gap,u={util}%,{int(elapsed)}s)"
                 with _status_lock:
-                    _status[gpu_id] = f"FILL(stale,u={util}%)"
+                    _status[gpu_id] = tag
+                # Fill with big matmul — GPU is idle, no competition
                 with torch.cuda.stream(stream):
                     for _ in range(kernel_batch):
                         torch.matmul(a_big, b_big)
