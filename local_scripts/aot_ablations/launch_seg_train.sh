@@ -46,9 +46,24 @@ mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 
 # ---- GPU filler: 保持利用率 ≥ 80%，训练阶段自动暂停 ----
-# filler 应该作为常驻进程在机器分配后启动，不随训练结束而停止
-# 启动方式: nohup python3 local_scripts/gpu_filler.py > /tmp/filler.log 2>&1 &
-# 训练脚本只负责清理信号文件
+# filler 常驻运行，训练结束后不停止（防止机器被回收）
+_filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
+if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]]; then
+  # 检查是否已有 filler 在运行
+  if ! pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
+    echo "[seg-aot] Starting GPU filler (常驻，训练结束后继续运行)"
+    nohup python3 "${_filler_script}" \
+      --pause "${FILLER_PAUSE:-50}" \
+      --burst "${FILLER_BURST:-0.3}" \
+      --matrix-size "${FILLER_MATRIX:-4096}" \
+      > /tmp/filler.log 2>&1 &
+    echo "[seg-aot] GPU filler started (PID $!), log: /tmp/filler.log"
+  else
+    echo "[seg-aot] GPU filler already running ($(pgrep -f gpu_filler.py))"
+  fi
+fi
+
+# 训练结束只清理信号文件，不杀 filler
 cleanup_signal() {
   rm -f /tmp/verl_gpu_phase
 }
