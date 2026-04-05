@@ -45,6 +45,15 @@ _ray_tmpdir="/tmp/ray_${_exp_short}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 
+# ---- GPU filler: 保持利用率 ≥ 80%，训练阶段自动暂停 ----
+# filler 应该作为常驻进程在机器分配后启动，不随训练结束而停止
+# 启动方式: nohup python3 local_scripts/gpu_filler.py > /tmp/filler.log 2>&1 &
+# 训练脚本只负责清理信号文件
+cleanup_signal() {
+  rm -f /tmp/verl_gpu_phase
+}
+trap cleanup_signal EXIT
+
 # ---- Step B: 训练 ----
 echo "[seg-aot] Starting training: ${EXP_NAME}"
 

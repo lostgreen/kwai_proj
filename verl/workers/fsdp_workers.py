@@ -18,6 +18,7 @@ The main entry point to run the PPO algorithm
 from typing import Literal, Optional, Union, cast
 
 import numpy as np
+import os
 import psutil
 import torch
 import torch.distributed as dist
@@ -51,6 +52,7 @@ from ..utils.fsdp_utils import (
     offload_fsdp_model,
     offload_fsdp_optimizer,
 )
+from ..utils.gpu_phase_signal import set_gpu_phase
 from ..utils.model_utils import print_gpu_memory_usage, print_model_size
 from ..utils.tokenizer import get_processor, get_tokenizer
 from ..utils.torch_dtypes import PrecisionType
@@ -94,6 +96,7 @@ class FSDPWorker(Worker):
         self._use_param_offload = False
         self._use_optimizer_offload = False
         self._use_ref_param_offload = False
+        self._is_local_rank0 = int(os.environ.get("LOCAL_RANK", 0)) == 0
         if self._has_actor:
             self._use_param_offload = self.config.actor.offload.offload_params
             self._use_optimizer_offload = self.config.actor.offload.offload_optimizer
@@ -453,6 +456,11 @@ class FSDPWorker(Worker):
         if self._use_optimizer_offload:  # avoid OOM in resuming
             offload_fsdp_optimizer(self.optimizer)
 
+    def _set_phase(self, phase: str):
+        """Write GPU phase signal on local_rank 0 of each node."""
+        if self._is_local_rank0:
+            set_gpu_phase(phase)
+
     def _process_multi_modal_inputs(self, data: DataProto):
         if "multi_modal_data" not in data.non_tensor_batch:
             return
@@ -518,6 +526,7 @@ class FSDPWorker(Worker):
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_actor(self, data: DataProto):
         assert self._has_actor
+        self._set_phase("update")
 
         self._process_multi_modal_inputs(data)
         data = data.to(torch.cuda.current_device())
@@ -566,6 +575,7 @@ class FSDPWorker(Worker):
             offload_fsdp_optimizer(optimizer=self.optimizer)
 
         output = output.to("cpu")
+        self._set_phase("idle")
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
@@ -579,6 +589,7 @@ class FSDPWorker(Worker):
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         assert self._has_rollout
+        self._set_phase("gen")
         import time as _time
         from verl.utils.timing_logger import tlog
         _rank = torch.distributed.get_rank()
@@ -610,11 +621,13 @@ class FSDPWorker(Worker):
         _t3 = _time.time()
         tlog(f"[gen][rank={_rank} dp={_dp_rank} tp={_tp_rank}] postprocess+to_cpu: {_t3 - _t2:.2f}s, total: {_t3 - _t0:.2f}s")
 
+        self._set_phase("idle")
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_log_probs(self, data: DataProto):
         assert self._has_actor
+        self._set_phase("update")
 
         self._process_multi_modal_inputs(data)
         data = data.to(torch.cuda.current_device())
@@ -650,11 +663,13 @@ class FSDPWorker(Worker):
             offload_fsdp_model(self.fsdp_module)
 
         output = output.to("cpu")
+        self._set_phase("idle")
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_ref_log_probs(self, data: DataProto):
         assert self._has_ref
+        self._set_phase("update")
 
         self._process_multi_modal_inputs(data)
         data = data.to(torch.cuda.current_device())
@@ -678,11 +693,13 @@ class FSDPWorker(Worker):
             offload_fsdp_model(self.ref_fsdp_module)
 
         output = output.to("cpu")
+        self._set_phase("idle")
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_values(self, data: DataProto):
         assert self._has_critic
+        self._set_phase("update")
 
         self._process_multi_modal_inputs(data)
         data = data.to(torch.cuda.current_device())
@@ -700,11 +717,13 @@ class FSDPWorker(Worker):
             offload_fsdp_model(self.fsdp_module)
 
         output = output.to("cpu")
+        self._set_phase("idle")
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_critic(self, data: DataProto):
         assert self._has_critic
+        self._set_phase("update")
 
         self._process_multi_modal_inputs(data)
         data = data.to(torch.cuda.current_device())
@@ -746,4 +765,5 @@ class FSDPWorker(Worker):
             offload_fsdp_optimizer(optimizer=self.optimizer)
 
         output = output.to("cpu")
+        self._set_phase("idle")
         return output

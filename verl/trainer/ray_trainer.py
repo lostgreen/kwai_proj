@@ -42,6 +42,7 @@ from ..utils.checkpoint import CHECKPOINT_TRACKER, find_latest_ckpt, remove_obso
 from ..utils.logger import Tracker
 from ..utils.py_functional import convert_dict_to_str, timer, unflatten_dict
 from ..utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
+from ..utils.gpu_phase_signal import clear_gpu_phase, register_cleanup
 from ..utils.timing_logger import init_timing_log, log_timing, tlog
 from ..workers.fsdp_workers import FSDPWorker
 from ..workers.reward import FunctionRewardManager
@@ -775,6 +776,7 @@ class RayPPOTrainer:
         """
         self.logger = Tracker(loggers=self.config.trainer.logger, config=self.config.to_dict())
         init_timing_log(self.config.trainer.save_checkpoint_path)
+        register_cleanup()
         self.global_step = 0
         main_tqdm = tqdm(range(self.training_steps), desc="Running step", position=0)
         val_metrics: Optional[dict[str, Any]] = None
@@ -934,3 +936,5 @@ class RayPPOTrainer:
 
         if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
             self._save_checkpoint()
+
+        clear_gpu_phase()
