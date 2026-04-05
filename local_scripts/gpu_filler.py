@@ -174,7 +174,7 @@ def filler_worker(
     # while training process holds CUDA context but isn't computing.
     # After IDLE_ESCALATION_TIMEOUT, switch to big matrix (safe — GPU is idle).
     _low_util_since = None
-    IDLE_ESCALATION_TIMEOUT = 2  # seconds before escalating to big matrix
+    IDLE_ESCALATION_TIMEOUT = 0.5  # seconds before escalating to big matrix
     STALE_SIGNAL_TIMEOUT = 30
 
     while not _STOP.is_set():
