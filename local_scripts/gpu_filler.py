@@ -10,17 +10,17 @@ Three-layer per-GPU decision logic:
       No non-filler process on GPU → big matmul fill 100%
       Training process detected    → go to Layer 2
   Layer 2 — Signal file (/tmp/verl_gpu_phase):
-      Signal says "gen"/"update"   → light fill (small matrix, long sleep)
-      Signal says "idle" or missing → go to Layer 3
+      Signal + high util → light fill (small matrix, keeps +6% util)
+      Signal + low util  → medium fill (big matrix half-batch, fills gap)
+      No signal          → go to Layer 3
   Layer 3 — Utilization fallback:
-      GPU util ≥ threshold → light fill (don't interfere)
-      GPU util < threshold → medium fill (push util up)
+      GPU util ≥ threshold → light fill (small matrix)
+      GPU util < threshold → medium fill (big matrix half-batch)
 
-  Two-tier matrix strategy:
-    - Idle GPU (no training): big matrix (8192) full blast → 95%+ util
-    - Training GPU: small matrix (1024) with long sleep → ~6-10% extra duty
-      cycle. Each kernel is ~7μs (vs 3.5ms for 8192), negligible compute
-      overhead. But continuously queued to keep nvidia-smi metric up.
+  Three-tier fill intensity:
+    - FULL:   big matrix (8192) × full batch  — idle GPU, no competition
+    - MEDIUM: big matrix (8192) × half batch  — low-util training gap (~74% avg)
+    - LIGHT:  small matrix (1024) × low batch — high-util training (+6% util)
 
 Usage:
     python gpu_filler.py                          # all GPUs
@@ -126,24 +126,23 @@ def filler_worker(
 ):
     """Async GPU filler with 3-layer training awareness.
 
-    Two-tier matrix strategy:
-      - Idle GPU:     big matrix (matrix_size) × kernel_batch — full blast
-      - Training GPU: small matrix (train_matrix) × train_batch — light fill
+    Three-tier fill strategy:
+      - Idle GPU (no training):    big matrix full blast → 95%+ util
+      - Training + low util:       big matrix half-batch → fill the gap aggressively
+      - Training + high util:      small matrix light fill → +6% util, near-zero overhead
 
-    1024x1024 kernel = ~7μs on A100 (vs 3.5ms for 8192x8192 = 500x faster).
-    With train_batch=50, train_sleep=5ms: 0.35ms compute / 5.35ms cycle = 6.5% duty.
-    This adds ~6-10% util on top of training's natural util, with negligible
-    compute overhead (total filler FLOPS during gen < 0.3% of GPU capacity).
+    The low-util half-batch worked at ~74% avg without slowing gen.
+    The high-util light fill adds ~6% on top → target ~80%.
     """
     import torch
 
     torch.cuda.set_device(gpu_id)
     device = torch.device(f"cuda:{gpu_id}")
 
-    # Big matrices for idle fill (no training → full blast)
+    # Big matrices for idle fill and low-util gap fill
     a_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
     b_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
-    # Small matrices for training-concurrent light fill
+    # Small matrices for light fill during high-util training
     a_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
     b_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
     stream = torch.cuda.Stream(device=device)
@@ -152,7 +151,7 @@ def filler_worker(
 
     print(f"[filler] GPU {gpu_id} (nvml {nvml_idx}): started  "
           f"idle={matrix_size}x{kernel_batch}  "
-          f"train={train_matrix}x{train_batch}+{train_sleep*1000:.0f}ms  "
+          f"train_light={train_matrix}x{train_batch}+{train_sleep*1000:.0f}ms  "
           f"pause≥{pause_threshold}%")
 
     # Stale signal detection
@@ -193,23 +192,36 @@ def filler_worker(
                         _status[gpu_id] = f"WAIT(stale?,u={util}%,{int(elapsed)}s)"
                     _STOP.wait(timeout=0.5)
                     continue
-                # Stale signal → light fill
+                # Stale signal → full fill
                 with _status_lock:
                     _status[gpu_id] = f"FILL(stale,u={util}%)"
+                with torch.cuda.stream(stream):
+                    for _ in range(kernel_batch):
+                        torch.matmul(a_big, b_big)
+                time.sleep(0.002)
+                continue
+            elif util >= pause_threshold:
+                # Training using GPU heavily → light fill with small matrix
+                # (previously PAUSE → now adds ~6% util with near-zero overhead)
+                _signal_busy_low_util_since = None
+                with _status_lock:
+                    _status[gpu_id] = f"LFILL(busy,u={util}%)"
                 with torch.cuda.stream(stream):
                     for _ in range(train_batch):
                         torch.matmul(a_sm, b_sm)
                 time.sleep(train_sleep)
                 continue
             else:
-                # Training active → light fill (small matrix, long sleep)
+                # Signal busy, but GPU has headroom → half-batch big matmul
+                # (this is the approach that worked at ~74% without slowing gen)
                 _signal_busy_low_util_since = None
                 with _status_lock:
-                    _status[gpu_id] = f"LFILL(sig,u={util}%)"
+                    _status[gpu_id] = f"FILL(mid,u={util}%)"
+                half = max(1, kernel_batch // 2)
                 with torch.cuda.stream(stream):
-                    for _ in range(train_batch):
-                        torch.matmul(a_sm, b_sm)
-                time.sleep(train_sleep)
+                    for _ in range(half):
+                        torch.matmul(a_big, b_big)
+                time.sleep(0.003)
                 continue
         else:
             _signal_busy_low_util_since = None
@@ -218,19 +230,20 @@ def filler_worker(
         if util >= pause_threshold:
             # High util → light fill to maintain
             with _status_lock:
-                _status[gpu_id] = f"LFILL(high,u={util}%)"
+                _status[gpu_id] = f"LFILL(nosig,u={util}%)"
             with torch.cuda.stream(stream):
                 for _ in range(train_batch):
                     torch.matmul(a_sm, b_sm)
             time.sleep(train_sleep)
         else:
-            # Low util → slightly more aggressive fill (2x batch, half sleep)
+            # Low util → half-batch big matmul to fill gap
             with _status_lock:
-                _status[gpu_id] = f"LFILL(low,u={util}%)"
+                _status[gpu_id] = f"FILL(gap,u={util}%)"
+            half = max(1, kernel_batch // 2)
             with torch.cuda.stream(stream):
-                for _ in range(train_batch * 2):
-                    torch.matmul(a_sm, b_sm)
-            time.sleep(train_sleep / 2)
+                for _ in range(half):
+                    torch.matmul(a_big, b_big)
+            time.sleep(0.003)
 
     del a_big, b_big, a_sm, b_sm
     torch.cuda.empty_cache()
