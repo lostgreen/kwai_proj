@@ -72,7 +72,7 @@ trap cleanup_signal EXIT
 # ---- Step B: 训练 ----
 echo "[seg-aot] Starting training: ${EXP_NAME}"
 
-TENSORBOARD_DIR="${CHECKPOINT_ROOT}/tensorboard" \
+TENSORBOARD_DIR="${CHECKPOINT_ROOT}/${EXP_NAME}/tensorboard" \
 python3 -m verl.trainer.main \
   config="${REPO_ROOT}/examples/config_ema_grpo_64.yaml" \
   data.train_files="${TRAIN_FILE}" \
