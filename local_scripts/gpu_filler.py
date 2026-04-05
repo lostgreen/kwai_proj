@@ -144,14 +144,13 @@ def filler_worker(
         has_other = other_pids_on_gpu(nvml_idx, my_pid)
 
         if not has_other:
-            # No training process → fill 100%
+            # No training process → fill continuously (check every 3s)
             with _status_lock:
                 _status[gpu_id] = "FILL(idle)"
             t0 = time.time()
-            while time.time() - t0 < burst_sec and not _STOP.is_set():
+            while time.time() - t0 < 3.0 and not _STOP.is_set():
                 torch.mm(a, b)
             torch.cuda.synchronize(device)
-            _STOP.wait(timeout=0.05)
             continue
 
         # === Layer 2: Signal file ===
@@ -173,12 +172,11 @@ def filler_worker(
             _STOP.wait(timeout=0.3)
             continue
 
-        # Training is in idle gap → fill
+        # Training is in idle gap → fill with short burst
         with _status_lock:
             _status[gpu_id] = f"FILL(gap,util={util}%)"
         t0 = time.time()
         while time.time() - t0 < burst_sec and not _STOP.is_set():
-            # Re-check signal mid-burst for responsiveness
             if signal_says_busy():
                 break
             torch.mm(a, b)
@@ -199,8 +197,8 @@ def main():
         description="Smart GPU filler — 3-layer: process detection + signal + util")
     parser.add_argument("--gpus", type=str, default=None,
                         help="Comma-separated CUDA GPU IDs (default: all visible)")
-    parser.add_argument("--matrix-size", type=int, default=4096,
-                        help="Matrix size for matmul (default: 4096)")
+    parser.add_argument("--matrix-size", type=int, default=8192,
+                        help="Matrix size for matmul (default: 8192)")
     parser.add_argument("--burst", type=float, default=0.3,
                         help="Matmul burst duration in seconds (default: 0.3)")
     parser.add_argument("--pause", type=int, default=50,
