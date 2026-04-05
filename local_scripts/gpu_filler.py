@@ -261,8 +261,8 @@ def main():
                         help="Kernels per batch for idle fill (default: 50)")
     parser.add_argument("--train-matrix", type=int, default=1024,
                         help="Matrix size during training (default: 1024)")
-    parser.add_argument("--train-batch", type=int, default=50,
-                        help="Kernels per batch during training (default: 50)")
+    parser.add_argument("--train-batch", type=int, default=500,
+                        help="Kernels per batch during training (default: 500)")
     parser.add_argument("--train-sleep", type=float, default=0.005,
                         help="Sleep between batches during training in sec (default: 0.005)")
     parser.add_argument("--pause", type=int, default=50,
