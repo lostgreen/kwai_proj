@@ -631,6 +631,33 @@ class RayPPOTrainer:
         )
         metrics.update(global_balance_stats)
 
+    def _log_filtered_samples(self, batch: DataProto, filtered_idxs: list[int],
+                              reward_metrics: dict, uid2mean: dict):
+        """Log filtered-out samples to a JSONL file for analysis."""
+        log_path = os.path.join(self.config.trainer.save_checkpoint_path, "filtered_samples.jsonl")
+        response_ids = batch.batch["responses"]
+        response_mask = batch.batch["response_mask"]
+        uids = batch.non_tensor_batch["uid"]
+        try:
+            with open(log_path, "a") as f:
+                for idx in filtered_idxs:
+                    resp_len = int(response_mask[idx].sum().item())
+                    response_text = self.tokenizer.decode(
+                        response_ids[idx][:resp_len], skip_special_tokens=True
+                    )
+                    record = {
+                        "step": self.global_step,
+                        "uid": str(uids[idx]),
+                        "uid_mean_reward": float(uid2mean.get(str(uids[idx]), 0)),
+                        "problem_type": str(batch.non_tensor_batch.get("problem_type", [""])[idx]),
+                        "ground_truth": str(batch.non_tensor_batch.get("ground_truth", [""])[idx]),
+                        "response": response_text[:500],
+                        "reward": {k: float(v[idx]) for k, v in reward_metrics.items() if idx < len(v)},
+                    }
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"[online_filtering] Failed to log filtered samples: {e}")
+
     def _make_batch_data(self, metrics: dict[str, Any], timing_raw: dict[str, float] = None) -> DataProto:
         batch = None
         all_metrics = defaultdict(list)
@@ -718,6 +745,12 @@ class RayPPOTrainer:
                     if avg_score > self.config.algorithm.filter_low and avg_score < self.config.algorithm.filter_high
                 ]
                 kept_sample_idxs = [idx for idx, uid in enumerate(uids) if uid in kept_uids]
+
+                # Log filtered-out samples to JSONL file
+                filtered_out_idxs = [idx for idx in range(len(uids)) if idx not in set(kept_sample_idxs)]
+                if filtered_out_idxs:
+                    self._log_filtered_samples(new_batch, filtered_out_idxs, reward_metrics, uid2mean)
+
                 if len(kept_sample_idxs) == 0:
                     print(
                         "[online_filtering] No sample kept after filtering "
