@@ -4,27 +4,26 @@
 # 流程:
 #   Step 1: text_filter (仅时长过滤)
 #   Step 2: sample_per_source (格式转换 + 可选采样)
-#   Step 3: local_screen Stage 1 (L1/L2 score + domain + quality)
-#   Step 4: local_screen Stage 2 (prog_type + visual_diversity + order_dependency)
+#   Step 3: local_screen (unified single-pass: L1/L2 + prog_type + order + domain + quality)
 #
-# 自动跳过已完成的步骤：
-#   - screen_keep.jsonl 存在 → 跳过 Stage 1
-#   - screen_keep.jsonl 含 _screen_2 字段 → 跳过 Stage 2
-#
-# 用法:
-#   bash run_pipeline.sh              # 全量：Step 1-4
-#   SKIP_STAGE2=1 bash run_pipeline.sh  # 只跑到 Stage 1
-#   FORCE=1 bash run_pipeline.sh        # 强制全量重跑
+# 用法 (从 train/ 目录运行):
+#   bash proxy_data/data_curation/et_instruct_164k/run_pipeline.sh
+#   LOCAL_MODEL=/m2v_intern/xuboshen/zgw/models/Qwen3-VL-32B-Instruct TP_SIZE=2 \
+#     bash proxy_data/data_curation/et_instruct_164k/run_pipeline.sh
+#   FORCE=1 bash proxy_data/data_curation/et_instruct_164k/run_pipeline.sh
 #
 # 环境变量:
 #   ET_JSON_PATH   — et_instruct_164k_txt.json 路径
 #   VIDEO_ROOT     — ET-Instruct 视频根目录
 #   LOCAL_MODEL    — 本地 VLM 模型路径
-#   NUM_GPUS       — local_screen 数据并行 GPU 数 (默认 2)
+#   TP_SIZE        — tensor parallel size (默认 1; >1 时用 TP 模式而非数据并行)
+#   NUM_GPUS       — 数据并行 GPU 数 (仅 TP_SIZE=1 时生效, 默认 2)
+#   GPU_MEM_UTIL   — gpu_memory_utilization (默认 0.85)
+#   BATCH_SIZE     — inference batch size (默认 8)
+#   MAX_BATCHED_TOKENS — vLLM max_num_batched_tokens (默认 16384)
 #   PER_SOURCE     — 每个 source 采样条数 (0 = 全量)
 #   OUTPUT_ROOT    — 输出目录
-#   SKIP_STAGE2    — 跳过 Stage 2 (1 = 跳过, 默认 0)
-#   FORCE          — 强制重跑所有步骤 (1 = 强制, 默认 0)
+#   FORCE          — 强制重跑 (1 = 强制, 默认 0)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,10 +35,14 @@ VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos}
 CONFIG="${CONFIG:-../configs/et_instruct_164k.yaml}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-../results/et_instruct_164k}"
 LOCAL_MODEL="${LOCAL_MODEL:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
+LOCAL_SCREEN="../shared/local_screen.py"
+TP_SIZE="${TP_SIZE:-1}"
 NUM_GPUS="${NUM_GPUS:-2}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-16384}"
 PER_SOURCE="${PER_SOURCE:-0}"
 SEED="${SEED:-42}"
-SKIP_STAGE2="${SKIP_STAGE2:-0}"
 FORCE="${FORCE:-0}"
 
 echo "============================================="
@@ -47,9 +50,13 @@ echo " ET-Instruct: Duration Filter + Local VLM Screening"
 echo " JSON:       $ET_JSON_PATH"
 echo " Video Root: $VIDEO_ROOT"
 echo " Output:     $OUTPUT_ROOT"
-echo " Local VLM:  $LOCAL_MODEL (${NUM_GPUS} GPUs)"
+if [ "$TP_SIZE" -gt 1 ]; then
+    echo " Model:      $LOCAL_MODEL (TP=$TP_SIZE)"
+else
+    echo " Model:      $LOCAL_MODEL (DP=${NUM_GPUS} GPUs)"
+fi
+echo " Batch:      $BATCH_SIZE  Max Tokens: $MAX_BATCHED_TOKENS"
 echo " Per Source: $PER_SOURCE (0 = all)"
-echo " Skip S2:   $SKIP_STAGE2"
 echo " Force:     $FORCE"
 echo "============================================="
 
@@ -88,104 +95,58 @@ echo "  → $OUTPUT_ROOT/sample_dev.jsonl"
 SCREEN_COMMON=(
     --input_jsonl "$OUTPUT_ROOT/sample_dev.jsonl"
     --model_path "$LOCAL_MODEL"
+    --gpu_memory_utilization "$GPU_MEM_UTIL"
+    --batch_size "$BATCH_SIZE"
+    --max_num_batched_tokens "$MAX_BATCHED_TOKENS"
+    --unified
 )
+if [ "$TP_SIZE" -gt 1 ]; then
+    SCREEN_COMMON+=(--tensor_parallel_size "$TP_SIZE")
+fi
 
-# ── Step 3: Stage 1 ──
-_run_stage1() {
+# ── Step 3: Unified screening ──
+SCREEN_DONE=0
+if [ "$FORCE" != "1" ] && [ -s "$OUTPUT_ROOT/screen_keep.jsonl" ]; then
+    if head -1 "$OUTPUT_ROOT/screen_keep.jsonl" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('_screen',{}).get('prog_type') else 1)" 2>/dev/null; then
+        KEEP=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
+        echo ""
+        echo "  [Screening 已完成: $KEEP kept — 跳过. Use FORCE=1 to rerun]"
+        SCREEN_DONE=1
+    fi
+fi
+
+if [ "$SCREEN_DONE" = "0" ]; then
     echo ""
-    echo "=== Step 3: local_screen Stage 1 (${NUM_GPUS} GPUs) ==="
+    echo "=== Step 3: local_screen unified ==="
 
-    if [ "$NUM_GPUS" -gt 1 ]; then
+    if [ "$TP_SIZE" -gt 1 ]; then
+        echo "  TP=$TP_SIZE mode"
+        python "$LOCAL_SCREEN" \
+            "${SCREEN_COMMON[@]}" \
+            --output_jsonl "$OUTPUT_ROOT/screen_results.jsonl" \
+            --keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \
+            --reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl"
+    elif [ "$NUM_GPUS" -gt 1 ]; then
+        echo "  Data-parallel mode (${NUM_GPUS} GPUs)"
         for i in $(seq 0 $((NUM_GPUS-1))); do
-            CUDA_VISIBLE_DEVICES=$i python ../shared/local_screen.py \
+            CUDA_VISIBLE_DEVICES=$i python "$LOCAL_SCREEN" \
                 "${SCREEN_COMMON[@]}" \
+                --shard_id "$i" --num_shards "$NUM_GPUS" \
                 --output_jsonl "$OUTPUT_ROOT/screen_shard${i}.jsonl" \
                 --keep_jsonl "$OUTPUT_ROOT/keep_shard${i}.jsonl" \
-                --reject_jsonl "$OUTPUT_ROOT/reject_shard${i}.jsonl" \
-                --shard_id "$i" --num_shards "$NUM_GPUS" &
+                --reject_jsonl "$OUTPUT_ROOT/reject_shard${i}.jsonl" &
         done
         wait
         cat "$OUTPUT_ROOT"/keep_shard*.jsonl > "$OUTPUT_ROOT/screen_keep.jsonl"
         cat "$OUTPUT_ROOT"/reject_shard*.jsonl > "$OUTPUT_ROOT/screen_reject.jsonl"
         cat "$OUTPUT_ROOT"/screen_shard*.jsonl > "$OUTPUT_ROOT/screen_results.jsonl"
     else
-        python ../shared/local_screen.py \
+        echo "  Single GPU mode"
+        python "$LOCAL_SCREEN" \
             "${SCREEN_COMMON[@]}" \
             --output_jsonl "$OUTPUT_ROOT/screen_results.jsonl" \
             --keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \
             --reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl"
-    fi
-}
-
-# ── Step 4: Stage 2 ──
-_run_stage2() {
-    echo ""
-    echo "=== Step 4: local_screen Stage 2 (${NUM_GPUS} GPUs) ==="
-
-    if [ "$NUM_GPUS" -gt 1 ]; then
-        for i in $(seq 0 $((NUM_GPUS-1))); do
-            CUDA_VISIBLE_DEVICES=$i python ../shared/local_screen.py \
-                "${SCREEN_COMMON[@]}" \
-                --output_jsonl "$OUTPUT_ROOT/s2_shard${i}.jsonl" \
-                --keep_jsonl "$OUTPUT_ROOT/s2_keep_shard${i}.jsonl" \
-                --reject_jsonl "$OUTPUT_ROOT/s2_reject_shard${i}.jsonl" \
-                --s1_keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \
-                --s1_reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl" \
-                --shard_id "$i" --num_shards "$NUM_GPUS" \
-                --secondary_screen_only &
-        done
-        wait
-        cat "$OUTPUT_ROOT"/s2_keep_shard*.jsonl > "$OUTPUT_ROOT/screen_keep.jsonl"
-        cat "$OUTPUT_ROOT"/s2_reject_shard*.jsonl > "$OUTPUT_ROOT/screen_reject.jsonl"
-        cat "$OUTPUT_ROOT"/s2_shard*.jsonl > "$OUTPUT_ROOT/screen_results.jsonl"
-    else
-        python ../shared/local_screen.py \
-            "${SCREEN_COMMON[@]}" \
-            --output_jsonl "$OUTPUT_ROOT/screen_results.jsonl" \
-            --keep_jsonl "$OUTPUT_ROOT/screen_keep.jsonl" \
-            --reject_jsonl "$OUTPUT_ROOT/screen_reject.jsonl" \
-            --secondary_screen_only
-    fi
-}
-
-# ── 执行逻辑：检测已有结果，自动跳过 ──
-
-# Stage 1: screen_keep.jsonl 存在且非空 → 已完成
-S1_DONE=0
-if [ "$FORCE" != "1" ] && [ -s "$OUTPUT_ROOT/screen_keep.jsonl" ]; then
-    KEEP_S1=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
-    echo ""
-    echo "  [Stage 1 已完成: screen_keep.jsonl 存在, $KEEP_S1 kept — 跳过]"
-    S1_DONE=1
-else
-    _run_stage1
-    KEEP_S1=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
-fi
-REJECT_S1=$(wc -l < "$OUTPUT_ROOT/screen_reject.jsonl" | tr -d ' ')
-echo "  Stage 1 → kept=$KEEP_S1  rejected=$REJECT_S1"
-
-# Stage 2
-if [ "$SKIP_STAGE2" != "1" ] && [ "$KEEP_S1" -gt 0 ]; then
-    # Stage 2 done check: first line of screen_keep.jsonl has _screen_2 field
-    S2_DONE=0
-    if [ "$FORCE" != "1" ] && [ "$S1_DONE" = "1" ]; then
-        if head -1 "$OUTPUT_ROOT/screen_keep.jsonl" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if '_screen_2' in d else 1)" 2>/dev/null; then
-            KEEP_S2=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
-            echo ""
-            echo "  [Stage 2 已完成: _screen_2 field present, $KEEP_S2 kept — 跳过]"
-            S2_DONE=1
-        fi
-    fi
-
-    if [ "$S2_DONE" = "0" ]; then
-        _run_stage2
-        KEEP_S2=$(wc -l < "$OUTPUT_ROOT/screen_keep.jsonl" | tr -d ' ')
-    fi
-    echo "  Stage 2 → kept=$KEEP_S2 (from $KEEP_S1)"
-else
-    if [ "$SKIP_STAGE2" = "1" ]; then
-        echo ""
-        echo "  [Skipping Stage 2 (SKIP_STAGE2=1)]"
     fi
 fi
 

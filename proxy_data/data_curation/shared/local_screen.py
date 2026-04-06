@@ -3,40 +3,37 @@
 """
 Local VLM pre-screening for hierarchical annotation pipeline.
 
-Uses a local Qwen VL model (via vLLM) to quickly assess whether a video
+Uses a local Qwen VL model (via vLLM) to assess whether a video
 is suitable for hierarchical temporal segmentation annotation.
 
-Evaluates four dimensions:
-  1. L1 Phase structure score (1-5) + estimated phase count
-  2. L2 Event structure score (1-5) + estimated event count
-  3. Domain classification (domain_l1 + domain_l2)
-  4. Visual quality (good/bad)
+Unified mode (--unified, recommended for 32B+ models) evaluates all
+dimensions in a single pass:
+  1. L1 Phase structure score (1-5)
+  2. L2 Event structure score (1-5)
+  3. Progression type (procedural / narrative / interwoven_or_repetitive)
+  4. Order dependency (strict / loose / none)
+  5. Domain classification (domain_l1 + domain_l2)
+  6. Visual quality (good/bad)
 
-Decision rule: keep only if L1 >= threshold AND L2 >= threshold,
-ensuring the video has at least two layers of temporal structure.
-
-Architecture: Reuses the vLLM batch inference pattern from
-offline_rollout_filter.py — supports tensor parallelism and
-data-parallel sharding across multiple GPUs.
-
-Usage:
-    # Single GPU
-    python local_screen.py \
-        --input_jsonl sample_dev.jsonl \
+Usage (from train/ directory):
+    # 32B model, TP=2, unified mode
+    python proxy_data/data_curation/shared/local_screen.py \
+        --input_jsonl proxy_data/data_curation/results/et_instruct_164k/sample_dev.jsonl \
         --output_jsonl screen_results.jsonl \
         --keep_jsonl screen_keep.jsonl \
         --reject_jsonl screen_reject.jsonl \
-        --model_path /path/to/Qwen3-VL-4B-Instruct
+        --model_path /m2v_intern/xuboshen/zgw/models/Qwen3-VL-32B-Instruct \
+        --tensor_parallel_size 2 --unified
 
-    # 8-GPU data parallel (4B fits on 1 GPU)
-    for i in $(seq 0 7); do
-        CUDA_VISIBLE_DEVICES=$i python local_screen.py \
+    # 2-GPU data parallel (4B model)
+    for i in 0 1; do
+        CUDA_VISIBLE_DEVICES=$i python proxy_data/data_curation/shared/local_screen.py \
             --input_jsonl sample_dev.jsonl \
             --output_jsonl screen_shard${i}.jsonl \
             --keep_jsonl keep_shard${i}.jsonl \
             --reject_jsonl reject_shard${i}.jsonl \
-            --model_path /path/to/Qwen3-VL-4B-Instruct \
-            --shard_id $i --num_shards 8 &
+            --model_path /home/xuboshen/models/Qwen3-VL-4B-Instruct \
+            --shard_id $i --num_shards 2 --unified &
     done
     wait
     cat keep_shard*.jsonl > screen_keep.jsonl
@@ -150,6 +147,73 @@ PROG_TYPE: <procedural | narrative | repetitive_loop>
 VISUAL_DIVERSITY: <high | medium | low>
 ORDER_DEPENDENCY: <strict | loose | none>
 REASON: <One sentence explaining how the visual state evolves (or fails to evolve) between segments.>"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified single-pass prompt (for stronger models, merges Stage 1 + Stage 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+VALID_UNIFIED_PROG_TYPES = {"procedural", "narrative", "interwoven_or_repetitive"}
+
+UNIFIED_SCREEN_PROMPT = """\
+<video>
+Watch this video clip ({duration:.0f}s) and perform a comprehensive analysis of its suitability for hierarchical temporal annotation.
+
+**CRITICAL RULES FOR JUDGMENT:**
+1.  **A "Phase" MUST be a CONTINUOUS block of time.** A video that frequently cuts back and forth between two different scenes (e.g., an interview and a sports action) does NOT have multiple phases. Instead, it is a single, interwoven phase and should receive a LOW L1_SCORE (1 or 2).
+2.  **DO NOT confuse editing cuts with event boundaries.** A simple camera angle change within the same ongoing action is NOT a new event. We are looking for changes in the *person's goal or the state of objects*.
+
+### PART 1: Basic Structural Assessment
+
+Q1 — L1 Macro-Phase Structure (L1_SCORE, integer 1-5):
+  Does the video progress through distinct, logically ordered, and **continuous** high-level phases?
+  5 = 4+ very distinct and continuous phases with different goals (e.g., procedural: prep → cook → plate; narrative: setup → conflict → resolution).
+  4 = 3 distinct, continuous phases are identifiable.
+  3 = 2 distinct, continuous phases are visible.
+  2 = The activity has some variation, but lacks clear, continuous phase boundaries. It might be interwoven or a montage.
+  1 = A single continuous activity OR a video that constantly cuts back and forth between different content types (interview/action).
+
+Q2 — L2 Sub-Event Structure (L2_SCORE, integer 1-5):
+  Within the potential phases, are there identifiable, distinct sub-events based on **goal shifts or object state changes** (not just camera cuts)?
+  5 = Most phases are clearly composed of multiple sub-events.
+  4 = Most phases have 2+ identifiable sub-events.
+  3 = Some phases have sub-events, others are monolithic.
+  2 = Sub-events are barely distinguishable.
+  1 = No clear sub-event structure within phases.
+
+### PART 2: Deep Progression Analysis
+
+Q3 — Progression Type (PROG_TYPE):
+  Based on the video's overall flow, choose ONE primary type:
+  procedural = A step-by-step process creating a final product or state. The order is critical.
+  narrative = A chronological journey, story, or evolving situation. The order follows time, location, or intent.
+  interwoven_or_repetitive = The video constantly switches between different scenes (like interview/action cuts) OR repeats the same action in loops. This is a BAD signal for L1 structure.
+
+Q4 — Order Dependency (ORDER_DEPENDENCY):
+  If you shuffled the main logical segments (ignoring interwoven editing cuts), would the video's logic break?
+  strict = Yes, it would become physically impossible or narratively absurd.
+  loose = It would feel weird or out of order, but still possible to understand.
+  none = No, the order of the core actions does not matter at all.
+
+### PART 3: General Information
+
+Q5 — Domain Classification:
+  domain_l1 choices: procedural | physical | lifestyle | entertainment | narrative | educational | other
+  domain_l2 choices: cooking | construction_building | crafting_diy | repair_maintenance | sports | fitness_exercise | music_performance | beauty_grooming | cleaning_housework | gardening_outdoor | vehicle_operation | movie_scene | reality_show | animation | vlog | interview_talk | documentary | news_report | science_experiment | lecture_tutorial | other
+
+Q6 — Visual Quality (QUALITY):
+  good = Clear footage with meaningful, visible actions.
+  bad = Blurry, static, screen recording, pure talking head, gaming footage, text-heavy slides.
+
+Answer in EXACTLY this format (one field per line):
+L1_SCORE: <integer 1-5>
+L2_SCORE: <integer 1-5>
+PROG_TYPE: <procedural | narrative | interwoven_or_repetitive>
+ORDER_DEPENDENCY: <strict | loose | none>
+DOMAIN_L1: <one word from the list>
+DOMAIN_L2: <one word from the list>
+QUALITY: <good or bad>
+REASON: <One sentence explaining your core judgment, especially regarding the PROG_TYPE and ORDER_DEPENDENCY.>"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,6 +346,95 @@ def apply_secondary_rules(parsed: dict[str, Any]) -> str:
 
     # Double-low: no diversity AND no order dependency → reject
     if vis == "low" and order == "none":
+        return "reject"
+
+    return "keep"
+
+
+def parse_unified_response(text: str) -> dict[str, Any]:
+    """Parse unified single-pass screening response (all fields in one shot)."""
+    result: dict[str, Any] = {"_raw": text}
+
+    m = re.search(r"L1_SCORE:\s*(\d)", text, re.IGNORECASE)
+    result["l1_score"] = int(m.group(1)) if m else None
+
+    m = re.search(r"L2_SCORE:\s*(\d)", text, re.IGNORECASE)
+    result["l2_score"] = int(m.group(1)) if m else None
+
+    m = re.search(r"PROG_TYPE:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower().strip().rstrip(".,;:")
+        result["prog_type"] = val if val in VALID_UNIFIED_PROG_TYPES else None
+    else:
+        result["prog_type"] = None
+
+    m = re.search(r"ORDER_DEPENDENCY:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower().strip().rstrip(".,;:")
+        result["order_dependency"] = val if val in VALID_ORDER_DEPENDENCY else None
+    else:
+        result["order_dependency"] = None
+
+    m = re.search(r"DOMAIN_L1:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower().strip().rstrip(".,;:")
+        result["domain_l1"] = val if val in VALID_DOMAIN_L1 else None
+    else:
+        result["domain_l1"] = None
+
+    m = re.search(r"DOMAIN_L2:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower().strip().rstrip(".,;:")
+        result["domain_l2"] = val if val in VALID_DOMAIN_L2 else None
+    else:
+        result["domain_l2"] = None
+
+    m = re.search(r"QUALITY:\s*(good|bad)", text, re.IGNORECASE)
+    result["quality"] = m.group(1).lower() if m else None
+
+    m = re.search(r"REASON:\s*(.+)", text, re.IGNORECASE)
+    result["reason"] = m.group(1).strip() if m else None
+
+    return result
+
+
+def apply_unified_rules(
+    parsed: dict[str, Any],
+    l1_threshold: int = 3,
+    l2_threshold: int = 3,
+) -> str:
+    """Unified decision rules (merges Stage 1 + Stage 2 logic). Returns 'keep' or 'reject'.
+
+    Reject if ANY of:
+      - Parse failure on L1 or L2 score
+      - quality == bad
+      - L1 < threshold or L2 < threshold
+      - prog_type == repetitive_or_unconnected
+      - order_dependency == none (fully interchangeable segments)
+    """
+    l1 = parsed.get("l1_score")
+    l2 = parsed.get("l2_score")
+    prog = parsed.get("prog_type")
+    order = parsed.get("order_dependency")
+
+    # Parse failure on critical fields → reject
+    if l1 is None or l2 is None:
+        return "reject"
+
+    # Bad visual quality → hard reject
+    if parsed.get("quality") == "bad":
+        return "reject"
+
+    # Both levels must meet threshold
+    if l1 < l1_threshold or l2 < l2_threshold:
+        return "reject"
+
+    # Interwoven or repetitive → hard reject
+    if prog == "interwoven_or_repetitive":
+        return "reject"
+
+    # No order dependency at all → reject
+    if order == "none":
         return "reject"
 
     return "keep"
@@ -588,6 +741,9 @@ def parse_args() -> argparse.Namespace:
                         help="Stage-2 only: read s1_keep_jsonl from a previous Stage-1 run, "
                              "run secondary screening, and rewrite outputs. "
                              "Skips Stage 1 entirely.")
+    parser.add_argument("--unified", action="store_true",
+                        help="Single-pass unified screening (merges Stage 1 + Stage 2 into "
+                             "one prompt). Recommended for stronger models (e.g. 32B+).")
     parser.add_argument("--s1_keep_jsonl", default="",
                         help="Stage-1 keep file to read for --secondary_screen_only. "
                              "Defaults to --keep_jsonl if not set.")
@@ -709,6 +865,51 @@ def _run_secondary_screen(
     return kept_items, rejected_items
 
 
+def _run_unified_screen(
+    items: list[dict[str, Any]],
+    processor,
+    llm,
+    sampling_params,
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Single-pass unified screening. Returns (kept_items, rejected_items)."""
+    kept_items: list[dict[str, Any]] = []
+    rejected_items: list[dict[str, Any]] = []
+    errors = 0
+    processed = 0
+
+    for idx, item, result in iter_vllm_batches(
+        items, processor, llm, sampling_params, args,
+        batch_size=args.batch_size,
+        prompt_template=UNIFIED_SCREEN_PROMPT,
+    ):
+        if isinstance(result, Exception):
+            errors += 1
+            item["_screen"] = {"error": str(result), "decision": "reject"}
+            rejected_items.append(item)
+        else:
+            response_text = result[0] if result else ""
+            parsed = parse_unified_response(response_text)
+            decision = apply_unified_rules(parsed, args.l1_threshold, args.l2_threshold)
+            parsed["decision"] = decision
+            item["_screen"] = parsed
+
+            if decision == "keep":
+                kept_items.append(item)
+            else:
+                rejected_items.append(item)
+
+        processed += 1
+        if processed % args.log_every == 0 or processed == len(items):
+            print(
+                f"[screen-unified] processed={processed}/{len(items)} "
+                f"kept={len(kept_items)} rejected={len(rejected_items)} errors={errors}",
+                flush=True,
+            )
+
+    return kept_items, rejected_items
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -822,19 +1023,24 @@ def main() -> None:
     if args.report_jsonl:
         Path(args.report_jsonl).parent.mkdir(parents=True, exist_ok=True)
 
-    # ── Stage 1: Primary screening ──
-    print(f"\n[screen] ═══ Stage 1: Primary screening ({len(items)} videos) ═══", flush=True)
-    s1_kept, s1_rejected = _run_primary_screen(items, processor, llm, sampling_params, args)
-
-    # ── Stage 2: Secondary screening (optional) ──
-    if args.secondary_screen and s1_kept:
-        print(f"\n[screen] ═══ Stage 2: Secondary screening ({len(s1_kept)} videos) ═══", flush=True)
-        s2_kept, s2_rejected = _run_secondary_screen(s1_kept, processor, llm, sampling_params, args)
-        new_kept = s2_kept
-        new_rejected = s1_rejected + s2_rejected
+    # ── Unified single-pass screening ──
+    if args.unified:
+        print(f"\n[screen] ═══ Unified screening ({len(items)} videos) ═══", flush=True)
+        new_kept, new_rejected = _run_unified_screen(items, processor, llm, sampling_params, args)
     else:
-        new_kept = s1_kept
-        new_rejected = s1_rejected
+        # ── Stage 1: Primary screening ──
+        print(f"\n[screen] ═══ Stage 1: Primary screening ({len(items)} videos) ═══", flush=True)
+        s1_kept, s1_rejected = _run_primary_screen(items, processor, llm, sampling_params, args)
+
+        # ── Stage 2: Secondary screening (optional) ──
+        if args.secondary_screen and s1_kept:
+            print(f"\n[screen] ═══ Stage 2: Secondary screening ({len(s1_kept)} videos) ═══", flush=True)
+            s2_kept, s2_rejected = _run_secondary_screen(s1_kept, processor, llm, sampling_params, args)
+            new_kept = s2_kept
+            new_rejected = s1_rejected + s2_rejected
+        else:
+            new_kept = s1_kept
+            new_rejected = s1_rejected
 
     # Merge with existing results (resume mode)
     final_kept = existing_kept + new_kept
@@ -848,7 +1054,7 @@ def main() -> None:
     if total > 0:
         print(f"[screen] Keep rate: {100.0 * len(final_kept) / total:.1f}%")
 
-    if args.secondary_screen:
+    if not args.unified and args.secondary_screen:
         all_input = len(items) + len(existing_kept) + len(existing_rejected)
         s1_all_kept = len([it for it in final_kept + final_rejected
                           if it.get("_screen", {}).get("decision") == "keep"])
@@ -908,19 +1114,19 @@ def _write_outputs(
             for item in kept + rejected:
                 s1 = item.get("_screen", {})
                 s2 = item.get("_screen_2", {})
+                # In unified mode, prog_type/order_dependency are in _screen.
+                # In two-stage mode, they are in _screen_2.
                 freport.write(json.dumps({
                     "clip_key": _get_item_key(item),
                     "source": item.get("source", "unknown"),
-                    "decision_s1": s1.get("decision"),
+                    "decision": s2.get("decision") or s1.get("decision"),
                     "l1_score": s1.get("l1_score"),
                     "l2_score": s1.get("l2_score"),
                     "domain_l1": s1.get("domain_l1"),
                     "domain_l2": s1.get("domain_l2"),
                     "quality": s1.get("quality"),
-                    "decision_s2": s2.get("decision") if s2 else None,
-                    "prog_type": s2.get("prog_type") if s2 else None,
-                    "visual_diversity": s2.get("visual_diversity") if s2 else None,
-                    "order_dependency": s2.get("order_dependency") if s2 else None,
+                    "prog_type": s1.get("prog_type") or s2.get("prog_type"),
+                    "order_dependency": s1.get("order_dependency") or s2.get("order_dependency"),
                 }, ensure_ascii=False) + "\n")
 
 
