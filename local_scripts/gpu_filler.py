@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 """Smart GPU filler — keeps GPU utilization above cluster threshold.
 
-Combines two approaches:
-  - High-performance async fill (CUDA stream, no sync, batched kernels)
-  - 3-layer training awareness (process detection → signal → util)
+Architecture (v2 — monitor-decoupled):
+  - Monitor thread: polls NVML at ~10Hz for all GPUs, caches state
+  - Worker threads: read cached state, run matmul fills (zero NVML calls)
+  - Display loop: reads cached state (zero NVML calls)
 
-Three-layer per-GPU decision logic:
-  Layer 1 — Process detection (pynvml):
-      No non-filler process on GPU → big matmul fill 100%
-      Training process detected    → go to Layer 2
-  Layer 2 — Util-based with escalation:
-      High util (≥threshold)  → light fill (small matrix)
-      Low util, brief (<2s)   → small matrix gap fill
-      Low util, sustained (≥2s) → big matrix (process holds context but idle)
+  This eliminates NVML driver-lock contention that previously caused
+  nvidia-smi to hang when 8 worker threads polled concurrently.
 
-  Three-tier fill intensity:
-    - FULL:   big matrix (8192) × full batch  — idle GPU or sustained idle process
-    - MEDIUM: small matrix (1024) × high batch — brief training gap
-    - LIGHT:  small matrix (1024) × low batch  — high-util training (+6% util)
+Five-tier fill strategy:
+  Tier 1 — No other process:       big matrix (8192) full blast
+  Tier 2 — Low util, brief <0.5s:  gap matrix (4096) medium fill
+  Tier 3 — Low util, sustained:    big matrix (8192) escalation
+  Tier 4 — Below target util:      push matrix (6144/4096) dynamic fill
+  Tier 5 — At/above target util:   backoff (50ms sleep)
 
 Usage:
-    python gpu_filler.py                          # all GPUs
+    python gpu_filler.py                          # all GPUs, target 85%
     python gpu_filler.py --gpus 0,1,2,3           # specific GPUs
-    python gpu_filler.py --batch 50 --pause 40    # tweak params
+    python gpu_filler.py --target-util 80         # custom target
 
 Environment:
     VERL_GPU_SIGNAL_PATH  — signal file path (default: /tmp/verl_gpu_phase)
@@ -30,14 +27,16 @@ Environment:
 """
 
 import argparse
+import dataclasses
 import os
 import signal
+import subprocess
 import sys
 import time
 import threading
 
 # ---------------------------------------------------------------------------
-# pynvml helpers
+# pynvml helpers (used ONLY by monitor thread)
 # ---------------------------------------------------------------------------
 
 _nvml_inited = False
@@ -70,8 +69,6 @@ def other_pids_on_gpu(nvml_idx: int, my_pid: int) -> bool:
         return False
     for p in procs:
         if p.pid != my_pid:
-            # Verify the process actually exists (guard against zombie CUDA contexts
-            # left behind by killed processes — pynvml still reports them)
             try:
                 os.kill(p.pid, 0)  # signal 0 = existence check only
                 return True
@@ -86,12 +83,21 @@ def other_pids_on_gpu(nvml_idx: int, my_pid: int) -> bool:
 
 SIGNAL_PATH = os.environ.get("VERL_GPU_SIGNAL_PATH", "/tmp/verl_gpu_phase")
 BUSY_PHASES = {"gen", "update"}
+STALE_SIGNAL_TIMEOUT = 30  # seconds
 
 
 def signal_says_busy() -> bool:
     try:
         with open(SIGNAL_PATH, "r") as f:
             return f.read().strip() in BUSY_PHASES
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def is_signal_stale() -> bool:
+    try:
+        mtime = os.path.getmtime(SIGNAL_PATH)
+        return (time.time() - mtime) > STALE_SIGNAL_TIMEOUT
     except (FileNotFoundError, OSError):
         return False
 
@@ -109,80 +115,128 @@ def resolve_nvml_indices(cuda_ids: list[int]) -> dict[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Per-GPU filler worker
+# Monitor cache — written by monitor thread, read by workers + display
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class GPUState:
+    util: int = 0
+    has_other: bool = False
+    timestamp: float = 0.0
+
+
+# Python dict[int] = obj assignment is atomic (GIL), so readers always see
+# either the old or new GPUState — never a half-written one. No lock needed
+# on the read path.
+_gpu_cache: dict[int, GPUState] = {}
+
+# Signal state (also written by monitor, read by workers)
+_signal_busy: bool = False
+_signal_is_stale: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Monitor thread — single thread polls NVML at ~10Hz
 # ---------------------------------------------------------------------------
 
 _STOP = threading.Event()
 
+
+def monitor_loop(gpu_ids: list[int], nvml_map: dict[int, int], my_pid: int):
+    """Poll NVML for all GPUs + signal file at ~10Hz."""
+    global _signal_busy, _signal_is_stale
+    POLL_INTERVAL = 0.1  # 100ms
+
+    while not _STOP.is_set():
+        # Signal file — once per poll, not per GPU
+        _signal_busy = signal_says_busy()
+        _signal_is_stale = is_signal_stale()
+
+        for gid in gpu_ids:
+            nvml_idx = nvml_map[gid]
+            try:
+                util = gpu_utilization(nvml_idx)
+            except Exception:
+                util = 0
+            try:
+                has_other = other_pids_on_gpu(nvml_idx, my_pid)
+            except Exception:
+                has_other = False
+            _gpu_cache[gid] = GPUState(
+                util=util, has_other=has_other, timestamp=time.time()
+            )
+
+        _STOP.wait(timeout=POLL_INTERVAL)
+
+
+# ---------------------------------------------------------------------------
+# Per-GPU filler worker
+# ---------------------------------------------------------------------------
+
 _status: dict[int, str] = {}
 _status_lock = threading.Lock()
+
+# Timing constants
+IDLE_ESCALATION_TIMEOUT = 0.5   # seconds before escalating to big matrix
 
 
 def filler_worker(
     gpu_id: int,
-    nvml_idx: int,
     matrix_size: int,
     kernel_batch: int,
-    pause_threshold: int,
-    train_matrix: int,
-    train_batch: int,
-    train_sleep: float,
+    target_util: int,
     gap_matrix: int,
+    push_matrix: int,
 ):
-    """Async GPU filler with 3-layer training awareness.
+    """Async GPU filler — reads monitor cache, fills with matmul.
 
-    Four-tier fill strategy:
-      - Idle GPU (no training):    big matrix (8192) full blast → 95%+ util
-      - Training + sustained idle: big matrix half-batch → fill the gap aggressively
-      - Training + low util gap:   medium matrix (4096) → 60-70% util, safe
-      - Training + high util:      small matrix (1024) light fill → +6% util
+    Five-tier strategy (see module docstring).
     """
     import torch
 
     torch.cuda.set_device(gpu_id)
     device = torch.device(f"cuda:{gpu_id}")
 
-    # Big matrices for idle fill and low-util gap fill
-    a_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
-    b_big = torch.randn(matrix_size, matrix_size, device=device, dtype=torch.float16)
-    # Medium matrices for gap/mid fill during training transitions
-    a_med = torch.randn(gap_matrix, gap_matrix, device=device, dtype=torch.float16)
-    b_med = torch.randn(gap_matrix, gap_matrix, device=device, dtype=torch.float16)
-    # Small matrices for light fill during high-util training
-    a_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
-    b_sm = torch.randn(train_matrix, train_matrix, device=device, dtype=torch.float16)
+    # Use bf16 on compute capability ≥8.0 (A100/A800/H800), fp16 otherwise
+    if torch.cuda.get_device_capability(gpu_id)[0] >= 8:
+        dtype = torch.bfloat16
+    else:
+        dtype = torch.float16
+
+    # Pre-allocate tensors
+    a_big = torch.randn(matrix_size, matrix_size, device=device, dtype=dtype)
+    b_big = torch.randn(matrix_size, matrix_size, device=device, dtype=dtype)
+    a_push = torch.randn(push_matrix, push_matrix, device=device, dtype=dtype)
+    b_push = torch.randn(push_matrix, push_matrix, device=device, dtype=dtype)
+    a_gap = torch.randn(gap_matrix, gap_matrix, device=device, dtype=dtype)
+    b_gap = torch.randn(gap_matrix, gap_matrix, device=device, dtype=dtype)
     stream = torch.cuda.Stream(device=device)
 
-    my_pid = os.getpid()
-
-    # Diagnostic: show what PIDs are on this GPU at startup
-    import pynvml as _pynvml
-    _h = _pynvml.nvmlDeviceGetHandleByIndex(nvml_idx)
-    try:
-        _procs = _pynvml.nvmlDeviceGetComputeRunningProcesses(_h)
-        _pids = [p.pid for p in _procs]
-    except _pynvml.NVMLError:
-        _pids = []
-    print(f"[filler] GPU {gpu_id} (nvml {nvml_idx}): started  "
+    print(f"[filler] GPU {gpu_id}: started  "
           f"idle={matrix_size}x{kernel_batch}  "
-          f"gap={gap_matrix}  "
-          f"train_light={train_matrix}x{train_batch}+{train_sleep*1000:.0f}ms  "
-          f"pause≥{pause_threshold}%  "
-          f"my_pid={my_pid} gpu_pids={_pids}")
+          f"push={push_matrix}  gap={gap_matrix}  "
+          f"target={target_util}%  dtype={dtype}")
 
-    # Unified low-util timer: tracks how long GPU stays at low util
-    # while training process holds CUDA context but isn't computing.
-    # After IDLE_ESCALATION_TIMEOUT, switch to big matrix (safe — GPU is idle).
     _low_util_since = None
-    IDLE_ESCALATION_TIMEOUT = 0.5  # seconds before escalating to big matrix
-    STALE_SIGNAL_TIMEOUT = 30
 
     while not _STOP.is_set():
-        # === Layer 1: Process detection ===
-        has_other = other_pids_on_gpu(nvml_idx, my_pid)
+        state = _gpu_cache.get(gpu_id)
+        if state is None:
+            time.sleep(0.05)  # cache not populated yet
+            continue
 
+        # Guard against monitor thread crash — if cache is >1s stale, be conservative
+        if time.time() - state.timestamp > 1.0:
+            with _status_lock:
+                _status[gpu_id] = "STALE_CACHE"
+            time.sleep(0.1)
+            continue
+
+        has_other = state.has_other
+        util = state.util
+
+        # === Tier 1: No other process → full blast ===
         if not has_other:
-            # No training process → big matmul, full blast
             _low_util_since = None
             with _status_lock:
                 _status[gpu_id] = "FILL(idle)"
@@ -192,70 +246,71 @@ def filler_worker(
             time.sleep(0.002)
             continue
 
-        # === Shared util check ===
-        is_busy_signal = signal_says_busy()
-
-        try:
-            util = gpu_utilization(nvml_idx)
-        except Exception:
-            util = 0
-
-        # --- High util: any process actively computing → light fill ---
-        if util >= pause_threshold:
+        # === Tier 5: At/above target → backoff ===
+        if util >= target_util:
             _low_util_since = None
-            sig_tag = "busy" if is_busy_signal else "nosig"
+            sig = "busy" if _signal_busy else "nosig"
             with _status_lock:
-                _status[gpu_id] = f"LFILL({sig_tag},u={util}%)"
-            with torch.cuda.stream(stream):
-                for _ in range(train_batch):
-                    torch.matmul(a_sm, b_sm)
-            time.sleep(train_sleep)
+                _status[gpu_id] = f"BACK({sig},u={util}%)"
+            time.sleep(0.050)
             continue
 
-        # --- Low util (<pause_threshold): process holds context but may be idle ---
-        if _low_util_since is None:
-            _low_util_since = time.time()
-        elapsed = time.time() - _low_util_since
+        # === Below target with other process ===
 
-        if elapsed >= IDLE_ESCALATION_TIMEOUT:
-            # Process has been idle for 2+s → GPU is effectively free.
-            # Big matrix is safe here — no active compute to compete with.
-            # Use fewer kernels than idle path (15 vs 50) so if training
-            # resumes mid-batch, max queue interference is ~50ms not ~175ms.
-            if elapsed >= STALE_SIGNAL_TIMEOUT:
-                tag = f"FILL(stale,u={util}%)"
+        if util < 20:
+            # Low util zone — use escalation timer
+            if _low_util_since is None:
+                _low_util_since = time.time()
+            elapsed = time.time() - _low_util_since
+
+            if elapsed >= IDLE_ESCALATION_TIMEOUT:
+                # === Tier 3: Sustained low util (≥0.5s) → big matrix escalation ===
+                if _signal_is_stale:
+                    tag = f"FILL(stale,u={util}%)"
+                else:
+                    sig = "sig" if _signal_busy else "nosig"
+                    tag = f"FILL(esc,{sig},u={util}%,{int(elapsed)}s)"
+                with _status_lock:
+                    _status[gpu_id] = tag
+                esc_batch = min(kernel_batch, 15)
+                with torch.cuda.stream(stream):
+                    for _ in range(esc_batch):
+                        torch.matmul(a_big, b_big)
+                time.sleep(0.002)
             else:
-                sig_tag = "sig" if is_busy_signal else "nosig"
-                tag = f"FILL(idle-esc,{sig_tag},u={util}%,{int(elapsed)}s)"
-            with _status_lock:
-                _status[gpu_id] = tag
-            esc_batch = min(kernel_batch, 15)
-            with torch.cuda.stream(stream):
-                for _ in range(esc_batch):
-                    torch.matmul(a_big, b_big)
-            time.sleep(0.002)
-        elif util < 20:
-            # Brief gap (<2s), very low util → medium matrix for meaningful SM occupancy
-            # 4096² × 40 = 17.6ms compute + 1ms sleep = 94.6% duty cycle
-            sig_tag = "gap" if is_busy_signal else "nosig"
-            with _status_lock:
-                _status[gpu_id] = f"GFILL({sig_tag},u={util}%,{int(elapsed)}s)"
-            with torch.cuda.stream(stream):
-                for _ in range(40):
-                    torch.matmul(a_med, b_med)
-            time.sleep(0.001)
+                # === Tier 2: Brief low util (<0.5s) → medium gap fill ===
+                sig = "gap" if _signal_busy else "nosig"
+                with _status_lock:
+                    _status[gpu_id] = f"GFILL({sig},u={util}%,{elapsed:.1f}s)"
+                with torch.cuda.stream(stream):
+                    for _ in range(30):
+                        torch.matmul(a_gap, b_gap)
+                time.sleep(0.001)
         else:
-            # Mid util (20-pause_threshold), brief → medium matrix moderate batch
-            # 4096² × 30 = 13.2ms compute + 1ms sleep = 93% duty cycle
-            sig_tag = "mid" if is_busy_signal else "nosig-mid"
-            with _status_lock:
-                _status[gpu_id] = f"GFILL({sig_tag},u={util}%)"
-            with torch.cuda.stream(stream):
-                for _ in range(30):
-                    torch.matmul(a_med, b_med)
-            time.sleep(0.001)
+            # === Tier 4: util 20..target → push fill ===
+            _low_util_since = None
+            gap = target_util - util
 
-    del a_big, b_big, a_med, b_med, a_sm, b_sm
+            if gap > 20:
+                # Far from target: push harder with 6144
+                sig = "push" if _signal_busy else "nosig-push"
+                with _status_lock:
+                    _status[gpu_id] = f"PUSH({sig},u={util}%)"
+                with torch.cuda.stream(stream):
+                    for _ in range(5):
+                        torch.matmul(a_push, b_push)
+                time.sleep(0.002)
+            else:
+                # Near target: gentle push with 4096
+                sig = "near" if _signal_busy else "nosig-near"
+                with _status_lock:
+                    _status[gpu_id] = f"PFILL({sig},u={util}%)"
+                with torch.cuda.stream(stream):
+                    for _ in range(3):
+                        torch.matmul(a_gap, b_gap)
+                time.sleep(0.003)
+
+    del a_big, b_big, a_push, b_push, a_gap, b_gap
     torch.cuda.empty_cache()
     print(f"[filler] GPU {gpu_id}: stopped")
 
@@ -266,24 +321,27 @@ def filler_worker(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Smart GPU filler — async fill + 3-layer training awareness")
+        description="Smart GPU filler — monitor-decoupled, 5-tier fill")
     parser.add_argument("--gpus", type=str, default=None,
                         help="Comma-separated CUDA GPU IDs (default: all visible)")
+    parser.add_argument("--target-util", type=int, default=85,
+                        help="Target GPU utilization %% (default: 85)")
     parser.add_argument("--matrix-size", type=int, default=8192,
-                        help="Matrix size for idle fill (default: 8192)")
+                        help="Matrix size for idle/escalation fill (default: 8192)")
     parser.add_argument("--batch", type=int, default=50,
                         help="Kernels per batch for idle fill (default: 50)")
-    parser.add_argument("--train-matrix", type=int, default=1024,
-                        help="Matrix size during training (default: 1024)")
-    parser.add_argument("--train-batch", type=int, default=600,
-                        help="Kernels per batch during training (default: 600)")
-    parser.add_argument("--train-sleep", type=float, default=0.003,
-                        help="Sleep between batches during training in sec (default: 0.003)")
-    parser.add_argument("--pause", type=int, default=50,
-                        help="Util threshold for reduced fill (default: 50)")
     parser.add_argument("--gap-matrix", type=int, default=4096,
-                        help="Matrix size for gap/mid fill during training transitions (default: 4096)")
+                        help="Matrix size for gap/near-target fill (default: 4096)")
+    parser.add_argument("--push-matrix", type=int, default=6144,
+                        help="Matrix size for push fill below target (default: 6144)")
+    # Deprecated alias
+    parser.add_argument("--pause", type=int, default=None,
+                        help="DEPRECATED: use --target-util instead")
     args = parser.parse_args()
+
+    # Backward compat
+    if args.pause is not None:
+        args.target_util = args.pause
 
     if args.gpus:
         gpu_ids = [int(g) for g in args.gpus.split(",")]
@@ -299,19 +357,17 @@ def main():
     _init_nvml()
 
     print(f"[filler] GPUs: {gpu_ids}  nvml: {[nvml_map[g] for g in gpu_ids]}")
-    print(f"[filler] idle: matrix={args.matrix_size} batch={args.batch}")
-    print(f"[filler] gap: matrix={args.gap_matrix}")
-    print(f"[filler] train: matrix={args.train_matrix} batch={args.train_batch} sleep={args.train_sleep*1000:.0f}ms")
-    print(f"[filler] pause≥{args.pause}%  signal: {SIGNAL_PATH}")
-    print(f"[filler] 3-layer: process→signal→util")
+    print(f"[filler] target: {args.target_util}%  idle: {args.matrix_size}x{args.batch}")
+    print(f"[filler] push: {args.push_matrix}  gap: {args.gap_matrix}")
+    print(f"[filler] signal: {SIGNAL_PATH}")
+    print(f"[filler] architecture: monitor(10Hz) + workers(cache-read)")
 
     # Clean stale signal file
     if os.path.exists(SIGNAL_PATH):
         os.remove(SIGNAL_PATH)
         print(f"[filler] Cleaned stale signal file")
 
-    # Kill old filler instances (prevent them from being detected as "training")
-    import subprocess
+    # Kill old filler instances
     my_pid = os.getpid()
     killed_any = False
     result = subprocess.run(
@@ -339,27 +395,34 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    threads = []
+    # Start monitor thread (must populate cache before workers start)
+    mon_thread = threading.Thread(
+        target=monitor_loop,
+        args=(gpu_ids, nvml_map, my_pid),
+        daemon=True,
+    )
+    mon_thread.start()
+    time.sleep(0.2)  # let cache populate
+
+    # Start worker threads
+    workers = []
     for gid in gpu_ids:
         t = threading.Thread(
             target=filler_worker,
-            args=(gid, nvml_map[gid], args.matrix_size, args.batch,
-                  args.pause, args.train_matrix, args.train_batch,
-                  args.train_sleep, args.gap_matrix),
+            args=(gid, args.matrix_size, args.batch,
+                  args.target_util, args.gap_matrix, args.push_matrix),
             daemon=True,
         )
         t.start()
-        threads.append(t)
+        workers.append(t)
 
-    # Display loop
+    # Display loop (reads cache — no NVML calls)
     try:
         while not _STOP.is_set():
             parts = []
             for gid in gpu_ids:
-                try:
-                    u = gpu_utilization(nvml_map[gid])
-                except Exception:
-                    u = -1
+                state = _gpu_cache.get(gid)
+                u = state.util if state else -1
                 with _status_lock:
                     st = _status.get(gid, "init")
                 parts.append(f"GPU{gid}:{u:3d}% {st}")
@@ -368,8 +431,9 @@ def main():
     except KeyboardInterrupt:
         _STOP.set()
 
-    for t in threads:
+    for t in workers:
         t.join(timeout=5)
+    mon_thread.join(timeout=2)
     print("\n[filler] Done.")
 
 

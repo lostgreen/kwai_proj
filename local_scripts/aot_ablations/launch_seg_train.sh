@@ -55,14 +55,11 @@ if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]];
     pkill -f "gpu_filler.py" 2>/dev/null || true
     sleep 2  # 等旧 filler 释放 GPU 资源
   fi
-  echo "[seg-aot] Starting GPU filler (idle=${FILLER_MATRIX:-8192}, train=${FILLER_TRAIN_MATRIX:-1024})"
+  echo "[seg-aot] Starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%, idle=${FILLER_MATRIX:-8192})"
   nohup python3 "${_filler_script}" \
-    --pause "${FILLER_PAUSE:-50}" \
+    --target-util "${FILLER_TARGET_UTIL:-85}" \
     --batch "${FILLER_BATCH:-50}" \
     --matrix-size "${FILLER_MATRIX:-8192}" \
-    --train-matrix "${FILLER_TRAIN_MATRIX:-1024}" \
-    --train-batch "${FILLER_TRAIN_BATCH:-600}" \
-    --train-sleep "${FILLER_TRAIN_SLEEP:-0.003}" \
     > /tmp/filler.log 2>&1 &
   echo "[seg-aot] GPU filler started (PID $!), log: /tmp/filler.log"
 fi
