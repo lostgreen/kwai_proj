@@ -10,14 +10,23 @@ build_event_shuffle.py — 从 hier seg annotation 构建 sort 训练数据（L2
 
 Reward: Jigsaw Displacement R = 1 - E_jigsaw / E_max（复用 hier_seg_reward 的 sort）。
 
-用法:
-    # L2 event sort
-    python build_event_shuffle.py --level l2 \\
-        --annotation-dir ... --clip-dir ... --output-dir ...
+构建命令:
 
-    # L3 action sort (筛选 distinguishable events)
+    ANN=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/annotations_fixed_gmn25
+    CLIPS=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/clips
+    OUT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/event_logic/ablations
+
+    # L2 event sort（不筛选 _order_distinguishable）
+    python build_event_shuffle.py --level l2 \\
+        --annotation-dir $ANN --clip-dir $CLIPS \\
+        --output-dir $OUT/sort_l2_exp1 \\
+        --complete-only --seed 42
+
+    # L3 action sort（筛选 _order_distinguishable=true 的 event）
     python build_event_shuffle.py --level l3 --filter-order \\
-        --annotation-dir ... --clip-dir ... --output-dir ...
+        --annotation-dir $ANN --clip-dir $CLIPS \\
+        --output-dir $OUT/sort_l3_exp2 \\
+        --complete-only --seed 42
 """
 
 from __future__ import annotations

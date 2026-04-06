@@ -22,7 +22,7 @@ ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/
 CLIP_DIR="${CLIP_DIR:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/clips}"
 
 # ---- 消融实验数据根目录 ----
-EL_DATA_ROOT="${EL_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/event_logic/ablations}"
+EL_DATA_ROOT="${EL_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/event_logic}"
 
 # ---- 视频 & 分辨率 ----
 VIDEO_FPS=2.0

@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================
-# launch_sort_train.sh — Event Shuffle (Sort) 实验训练入口
+# launch_sort_train.sh — Sort 实验训练入口（纯训练，不构建数据）
 #
-# 流程: build_event_shuffle.py 构建数据 → 训练
+# 数据需提前用 build_event_shuffle.py 构建好，放在 DATA_DIR 下。
 #
 # 调用前必须 source common.sh 并设置:
 #   EXP_NAME       实验名称
-#   DATA_DIR        数据输出目录
+#   DATA_DIR        数据输出目录（需含 train.jsonl, val.jsonl）
 # =============================================================
 set -euo pipefail
 
 if [[ -z "${EXP_NAME:-}" ]];   then echo "[el] EXP_NAME not set"   >&2; exit 1; fi
 if [[ -z "${DATA_DIR:-}" ]];   then echo "[el] DATA_DIR not set"   >&2; exit 1; fi
-mkdir -p "${DATA_DIR}"
 
 # =========================================================
 # 运行日志 & Ray 会话目录
@@ -40,30 +39,11 @@ TRAIN_FILE="${DATA_DIR}/train.jsonl"
 TEST_FILE="${DATA_DIR}/val.jsonl"
 
 # =========================================================
-# Step A: 数据构造（build_event_shuffle.py）
+# 检查数据存在
 # =========================================================
-if [[ ! -f "${TRAIN_FILE}" || "${FORCE_BUILD:-false}" == "true" ]]; then
-  echo "[el] Building event shuffle data ..."
-  python3 "${REPO_ROOT}/proxy_data/youcook2_seg/event_logic/build_event_shuffle.py" \
-    --annotation-dir "${ANNOTATION_DIR}" \
-    --clip-dir       "${CLIP_DIR}" \
-    --output-dir     "${DATA_DIR}" \
-    --level          "${SORT_LEVEL:-l2}" \
-    --min-events     "${MIN_EVENTS:-3}" \
-    --max-events     "${MAX_EVENTS:-8}" \
-    --seq-len        "${SORT_SEQ_LEN:-5}" \
-    --samples-per-group "${SAMPLES_PER_GROUP:-1}" \
-    --complete-only \
-    ${FILTER_ORDER:+--filter-order} \
-    --train-budget   "${TRAIN_BUDGET:--1}" \
-    --val-count      "${VAL_COUNT:-100}" \
-    --seed           "${BUILD_SEED:-42}"
-else
-  echo "[el] Reusing existing data at ${DATA_DIR}"
-fi
-
 if [[ ! -f "${TRAIN_FILE}" ]]; then
   echo "[el] ERROR: TRAIN_FILE not found: ${TRAIN_FILE}" >&2
+  echo "[el] 请先用 build_event_shuffle.py 构建数据。" >&2
   exit 1
 fi
 
@@ -93,7 +73,7 @@ fi
 trap 'rm -f /tmp/verl_gpu_phase' EXIT
 
 # =========================================================
-# Step B: 训练
+# 训练
 # =========================================================
 echo "[el] Starting training: ${EXP_NAME}"
 echo "[el] LR=${LR}  warmup=${WARMUP_STYLE}  warmup_ratio=${LR_WARMUP_RATIO}"
