@@ -1,18 +1,16 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
-YouCook2 分层时序分割 Reward 函数 — V2: NGIoU 分层奖励。
+YouCook2 分层时序分割 Reward 函数 — F1-IoU 分层奖励。
 
 支持五种 problem_type：
-  - temporal_seg_hier_L1:     宏观阶段分割    → Margin-Relaxed F1-NGIoU (Δ=5s)
-  - temporal_seg_hier_L2:     滑窗事件检测    → F1-NGIoU
-  - temporal_seg_hier_L3:     原子操作分割    → F1-NGIoU (无 NMS)
-  - temporal_seg_hier_L3_seg: 同上（别名）    → F1-NGIoU
+  - temporal_seg_hier_L1:     宏观阶段分割    → F1-IoU
+  - temporal_seg_hier_L2:     滑窗事件检测    → F1-IoU
+  - temporal_seg_hier_L3:     原子操作分割    → F1-IoU
+  - temporal_seg_hier_L3_seg: 同上（别名）    → F1-IoU
   - sort:                     事件排序        → Jigsaw Displacement
 
-[V2 变更] IoU → NGIoU，提供不重叠段间的连续梯度信号。
-L1 使用 margin-relaxed NGIoU（GT 外扩 5s），对宏观边界偏差更宽容。
-所有层统一 Hungarian 匹配，不使用 NMS（提示词已要求不重叠）。
+所有层统一 Hungarian 匹配 + NMS 去重 + F1-IoU。
 """
 
 import random
@@ -21,9 +19,7 @@ from typing import Any, Dict, List
 
 from verl.reward_function.youcook2_temporal_seg_reward import (
     compute_f1_iou,
-    compute_f1_ngiou,
     has_events_tag,
-    ngiou,
     parse_segments,
     temporal_iou,
 )
@@ -68,11 +64,8 @@ def _l1_l2_reward(response: str, ground_truth: str) -> Dict[str, float]:
 
 
 # ===========================
-# V2: NGIoU 分层 reward
+# V2 → V3: 统一 F1-IoU reward
 # ===========================
-
-# L1 margin: GT 边界外扩秒数（宏观阶段 30-120s，±5s 不影响语义）
-_L1_MARGIN = 5.0
 
 
 def _parse_and_check(response: str, ground_truth: str):
@@ -91,32 +84,32 @@ def _parse_and_check(response: str, ground_truth: str):
 
 
 def _l1_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """L1: Margin-Relaxed F1-NGIoU（GT 外扩 Δ=5s 后计算 NGIoU）。"""
+    """L1: F1-IoU（宏观阶段分割）。"""
     result = _parse_and_check(response, ground_truth)
     if result is None:
         return dict(_ZERO)
     pred_segs, gt_segs = result
-    f1 = compute_f1_ngiou(pred_segs, gt_segs, margin=_L1_MARGIN)
+    f1 = compute_f1_iou(pred_segs, gt_segs)
     return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
 
 
 def _l2_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """L2: F1-NGIoU（标准模式，无 margin）。"""
+    """L2: F1-IoU（滑窗事件检测）。"""
     result = _parse_and_check(response, ground_truth)
     if result is None:
         return dict(_ZERO)
     pred_segs, gt_segs = result
-    f1 = compute_f1_ngiou(pred_segs, gt_segs)
+    f1 = compute_f1_iou(pred_segs, gt_segs)
     return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
 
 
 def _l3_reward_v2(response: str, ground_truth: str) -> Dict[str, float]:
-    """L3: F1-NGIoU（无 NMS，无 margin）。"""
+    """L3: F1-IoU（原子操作分割）。"""
     result = _parse_and_check(response, ground_truth)
     if result is None:
         return dict(_ZERO)
     pred_segs, gt_segs = result
-    f1 = compute_f1_ngiou(pred_segs, gt_segs)
+    f1 = compute_f1_iou(pred_segs, gt_segs)
     return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
 
 
@@ -252,9 +245,9 @@ def _sort_reward(response: str, ground_truth: str) -> Dict[str, float]:
 # ===========================
 
 _DISPATCH = {
-    "temporal_seg_hier_L1":     _l1_reward,      # Margin-Relaxed F1-NGIoU
-    "temporal_seg_hier_L2":     _l2_reward,      # F1-NGIoU
-    "temporal_seg_hier_L3":     _l3_reward_v2,   # F1-NGIoU (no NMS)
+    "temporal_seg_hier_L1":     _l1_reward,      # F1-IoU
+    "temporal_seg_hier_L2":     _l2_reward,      # F1-IoU
+    "temporal_seg_hier_L3":     _l3_reward_v2,   # F1-IoU
     "temporal_seg_hier_L3_seg": _l3_reward_v2,   # 同上
     "sort":                     _sort_reward,     # Jigsaw Displacement
 }
