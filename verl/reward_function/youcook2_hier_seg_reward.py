@@ -3,11 +3,12 @@
 """
 YouCook2 分层时序分割 Reward 函数 — V2: NGIoU 分层奖励。
 
-支持四种 problem_type：
+支持五种 problem_type：
   - temporal_seg_hier_L1:     宏观阶段分割    → Margin-Relaxed F1-NGIoU (Δ=5s)
   - temporal_seg_hier_L2:     滑窗事件检测    → F1-NGIoU
   - temporal_seg_hier_L3:     原子操作分割    → F1-NGIoU (无 NMS)
   - temporal_seg_hier_L3_seg: 同上（别名）    → F1-NGIoU
+  - sort:                     事件排序        → Jigsaw Displacement
 
 [V2 变更] IoU → NGIoU，提供不重叠段间的连续梯度信号。
 L1 使用 margin-relaxed NGIoU（GT 外扩 5s），对宏观边界偏差更宽容。
@@ -173,6 +174,80 @@ def _l3_reward(response: str, ground_truth: str) -> Dict[str, float]:
 
 
 # ===========================
+# Sort: Jigsaw Displacement reward
+# ===========================
+
+_ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+_DIGIT_RE = re.compile(r"\d")
+
+
+def _parse_sort_digits(text: str) -> List[int] | None:
+    """解析排序序列 "13245" 或 "1 3 2 4 5" → [1, 3, 2, 4, 5]。"""
+    if not text:
+        return None
+    digits = _DIGIT_RE.findall(text)
+    if not digits:
+        return None
+    try:
+        seq = [int(d) for d in digits]
+        return seq if len(seq) >= 2 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _compute_jigsaw_displacement(pred_seq: List[int], gt_seq: List[int]) -> float:
+    """Jigsaw Displacement: R = 1 - E_jigsaw / E_max。"""
+    n = len(gt_seq)
+    if n <= 1:
+        return 1.0 if pred_seq == gt_seq else 0.0
+    gt_pos = {elem: i for i, elem in enumerate(gt_seq)}
+    e_jigsaw = 0.0
+    for i, elem in enumerate(pred_seq):
+        gt_p = gt_pos.get(elem)
+        if gt_p is None:
+            e_jigsaw += n - 1
+        else:
+            e_jigsaw += abs(i - gt_p)
+    e_max = sum(abs(i - (n - 1 - i)) for i in range(n))
+    if e_max == 0:
+        return 1.0
+    return max(0.0, 1.0 - e_jigsaw / e_max)
+
+
+def _sort_reward(response: str, ground_truth: str) -> Dict[str, float]:
+    """排序题 Jigsaw Displacement reward。
+
+    - 必须包含 <answer> 标签
+    - 从 <answer> 内解析数字序列
+    - 计算 jigsaw displacement reward
+    """
+    gt_seq = _parse_sort_digits(ground_truth)
+    if gt_seq is None:
+        return dict(_ZERO)
+
+    matches = _ANSWER_TAG_RE.findall(response)
+    if not matches:
+        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+
+    tag_content = matches[-1].strip()
+    pred_seq = _parse_sort_digits(tag_content)
+    if pred_seq is None:
+        return {"overall": 0.0, "format": 1.0, "accuracy": 0.0}
+
+    # 长度不匹配的处理
+    if len(pred_seq) != len(gt_seq):
+        if len(pred_seq) > len(gt_seq):
+            pred_seq = pred_seq[:len(gt_seq)]
+        else:
+            missing = [e for e in gt_seq if e not in pred_seq]
+            pred_seq = pred_seq + missing[:len(gt_seq) - len(pred_seq)]
+
+    jigsaw_r = _compute_jigsaw_displacement(pred_seq, gt_seq)
+    accuracy = 1.0 if pred_seq == gt_seq else jigsaw_r
+    return {"overall": float(accuracy), "format": 1.0, "accuracy": float(accuracy)}
+
+
+# ===========================
 # 统一 dispatch（EasyR1 batch reward 接口）
 # ===========================
 
@@ -181,6 +256,7 @@ _DISPATCH = {
     "temporal_seg_hier_L2":     _l2_reward,      # F1-NGIoU
     "temporal_seg_hier_L3":     _l3_reward_v2,   # F1-NGIoU (no NMS)
     "temporal_seg_hier_L3_seg": _l3_reward_v2,   # 同上
+    "sort":                     _sort_reward,     # Jigsaw Displacement
 }
 
 
@@ -206,9 +282,11 @@ def compute_score(
 
             reward_fn = _DISPATCH.get(problem_type)
             if reward_fn is None:
-                # fallback: 如果 GT 里有 <events> 就用 F1-IoU
+                # fallback: 如果 GT 里有 <events> 就用 F1-IoU；纯数字序列就用 sort
                 if has_events_tag(ground_truth):
                     reward_fn = _l1_l2_reward
+                elif re.match(r"^\d+$", ground_truth.strip()):
+                    reward_fn = _sort_reward
                 else:
                     results.append(dict(_ZERO))
                     continue

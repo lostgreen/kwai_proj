@@ -82,8 +82,30 @@ except Exception:
 }
 _update_progress &
 _progress_pid=$!
-# 确保脚本退出时清理后台进程
-trap 'kill ${_progress_pid} 2>/dev/null || true' EXIT
+
+# =========================================================
+# GPU filler: 保持利用率 ≥ 80%，训练阶段自动暂停
+# filler 常驻运行，训练结束后不停止（防止机器被回收）
+# =========================================================
+_filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
+if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]]; then
+  # 先杀掉旧 filler 实例
+  if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
+    echo "[hier] Killing old filler instances..."
+    pkill -f "gpu_filler.py" 2>/dev/null || true
+    sleep 2  # 等旧 filler 释放 GPU 资源
+  fi
+  echo "[hier] Starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%, idle=${FILLER_MATRIX:-8192})"
+  nohup python3 "${_filler_script}" \
+    --target-util "${FILLER_TARGET_UTIL:-85}" \
+    --batch "${FILLER_BATCH:-50}" \
+    --matrix-size "${FILLER_MATRIX:-8192}" \
+    > /tmp/filler.log 2>&1 &
+  echo "[hier] GPU filler started (PID $!), log: /tmp/filler.log"
+fi
+
+# 确保脚本退出时清理后台进程 & 信号文件（不杀 filler）
+trap 'kill ${_progress_pid} 2>/dev/null || true; rm -f /tmp/verl_gpu_phase' EXIT
 
 # =========================================================
 # 启动训练

@@ -162,6 +162,46 @@ def get_sort_prompt(num_clips: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Sort (Generic) — Domain-agnostic variant for cross-domain hier seg data
+# Same structure as get_sort_prompt but without cooking-specific language.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_sort_prompt_generic(num_clips: int) -> str:
+    """
+    Build a domain-generic Sort task prompt (no cooking references).
+
+    Identical to get_sort_prompt but replaces cooking-specific phrases with
+    general descriptions suitable for any video domain.
+
+    Args:
+        num_clips: Number of video clips in the shuffled sequence.
+
+    Returns:
+        User-turn prompt string with <video> placeholders and CoT instructions.
+    """
+    lines = [
+        f"The following {num_clips} video clips show steps from a continuous process, "
+        "but they are presented in a shuffled order.",
+        "Video Clips (shuffled order):",
+    ]
+    for i in range(num_clips):
+        lines.append(f"Clip {i + 1}: <video>")
+
+    lines += [
+        "",
+        "Determine the correct chronological order of these clips to reconstruct the original sequence.",
+        "",
+        "First, carefully observe the actions, object states, and scene changes in each clip. "
+        "Reason about which step comes first, which transformation follows, and which final state is last.",
+        "",
+        "Think step by step inside <think> </think> tags, then provide your final answer "
+        "as a sequence of clip numbers with no spaces or separators "
+        f"(e.g., {''.join(str(i) for i in range(num_clips, 0, -1))}) inside <answer> </answer> tags.",
+    ]
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AI Causality Filter — Verify uniqueness and sufficiency of causal context
 # Used in build_l2_event_logic.py
 # Input: keyframes of context events + shuffled text options
