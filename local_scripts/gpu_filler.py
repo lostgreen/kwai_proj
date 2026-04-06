@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Smart GPU filler — keeps GPU utilization above cluster threshold.
 
-Architecture (v2 — monitor-decoupled):
-  - Monitor thread: polls NVML at ~10Hz for all GPUs, caches state
+Architecture (v3 — NVML-safe):
+  - Monitor thread: polls NVML at ~2Hz (reduced from 10Hz) with per-call timeout
   - Worker threads: read cached state, run matmul fills (zero NVML calls)
   - Display loop: reads cached state (zero NVML calls)
+  - NVML safety: if NVML hangs or fails 10 consecutive polls, filler auto-stops
 
   This eliminates NVML driver-lock contention that previously caused
-  nvidia-smi to hang when 8 worker threads polled concurrently.
+  nvidia-smi to hang when monitor + worker threads competed for the driver lock.
 
 Five-tier fill strategy:
   Tier 1 — No other process:       big matrix (8192) full blast
@@ -136,35 +137,78 @@ _signal_is_stale: bool = False
 
 
 # ---------------------------------------------------------------------------
-# Monitor thread — single thread polls NVML at ~10Hz
+# Monitor thread — single thread polls NVML at ~2Hz
 # ---------------------------------------------------------------------------
 
 _STOP = threading.Event()
 
 
+_NVML_CONSECUTIVE_FAILURES = 0
+_NVML_MAX_FAILURES = 10  # after this many consecutive failures, stop all workers
+
+
+def _nvml_call_with_timeout(fn, *args, timeout_s=2.0):
+    """Run an NVML call; if it hangs > timeout_s, return None.
+
+    Uses a daemon thread so a hung NVML call won't block the monitor forever.
+    """
+    result = [None]
+    exc = [None]
+
+    def wrapper():
+        try:
+            result[0] = fn(*args)
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=wrapper, daemon=True)
+    t.start()
+    t.join(timeout=timeout_s)
+    if t.is_alive():
+        # NVML call is hung — don't wait, just return None
+        return None
+    if exc[0] is not None:
+        return None
+    return result[0]
+
+
 def monitor_loop(gpu_ids: list[int], nvml_map: dict[int, int], my_pid: int):
-    """Poll NVML for all GPUs + signal file at ~10Hz."""
-    global _signal_busy, _signal_is_stale
-    POLL_INTERVAL = 0.1  # 100ms
+    """Poll NVML for all GPUs + signal file at ~2Hz (was 10Hz)."""
+    global _signal_busy, _signal_is_stale, _NVML_CONSECUTIVE_FAILURES
+    POLL_INTERVAL = 0.5  # 500ms — reduced from 100ms to lower driver lock pressure
 
     while not _STOP.is_set():
         # Signal file — once per poll, not per GPU
         _signal_busy = signal_says_busy()
         _signal_is_stale = is_signal_stale()
 
+        all_failed = True
         for gid in gpu_ids:
             nvml_idx = nvml_map[gid]
-            try:
-                util = gpu_utilization(nvml_idx)
-            except Exception:
+            util = _nvml_call_with_timeout(gpu_utilization, nvml_idx)
+            has_other = _nvml_call_with_timeout(other_pids_on_gpu, nvml_idx, my_pid)
+
+            if util is None:
                 util = 0
-            try:
-                has_other = other_pids_on_gpu(nvml_idx, my_pid)
-            except Exception:
+            else:
+                all_failed = False
+            if has_other is None:
                 has_other = False
+
             _gpu_cache[gid] = GPUState(
                 util=util, has_other=has_other, timestamp=time.time()
             )
+
+        # Track NVML health
+        if all_failed:
+            _NVML_CONSECUTIVE_FAILURES += 1
+            if _NVML_CONSECUTIVE_FAILURES >= _NVML_MAX_FAILURES:
+                print(f"\n[filler] NVML failed {_NVML_MAX_FAILURES} consecutive polls — "
+                      f"driver likely hung. Stopping filler to prevent further damage.")
+                _STOP.set()
+                break
+        else:
+            _NVML_CONSECUTIVE_FAILURES = 0
 
         _STOP.wait(timeout=POLL_INTERVAL)
 
@@ -225,8 +269,8 @@ def filler_worker(
             time.sleep(0.05)  # cache not populated yet
             continue
 
-        # Guard against monitor thread crash — if cache is >1s stale, be conservative
-        if time.time() - state.timestamp > 1.0:
+        # Guard against monitor thread crash — if cache is >3s stale, be conservative
+        if time.time() - state.timestamp > 3.0:
             with _status_lock:
                 _status[gpu_id] = "STALE_CACHE"
             time.sleep(0.1)
@@ -235,7 +279,7 @@ def filler_worker(
         has_other = state.has_other
         util = state.util
 
-        # === Tier 1: No other process → full blast ===
+        # === Tier 1: No other process → fill (reduced aggressiveness) ===
         if not has_other:
             _low_util_since = None
             with _status_lock:
@@ -243,7 +287,7 @@ def filler_worker(
             with torch.cuda.stream(stream):
                 for _ in range(kernel_batch):
                     torch.matmul(a_big, b_big)
-            time.sleep(0.002)
+            time.sleep(0.010)  # 10ms backoff to reduce driver pressure
             continue
 
         # === Tier 5: At/above target → backoff ===
