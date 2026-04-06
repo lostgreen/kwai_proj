@@ -4,24 +4,35 @@
 优先选择因果逻辑 order_dependency == "strict" 的样本。
 
 策略:
-  第一层: 将 total 均匀分配到各 domain_l1
+  0. 前置筛选: min L1/L2 score, order_dependency, visual_diversity, prog_type
+  1. 第一层: 将 total 均匀分配到各 domain_l1
           不足的 domain_l1 将余额重新分配给有余量的 L1
-  第二层: 在每个 domain_l1 的 quota 内，再按 domain_l2 子类均衡分配
+  2. 第二层: 在每个 domain_l1 的 quota 内，再按 domain_l2 子类均衡分配
           每个 L2 内优先选 strict > loose > none, 同级按 l1_score*l2_score 降序
-  最终输出 total 条 JSONL，保留原始字段
+  3. 输出 JSONL + 领域分布饼图
 
 用法:
+    # 基础
     python balanced_sample.py \
         --input screen_keep.jsonl \
         --output balanced_1200.jsonl \
-        --total 1200 \
-        --seed 42
+        --total 1200 --seed 42
+
+    # 严格筛选 + 饼图
+    python balanced_sample.py \
+        --input screen_keep.jsonl \
+        --output balanced_1200.jsonl \
+        --total 1200 --seed 42 \
+        --min-l1-score 4 --min-l2-score 4 \
+        --order-dep strict \
+        --pie-chart distribution.png
 """
 
 import argparse
 import json
 import random
 from collections import defaultdict
+from pathlib import Path
 
 
 def load_jsonl(path: str) -> list[dict]:
@@ -47,6 +58,41 @@ def get_domain_l2(item: dict) -> str:
 def get_order_dependency(item: dict) -> str:
     screen2 = item.get("_screen_2") or {}
     return screen2.get("order_dependency", "unknown")
+
+
+def apply_filters(
+    items: list[dict],
+    min_l1_score: int = 0,
+    min_l2_score: int = 0,
+    order_deps: set[str] | None = None,
+    visual_divs: set[str] | None = None,
+    prog_types: set[str] | None = None,
+) -> list[dict]:
+    """前置筛选，返回满足所有条件的样本。"""
+    filtered = []
+    for item in items:
+        screen = item.get("_screen") or {}
+        screen2 = item.get("_screen_2") or {}
+
+        l1 = screen.get("l1_score") or 0
+        l2 = screen.get("l2_score") or 0
+        order = screen2.get("order_dependency", "unknown")
+        vis = screen2.get("visual_diversity", "unknown")
+        prog = screen2.get("prog_type", "unknown")
+
+        if l1 < min_l1_score:
+            continue
+        if l2 < min_l2_score:
+            continue
+        if order_deps and order not in order_deps:
+            continue
+        if visual_divs and vis not in visual_divs:
+            continue
+        if prog_types and prog not in prog_types:
+            continue
+
+        filtered.append(item)
+    return filtered
 
 
 def priority_sort_key(item: dict) -> tuple:
@@ -215,6 +261,69 @@ def balanced_sample(
     return result
 
 
+def generate_pie_charts(result: list[dict], output_path: str):
+    """生成 L1 + L2 领域分布饼图 (双子图)。"""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("⚠️  matplotlib 未安装，跳过饼图生成 (pip install matplotlib)")
+        return
+
+    # 统计
+    l1_counts: dict[str, int] = defaultdict(int)
+    l2_counts: dict[str, int] = defaultdict(int)
+    order_counts: dict[str, int] = defaultdict(int)
+    for item in result:
+        l1_counts[get_domain_l1(item)] += 1
+        l2_counts[get_domain_l2(item)] += 1
+        order_counts[get_order_dependency(item)] += 1
+
+    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+
+    # L1 饼图
+    l1_labels = sorted(l1_counts.keys())
+    l1_sizes = [l1_counts[k] for k in l1_labels]
+    l1_labels_pct = [f"{k}\n({v}, {100*v/len(result):.1f}%)" for k, v in zip(l1_labels, l1_sizes)]
+    axes[0].pie(l1_sizes, labels=l1_labels_pct, autopct="", startangle=90)
+    axes[0].set_title(f"L1 Domain Distribution (n={len(result)})", fontsize=14)
+
+    # L2 饼图
+    l2_sorted = sorted(l2_counts.items(), key=lambda x: -x[1])
+    l2_labels = [k for k, _ in l2_sorted]
+    l2_sizes = [v for _, v in l2_sorted]
+    # 太小的合并为 "others"
+    threshold = len(result) * 0.02
+    main_labels, main_sizes = [], []
+    other_size = 0
+    for label, size in zip(l2_labels, l2_sizes):
+        if size >= threshold:
+            main_labels.append(f"{label}\n({size})")
+            main_sizes.append(size)
+        else:
+            other_size += size
+    if other_size > 0:
+        main_labels.append(f"others\n({other_size})")
+        main_sizes.append(other_size)
+    axes[1].pie(main_sizes, labels=main_labels, autopct="", startangle=90)
+    axes[1].set_title(f"L2 Sub-Domain Distribution ({len(l2_counts)} types)", fontsize=14)
+
+    # Order dependency 饼图
+    order_labels = sorted(order_counts.keys())
+    order_sizes = [order_counts[k] for k in order_labels]
+    order_labels_pct = [f"{k}\n({v}, {100*v/len(result):.1f}%)" for k, v in zip(order_labels, order_sizes)]
+    colors = {"strict": "#2ecc71", "loose": "#f39c12", "none": "#e74c3c", "unknown": "#95a5a6"}
+    order_colors = [colors.get(k, "#bdc3c7") for k in order_labels]
+    axes[2].pie(order_sizes, labels=order_labels_pct, colors=order_colors, autopct="", startangle=90)
+    axes[2].set_title("Causal Order Dependency", fontsize=14)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"✅ 饼图已保存到 {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="两层均衡采样 (L1 → L2)，优先 strict 因果逻辑")
@@ -228,10 +337,58 @@ def main():
                         help="随机种子")
     parser.add_argument("--stats", default="",
                         help="可选: 输出采样统计 JSON")
+
+    # 筛选参数
+    parser.add_argument("--min-l1-score", type=int, default=0,
+                        help="最低 L1 phase score (1-5, 默认 0 不筛)")
+    parser.add_argument("--min-l2-score", type=int, default=0,
+                        help="最低 L2 event score (1-5, 默认 0 不筛)")
+    parser.add_argument("--order-dep", type=str, default="",
+                        help="允许的 order_dependency, 逗号分隔 (strict,loose,none)")
+    parser.add_argument("--visual-div", type=str, default="",
+                        help="允许的 visual_diversity, 逗号分隔 (high,medium,low)")
+    parser.add_argument("--prog-type", type=str, default="",
+                        help="允许的 prog_type, 逗号分隔 (procedural,narrative)")
+
+    # 可视化
+    parser.add_argument("--pie-chart", default="",
+                        help="输出领域分布饼图路径 (.png)")
+
     args = parser.parse_args()
 
     items = load_jsonl(args.input)
     print(f"加载 {len(items)} 条 from {args.input}")
+
+    # 前置筛选
+    order_deps = set(args.order_dep.split(",")) if args.order_dep else None
+    visual_divs = set(args.visual_div.split(",")) if args.visual_div else None
+    prog_types = set(args.prog_type.split(",")) if args.prog_type else None
+
+    if any([args.min_l1_score, args.min_l2_score, order_deps, visual_divs, prog_types]):
+        before = len(items)
+        items = apply_filters(
+            items,
+            min_l1_score=args.min_l1_score,
+            min_l2_score=args.min_l2_score,
+            order_deps=order_deps,
+            visual_divs=visual_divs,
+            prog_types=prog_types,
+        )
+        print(f"筛选后: {len(items)} 条 (过滤掉 {before - len(items)} 条)")
+        if order_deps:
+            print(f"  order_dependency ∈ {order_deps}")
+        if visual_divs:
+            print(f"  visual_diversity ∈ {visual_divs}")
+        if prog_types:
+            print(f"  prog_type ∈ {prog_types}")
+        if args.min_l1_score:
+            print(f"  l1_score >= {args.min_l1_score}")
+        if args.min_l2_score:
+            print(f"  l2_score >= {args.min_l2_score}")
+
+    if len(items) == 0:
+        print("⚠️  筛选后无候选，请放宽条件")
+        return
 
     if len(items) < args.total:
         print(f"⚠️  候选 ({len(items)}) < 目标 ({args.total})，将输出所有候选")
@@ -243,12 +400,24 @@ def main():
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
     print(f"\n✅ 已写入 {args.output} ({len(result)} records)")
 
+    # 饼图
+    if args.pie_chart:
+        Path(args.pie_chart).parent.mkdir(parents=True, exist_ok=True)
+        generate_pie_charts(result, args.pie_chart)
+
     # 可选统计输出
     if args.stats:
         stats = {
             "total_input": len(items),
             "total_sampled": len(result),
             "seed": args.seed,
+            "filters": {
+                "min_l1_score": args.min_l1_score,
+                "min_l2_score": args.min_l2_score,
+                "order_dep": args.order_dep or "all",
+                "visual_div": args.visual_div or "all",
+                "prog_type": args.prog_type or "all",
+            },
             "per_l1": {},
             "per_l2": {},
         }
