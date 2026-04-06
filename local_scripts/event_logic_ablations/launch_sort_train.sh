@@ -48,11 +48,13 @@ if [[ ! -f "${TRAIN_FILE}" || "${FORCE_BUILD:-false}" == "true" ]]; then
     --annotation-dir "${ANNOTATION_DIR}" \
     --clip-dir       "${CLIP_DIR}" \
     --output-dir     "${DATA_DIR}" \
+    --level          "${SORT_LEVEL:-l2}" \
     --min-events     "${MIN_EVENTS:-3}" \
     --max-events     "${MAX_EVENTS:-8}" \
     --seq-len        "${SORT_SEQ_LEN:-5}" \
     --samples-per-group "${SAMPLES_PER_GROUP:-1}" \
     --complete-only \
+    ${FILTER_ORDER:+--filter-order} \
     --train-budget   "${TRAIN_BUDGET:--1}" \
     --val-count      "${VAL_COUNT:-100}" \
     --seed           "${BUILD_SEED:-42}"

@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-build_event_shuffle.py — 从 hier seg annotation 构建 event shuffling (sort) 训练数据。
+build_event_shuffle.py — 从 hier seg annotation 构建 sort 训练数据（L2 event / L3 action）。
 
-用 L1 phase 的 child L2 events 的原子 clips 构建排序任务：
-给模型打乱顺序的 event clips，模型输出正确时间顺序排列。
+两种 level:
+  --level l2  L1 phase 的 child L2 events 排序（默认）
+  --level l3  L2 event 的 child L3 actions 排序
 
-可选通过 --filter-order 仅保留 _order_distinguishable=true 的 phase。
+可选通过 --filter-order 仅保留 _order_distinguishable=true 的 group。
 
 Reward: Jigsaw Displacement R = 1 - E_jigsaw / E_max（复用 hier_seg_reward 的 sort）。
 
 用法:
-    python proxy_data/youcook2_seg/event_logic/build_event_shuffle.py \\
-        --annotation-dir /m2v_intern/.../annotations_fixed_gmn25 \\
-        --clip-dir /m2v_intern/.../clips \\
-        --output-dir /m2v_intern/.../event_shuffle \\
-        --complete-only --seed 42
+    # L2 event sort
+    python build_event_shuffle.py --level l2 \\
+        --annotation-dir ... --clip-dir ... --output-dir ...
 
-    # 仅保留 _order_distinguishable=true 的 phase:
-    python ... --filter-order
+    # L3 action sort (筛选 distinguishable events)
+    python build_event_shuffle.py --level l3 --filter-order \\
+        --annotation-dir ... --clip-dir ... --output-dir ...
 """
 
 from __future__ import annotations
@@ -41,7 +41,11 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
-from shared.seg_source import load_annotations, get_l2_event_atomic_path  # noqa: E402
+from shared.seg_source import (  # noqa: E402
+    load_annotations,
+    get_l2_event_atomic_path,
+    get_l3_action_atomic_path,
+)
 from prompts import get_sort_prompt_generic  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -159,6 +163,116 @@ def collect_phase_groups(
 
 
 # =====================================================================
+# Phase 1b: Collect event-action groups (L3 sort)
+# =====================================================================
+
+def collect_event_action_groups(
+    annotations: list[dict],
+    clip_dir: str,
+    min_actions: int = 3,
+    max_actions: int = 8,
+    complete_only: bool = False,
+    filter_order: bool = False,
+    order_confidence_threshold: float = 0.0,
+) -> list[dict]:
+    """Iterate annotations, collect child L3 actions per L2 event.
+
+    Args:
+        filter_order: If True, only keep events with _order_distinguishable=True.
+                      If False (default), keep all events regardless.
+
+    Returns list of group dicts with keys:
+        clip_key, event_id, parent_phase_id, actions,
+        domain_l1, domain_l2, order_confidence, order_cue
+    """
+    groups: list[dict] = []
+    stats = Counter()
+
+    for ann in annotations:
+        l2 = ann.get("level2")
+        l3 = ann.get("level3")
+        if not l2 or not l3 or l3.get("_parse_error"):
+            stats["skip_no_l2_l3"] += 1
+            continue
+
+        clip_key = ann.get("clip_key", "")
+        events = l2.get("events", [])
+        all_results = l3.get("grounding_results", [])
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+
+            ev_id = event.get("event_id")
+            stats["events_total"] += 1
+
+            # Filter: _order_distinguishable on the event level
+            if filter_order and not event.get("_order_distinguishable", False):
+                stats["events_not_distinguishable"] += 1
+                continue
+
+            confidence = event.get("_order_confidence", 0.0)
+            if filter_order and confidence < order_confidence_threshold:
+                stats["events_low_confidence"] += 1
+                continue
+
+            # Gather child actions sorted by start_time
+            child_actions = sorted(
+                [r for r in all_results
+                 if isinstance(r, dict)
+                 and r.get("parent_event_id") == ev_id
+                 and r.get("sub_action", "").strip()
+                 and isinstance(r.get("start_time"), (int, float))],
+                key=lambda r: r["start_time"],
+            )
+            if len(child_actions) < min_actions:
+                stats["events_too_few_actions"] += 1
+                continue
+            if len(child_actions) > max_actions:
+                stats["events_too_many_actions"] += 1
+                continue
+
+            # Resolve atomic L3 clip paths
+            action_records = []
+            all_exist = True
+            for act in child_actions:
+                path = get_l3_action_atomic_path(
+                    clip_key, act["action_id"], ev_id,
+                    int(act["start_time"]), int(act["end_time"]),
+                    clip_dir,
+                )
+                if complete_only and not os.path.exists(path):
+                    all_exist = False
+                    break
+                action_records.append({
+                    "action_id": act["action_id"],
+                    "start": int(act["start_time"]),
+                    "end": int(act["end_time"]),
+                    "instruction": act["sub_action"].strip(),
+                    "clip_path": path,
+                })
+
+            if not all_exist:
+                stats["events_missing_clips"] += 1
+                continue
+
+            stats["events_kept"] += 1
+            groups.append({
+                "clip_key": clip_key,
+                "event_id": ev_id,
+                "parent_phase_id": event.get("parent_phase_id"),
+                "events": action_records,  # reuse 'events' key for compatibility
+                "domain_l1": ann.get("domain_l1", "other"),
+                "domain_l2": ann.get("domain_l2", "other"),
+                "order_confidence": confidence,
+                "order_cue": event.get("_order_cue", ""),
+            })
+
+    log.info("Event-action group collection stats: %s", dict(stats))
+    return groups
+
+
+# =====================================================================
 # Phase 2: Build sort records
 # =====================================================================
 
@@ -166,11 +280,12 @@ def build_sort_record(
     group: dict,
     seq_len: int,
     rng: random.Random,
+    level: str = "l2",
 ) -> dict | None:
-    """Build one sort record from a phase-event group.
+    """Build one sort record from a group.
 
-    If the group has more events than seq_len, a random contiguous
-    subsequence of seq_len events is selected.
+    Works for both L2 event sort and L3 action sort — the 'events' key
+    in the group dict holds either event records or action records.
 
     Returns EasyR1 record dict or None if shuffle fails.
     """
@@ -204,6 +319,25 @@ def build_sort_record(
     shuffled_events = [selected[i] for i in shuf_idx]
     prompt = get_sort_prompt_generic(seq_len)
 
+    # Build metadata based on level
+    meta = {
+        "clip_key": group["clip_key"],
+        "shuffled_indices": shuf_idx,
+        "event_instructions": [ev["instruction"] for ev in shuffled_events],
+        "order_confidence": group["order_confidence"],
+        "order_cue": group["order_cue"],
+        "domain_l1": group["domain_l1"],
+        "domain_l2": group["domain_l2"],
+        "source": f"event_shuffle_{level}",
+    }
+    if level == "l3":
+        meta["event_id"] = group["event_id"]
+        meta["parent_phase_id"] = group.get("parent_phase_id")
+        meta["original_action_ids"] = [ev["action_id"] for ev in selected]
+    else:
+        meta["phase_id"] = group.get("phase_id")
+        meta["original_event_ids"] = [ev["event_id"] for ev in selected]
+
     return {
         "messages": [{"role": "user", "content": prompt}],
         "prompt": prompt,
@@ -211,18 +345,7 @@ def build_sort_record(
         "videos": [ev["clip_path"] for ev in shuffled_events],
         "data_type": "video",
         "problem_type": "sort",
-        "metadata": {
-            "clip_key": group["clip_key"],
-            "phase_id": group["phase_id"],
-            "original_event_ids": [ev["event_id"] for ev in selected],
-            "shuffled_indices": shuf_idx,
-            "event_instructions": [ev["instruction"] for ev in shuffled_events],
-            "order_confidence": group["order_confidence"],
-            "order_cue": group["order_cue"],
-            "domain_l1": group["domain_l1"],
-            "domain_l2": group["domain_l2"],
-            "source": "event_shuffle",
-        },
+        "metadata": meta,
     }
 
 
@@ -317,20 +440,22 @@ def write_jsonl(records: list[dict], path: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="从 hier seg annotation 构建 event shuffling (sort) 数据"
+        description="从 hier seg annotation 构建 sort 数据（L2 event / L3 action）"
     )
     parser.add_argument("--annotation-dir", "-a", required=True,
                         help="标注 JSON 目录")
     parser.add_argument("--clip-dir", required=True,
-                        help="原子 clips 根目录（含 L2/ 子目录）")
+                        help="原子 clips 根目录（含 L2/, L3/ 子目录）")
     parser.add_argument("--output-dir", "-o", required=True,
                         help="输出目录（生成 train.jsonl, val.jsonl, stats.json）")
+    parser.add_argument("--level", choices=["l2", "l3"], default="l2",
+                        help="排序层级: l2=event sort, l3=action sort（默认 l2）")
 
     # Group filtering
     parser.add_argument("--min-events", type=int, default=3,
-                        help="phase 至少包含的 event 数（默认 3）")
+                        help="group 至少包含的 child 数（默认 3）")
     parser.add_argument("--max-events", type=int, default=8,
-                        help="phase 最多包含的 event 数（默认 8）")
+                        help="group 最多包含的 child 数（默认 8）")
     parser.add_argument("--order-confidence-threshold", type=float, default=0.0,
                         help="_order_confidence 最低阈值（默认 0.0，不过滤）")
     parser.add_argument("--filter-order", action="store_true",
@@ -360,20 +485,35 @@ def main():
     annotations = load_annotations(args.annotation_dir, complete_only=False)
     log.info("Loaded %d annotations", len(annotations))
 
-    # ---- 2. Collect phase groups ----
-    groups = collect_phase_groups(
-        annotations,
-        clip_dir=args.clip_dir,
-        min_events=args.min_events,
-        max_events=args.max_events,
-        complete_only=args.complete_only,
-        filter_order=args.filter_order,
-        order_confidence_threshold=args.order_confidence_threshold,
-    )
-    log.info("Collected %d phase groups (%s, %d-%d events)",
-             len(groups),
-             "filter_order=true" if args.filter_order else "all phases",
-             args.min_events, args.max_events)
+    # ---- 2. Collect groups ----
+    if args.level == "l3":
+        groups = collect_event_action_groups(
+            annotations,
+            clip_dir=args.clip_dir,
+            min_actions=args.min_events,
+            max_actions=args.max_events,
+            complete_only=args.complete_only,
+            filter_order=args.filter_order,
+            order_confidence_threshold=args.order_confidence_threshold,
+        )
+        log.info("Collected %d event-action groups (L3 sort, %s, %d-%d actions)",
+                 len(groups),
+                 "filter_order=true" if args.filter_order else "all events",
+                 args.min_events, args.max_events)
+    else:
+        groups = collect_phase_groups(
+            annotations,
+            clip_dir=args.clip_dir,
+            min_events=args.min_events,
+            max_events=args.max_events,
+            complete_only=args.complete_only,
+            filter_order=args.filter_order,
+            order_confidence_threshold=args.order_confidence_threshold,
+        )
+        log.info("Collected %d phase groups (L2 sort, %s, %d-%d events)",
+                 len(groups),
+                 "filter_order=true" if args.filter_order else "all phases",
+                 args.min_events, args.max_events)
 
     if not groups:
         log.error("No qualifying phase groups found. Check --annotation-dir and --clip-dir.")
@@ -383,7 +523,7 @@ def main():
     records: list[dict] = []
     for group in groups:
         for _ in range(args.samples_per_group):
-            rec = build_sort_record(group, args.seq_len, rng)
+            rec = build_sort_record(group, args.seq_len, rng, level=args.level)
             if rec is not None:
                 records.append(rec)
     log.info("Built %d sort records from %d groups", len(records), len(groups))
@@ -411,6 +551,7 @@ def main():
 
     # Stats
     stats = {
+        "level": args.level,
         "total_annotations": len(annotations),
         "total_groups": len(groups),
         "total_records": len(records),
