@@ -2,17 +2,22 @@
 """
 build_event_shuffle.py — 从 hier seg annotation 构建 event shuffling (sort) 训练数据。
 
-仅选择 _order_distinguishable=true 的 L1 phase，用其 child L2 events 的原子 clips
-构建排序任务：给模型打乱顺序的 event clips，模型输出正确时间顺序排列。
+用 L1 phase 的 child L2 events 的原子 clips 构建排序任务：
+给模型打乱顺序的 event clips，模型输出正确时间顺序排列。
 
-Reward: Jigsaw Displacement R = 1 - E_jigsaw / E_max（复用 mixed_proxy_reward 的 sort）。
+可选通过 --filter-order 仅保留 _order_distinguishable=true 的 phase。
+
+Reward: Jigsaw Displacement R = 1 - E_jigsaw / E_max（复用 hier_seg_reward 的 sort）。
 
 用法:
     python proxy_data/youcook2_seg/event_logic/build_event_shuffle.py \\
-        --annotation-dir /m2v_intern/.../annotations \\
+        --annotation-dir /m2v_intern/.../annotations_fixed_gmn25 \\
         --clip-dir /m2v_intern/.../clips \\
         --output-dir /m2v_intern/.../event_shuffle \\
         --complete-only --seed 42
+
+    # 仅保留 _order_distinguishable=true 的 phase:
+    python ... --filter-order
 """
 
 from __future__ import annotations
@@ -53,9 +58,14 @@ def collect_phase_groups(
     min_events: int = 3,
     max_events: int = 8,
     complete_only: bool = False,
+    filter_order: bool = False,
     order_confidence_threshold: float = 0.0,
 ) -> list[dict]:
-    """Iterate annotations, filter phases by _order_distinguishable, collect child events.
+    """Iterate annotations, collect child events per phase.
+
+    Args:
+        filter_order: If True, only keep phases with _order_distinguishable=True.
+                      If False (default), keep all phases regardless.
 
     Returns list of group dicts with keys:
         clip_key, phase_id, events, domain_l1, domain_l2,
@@ -82,14 +92,14 @@ def collect_phase_groups(
             ph_id = phase.get("phase_id")
             stats["phases_total"] += 1
 
-            # Filter: _order_distinguishable must be True
-            if not phase.get("_order_distinguishable", False):
+            # Filter: _order_distinguishable (only when --filter-order is set)
+            if filter_order and not phase.get("_order_distinguishable", False):
                 stats["phases_not_distinguishable"] += 1
                 continue
 
-            # Optional: filter by confidence
+            # Optional: filter by confidence (only meaningful with --filter-order)
             confidence = phase.get("_order_confidence", 0.0)
-            if confidence < order_confidence_threshold:
+            if filter_order and confidence < order_confidence_threshold:
                 stats["phases_low_confidence"] += 1
                 continue
 
@@ -323,6 +333,8 @@ def main():
                         help="phase 最多包含的 event 数（默认 8）")
     parser.add_argument("--order-confidence-threshold", type=float, default=0.0,
                         help="_order_confidence 最低阈值（默认 0.0，不过滤）")
+    parser.add_argument("--filter-order", action="store_true",
+                        help="仅保留 _order_distinguishable=true 的 phase（默认不筛选）")
     parser.add_argument("--complete-only", action="store_true",
                         help="仅保留所有 atomic clips 都存在的 group")
 
@@ -355,10 +367,13 @@ def main():
         min_events=args.min_events,
         max_events=args.max_events,
         complete_only=args.complete_only,
+        filter_order=args.filter_order,
         order_confidence_threshold=args.order_confidence_threshold,
     )
-    log.info("Collected %d phase groups (order_distinguishable=true, %d-%d events)",
-             len(groups), args.min_events, args.max_events)
+    log.info("Collected %d phase groups (%s, %d-%d events)",
+             len(groups),
+             "filter_order=true" if args.filter_order else "all phases",
+             args.min_events, args.max_events)
 
     if not groups:
         log.error("No qualifying phase groups found. Check --annotation-dir and --clip-dir.")

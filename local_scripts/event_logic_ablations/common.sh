@@ -18,7 +18,7 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-event-logic-ablation}"
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- 数据源 ----
-ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/annotations}"
+ANNOTATION_DIR="${ANNOTATION_DIR:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/annotations_fixed_gmn25}"
 CLIP_DIR="${CLIP_DIR:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/clips}"
 
 # ---- 消融实验数据根目录 ----
