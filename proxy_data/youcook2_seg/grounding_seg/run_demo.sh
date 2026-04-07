@@ -27,8 +27,9 @@ TRAIN_DIR="${DATA_ROOT}/train_data"
 VIDEO_DIR="/m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos"
 
 # Input source
-INPUT_JSONL="${INPUT_JSONL:-proxy_data/data_curation/results/merged/candidates.jsonl}"
+INPUT_JSONL="${INPUT_JSONL:-proxy_data/data_curation/results/et_instruct_164k/screen_keep.jsonl}"
 SAMPLED_JSONL="${DATA_ROOT}/sampled_demo.jsonl"
+GROUP_BY="${GROUP_BY:-_screen.domain_l1}"
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 PER_SOURCE="${PER_SOURCE:-50}"
@@ -46,6 +47,7 @@ echo "============================================"
 echo " INPUT_JSONL:  $INPUT_JSONL"
 echo " DATA_ROOT:    $DATA_ROOT"
 echo " PER_SOURCE:   $PER_SOURCE"
+echo " GROUP_BY:     $GROUP_BY"
 echo " MODEL:        $MODEL"
 echo " WORKERS:      $WORKERS"
 echo " LIMIT:        $LIMIT"
@@ -59,12 +61,13 @@ if [ "$SKIP_SAMPLE" = "true" ] && [ -f "$SAMPLED_JSONL" ]; then
     echo "    $N_SAMPLED records"
 else
     echo ""
-    echo ">>> Step 0: Balanced sampling ($PER_SOURCE per source)"
+    echo ">>> Step 0: Balanced sampling ($PER_SOURCE per group, group_by=$GROUP_BY)"
     mkdir -p "$DATA_ROOT"
     python "$SCRIPT_DIR/sample_for_demo.py" \
         --input "$INPUT_JSONL" \
         --output "$SAMPLED_JSONL" \
-        --per-source "$PER_SOURCE" \
+        --group-by "$GROUP_BY" \
+        --per-group "$PER_SOURCE" \
         --seed 42
 fi
 

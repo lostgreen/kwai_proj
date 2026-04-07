@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-sample_for_demo.py — Balanced sampling from candidates.jsonl by source (domain).
+sample_for_demo.py — Balanced sampling from JSONL by a grouping field.
 
-Reads a JSONL file where each line has a ``source`` field (e.g. how_to_step,
-cosmo_cap, hacs, ...) and outputs a sub-sampled JSONL with at most N records
-per source, preserving the original format.
+Supports grouping by:
+  - ``source``          (candidates.jsonl: how_to_step, cosmo_cap, ...)
+  - ``_screen.domain_l1`` (screen_keep.jsonl: educational, entertainment, ...)
+  - any dot-separated nested key
 
 Usage:
-    python sample_for_demo.py \
-        --input candidates.jsonl \
-        --output sampled.jsonl \
-        --per-source 50 \
-        --seed 42
+    # By source (candidates.jsonl)
+    python sample_for_demo.py --input candidates.jsonl --output sampled.jsonl
+
+    # By domain_l1 (screen_keep.jsonl)
+    python sample_for_demo.py --input screen_keep.jsonl --output sampled.jsonl \
+        --group-by _screen.domain_l1
 """
 
 import argparse
@@ -21,14 +23,27 @@ from collections import defaultdict
 from pathlib import Path
 
 
+def _get_nested(rec: dict, key: str) -> str:
+    """Resolve dot-separated nested key, e.g. ``_screen.domain_l1``."""
+    obj = rec
+    for part in key.split("."):
+        if isinstance(obj, dict):
+            obj = obj.get(part)
+        else:
+            return "unknown"
+    return str(obj) if obj is not None else "unknown"
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Balanced sampling from JSONL by source field.",
+        description="Balanced sampling from JSONL by a grouping field.",
     )
     parser.add_argument("--input", required=True, help="Input JSONL path")
     parser.add_argument("--output", required=True, help="Output JSONL path")
-    parser.add_argument("--per-source", type=int, default=50,
-                        help="Max records per source (default: 50)")
+    parser.add_argument("--group-by", default="_screen.domain_l1",
+                        help="Dot-separated field to group by (default: _screen.domain_l1)")
+    parser.add_argument("--per-group", type=int, default=50,
+                        help="Max records per group (default: 50)")
     parser.add_argument("--min-duration", type=float, default=30.0,
                         help="Minimum video duration in seconds (default: 30)")
     parser.add_argument("--max-duration", type=float, default=600.0,
@@ -38,8 +53,8 @@ def main():
 
     rng = random.Random(args.seed)
 
-    # Load and group by source
-    by_source: dict[str, list[str]] = defaultdict(list)
+    # Load and group
+    by_group: dict[str, list[str]] = defaultdict(list)
     total = 0
     filtered = 0
     with open(args.input, encoding="utf-8") as f:
@@ -53,22 +68,22 @@ def main():
             if dur < args.min_duration or dur > args.max_duration:
                 filtered += 1
                 continue
-            source = rec.get("source", "unknown")
-            by_source[source].append(line)
+            group = _get_nested(rec, args.group_by)
+            by_group[group].append(line)
 
     print(f"Total records: {total}")
     print(f"Filtered by duration [{args.min_duration}, {args.max_duration}]: {filtered}")
     print(f"Remaining: {total - filtered}")
-    print(f"Sources: {len(by_source)}")
+    print(f"Groups (by {args.group_by}): {len(by_group)}")
 
     # Sample
     sampled = []
-    for source in sorted(by_source):
-        pool = by_source[source]
+    for group in sorted(by_group):
+        pool = by_group[group]
         rng.shuffle(pool)
-        take = min(len(pool), args.per_source)
+        take = min(len(pool), args.per_group)
         sampled.extend(pool[:take])
-        print(f"  {source}: {len(pool)} → {take}")
+        print(f"  {group}: {len(pool)} → {take}")
 
     rng.shuffle(sampled)
 
