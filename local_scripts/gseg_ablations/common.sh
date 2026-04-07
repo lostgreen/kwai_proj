@@ -15,6 +15,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 export DECORD_EOF_RETRY_MAX=2048001
+export FORCE_QWENVL_VIDEO_READER=decord
 export BAD_SAMPLES_LOG="${REPO_ROOT}/bad_samples.txt"
 
 # ---- 通用实验标签 ----
