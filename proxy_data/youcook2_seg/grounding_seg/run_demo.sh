@@ -32,9 +32,9 @@ SAMPLED_JSONL="${DATA_ROOT}/sampled_demo.jsonl"
 GROUP_BY="${GROUP_BY:-_screen.domain_l1}"
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-PER_SOURCE="${PER_SOURCE:-50}"
+PER_SOURCE="${PER_SOURCE:-100}"
 WORKERS="${WORKERS:-4}"
-MODEL="${MODEL:-pa/gmn-2.5-fl}"
+MODEL="${MODEL:-pa/gmn-2.5-fls}"
 API_BASE="${API_BASE:-https://api.novita.ai/v3/openai}"
 SKIP_SAMPLE="${SKIP_SAMPLE:-false}"
 SKIP_FRAMES="${SKIP_FRAMES:-false}"
@@ -99,7 +99,6 @@ else
         --output-dir "$ANN_DIR"
         --api-base "$API_BASE"
         --model "$MODEL"
-        --max-frames-per-call 64
         --workers "$WORKERS"
     )
     if [ "$LIMIT" -gt 0 ] 2>/dev/null; then

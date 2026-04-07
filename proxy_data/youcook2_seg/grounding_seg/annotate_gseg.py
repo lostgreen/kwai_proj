@@ -297,7 +297,7 @@ def main():
                         help="Output directory for annotation JSONs")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai")
     parser.add_argument("--api-key", default="")
-    parser.add_argument("--model", default="pa/gmn-2.5-fl")
+    parser.add_argument("--model", default="pa/gmn-2.5-fls")
     parser.add_argument("--max-frames-per-call", type=int, default=0,
                         help="Max frames to send per VLM call (0 = no limit)")
     parser.add_argument("--resize-max-width", type=int, default=0)
