@@ -94,6 +94,8 @@ Example query pattern:
     concrete items.
 ✅  Make the query specific enough that a single correct segmentation
     exists (or at most minor boundary variation).
+✅  Force the query to focus on a specific flow of physical actions,
+    transformations, or interactions — NOT just general "event coverage".
 
 ❌  Do NOT mention any specific timestamps or time ranges.
 ❌  Do NOT state the exact number of segments.
@@ -102,13 +104,11 @@ Example query pattern:
     instead (e.g., "the main crafting activity" instead of "sewing the zipper").
 ❌  Do NOT make the query so vague that multiple fundamentally different
     segmentations would be equally valid.
-❌  **Do NOT leak the noise types:** When writing the `query`, you MUST NOT
-    explicitly list the types of distractions or noise the student should
-    filter out.
+❌  **Do NOT leak the noise types:** you MUST NOT list the types of
+    distractions or noise the student should filter out.
     - Bad: "Extract the slacklining, filtering out scenic shots and people
       playing guitar." (This leaks the answer.)
     - Good: "Extract only the active, hands-on slacklining process."
-      (The student must deduce what is NOT the active process.)
 
 Note: Some domain awareness is acceptable — e.g., "the stretching routine"
 is fine; "the hamstring stretch then the quad stretch then the calf stretch"
@@ -121,104 +121,65 @@ is leaking the answer.
 You must act as a strict filter. Do NOT just segment every camera cut or
 scene change.
 
-1. **Mind the Gaps (forced temporal gaps):** You MUST leave temporal gaps
-   between your segments whenever there is noise, idle time, or irrelevant
-   content. The total duration of your segments should often be MUCH shorter
-   than the grounding span.
+1. **Mind the Gaps:** You MUST leave temporal gaps between segments whenever
+   there is noise, idle time, or irrelevant content. The total segment
+   duration should often be MUCH shorter than the grounding span.
 
-2. **Anti-B-Roll Rule:** Unless your query explicitly focuses on them, you
-   MUST EXCLUDE and SKIP all: interviews, talking heads, static spectator
-   shots, B-roll, random camera transitions, title cards, and idle moments.
-   DO NOT create segments for them.
+2. **Anti-B-Roll Rule:** EXCLUDE and SKIP all: interviews, talking heads,
+   static spectator shots, B-roll, camera transitions, title cards, idle.
 
-3. **Query Strictness:** Your segments MUST strictly answer the specific
-   action requested in your query. If your query asks for "physical actions
-   of crafting", a segment labelled "interview with the craftsman" is a
-   severe failure.
-
-4. **Action-Driven Queries:** When writing your Query, force it to focus on
-   a specific flow of physical actions, transformations, or interactions —
-   NOT just general "event coverage".
+3. **Query Strictness:** Segments MUST strictly answer the query. If the
+   query asks for "physical actions of crafting", a segment labelled
+   "interview with the craftsman" is a severe failure.
 
 ────────────────────────────────────────
 ## Multi-Task: One Video, Multiple Tasks
 ────────────────────────────────────────
 
-If the video is rich and contains **multiple distinct, unrelated activity
-threads** (e.g., a vlog showing cooking, then a band playing, then swimming),
-you SHOULD output multiple tasks — one per thread, each using a different
-Query Style where appropriate.
-
-If the video has a single coherent theme, output exactly ONE task.
+If the video contains **multiple distinct activity threads**, you SHOULD
+output multiple tasks — one per thread. If the video has a single coherent
+theme, output exactly ONE task.
 
 ────────────────────────────────────────
 ## Output JSON Schema
 ────────────────────────────────────────
 
-Output a JSON **array** of task objects.  Each task follows this schema:
+Output a JSON **array** of task objects (even for a single task):
 
 ```json
 [
   {{
-    "video_summary": "<one-sentence factual summary of the entire video>",
-    "domain": "<domain label, e.g. fitness, cooking, vlog, pet_training, crafting>",
-    "noise_description": "<what irrelevant content exists — null if none>",
-
     "query_style": "<A|B|C|D|E>",
     "query": "<the abstract reasoning query for the student model>",
 
     "grounding": {{
-      "start_time": <int seconds — start of the relevant portion>,
-      "end_time":   <int seconds — end of the relevant portion>,
-      "rationale":  "<why this is the relevant portion>"
+      "start_time": <int seconds>,
+      "end_time":   <int seconds>
     }},
-
-    "rejected_noise_spans": [
-      {{
-        "start_time": <int seconds>,
-        "end_time":   <int seconds>,
-        "reason":     "<why this span was skipped, e.g. 'interview', 'B-roll', 'idle'>"
-      }}
-    ],
 
     "segments": [
       {{
         "id": 1,
         "start_time": <int seconds>,
         "end_time":   <int seconds>,
-        "label":      "<detailed caption: what specific action/state/change occurs in this segment — include actor, object, and motion, e.g. 'The person bends forward to touch their toes with both hands, holding the stretch for several seconds'>"
+        "label":      "<detailed caption: actor + action + object + state change>"
       }}
-    ],
-
-    "reorderable": <true|false — are these segments in a strict causal/procedural order where shuffling them would be obviously wrong?>,
-    "reorder_reason": "<why reordering is or is not feasible, e.g. 'Steps have strict causal dependency: dough must be kneaded before shaping' or 'Segments are independent repetitions with no inherent order'>"
+    ]
   }}
 ]
 ```
 
-Output a JSON array `[{{task1}}, {{task2}}, ...]` even for a single task.
-Different tasks targetting the same video MUST have non-overlapping
-grounding ranges.
+Different tasks from the same video MUST have non-overlapping grounding ranges.
 
-IMPORTANT: You MUST fill `rejected_noise_spans` BEFORE writing `segments`.
-List every noise span within the grounding range that you are deliberately
-skipping. If there is no noise, output an empty array `[]`.
-
-For the `label` field in each segment, write a DETAILED caption (1–2
-sentences) describing the specific action, the actor, the objects involved,
-and any visible state change. Do NOT use vague labels like "step 1" or
-"activity". The caption should be vivid enough that someone could visualise
-the segment without seeing the video.
+For each segment `label`, write a DETAILED caption (1–2 sentences) describing
+the specific action, actor, objects, and any visible state change.
 
 Rules for timestamps:
   - All times are integer seconds, 0-based, within [0, {duration}].
   - Segments must be within the grounding boundaries.
   - Segments must not overlap and should be in chronological order.
-  - Gaps between segments are allowed (idle, transitional, or irrelevant frames).
-  - For Style B (full seg), grounding.start_time may be 0 and
-    grounding.end_time may equal the video duration.
-  - Aim for 3–12 segments per task. If the video genuinely has fewer distinct
-    units, that is fine.
+  - Gaps between segments are allowed and expected.
+  - Aim for 3–12 segments per task.
 """
 
 

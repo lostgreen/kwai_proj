@@ -135,15 +135,12 @@ def build_record(
         "metadata": {
             "clip_key": clip_key,
             "clip_duration_sec": duration,
-            "domain": ann.get("domain", ""),
             "query_style": ann.get("query_style", ""),
             "output_count": len(spans),
             "grounding_start": grounding.get("start_time"),
             "grounding_end": grounding.get("end_time"),
             "noise_ratio": _compute_noise_ratio(grounding, duration),
             "source_video_path": source_video,
-            "reorderable": ann.get("reorderable", False),
-            "reorder_reason": ann.get("reorder_reason", ""),
         },
     }
 
@@ -163,35 +160,35 @@ def _compute_noise_ratio(grounding: dict, duration: int) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def balanced_sample(records: list[dict], target: int, rng: random.Random) -> list[dict]:
-    """Domain-balanced downsampling."""
-    by_domain: dict[str, list[dict]] = {}
+    """Query-style-balanced downsampling."""
+    by_style: dict[str, list[dict]] = {}
     for r in records:
-        d = r.get("metadata", {}).get("domain", "other")
-        by_domain.setdefault(d, []).append(r)
+        d = r.get("metadata", {}).get("query_style", "other")
+        by_style.setdefault(d, []).append(r)
 
-    n_domains = len(by_domain)
-    if n_domains == 0:
+    n_groups = len(by_style)
+    if n_groups == 0:
         return []
 
-    per_domain = max(1, target // n_domains)
+    per_group = max(1, target // n_groups)
     result = []
     surplus = 0
 
-    for domain in sorted(by_domain):
-        pool = by_domain[domain]
+    for key in sorted(by_style):
+        pool = by_style[key]
         rng.shuffle(pool)
-        take = min(len(pool), per_domain)
+        take = min(len(pool), per_group)
         result.extend(pool[:take])
-        if take < per_domain:
-            surplus += per_domain - take
+        if take < per_group:
+            surplus += per_group - take
 
     # Redistribute surplus
     if surplus > 0:
         remaining = []
-        for domain in sorted(by_domain):
-            pool = by_domain[domain]
-            if len(pool) > per_domain:
-                remaining.extend(pool[per_domain:])
+        for key in sorted(by_style):
+            pool = by_style[key]
+            if len(pool) > per_group:
+                remaining.extend(pool[per_group:])
         rng.shuffle(remaining)
         result.extend(remaining[:surplus])
 
@@ -254,19 +251,13 @@ def main():
 
     # Collect stats
     style_counts: dict[str, int] = {}
-    domain_counts: dict[str, int] = {}
     for r in records:
         m = r.get("metadata", {})
         qs = m.get("query_style", "?")
         style_counts[qs] = style_counts.get(qs, 0) + 1
-        d = m.get("domain", "?")
-        domain_counts[d] = domain_counts.get(d, 0) + 1
 
     print(f"\n=== Query Style Distribution ===")
     for k, v in sorted(style_counts.items()):
-        print(f"  {k}: {v}")
-    print(f"\n=== Domain Distribution ===")
-    for k, v in sorted(domain_counts.items()):
         print(f"  {k}: {v}")
 
     # Train/val split

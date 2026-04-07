@@ -223,16 +223,8 @@ def annotate_clip(
         validated = {
             "query_style": t.get("query_style", ""),
             "query": t["query"],
-            "video_summary": t.get("video_summary", ""),
-            "domain": t.get("domain", ""),
-            "noise_description": t.get("noise_description"),
             "grounding": _validate_grounding(t.get("grounding", {}), duration),
-            "rejected_noise_spans": _validate_noise_spans(
-                t.get("rejected_noise_spans", []), duration,
-            ),
             "segments": _validate_segments(t.get("segments", []), duration),
-            "reorderable": bool(t.get("reorderable", False)),
-            "reorder_reason": t.get("reorder_reason", ""),
         }
         if validated["segments"]:
             valid_tasks.append(validated)
@@ -284,26 +276,6 @@ def _validate_segments(segments: list, duration: int) -> list:
             "start_time": s,
             "end_time": e,
             "label": seg.get("label", ""),
-        })
-    return result
-
-
-def _validate_noise_spans(spans: list, duration: int) -> list:
-    """Validate and clamp rejected noise spans."""
-    if not isinstance(spans, list):
-        return []
-    result = []
-    for span in spans:
-        if not isinstance(span, dict):
-            continue
-        s = max(0, min(int(span.get("start_time", 0)), duration))
-        e = max(0, min(int(span.get("end_time", 0)), duration))
-        if e <= s:
-            continue
-        result.append({
-            "start_time": s,
-            "end_time": e,
-            "reason": span.get("reason", ""),
         })
     return result
 
