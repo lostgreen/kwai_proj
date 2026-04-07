@@ -107,6 +107,32 @@ Note: Some domain awareness is acceptable — e.g., "the stretching routine"
 is fine; "the hamstring stretch then the quad stretch then the calf stretch"
 is leaking the answer.
 
+────────────────────────────────────────────────────
+## Strict Segmentation & Filtering Rules (CRITICAL)
+────────────────────────────────────────────────────
+
+You must act as a strict filter. Do NOT just segment every camera cut or
+scene change.
+
+1. **Mind the Gaps (forced temporal gaps):** You MUST leave temporal gaps
+   between your segments whenever there is noise, idle time, or irrelevant
+   content. The total duration of your segments should often be MUCH shorter
+   than the grounding span.
+
+2. **Anti-B-Roll Rule:** Unless your query explicitly focuses on them, you
+   MUST EXCLUDE and SKIP all: interviews, talking heads, static spectator
+   shots, B-roll, random camera transitions, title cards, and idle moments.
+   DO NOT create segments for them.
+
+3. **Query Strictness:** Your segments MUST strictly answer the specific
+   action requested in your query. If your query asks for "physical actions
+   of crafting", a segment labelled "interview with the craftsman" is a
+   severe failure.
+
+4. **Action-Driven Queries:** When writing your Query, force it to focus on
+   a specific flow of physical actions, transformations, or interactions —
+   NOT just general "event coverage".
+
 ────────────────────────────────────────
 ## Multi-Task: One Video, Multiple Tasks
 ────────────────────────────────────────
@@ -140,6 +166,14 @@ Output a JSON **array** of task objects.  Each task follows this schema:
       "rationale":  "<why this is the relevant portion>"
     }},
 
+    "rejected_noise_spans": [
+      {{
+        "start_time": <int seconds>,
+        "end_time":   <int seconds>,
+        "reason":     "<why this span was skipped, e.g. 'interview', 'B-roll', 'idle'>"
+      }}
+    ],
+
     "segments": [
       {{
         "id": 1,
@@ -157,6 +191,12 @@ Output a JSON **array** of task objects.  Each task follows this schema:
 Output a JSON array `[{{task1}}, {{task2}}, ...]` even for a single task.
 Different tasks targetting the same video MUST have non-overlapping
 grounding ranges.
+
+IMPORTANT: You MUST fill `rejected_noise_spans` BEFORE writing `segments`.
+List every noise span within the grounding range that you are deliberately
+skipping (interviews, B-roll, idle, transitions, etc.). If there is no
+noise, output an empty array `[]`. This forces you to explicitly reason
+about what to exclude before deciding what to include.
 
 Rules for timestamps:
   - All times are integer seconds, 0-based, within [0, {duration}].
