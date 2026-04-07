@@ -31,9 +31,40 @@ data_curation 结果 (screen_keep.jsonl / 全量)
             拆分 query→学生 prompt, segments→answer
 ```
 
-## 执行命令
+## 快速 Demo (推荐)
 
 > 所有命令在 `train/` 目录下运行。
+
+一键运行完整管线 (采样 → 提帧 → 标注 → 构建训练数据):
+
+```bash
+# 默认: 每个 source 50 条, Gemini Flash
+bash proxy_data/youcook2_seg/grounding_seg/run_demo.sh
+
+# 自定义配置
+PER_SOURCE=20 WORKERS=8 LIMIT=100 \
+    bash proxy_data/youcook2_seg/grounding_seg/run_demo.sh
+
+# 跳过已完成的步骤 (增量运行)
+SKIP_SAMPLE=true SKIP_FRAMES=true \
+    bash proxy_data/youcook2_seg/grounding_seg/run_demo.sh
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PER_SOURCE` | 50 | 每个 source domain 采样数 |
+| `WORKERS` | 4 | 并行 workers |
+| `MODEL` | pa/gmn-2.5-fl | VLM 模型 |
+| `API_BASE` | https://api.novita.ai/v3/openai | VLM API |
+| `LIMIT` | 0 (全部) | 标注时处理的 clip 上限 |
+| `SKIP_SAMPLE` | false | 跳过采样步骤 |
+| `SKIP_FRAMES` | false | 跳过提帧步骤 |
+| `SKIP_ANNOTATE` | false | 跳过标注步骤 |
+| `INPUT_JSONL` | candidates.jsonl | 输入数据源 |
+
+## 分步执行
 
 ### Step 0: 设置变量
 
@@ -41,20 +72,28 @@ data_curation 结果 (screen_keep.jsonl / 全量)
 SCRIPT_DIR="proxy_data/youcook2_seg/grounding_seg"
 HIER_SCRIPT_DIR="proxy_data/youcook2_seg/hier_seg_annotation"
 
-# 数据路径 (按需修改)
 DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/grounding_seg"
 FRAMES_DIR="${DATA_ROOT}/frames"
 ANN_DIR="${DATA_ROOT}/annotations"
 TRAIN_DIR="${DATA_ROOT}/train_data"
 VIDEO_DIR="/m2v_intern/xuboshen/zgw/data/ET-Instruct-164K/videos"
 
-# 输入数据源 (screen_keep 或全量)
 JSONL="${JSONL:-proxy_data/data_curation/results/merged/candidates.jsonl}"
-
-# VLM 配置 (默认 Gemini Flash)
 MODEL="${MODEL:-pa/gmn-2.5-fl}"
 API_BASE="${API_BASE:-https://api.novita.ai/v3/openai}"
 WORKERS="${WORKERS:-4}"
+```
+
+### Step 0.5: 均衡采样 (可选)
+
+```bash
+python "$SCRIPT_DIR/sample_for_demo.py" \
+    --input "$JSONL" \
+    --output "${DATA_ROOT}/sampled_demo.jsonl" \
+    --per-source 50
+
+# 后续步骤使用采样后的 JSONL
+JSONL="${DATA_ROOT}/sampled_demo.jsonl"
 ```
 
 ### Step 1: 提取帧 (复用现有 extract_frames.py)
@@ -70,7 +109,6 @@ python "$HIER_SCRIPT_DIR/extract_frames.py" \
 ### Step 2: VLM 标注 — 生成 query + GT
 
 ```bash
-# 推荐: 用 --jsonl 避免 NFS 目录扫描卡顿 (用 Step 1 同一个 JSONL)
 python "$SCRIPT_DIR/annotate_gseg.py" \
     --jsonl "$JSONL" \
     --frames-dir "$FRAMES_DIR" \
@@ -81,7 +119,7 @@ python "$SCRIPT_DIR/annotate_gseg.py" \
     --workers "$WORKERS"
 ```
 
-输出示例 (`annotations/{clip_key}.json`) — 支持单视频多 Task:
+输出示例 (`annotations/{clip_key}.json`):
 ```json
 {
   "clip_key": "video_001",
@@ -93,17 +131,9 @@ python "$SCRIPT_DIR/annotate_gseg.py" \
       "query": "Locate the continuous exercise routine and segment each distinct movement...",
       "grounding": {"start_time": 22, "end_time": 155},
       "segments": [
-        {"id": 1, "start_time": 22, "end_time": 38, "label": "..."},
-        {"id": 2, "start_time": 39, "end_time": 52, "label": "..."}
-      ],
-      "reasoning_trace": "..."
-    },
-    {
-      "query_style": "E",
-      "query": "Extract the cooking preparation thread and segment by ingredient...",
-      "grounding": {"start_time": 160, "end_time": 178},
-      "segments": [...],
-      "reasoning_trace": "..."
+        {"id": 1, "start_time": 22, "end_time": 38, "label": "Person performs jumping jacks..."},
+        {"id": 2, "start_time": 39, "end_time": 52, "label": "Person transitions to push-ups..."}
+      ]
     }
   ]
 }
@@ -112,35 +142,12 @@ python "$SCRIPT_DIR/annotate_gseg.py" \
 ### Step 3: 构建训练数据
 
 ```bash
-# 标准模式 (无 CoT)
 python "$SCRIPT_DIR/build_gseg_data.py" \
     --annotation-dir "$ANN_DIR" \
     --output-dir "$TRAIN_DIR" \
     --video-dir "$VIDEO_DIR" \
     --min-segments 2 \
     --max-segments 15
-
-# 带 <think> CoT 模式
-python "$SCRIPT_DIR/build_gseg_data.py" \
-    --annotation-dir "$ANN_DIR" \
-    --output-dir "${TRAIN_DIR}_cot" \
-    --video-dir "$VIDEO_DIR" \
-    --use-think \
-    --min-segments 2 \
-    --max-segments 15
-```
-
-### 可选: 限量测试
-
-```bash
-# 只跑前 10 个视频
-python "$SCRIPT_DIR/annotate_gseg.py" \
-    --jsonl "$JSONL" \
-    --frames-dir "$FRAMES_DIR" \
-    --output-dir "$ANN_DIR" \
-    --model "$MODEL" \
-    --limit 10 \
-    --workers 2
 ```
 
 ## 训练数据格式
@@ -157,13 +164,12 @@ python "$SCRIPT_DIR/annotate_gseg.py" \
   "problem_type": "grounding_seg",
   "metadata": {
     "clip_key": "...",
-    "domain": "fitness",
     "query_style": "A",
     "output_count": 5,
     "grounding_start": 22,
     "grounding_end": 155,
     "noise_ratio": 0.25,
-    "reasoning_trace": "..."
+    "source_video_path": "..."
   }
 }
 ```
@@ -184,10 +190,12 @@ VLM 根据视频内容自动选择:
 
 ```
 grounding_seg/
-├── README.md           # 本文件
-├── prompts_gseg.py     # VLM 标注 prompt + 学生训练 prompt
-├── annotate_gseg.py    # Step 2: VLM 标注管线
-└── build_gseg_data.py  # Step 3: 标注 → 训练 JSONL
+├── README.md            # 本文件
+├── prompts_gseg.py      # VLM 标注 prompt + 学生训练 prompt
+├── annotate_gseg.py     # Step 2: VLM 标注管线
+├── build_gseg_data.py   # Step 3: 标注 → 训练 JSONL
+├── sample_for_demo.py   # Step 0: 按 source 均衡采样
+└── run_demo.sh          # 一键 demo 脚本
 ```
 
 ## 服务器目录结构
