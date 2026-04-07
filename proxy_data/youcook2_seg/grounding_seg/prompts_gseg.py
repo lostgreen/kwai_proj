@@ -30,7 +30,7 @@ Core principles:
 
 _ANNOTATION_BASE = """\
 You are given {n_frames} frames uniformly sampled from a {duration}s video.
-Each frame is labelled with its timestamp.
+Each frame is labelled with its absolute timestamp in seconds (e.g. [42s]).
 
 ## Your Task
 

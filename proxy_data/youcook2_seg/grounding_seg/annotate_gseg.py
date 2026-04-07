@@ -42,7 +42,6 @@ from annotate import (
     get_all_frame_files,
     sample_uniform,
     encode_frame_files,
-    format_mmss,
     frame_stem_to_index,
     frame_index_to_sec,
     load_frame_meta,
@@ -195,7 +194,7 @@ def annotate_clip(
     for fp in sampled:
         idx = frame_stem_to_index(fp, 0)
         sec = frame_index_to_sec(idx, 1.0)
-        frame_labels.append(f"[Timestamp {format_mmss(sec)} | Frame {idx}]")
+        frame_labels.append(f"[{int(sec)}s]")
 
     # Build prompt
     prompt_text = get_annotation_prompt(n_frames, duration)
