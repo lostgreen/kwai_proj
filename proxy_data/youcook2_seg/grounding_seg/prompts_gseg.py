@@ -181,16 +181,17 @@ Output a JSON **array** of task objects.  Each task follows this schema:
       }}
     ],
 
-    "segmentation_cot": "<BEFORE listing segments, explain your reasoning: (1) What is the core activity thread this query asks about? (2) What segmentation criterion will you use? (3) How many distinct units did you identify and why do you place boundaries there? Write 3–5 sentences.>",
-
     "segments": [
       {{
         "id": 1,
         "start_time": <int seconds>,
         "end_time":   <int seconds>,
-        "label":      "<brief factual description of this segment>"
+        "label":      "<detailed caption: what specific action/state/change occurs in this segment — include actor, object, and motion, e.g. 'The person bends forward to touch their toes with both hands, holding the stretch for several seconds'>"
       }}
-    ]
+    ],
+
+    "reorderable": <true|false — are these segments in a strict causal/procedural order where shuffling them would be obviously wrong?>,
+    "reorder_reason": "<why reordering is or is not feasible, e.g. 'Steps have strict causal dependency: dough must be kneaded before shaping' or 'Segments are independent repetitions with no inherent order'>"
   }}
 ]
 ```
@@ -199,14 +200,15 @@ Output a JSON array `[{{task1}}, {{task2}}, ...]` even for a single task.
 Different tasks targetting the same video MUST have non-overlapping
 grounding ranges.
 
-IMPORTANT: You MUST fill fields in this exact order:
-  1. `rejected_noise_spans` — explicitly list what you are skipping and why.
-  2. `segmentation_cot` — reason about the query, the criterion, and where
-     boundaries should go. This is the student's "thought process".
-  3. `segments` — only then output the final segment timestamps.
+IMPORTANT: You MUST fill `rejected_noise_spans` BEFORE writing `segments`.
+List every noise span within the grounding range that you are deliberately
+skipping. If there is no noise, output an empty array `[]`.
 
-If there is no noise, `rejected_noise_spans` should be `[]`.
-If the reasoning is trivial, `segmentation_cot` can be brief.
+For the `label` field in each segment, write a DETAILED caption (1–2
+sentences) describing the specific action, the actor, the objects involved,
+and any visible state change. Do NOT use vague labels like "step 1" or
+"activity". The caption should be vivid enough that someone could visualise
+the segment without seeing the video.
 
 Rules for timestamps:
   - All times are integer seconds, 0-based, within [0, {duration}].

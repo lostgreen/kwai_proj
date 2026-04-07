@@ -231,7 +231,8 @@ def annotate_clip(
                 t.get("rejected_noise_spans", []), duration,
             ),
             "segments": _validate_segments(t.get("segments", []), duration),
-            "segmentation_cot": t.get("segmentation_cot", ""),
+            "reorderable": bool(t.get("reorderable", False)),
+            "reorder_reason": t.get("reorder_reason", ""),
         }
         if validated["segments"]:
             valid_tasks.append(validated)

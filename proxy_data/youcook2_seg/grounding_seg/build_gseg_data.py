@@ -142,7 +142,8 @@ def build_record(
             "grounding_end": grounding.get("end_time"),
             "noise_ratio": _compute_noise_ratio(grounding, duration),
             "source_video_path": source_video,
-            "segmentation_cot": ann.get("segmentation_cot", ""),
+            "reorderable": ann.get("reorderable", False),
+            "reorder_reason": ann.get("reorder_reason", ""),
         },
     }
 
