@@ -94,6 +94,51 @@ def _extract_json_candidates(text: str) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Record loading from JSONL (avoids slow NFS directory scan)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_records_from_jsonl(jsonl_path: Path, frames_dir: Path, limit: int = 0) -> list[dict]:
+    """Load records from a JSONL file.
+
+    Each line should have at minimum ``videos`` and ``metadata.clip_key``.
+    The frames_dir is used to verify the clip directory exists.
+    """
+    records: list[dict] = []
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            meta = rec.get("metadata", {})
+            clip_key = meta.get("clip_key", "")
+            if not clip_key:
+                # Try to derive from video path
+                videos = rec.get("videos", [])
+                if videos:
+                    clip_key = Path(videos[0]).stem
+                    meta["clip_key"] = clip_key
+                    rec["metadata"] = meta
+            if not clip_key:
+                continue
+
+            # Derive duration from metadata if not present
+            if "clip_duration" not in meta and "clip_end" not in meta:
+                duration = rec.get("duration") or meta.get("duration")
+                if duration:
+                    meta["clip_duration"] = duration
+
+            records.append(rec)
+            if 0 < limit <= len(records):
+                break
+    return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Per-clip annotation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -248,6 +293,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Grounding+Segmentation annotation: VLM generates abstract query + GT.",
     )
+    parser.add_argument("--jsonl", type=Path, default=None,
+                        help="Input JSONL file (skip slow frames-dir scan). "
+                             "Each line needs 'videos' and 'metadata.clip_key'.")
     parser.add_argument("--frames-dir", type=Path, required=True,
                         help="Root dir of pre-extracted 1fps frames (subdir per clip)")
     parser.add_argument("--output-dir", type=Path, required=True,
@@ -265,9 +313,14 @@ def main():
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    # Load records from frames directory
-    records = load_records_from_frames_dir(args.frames_dir, args.limit)
-    print(f"Found {len(records)} clips in {args.frames_dir}", flush=True)
+    # Load records: prefer --jsonl (fast) over frames-dir scan (slow on NFS)
+    if args.jsonl:
+        records = _load_records_from_jsonl(args.jsonl, args.frames_dir, args.limit)
+        print(f"Loaded {len(records)} clips from {args.jsonl}", flush=True)
+    else:
+        print(f"Scanning {args.frames_dir} (may be slow on NFS) …", flush=True)
+        records = load_records_from_frames_dir(args.frames_dir, args.limit)
+        print(f"Found {len(records)} clips in {args.frames_dir}", flush=True)
 
     if not records:
         print("No clips to process.")
@@ -291,8 +344,15 @@ def main():
             args.overwrite,
         )
 
+    try:
+        from tqdm import tqdm
+        has_tqdm = True
+    except ImportError:
+        has_tqdm = False
+
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(_process, r): r for r in records}
+        pbar = tqdm(total=len(records), desc="Annotating", unit="clip") if has_tqdm else None
         for fut in as_completed(futures):
             try:
                 status = fut.result()
@@ -301,7 +361,13 @@ def main():
                 status = f"error {clip_key}: {exc}"
             tag = status.split()[0]
             counts[tag] = counts.get(tag, 0) + 1
-            print(f"  [{counts['ok']+counts['skip']+counts['error']}/{len(records)}] {status}", flush=True)
+            if pbar is not None:
+                pbar.set_postfix(ok=counts["ok"], skip=counts["skip"], err=counts["error"])
+                pbar.update(1)
+            else:
+                print(f"  [{counts['ok']+counts['skip']+counts['error']}/{len(records)}] {status}", flush=True)
+        if pbar is not None:
+            pbar.close()
 
     print(f"\nDone: {counts['ok']} annotated, {counts['skip']} skipped, {counts['error']} errors")
 

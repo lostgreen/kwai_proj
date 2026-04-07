@@ -70,7 +70,9 @@ python "$HIER_SCRIPT_DIR/extract_frames.py" \
 ### Step 2: VLM 标注 — 生成 query + GT
 
 ```bash
+# 推荐: 用 --jsonl 避免 NFS 目录扫描卡顿 (用 Step 1 同一个 JSONL)
 python "$SCRIPT_DIR/annotate_gseg.py" \
+    --jsonl "$JSONL" \
     --frames-dir "$FRAMES_DIR" \
     --output-dir "$ANN_DIR" \
     --api-base "$API_BASE" \
@@ -133,6 +135,7 @@ python "$SCRIPT_DIR/build_gseg_data.py" \
 ```bash
 # 只跑前 10 个视频
 python "$SCRIPT_DIR/annotate_gseg.py" \
+    --jsonl "$JSONL" \
     --frames-dir "$FRAMES_DIR" \
     --output-dir "$ANN_DIR" \
     --model "$MODEL" \
