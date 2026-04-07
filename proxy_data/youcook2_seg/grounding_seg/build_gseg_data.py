@@ -105,8 +105,16 @@ def build_record(
     # Resolve video path
     source_video = ann.get("source_video_path", "")
     if video_dir and source_video:
-        video_name = Path(source_video).name
-        video_path = os.path.join(video_dir, video_name)
+        # If source_video is already under video_dir, use it as-is
+        if source_video.startswith(video_dir):
+            video_path = source_video
+        else:
+            # Try to preserve relative structure (e.g. "mr_hisum/abc.mp4")
+            # by using the last two path components
+            parts = Path(source_video).parts
+            # Use parent_dir/filename if available, else just filename
+            rel = os.path.join(*parts[-2:]) if len(parts) >= 2 else Path(source_video).name
+            video_path = os.path.join(video_dir, rel)
     elif source_video:
         video_path = source_video
     else:
