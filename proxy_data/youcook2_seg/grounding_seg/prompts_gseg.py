@@ -102,6 +102,13 @@ Example query pattern:
     instead (e.g., "the main crafting activity" instead of "sewing the zipper").
 ❌  Do NOT make the query so vague that multiple fundamentally different
     segmentations would be equally valid.
+❌  **Do NOT leak the noise types:** When writing the `query`, you MUST NOT
+    explicitly list the types of distractions or noise the student should
+    filter out.
+    - Bad: "Extract the slacklining, filtering out scenic shots and people
+      playing guitar." (This leaks the answer.)
+    - Good: "Extract only the active, hands-on slacklining process."
+      (The student must deduce what is NOT the active process.)
 
 Note: Some domain awareness is acceptable — e.g., "the stretching routine"
 is fine; "the hamstring stretch then the quad stretch then the calf stretch"
