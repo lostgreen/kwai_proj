@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-annotate.py — Topology-adaptive hierarchical video annotation pipeline.
+annotate.py — Archetype-driven hierarchical video annotation pipeline.
 
 Annotation levels:
-  merged: L1+L2+Topology single-call — full video frames (1fps)
-          → domain + topology classification + macro phases + events
-  3:      L3 grounding — topology-routed:
-          procedural → per-event frames → state_change micro-actions
-          periodic   → per-phase frames → repetition_unit micro-actions
-          sequence   → per-event frames → interaction_unit micro-actions (v2)
-          flat       → skipped automatically
-  2c/3c:  Quality check & supplement for L2/L3 results respectively
+  merged: Step 0 classify (64 frames → archetype + domain_l2)
+          + Step 1 archetype-driven L1+L2 annotation (full video frames)
+  3:      L3 grounding — archetype-routed:
+          tutorial/educational → per-event → state_change micro-actions
+          performance          → per-phase → repetition_unit micro-actions
+          cinematic/vlog/sports → per-event → interaction_unit micro-actions
+          talk/ambient         → L3 skipped automatically
 
 Recommended workflow:
     # Step 1: L1+L2+Topology merged annotation (1fps full-video frames)
@@ -94,18 +93,21 @@ def _accumulate_usage(usage, text_chars: int = 0, image_b64_bytes: int = 0, n_im
         _token_usage["n_images"] += n_images
 
 
-from prompts import (
+from archetypes import (
     SYSTEM_PROMPT,
-    DOMAIN_TAXONOMY,
     DOMAIN_L2_ALL,
     TOPOLOGY_TYPES,
     TOPOLOGY_TO_L2_MODE,
     TOPOLOGY_TO_L3_MODE,
-    get_level2_check_prompt,
-    get_level3_prompt,
-    get_level3_check_prompt,
-    get_merged_check_prompt,
-    get_merged_l1l2_prompt,
+    ARCHETYPE_IDS,
+    ARCHETYPE_TO_TOPOLOGY,
+    TOPOLOGY_TO_DEFAULT_ARCHETYPE,
+    get_archetype,
+    get_classification_prompt,
+    get_archetype_merged_prompt,
+    get_archetype_l3_prompt,
+    get_active_levels,
+    get_l3_parent_type,
 )
 
 
@@ -417,6 +419,79 @@ def call_and_parse(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Archetype helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_archetype(existing: dict[str, Any]) -> str:
+    """Resolve archetype from existing annotation, with backward compat."""
+    archetype = existing.get("archetype")
+    if archetype and archetype in ARCHETYPE_IDS:
+        return archetype
+    # Fall back: topology → default archetype
+    topology = existing.get("topology_type", "")
+    return TOPOLOGY_TO_DEFAULT_ARCHETYPE.get(topology, "ambient")
+
+
+def _classify_archetype(
+    frame_dir: Path,
+    clip_duration: float,
+    api_base: str, api_key: str, model: str,
+    max_frames: int = 64,
+    resize_max_width: int = 0, jpeg_quality: int = 60,
+) -> dict[str, Any]:
+    """Step 0: Classify video archetype + domain_l2 using a small number of frames."""
+    all_frames = get_all_frame_files(frame_dir)
+    if not all_frames:
+        raise RuntimeError(f"no frames found in {frame_dir}")
+
+    sampled = sample_uniform(all_frames, max_frames)
+    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+    frame_labels = []
+    for fp in sampled:
+        idx = frame_stem_to_index(fp, 0)
+        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+
+    duration = int(clip_duration)
+    prompt_text = get_classification_prompt(n_frames=len(sampled), duration_sec=duration)
+    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+
+    if parsed is None:
+        # Fallback: default to tutorial archetype
+        return {
+            "archetype": "tutorial",
+            "archetype_confidence": 0.0,
+            "archetype_reason": "classification failed, defaulting to tutorial",
+            "domain_l2": "other",
+            "topology_type": "procedural",
+        }
+
+    archetype = parsed.get("archetype", "tutorial")
+    if archetype not in ARCHETYPE_IDS:
+        archetype = "tutorial"
+
+    domain_l2 = parsed.get("domain_l2", "other")
+    if domain_l2 not in DOMAIN_L2_ALL:
+        domain_l2 = "other"
+
+    archetype_confidence = parsed.get("archetype_confidence")
+    if not isinstance(archetype_confidence, (int, float)):
+        archetype_confidence = 0.5
+    archetype_confidence = max(0.0, min(1.0, float(archetype_confidence)))
+
+    archetype_reason = str(parsed.get("archetype_reason", ""))
+    topology_type = ARCHETYPE_TO_TOPOLOGY.get(archetype, "procedural")
+
+    return {
+        "archetype": archetype,
+        "archetype_confidence": archetype_confidence,
+        "archetype_reason": archetype_reason,
+        "domain_l2": domain_l2,
+        "topology_type": topology_type,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Per-clip annotation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -433,6 +508,7 @@ def annotate_clip(
     jpeg_quality: int,
     overwrite: bool,
     l3_frames_dir: Path | None = None,
+    classify_frames: int = 64,
 ) -> dict:
     """
     Run the annotation pipeline for a single clip record.
@@ -458,20 +534,11 @@ def annotate_clip(
             existing = {}
 
     # Skip if the requested level is already done and not overwriting
-    is_check_mode = level in ("2c", "3c")
     if level == "merged":
         if not overwrite and existing.get("level1") is not None and existing.get("level2") is not None:
             return {"clip_key": key, "ok": True, "error": None, "skipped": True}
     elif level == "3":
         if not overwrite and existing.get("level3") is not None:
-            return {"clip_key": key, "ok": True, "error": None, "skipped": True}
-    elif is_check_mode:
-        check_target = "level2" if level == "2c" else "level3"
-        if existing.get(check_target) is None:
-            return {"clip_key": key, "ok": False,
-                    "error": f"{check_target} annotation missing; run that level first before check",
-                    "skipped": False}
-        if not overwrite and existing.get(check_target, {}).get("_check_stats") is not None:
             return {"clip_key": key, "ok": True, "error": None, "skipped": True}
 
     # Load frames metadata
@@ -486,110 +553,79 @@ def annotate_clip(
     )
     n_total_frames = count_extracted_frames(frame_dir)
 
-    # For L3/3c, l3_frames_dir is the base dir for per-event subfolders:
+    # For L3, l3_frames_dir is the base dir for per-event subfolders:
     #   {l3_frames_dir}/{clip_key}_ev{event_id}/
     # frame_dir (full-video 1fps) is used as fallback when per-event dir is absent.
 
     try:
         if level == "merged":
+            # Step 0: Classify archetype + domain
+            classify_result = _classify_archetype(
+                frame_dir, clip_duration,
+                api_base, api_key, model,
+                max_frames=classify_frames,
+                resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
+            )
+            archetype_id = classify_result["archetype"]
+            print(f"  [{key}] archetype={archetype_id} "
+                  f"conf={classify_result['archetype_confidence']:.2f} "
+                  f"domain={classify_result['domain_l2']}", flush=True)
+
+            # Step 1: Archetype-driven merged L1+L2 annotation
             merged_result = _annotate_merged_l1l2(
                 frame_dir, clip_duration,
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
+                archetype_id=archetype_id,
             )
+            # Merge classify metadata into merged result
+            merged_result.update(classify_result)
         elif level == "3":
-            # ── Topology-aware L3 routing (v2: sequence now enabled) ──
-            topology_type = existing.get("topology_type", "procedural")
-            topology_confidence = existing.get("topology_confidence", 1.0)
-            l3_mode = existing.get("l3_mode") or TOPOLOGY_TO_L3_MODE.get(topology_type, "state_change")
+            # ── Archetype-aware L3 routing ──
+            archetype_id = _resolve_archetype(existing)
+            cfg = get_archetype(archetype_id)
+            topology_type = ARCHETYPE_TO_TOPOLOGY.get(archetype_id, "procedural")
 
-            # Conservative threshold: low confidence → skip L3
-            if topology_confidence < 0.6:
-                l3_mode = "skip"
-
-            if l3_mode == "skip":
+            # Check if L3 is enabled for this archetype
+            if not cfg.l3.enabled:
                 result_key, result_val = "level3", {
                     "micro_type": "skip",
                     "grounding_results": [],
                     "_segment_calls": [],
-                    "_skip_reason": f"l3_mode=skip (topology={topology_type}, conf={topology_confidence:.2f})",
+                    "_skip_reason": f"L3 disabled for archetype={archetype_id}",
                 }
-            elif topology_type == "periodic":
-                # periodic: L3 from phases, not events
-                l1 = existing.get("level1")
-                if l1 is None:
-                    return {"clip_key": key, "ok": False,
-                            "error": "level1 annotation missing; run merged first", "skipped": False}
-                result_key, result_val = _annotate_level3(
-                    frame_dir, clip_duration, existing.get("level2") or {"events": []},
-                    api_base, api_key, model,
-                    max_frames_per_call, resize_max_width, jpeg_quality,
-                    l3_base=l3_frames_dir,
-                    clip_key_str=key,
-                    topology_type=topology_type,
-                    l1_result=l1,
-                )
             else:
-                # default: leaf-node routing (events + eventless phases)
-                l2 = existing.get("level2")
-                if l2 is None:
-                    return {"clip_key": key, "ok": False,
-                            "error": "level2 annotation missing; run merged first", "skipped": False}
-                result_key, result_val = _annotate_level3(
-                    frame_dir, clip_duration, l2,
-                    api_base, api_key, model,
-                    max_frames_per_call, resize_max_width, jpeg_quality,
-                    l3_base=l3_frames_dir,
-                    clip_key_str=key,
-                    topology_type=topology_type,
-                    l1_result=existing.get("level1"),
-                )
-        elif level == "2c":
-            l1 = existing.get("level1")
-            l2 = existing.get("level2")
-            if l1 is None or l2 is None:
-                return {"clip_key": key, "ok": False,
-                        "error": "level1+level2 annotations required for L2 check; run merged first",
-                        "skipped": False}
-            result_key, result_val = _check_level2(
-                frame_dir, clip_duration, l1, l2,
-                api_base, api_key, model,
-                max_frames_per_call, resize_max_width, jpeg_quality,
-            )
-        elif level == "merged_c":
-            l1 = existing.get("level1")
-            l2 = existing.get("level2")
-            if l1 is None or l2 is None:
-                return {"clip_key": key, "ok": False,
-                        "error": "level1+level2 annotations required for merged check; run merged first",
-                        "skipped": False}
-            checked_l1, checked_l2 = _check_merged_l1l2(
-                frame_dir, clip_duration, l1, l2,
-                summary=existing.get("summary", ""),
-                topology_type=existing.get("topology_type", "procedural"),
-                topology_confidence=float(existing.get("topology_confidence", 0.5)),
-                api_base=api_base, api_key=api_key, model=model,
-                max_frames=max_frames_per_call,
-                resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
-                global_phase_criterion=existing.get("global_phase_criterion", ""),
-            )
-            # merged_c writes both level1 and level2 — handled specially below
-            result_key = "merged_c"
-            result_val = {"level1": checked_l1, "level2": checked_l2}
-        elif level == "3c":
-            l2 = existing.get("level2")
-            l3 = existing.get("level3")
-            if l2 is None or l3 is None:
-                return {"clip_key": key, "ok": False,
-                        "error": "level2+level3 annotations required for check; run merged & level 3 first",
-                        "skipped": False}
-            result_key, result_val = _check_level3(
-                frame_dir, clip_duration, l2, l3,
-                api_base, api_key, model,
-                max_frames_per_call, resize_max_width, jpeg_quality,
-                l3_base=l3_frames_dir,
-                clip_key_str=key,
-            )
+                l3_parent = get_l3_parent_type(archetype_id)
+                if l3_parent == "phase":
+                    # L3 from phases (e.g., performance archetype)
+                    l1 = existing.get("level1")
+                    if l1 is None:
+                        return {"clip_key": key, "ok": False,
+                                "error": "level1 annotation missing; run merged first", "skipped": False}
+                    result_key, result_val = _annotate_level3(
+                        frame_dir, clip_duration, existing.get("level2") or {"events": []},
+                        api_base, api_key, model,
+                        max_frames_per_call, resize_max_width, jpeg_quality,
+                        l3_base=l3_frames_dir,
+                        clip_key_str=key,
+                        archetype_id=archetype_id,
+                        l1_result=l1,
+                    )
+                else:
+                    # L3 from events (default: leaf-node routing)
+                    l2 = existing.get("level2")
+                    if l2 is None:
+                        return {"clip_key": key, "ok": False,
+                                "error": "level2 annotation missing; run merged first", "skipped": False}
+                    result_key, result_val = _annotate_level3(
+                        frame_dir, clip_duration, l2,
+                        api_base, api_key, model,
+                        max_frames_per_call, resize_max_width, jpeg_quality,
+                        l3_base=l3_frames_dir,
+                        clip_key_str=key,
+                        archetype_id=archetype_id,
+                        l1_result=existing.get("level1"),
+                    )
         else:
             return {"clip_key": key, "ok": False, "error": f"unsupported level {level}", "skipped": False}
 
@@ -615,10 +651,7 @@ def annotate_clip(
         **existing,
     }
     if level == "merged":
-        ann.update(merged_result)  # overwrites level1, level2, domain_l1, domain_l2, summary
-    elif level == "merged_c":
-        ann["level1"] = result_val["level1"]
-        ann["level2"] = result_val["level2"]
+        ann.update(merged_result)  # overwrites level1, level2, archetype, domain_l2, summary
     else:
         ann[result_key] = result_val
     ann["annotated_at"] = datetime.now(timezone.utc).isoformat()
@@ -643,44 +676,16 @@ def _split_merged_response(
     """Split merged VLM response into a flat dict of annotation fields.
 
     The VLM outputs events nested inside phases. This function:
-    1. Extracts and validates domain_l1/domain_l2/summary
-    2. Extracts and validates topology_type/confidence/reason/l2_mode/l3_mode
-    3. Strips nested events out of phases → flat events list
-    4. Tags each event with parent_phase_id
-    5. Re-numbers event_id globally by start_time
+    1. Extracts and validates summary
+    2. Strips nested events out of phases → flat events list
+    3. Tags each event with parent_phase_id
+    4. Re-numbers event_id globally by start_time
 
-    Returns dict with keys: level1, level2, domain_l1, domain_l2, summary,
-        topology_type, topology_confidence, topology_reason, l2_mode, l3_mode.
+    Returns dict with keys: level1, level2, summary, global_phase_criterion.
+    Note: archetype/domain_l2/topology are set by Step 0 (classify), not here.
     """
-    domain_l1 = parsed.get("domain_l1", "other")
-    if domain_l1 not in DOMAIN_TAXONOMY:
-        domain_l1 = "other"
-    domain_l2 = parsed.get("domain_l2", "other")
-    if domain_l2 not in DOMAIN_L2_ALL:
-        domain_l2 = "other"
     summary = parsed.get("summary", "")
     global_phase_criterion = parsed.get("global_phase_criterion", "")
-
-    # ── Topology extraction ──
-    topology_type = parsed.get("topology_type", "procedural")
-    if topology_type not in TOPOLOGY_TYPES:
-        topology_type = "procedural"
-
-    topology_confidence = parsed.get("topology_confidence")
-    if not isinstance(topology_confidence, (int, float)):
-        topology_confidence = 0.5
-    topology_confidence = max(0.0, min(1.0, float(topology_confidence)))
-
-    topology_reason = str(parsed.get("topology_reason", ""))
-
-    l2_mode = parsed.get("l2_mode") or TOPOLOGY_TO_L2_MODE.get(topology_type, "workflow")
-    l3_mode = TOPOLOGY_TO_L3_MODE.get(topology_type, "state_change")
-
-    # Conservative override: very low confidence → treat as flat
-    if topology_confidence < 0.5:
-        topology_type = "flat"
-        l2_mode = "skip"
-        l3_mode = "skip"
 
     raw_phases = parsed.get("macro_phases", [])
     l1_phases: list[dict] = []
@@ -733,15 +738,8 @@ def _split_merged_response(
     return {
         "level1": level1,
         "level2": level2,
-        "domain_l1": domain_l1,
-        "domain_l2": domain_l2,
         "summary": summary,
         "global_phase_criterion": global_phase_criterion,
-        "topology_type": topology_type,
-        "topology_confidence": topology_confidence,
-        "topology_reason": topology_reason,
-        "l2_mode": l2_mode,
-        "l3_mode": l3_mode,
     }
 
 
@@ -750,14 +748,15 @@ def _annotate_merged_l1l2(
     clip_duration: float,
     api_base: str, api_key: str, model: str,
     max_frames: int, resize_max_width: int, jpeg_quality: int,
+    archetype_id: str = "tutorial",
 ) -> dict[str, Any]:
     """
-    Merged L1+L2+Topology: Single VLM call for topology, phases, events, domain, and summary.
+    Merged L1+L2: Single VLM call for phases, events, and summary.
 
-    Uses real timestamps (not warped frames). Samples up to max_frames
-    from the full video.
+    Uses archetype-specific prompts. Archetype/domain classification
+    is done separately in Step 0 (_classify_archetype).
 
-    Returns dict of annotation updates including topology_type, l2_mode, l3_mode.
+    Returns dict of annotation updates including level1, level2, summary.
     """
     all_frames = get_all_frame_files(frame_dir)
     if not all_frames:
@@ -781,7 +780,9 @@ def _annotate_merged_l1l2(
         frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
 
     duration = int(clip_duration)
-    prompt_text = get_merged_l1l2_prompt(n_frames=len(sampled), duration_sec=duration)
+    prompt_text = get_archetype_merged_prompt(
+        archetype_id=archetype_id, n_frames=len(sampled), duration_sec=duration,
+    )
     parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
     if parsed is None:
         raise RuntimeError("merged L1+L2 JSON parse failed after retry")
@@ -803,21 +804,24 @@ def _annotate_level3(
     max_frames: int, resize_max_width: int, jpeg_quality: int,
     l3_base: Path | None = None,
     clip_key_str: str = "",
-    topology_type: str = "procedural",
+    archetype_id: str = "tutorial",
     l1_result: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
-    Level 3: Local Temporal Grounding (topology-aware).
+    Level 3: Local Temporal Grounding (archetype-aware).
 
-    Source selection by topology:
-      - procedural: iterate L2 events → per-event frames in {l3_base}/{clip_key}_ev{id}/
-      - periodic:   iterate L1 phases → per-phase frames in {l3_base}/{clip_key}_ph{id}/
+    Source selection by archetype L3 parent type:
+      - parent="event":  iterate L2 events → per-event frames
+      - parent="phase":  iterate L1 phases → per-phase frames
     Falls back to filtering the full-video 1fps frame dir when dedicated dir is absent.
     """
-    # ── Build source list based on topology (leaf-node collection) ──
+    cfg = get_archetype(archetype_id)
+    l3_parent = get_l3_parent_type(archetype_id)
+
+    # ── Build source list based on archetype L3 parent ──
     sources: list[dict[str, Any]] = []
 
-    if topology_type == "periodic" and l1_result is not None:
+    if l3_parent == "phase" and l1_result is not None:
         # periodic: L3 sources from L1 phases
         phases = l1_result.get("macro_phases", [])
         for phase in phases:
@@ -891,7 +895,7 @@ def _annotate_level3(
     meta = load_frame_meta(frame_dir)
     fps = float(meta.get("fps", 1.0))
 
-    micro_type = "repetition_unit" if topology_type == "periodic" else "state_change"
+    micro_type = cfg.l3.micro_type or "state_change"
     all_results: list[dict[str, Any]] = []
     segment_calls: list[dict[str, Any]] = []
 
@@ -952,9 +956,11 @@ def _annotate_level3(
         frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
         frame_labels = make_labels(sampled)
 
-        prompt_text = get_level3_prompt(
-            int(start_time), int(end_time), instruction,
-            topology_type=topology_type,
+        prompt_text = get_archetype_l3_prompt(
+            archetype_id=archetype_id,
+            clip_start_sec=int(start_time),
+            clip_end_sec=int(end_time),
+            action_query=instruction,
         )
         parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
 
@@ -1004,984 +1010,9 @@ def _annotate_level3(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Level 3 Check: Model-based Quality Judge & Supplement
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _apply_l2_check_results(
-    existing_events: list[dict[str, Any]],
-    check_parsed: dict[str, Any],
-    parent_phase_id: int,
-    phase_start: int,
-    phase_end: int,
-) -> list[dict[str, Any]]:
-    """
-    Apply check verdicts to existing L2 events for one phase.
-
-    Returns the updated list of events for this phase.
-    """
-    event_by_id = {e.get("event_id"): e for e in existing_events}
-
-    reviews = check_parsed.get("reviews") or []
-    kept_events: list[dict[str, Any]] = []
-
-    for review in reviews:
-        if not isinstance(review, dict):
-            continue
-        eid = review.get("event_id")
-        verdict = review.get("verdict", "keep")
-        original = event_by_id.get(eid)
-        if original is None:
-            continue
-
-        if verdict == "keep":
-            kept_events.append(original)
-        elif verdict == "revise":
-            revised = review.get("revised")
-            if isinstance(revised, dict):
-                updated = dict(original)
-                for field in ("start_time", "end_time", "instruction", "visual_keywords"):
-                    if field in revised:
-                        updated[field] = revised[field]
-                st = updated.get("start_time")
-                et = updated.get("end_time")
-                if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
-                    updated["_checked"] = "revised"
-                    kept_events.append(updated)
-                else:
-                    original["_checked"] = "revise_failed_kept_original"
-                    kept_events.append(original)
-            else:
-                original["_checked"] = "revise_no_data_kept_original"
-                kept_events.append(original)
-        elif verdict == "remove":
-            pass  # intentionally removed
-        else:
-            kept_events.append(original)
-
-    # Any existing events not mentioned in reviews are kept
-    reviewed_ids = {r.get("event_id") for r in reviews if isinstance(r, dict)}
-    for e in existing_events:
-        if e.get("event_id") not in reviewed_ids:
-            kept_events.append(e)
-
-    # Add supplements
-    supplements = check_parsed.get("supplements") or []
-    for sup in supplements:
-        if not isinstance(sup, dict):
-            continue
-        st = sup.get("start_time")
-        et = sup.get("end_time")
-        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
-            continue
-        sup["parent_phase_id"] = parent_phase_id
-        sup["_checked"] = "supplemented"
-        kept_events.append(sup)
-
-    return kept_events
-
-
-def _check_level2(
-    frame_dir: Path,
-    clip_duration: float,
-    l1_result: dict[str, Any],
-    l2_result: dict[str, Any],
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-) -> tuple[str, dict[str, Any]]:
-    """
-    Level 2 Check: Model-based quality review and supplement for L2 annotations.
-
-    For each L1 phase:
-      1. Gather existing L2 events belonging to this phase.
-      2. Re-read phase frames and call the judge model.
-      3. Apply verdicts (keep/revise/remove) and add supplemented events.
-    """
-    phases = l1_result.get("macro_phases", [])
-    phases = sorted(
-        [p for p in phases if isinstance(p, dict)],
-        key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)),
-    )
-    if not phases:
-        raise RuntimeError("level1 macro_phases missing or empty")
-
-    existing_events = l2_result.get("events", [])
-
-    all_checked: list[dict[str, Any]] = []
-    check_calls: list[dict[str, Any]] = []
-    stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
-
-    for phase in phases:
-        phase_id = phase.get("phase_id")
-        phase_name = phase.get("phase_name", "")
-        narrative = phase.get("narrative_summary", "")
-
-        phase_start = phase.get("start_time", 0)
-        phase_end = phase.get("end_time", 0)
-
-        # Gather events belonging to this phase
-        phase_events = [
-            e for e in existing_events
-            if isinstance(e, dict) and e.get("parent_phase_id") == phase_id
-        ]
-
-        if not phase_events:
-            check_calls.append({
-                "phase_id": phase_id, "phase_name": phase_name,
-                "start_time": phase_start, "end_time": phase_end,
-                "skipped": True, "skip_reason": "no existing L2 events",
-            })
-            continue
-
-        ph_frames = get_frames_in_time_range(frame_dir, int(phase_start), int(phase_end))
-        if not ph_frames:
-            check_calls.append({
-                "phase_id": phase_id, "phase_name": phase_name,
-                "start_time": phase_start, "end_time": phase_end,
-                "skipped": True, "skip_reason": "no frames",
-            })
-            all_checked.extend(phase_events)
-            continue
-
-        sampled = sample_uniform(ph_frames, max_frames)
-        frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-
-        frame_labels = []
-        for fp in sampled:
-            idx = frame_stem_to_index(fp, 0)
-            frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
-
-        prompt_text = get_level2_check_prompt(
-            int(phase_start), int(phase_end), phase_name, narrative, phase_events,
-        )
-        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
-
-        if parsed is None:
-            check_calls.append({
-                "phase_id": phase_id, "phase_name": phase_name,
-                "start_time": phase_start, "end_time": phase_end,
-                "skipped": True, "skip_reason": "check parse failed",
-            })
-            all_checked.extend(phase_events)
-            continue
-
-        n_before = len(phase_events)
-        checked = _apply_l2_check_results(
-            phase_events, parsed, phase_id, int(phase_start), int(phase_end),
-        )
-        all_checked.extend(checked)
-
-        # Count stats from actual apply results
-        for r in checked:
-            tag = r.get("_checked")
-            if tag == "revised":
-                stats["revised"] += 1
-            elif tag == "supplemented":
-                stats["supplemented"] += 1
-            else:
-                stats["kept"] += 1
-        stats["removed"] += n_before - sum(1 for r in checked if r.get("_checked") != "supplemented")
-
-        check_calls.append({
-            "phase_id": phase_id, "phase_name": phase_name,
-            "start_time": phase_start, "end_time": phase_end,
-            "n_before": n_before,
-            "n_after": len(checked),
-            "n_supplements": sum(1 for r in checked if r.get("_checked") == "supplemented"),
-        })
-
-    # Sort and re-number
-    all_checked.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
-    for i, e in enumerate(all_checked, 1):
-        e["event_id"] = i
-
-    return "level2", {
-        "events": all_checked,
-        "_check_calls": check_calls,
-        "_check_stats": stats,
-    }
-
-
-def _check_l2_with_shrinkage(
-    frame_dir: Path,
-    clip_duration: float,
-    phase: dict[str, Any],
-    existing_events: list[dict[str, Any]],
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-) -> dict[str, Any]:
-    """
-    Per-phase L2 check + L1 boundary shrinkage + order distinguishability.
-
-    This is the "2c_shrink" analog of ``_check_leaf_node``, but one level up:
-    it reviews L2 events within a single L1 phase, shrinks the L1 phase
-    boundaries, and judges temporal-order distinguishability.
-
-    Returns a dict with keys:
-        checked_events  – list of events after keep/revise/remove/supplement
-        was_shrunk      – bool
-        shrunk_start    – int
-        shrunk_end      – int
-        order_distinguishable – bool
-        order_cue       – str
-        order_confidence – float
-        call_info       – dict (API call metadata)
-    """
-    from prompts import get_l2_shrink_check_prompt
-
-    phase_id = phase.get("phase_id")
-    phase_name = phase.get("phase_name", "")
-    narrative = phase.get("narrative_summary", "")
-    phase_start = int(phase.get("start_time", 0))
-    phase_end = int(phase.get("end_time", 0))
-
-    result: dict[str, Any] = {
-        "checked_events": list(existing_events),
-        "was_shrunk": False,
-        "shrunk_start": phase_start,
-        "shrunk_end": phase_end,
-        "order_distinguishable": False,
-        "order_cue": "",
-        "order_confidence": 0.0,
-        "call_info": {
-            "phase_id": phase_id,
-            "phase_name": phase_name,
-            "start_time": phase_start,
-            "end_time": phase_end,
-        },
-    }
-
-    if not existing_events:
-        result["call_info"]["skipped"] = True
-        result["call_info"]["skip_reason"] = "no existing L2 events"
-        return result
-
-    ph_frames = get_frames_in_time_range(frame_dir, phase_start, phase_end)
-    if not ph_frames:
-        result["call_info"]["skipped"] = True
-        result["call_info"]["skip_reason"] = "no frames"
-        return result
-
-    sampled = sample_uniform(ph_frames, max_frames)
-    frame_b64 = encode_frame_files(
-        sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
-    )
-    frame_labels = []
-    for fp in sampled:
-        idx = frame_stem_to_index(fp, 0)
-        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
-
-    prompt_text = get_l2_shrink_check_prompt(
-        phase_name=phase_name,
-        phase_start=phase_start,
-        phase_end=phase_end,
-        narrative_summary=narrative,
-        existing_events=existing_events,
-    )
-
-    parsed = call_and_parse(
-        api_base, api_key, model, SYSTEM_PROMPT,
-        prompt_text, frame_b64, frame_labels,
-    )
-
-    if parsed is None:
-        result["call_info"]["skipped"] = True
-        result["call_info"]["skip_reason"] = "check parse failed"
-        return result
-
-    # ---- TASK 1: Apply L2 event verdicts ----
-    # The new prompt uses "event_reviews" / "event_supplements" keys
-    check_for_apply = {
-        "reviews": parsed.get("event_reviews", []),
-        "supplements": parsed.get("event_supplements", []),
-    }
-    n_before = len(existing_events)
-    checked = _apply_l2_check_results(
-        existing_events, check_for_apply, phase_id, phase_start, phase_end,
-    )
-    result["checked_events"] = checked
-    result["call_info"]["n_before"] = n_before
-    result["call_info"]["n_after"] = len(checked)
-    result["call_info"]["n_supplements"] = sum(
-        1 for r in checked if r.get("_checked") == "supplemented"
-    )
-
-    # ---- TASK 2: L1 boundary shrinkage ----
-    shrunk_s = parsed.get("shrunk_start")
-    shrunk_e = parsed.get("shrunk_end")
-    if (
-        isinstance(shrunk_s, (int, float))
-        and isinstance(shrunk_e, (int, float))
-        and int(shrunk_s) < int(shrunk_e)
-    ):
-        shrunk_s = int(shrunk_s)
-        shrunk_e = int(shrunk_e)
-        if shrunk_s != phase_start or shrunk_e != phase_end:
-            result["was_shrunk"] = True
-            result["shrunk_start"] = shrunk_s
-            result["shrunk_end"] = shrunk_e
-
-    # ---- TASK 3: Order distinguishability ----
-    result["order_distinguishable"] = bool(parsed.get("order_distinguishable", False))
-    result["order_cue"] = str(parsed.get("order_cue", ""))
-    oc = parsed.get("order_confidence", 0.0)
-    result["order_confidence"] = float(oc) if isinstance(oc, (int, float)) else 0.0
-
-    result["call_info"]["order_distinguishable"] = result["order_distinguishable"]
-    result["call_info"]["order_confidence"] = result["order_confidence"]
-
-    return result
-
-
-def _apply_l3_check_results(
-    existing_results: list[dict[str, Any]],
-    check_parsed: dict[str, Any],
-    parent_event_id: int,
-    event_start: int,
-    event_end: int,
-) -> list[dict[str, Any]]:
-    """
-    Apply check verdicts to existing L3 results for one event.
-
-    Returns the updated list of grounding results for this event.
-    """
-    result_by_id = {r.get("action_id"): r for r in existing_results}
-
-    reviews = check_parsed.get("reviews") or []
-    kept_results: list[dict[str, Any]] = []
-
-    for review in reviews:
-        if not isinstance(review, dict):
-            continue
-        aid = review.get("action_id")
-        verdict = review.get("verdict", "keep")
-        original = result_by_id.get(aid)
-        if original is None:
-            continue
-
-        if verdict == "keep":
-            kept_results.append(original)
-        elif verdict == "revise":
-            revised = review.get("revised")
-            if isinstance(revised, dict):
-                updated = dict(original)
-                for field in ("start_time", "end_time", "sub_action", "pre_state", "post_state"):
-                    if field in revised:
-                        updated[field] = revised[field]
-                # Validate revised timestamps stay within event bounds
-                st = updated.get("start_time")
-                et = updated.get("end_time")
-                if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
-                    updated["_checked"] = "revised"
-                    kept_results.append(updated)
-                else:
-                    # Revised timestamps invalid, keep original
-                    original["_checked"] = "revise_failed_kept_original"
-                    kept_results.append(original)
-            else:
-                # No revised data provided, keep original
-                original["_checked"] = "revise_no_data_kept_original"
-                kept_results.append(original)
-        elif verdict == "remove":
-            pass  # intentionally removed
-        else:
-            # Unknown verdict, keep original
-            kept_results.append(original)
-
-    # Any existing results not mentioned in reviews are kept
-    reviewed_ids = {r.get("action_id") for r in reviews if isinstance(r, dict)}
-    for r in existing_results:
-        if r.get("action_id") not in reviewed_ids:
-            kept_results.append(r)
-
-    # Add supplements
-    supplements = check_parsed.get("supplements") or []
-    for sup in supplements:
-        if not isinstance(sup, dict):
-            continue
-        st = sup.get("start_time")
-        et = sup.get("end_time")
-        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
-            continue
-        sup["parent_event_id"] = parent_event_id
-        sup["_checked"] = "supplemented"
-        kept_results.append(sup)
-
-    return kept_results
-
-
-def _check_level3(
-    frame_dir: Path,
-    clip_duration: float,
-    l2_result: dict[str, Any],
-    l3_result: dict[str, Any],
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-    l3_base: Path | None = None,
-    clip_key_str: str = "",
-) -> tuple[str, dict[str, Any]]:
-    """
-    Level 3 Check: Model-based quality review and supplement for L3 annotations.
-
-    For each L2 event:
-      1. Prefer per-event frames from {l3_base}/{clip_key}_ev{event_id}/ (high-fps).
-      2. Re-read event frames and call the judge model.
-      3. Apply verdicts (keep/revise/remove) and add supplemented actions.
-    """
-    events = l2_result.get("events", [])
-    events = sorted(
-        [e for e in events if isinstance(e, dict)],
-        key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)),
-    )
-    if not events:
-        raise RuntimeError("level2 events missing or empty")
-
-    meta = load_frame_meta(frame_dir)
-    fps = float(meta.get("fps", 1.0))
-
-    existing_l3 = l3_result.get("grounding_results", [])
-    micro_type = l3_result.get("micro_type", "state_change")
-    micro_split_criterion = l3_result.get("micro_split_criterion", "")
-
-    all_checked: list[dict[str, Any]] = []
-    check_calls: list[dict[str, Any]] = []
-    stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
-
-    for event in events:
-        event_id = event.get("event_id")
-        start_time = event.get("start_time")
-        end_time = event.get("end_time")
-        instruction = event.get("instruction", "")
-
-        if not isinstance(start_time, (int, float)) or not isinstance(end_time, (int, float)):
-            check_calls.append({
-                "event_id": event_id, "instruction": instruction,
-                "skipped": True, "skip_reason": "invalid time",
-            })
-            continue
-
-        # Gather existing L3 results for this event
-        event_results = [
-            r for r in existing_l3
-            if isinstance(r, dict) and r.get("parent_event_id") == event_id
-        ]
-
-        if not event_results:
-            check_calls.append({
-                "event_id": event_id, "instruction": instruction,
-                "start_time": start_time, "end_time": end_time,
-                "skipped": True, "skip_reason": "no existing L3 results",
-            })
-            continue
-
-        # Try per-event dir first
-        ev_dir = (l3_base / f"{clip_key_str}_ev{event_id}") if (l3_base and clip_key_str) else None
-        using_per_event = ev_dir is not None and ev_dir.exists() and len(list(ev_dir.glob("*.jpg"))) > 0
-
-        if using_per_event:
-            ev_meta = load_frame_meta(ev_dir)
-            ev_fps = float(ev_meta.get("fps", 2.0))
-            ev_start = float(ev_meta.get("event_start_sec", start_time))
-            ev_frames = get_all_frame_files(ev_dir)
-
-            def make_labels(frames: list[Path], _ev_fps: float = ev_fps, _ev_start: float = ev_start) -> list[str]:
-                labels = []
-                for fp in frames:
-                    idx = frame_stem_to_index(fp, 0)
-                    t_abs = _ev_start + frame_index_to_sec(idx, _ev_fps)
-                    labels.append(f"[Timestamp {format_mmss(t_abs)} | Frame {idx}]")
-                return labels
-        else:
-            ev_frames = get_frames_in_time_range(frame_dir, start_time, end_time, fps)
-
-            def make_labels(frames: list[Path], _fps: float = fps) -> list[str]:
-                labels = []
-                for fp in frames:
-                    idx = frame_stem_to_index(fp, 0)
-                    t = frame_index_to_sec(idx, _fps)
-                    labels.append(f"[Timestamp {format_mmss(t)} | Frame {idx}]")
-                return labels
-
-        if not ev_frames:
-            check_calls.append({
-                "event_id": event_id, "instruction": instruction,
-                "start_time": start_time, "end_time": end_time,
-                "skipped": True, "skip_reason": "no frames",
-            })
-            all_checked.extend(event_results)
-            continue
-
-        sampled = sample_uniform(ev_frames, max_frames)
-        frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-        frame_labels = make_labels(sampled)
-
-        prompt_text = get_level3_check_prompt(
-            int(start_time), int(end_time), instruction, event_results,
-            micro_type=micro_type, micro_split_criterion=micro_split_criterion,
-        )
-        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
-
-        if parsed is None:
-            # Check failed, keep originals
-            check_calls.append({
-                "event_id": event_id, "instruction": instruction,
-                "start_time": start_time, "end_time": end_time,
-                "skipped": True, "skip_reason": "check parse failed",
-            })
-            all_checked.extend(event_results)
-            continue
-
-        # Apply check results
-        n_before = len(event_results)
-        checked = _apply_l3_check_results(
-            event_results, parsed, event_id, int(start_time), int(end_time),
-        )
-        all_checked.extend(checked)
-
-        # Count stats from actual apply results
-        for r in checked:
-            tag = r.get("_checked")
-            if tag == "revised":
-                stats["revised"] += 1
-            elif tag == "supplemented":
-                stats["supplemented"] += 1
-            else:
-                stats["kept"] += 1
-        stats["removed"] += n_before - sum(1 for r in checked if r.get("_checked") != "supplemented")
-
-        check_calls.append({
-            "event_id": event_id, "instruction": instruction,
-            "start_time": start_time, "end_time": end_time,
-            "n_before": n_before,
-            "n_after": len(checked),
-            "n_supplements": sum(1 for r in checked if r.get("_checked") == "supplemented"),
-        })
-
-    # Sort and re-number
-    all_checked.sort(key=lambda r: (r.get("start_time", 0), r.get("end_time", 0)))
-    for i, r in enumerate(all_checked, 1):
-        r["action_id"] = i
-
-    return "level3", {
-        "grounding_results": all_checked,
-        "_check_calls": check_calls,
-        "_check_stats": stats,
-    }
-
-
-def _check_leaf_node(
-    frame_dir: Path,
-    clip_duration: float,
-    *,
-    leaf_parent_type: str,
-    leaf_parent_id: int,
-    leaf_parent_name: str,
-    leaf_parent_start: int,
-    leaf_parent_end: int,
-    existing_l3: list[dict[str, Any]],
-    micro_type: str,
-    micro_split_criterion: str,
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-    l3_base: Path | None = None,
-    clip_key_str: str = "",
-) -> dict[str, Any]:
-    """
-    Leaf-node check: combined L3 review + parent boundary shrinkage + order judgment.
-
-    For ONE leaf (an event or an eventless phase), reviews its L3 micro-actions,
-    optionally shrinks the parent's boundaries, and judges order distinguishability.
-
-    Returns dict with keys:
-        checked_l3  – list of L3 results after keep/revise/remove/supplement
-        was_shrunk  – bool
-        shrunk_start – int
-        shrunk_end   – int
-        order_distinguishable – bool | None
-        order_cue    – str
-        order_confidence – float
-        call_info    – dict (API call metadata)
-    """
-    from prompts import get_leaf_check_prompt
-
-    result: dict[str, Any] = {
-        "checked_l3": list(existing_l3),
-        "was_shrunk": False,
-        "shrunk_start": leaf_parent_start,
-        "shrunk_end": leaf_parent_end,
-        "order_distinguishable": None,
-        "order_cue": "",
-        "order_confidence": 0.0,
-        "call_info": {
-            "parent_type": leaf_parent_type,
-            "parent_id": leaf_parent_id,
-            "parent_name": leaf_parent_name,
-        },
-    }
-
-    if not existing_l3:
-        result["call_info"]["skipped"] = True
-        result["call_info"]["skip_reason"] = "no existing L3 results"
-        return result
-
-    # Try per-event / per-phase L3 frames first
-    if leaf_parent_type == "event":
-        ev_dir = (l3_base / f"{clip_key_str}_ev{leaf_parent_id}") if (l3_base and clip_key_str) else None
-    else:
-        ev_dir = (l3_base / f"{clip_key_str}_ph{leaf_parent_id}") if (l3_base and clip_key_str) else None
-
-    using_per_leaf = ev_dir is not None and ev_dir.exists() and len(list(ev_dir.glob("*.jpg"))) > 0
-
-    if using_per_leaf:
-        meta = load_frame_meta(ev_dir)
-        ev_fps = float(meta.get("fps", 2.0))
-        ev_start = float(meta.get("event_start_sec", leaf_parent_start))
-        ev_frames = get_all_frame_files(ev_dir)
-
-        def make_labels(frames: list[Path], _fps: float = ev_fps, _start: float = ev_start) -> list[str]:
-            labels = []
-            for fp in frames:
-                idx = frame_stem_to_index(fp, 0)
-                t_abs = _start + frame_index_to_sec(idx, _fps)
-                labels.append(f"[Timestamp {format_mmss(t_abs)} | Frame {idx}]")
-            return labels
-    else:
-        meta = load_frame_meta(frame_dir)
-        fps = float(meta.get("fps", 1.0))
-        ev_frames = get_frames_in_time_range(frame_dir, leaf_parent_start, leaf_parent_end, fps)
-
-        def make_labels(frames: list[Path], _fps: float = fps) -> list[str]:
-            labels = []
-            for fp in frames:
-                idx = frame_stem_to_index(fp, 0)
-                t = frame_index_to_sec(idx, _fps)
-                labels.append(f"[Timestamp {format_mmss(t)} | Frame {idx}]")
-            return labels
-
-    if not ev_frames:
-        result["call_info"]["skipped"] = True
-        result["call_info"]["skip_reason"] = "no frames"
-        return result
-
-    sampled = sample_uniform(ev_frames, max_frames)
-    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-    frame_labels = make_labels(sampled)
-
-    prompt_text = get_leaf_check_prompt(
-        parent_type=leaf_parent_type,
-        parent_name=leaf_parent_name,
-        parent_start=leaf_parent_start,
-        parent_end=leaf_parent_end,
-        existing_results=existing_l3,
-        micro_type=micro_type,
-        micro_split_criterion=micro_split_criterion,
-    )
-    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
-
-    if parsed is None:
-        result["call_info"]["skipped"] = True
-        result["call_info"]["skip_reason"] = "check parse failed"
-        return result
-
-    # Apply L3 verdicts
-    check_for_apply = {
-        "reviews": parsed.get("l3_reviews", []),
-        "supplements": parsed.get("l3_supplements", []),
-    }
-    parent_id = leaf_parent_id
-    checked = _apply_l3_check_results(
-        existing_l3, check_for_apply, parent_id,
-        leaf_parent_start, leaf_parent_end,
-    )
-    result["checked_l3"] = checked
-    result["call_info"]["n_before"] = len(existing_l3)
-    result["call_info"]["n_after"] = len(checked)
-
-    # Shrinkage
-    shrunk_s = parsed.get("shrunk_start")
-    shrunk_e = parsed.get("shrunk_end")
-    if (
-        isinstance(shrunk_s, (int, float))
-        and isinstance(shrunk_e, (int, float))
-        and int(shrunk_s) < int(shrunk_e)
-    ):
-        shrunk_s = int(shrunk_s)
-        shrunk_e = int(shrunk_e)
-        if shrunk_s != leaf_parent_start or shrunk_e != leaf_parent_end:
-            result["was_shrunk"] = True
-            result["shrunk_start"] = shrunk_s
-            result["shrunk_end"] = shrunk_e
-
-    # Order distinguishability
-    od = parsed.get("order_distinguishable")
-    if isinstance(od, bool):
-        result["order_distinguishable"] = od
-        result["order_cue"] = str(parsed.get("order_cue", ""))
-        oc = parsed.get("order_confidence")
-        result["order_confidence"] = float(oc) if isinstance(oc, (int, float)) else 0.0
-
-    return result
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Merged L1+L2 Check: Simultaneous Phase + Event Quality Review
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _apply_l1_check_results(
-    existing_phases: list[dict[str, Any]],
-    check_parsed: dict[str, Any],
-    clip_duration: float,
-) -> list[dict[str, Any]]:
-    """
-    Apply check verdicts to existing L1 phases.
-
-    Returns the updated list of macro phases.
-    """
-    phase_by_id = {p.get("phase_id"): p for p in existing_phases}
-
-    reviews = check_parsed.get("phase_reviews") or []
-    kept_phases: list[dict[str, Any]] = []
-
-    for review in reviews:
-        if not isinstance(review, dict):
-            continue
-        pid = review.get("phase_id")
-        verdict = review.get("verdict", "keep")
-        original = phase_by_id.get(pid)
-        if original is None:
-            continue
-
-        if verdict == "keep":
-            kept_phases.append(original)
-        elif verdict == "revise":
-            revised = review.get("revised")
-            if isinstance(revised, dict):
-                updated = dict(original)
-                for field in ("start_time", "end_time", "phase_name", "narrative_summary"):
-                    if field in revised:
-                        updated[field] = revised[field]
-                st = updated.get("start_time")
-                et = updated.get("end_time")
-                if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
-                    updated["_checked"] = "revised"
-                    kept_phases.append(updated)
-                else:
-                    original["_checked"] = "revise_failed_kept_original"
-                    kept_phases.append(original)
-            else:
-                original["_checked"] = "revise_no_data_kept_original"
-                kept_phases.append(original)
-        elif verdict == "remove":
-            pass  # intentionally removed
-        else:
-            kept_phases.append(original)
-
-    # Any existing phases not mentioned in reviews are kept
-    reviewed_ids = {r.get("phase_id") for r in reviews if isinstance(r, dict)}
-    for p in existing_phases:
-        if p.get("phase_id") not in reviewed_ids:
-            kept_phases.append(p)
-
-    # Add supplements
-    supplements = check_parsed.get("phase_supplements") or []
-    for sup in supplements:
-        if not isinstance(sup, dict):
-            continue
-        st = sup.get("start_time")
-        et = sup.get("end_time")
-        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
-            continue
-        sup["start_time"] = int(st)
-        sup["end_time"] = min(int(et), int(clip_duration))
-        sup["_checked"] = "supplemented"
-        kept_phases.append(sup)
-
-    return kept_phases
-
-
-def _check_merged_l1l2(
-    frame_dir: Path,
-    clip_duration: float,
-    l1_result: dict[str, Any],
-    l2_result: dict[str, Any],
-    summary: str,
-    topology_type: str,
-    topology_confidence: float,
-    api_base: str, api_key: str, model: str,
-    max_frames: int, resize_max_width: int, jpeg_quality: int,
-    global_phase_criterion: str = "",
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """
-    Merged L1+L2 Check: Model-based quality review for both L1 phases and L2 events.
-
-    Sends full-video 1fps frames with existing L1+L2 annotations for simultaneous
-    review, mirroring the merged annotation call.
-
-    Returns (checked_l1, checked_l2) dicts.
-    """
-    phases = l1_result.get("macro_phases", [])
-    phases = sorted(
-        [p for p in phases if isinstance(p, dict)],
-        key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)),
-    )
-    if not phases:
-        raise RuntimeError("level1 macro_phases missing or empty")
-
-    existing_events = l2_result.get("events", [])
-
-    # Sample full-video frames (same as merged annotation)
-    all_frames = get_all_frame_files(frame_dir)
-    if not all_frames:
-        raise RuntimeError(f"no frames found in {frame_dir}")
-
-    sampled = sample_uniform(all_frames, max_frames)
-    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
-
-    frame_labels = []
-    for fp in sampled:
-        idx = frame_stem_to_index(fp, 0)
-        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
-
-    prompt_text = get_merged_check_prompt(
-        n_frames=len(sampled),
-        duration_sec=int(clip_duration),
-        summary=summary,
-        topology_type=topology_type,
-        topology_confidence=topology_confidence,
-        l1_phases=phases,
-        l2_events=existing_events,
-        global_phase_criterion=global_phase_criterion,
-    )
-    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
-
-    if parsed is None:
-        raise RuntimeError("merged check: VLM parse failed")
-
-    # ── Apply L1 phase verdicts ──
-    checked_phases = _apply_l1_check_results(phases, parsed, clip_duration)
-
-    # Sort and re-number phases
-    checked_phases.sort(key=lambda p: (p.get("start_time", 0), p.get("end_time", 0)))
-    for i, p in enumerate(checked_phases, 1):
-        p["phase_id"] = i
-
-    # Build old→new phase_id mapping for event parent_phase_id fixup
-    # (supplements get new IDs from re-numbering above)
-    valid_phase_ids = {p["phase_id"] for p in checked_phases}
-
-    # ── Apply L2 event verdicts ──
-    event_by_id = {e.get("event_id"): e for e in existing_events}
-    event_reviews = parsed.get("event_reviews") or []
-    kept_events: list[dict[str, Any]] = []
-
-    for review in event_reviews:
-        if not isinstance(review, dict):
-            continue
-        eid = review.get("event_id")
-        verdict = review.get("verdict", "keep")
-        original = event_by_id.get(eid)
-        if original is None:
-            continue
-
-        if verdict == "keep":
-            kept_events.append(original)
-        elif verdict == "revise":
-            revised = review.get("revised")
-            if isinstance(revised, dict):
-                updated = dict(original)
-                for field in ("start_time", "end_time", "instruction", "visual_keywords"):
-                    if field in revised:
-                        updated[field] = revised[field]
-                st = updated.get("start_time")
-                et = updated.get("end_time")
-                if isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et:
-                    updated["_checked"] = "revised"
-                    kept_events.append(updated)
-                else:
-                    original["_checked"] = "revise_failed_kept_original"
-                    kept_events.append(original)
-            else:
-                original["_checked"] = "revise_no_data_kept_original"
-                kept_events.append(original)
-        elif verdict == "remove":
-            pass
-        else:
-            kept_events.append(original)
-
-    # Any existing events not mentioned in reviews are kept
-    reviewed_eids = {r.get("event_id") for r in event_reviews if isinstance(r, dict)}
-    for e in existing_events:
-        if e.get("event_id") not in reviewed_eids:
-            kept_events.append(e)
-
-    # Add event supplements
-    event_supplements = parsed.get("event_supplements") or []
-    for sup in event_supplements:
-        if not isinstance(sup, dict):
-            continue
-        st = sup.get("start_time")
-        et = sup.get("end_time")
-        if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
-            continue
-        sup["_checked"] = "supplemented"
-        kept_events.append(sup)
-
-    # Drop events whose parent_phase_id no longer exists
-    final_events = []
-    for e in kept_events:
-        ppid = e.get("parent_phase_id")
-        if ppid is not None and ppid not in valid_phase_ids:
-            continue  # orphaned by phase removal
-        final_events.append(e)
-
-    # Sort and re-number events
-    final_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
-    for i, e in enumerate(final_events, 1):
-        e["event_id"] = i
-
-    # ── Aggregate stats from actual results ──
-    l1_stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
-    original_phase_ids = {p.get("phase_id") for p in phases}
-    for p in checked_phases:
-        tag = p.get("_checked")
-        if tag == "revised":
-            l1_stats["revised"] += 1
-        elif tag == "supplemented":
-            l1_stats["supplemented"] += 1
-        else:
-            l1_stats["kept"] += 1
-    l1_stats["removed"] = len(original_phase_ids) - (l1_stats["kept"] + l1_stats["revised"])
-    if l1_stats["removed"] < 0:
-        l1_stats["removed"] = 0
-
-    l2_stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0}
-    original_event_ids = {e.get("event_id") for e in existing_events}
-    for e in final_events:
-        tag = e.get("_checked")
-        if tag == "revised":
-            l2_stats["revised"] += 1
-        elif tag == "supplemented":
-            l2_stats["supplemented"] += 1
-        elif e.get("event_id") in original_event_ids or tag is None:
-            l2_stats["kept"] += 1
-    l2_stats["removed"] = len(original_event_ids) - (l2_stats["kept"] + l2_stats["revised"])
-    if l2_stats["removed"] < 0:
-        l2_stats["removed"] = 0
-
-    checked_l1 = {
-        "macro_phases": checked_phases,
-        "_check_stats": l1_stats,
-    }
-    checked_l2 = {
-        "events": final_events,
-        "_check_stats": l2_stats,
-    }
-
-    return checked_l1, checked_l2
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Hierarchical video annotation pipeline (merged L1+L2, L3, and quality checks)",
+        description="Hierarchical video annotation pipeline (merged L1+L2, L3)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--jsonl", default=None,
@@ -1991,9 +1022,11 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write per-clip annotation JSON files")
     parser.add_argument("--l3-frames-dir", default=None,
-                        help="High-FPS frames directory for L3/3c (falls back to --frames-dir)")
-    parser.add_argument("--level", type=str, choices=["merged", "3", "2c", "3c", "merged_c"], default="merged",
-                        help="Annotation level (merged=L1+L2+domain, 3=L3 grounding, 2c/3c=check, merged_c=L1+L2 check)")
+                        help="High-FPS frames directory for L3 (falls back to --frames-dir)")
+    parser.add_argument("--level", type=str, choices=["merged", "3"], default="merged",
+                        help="Annotation level (merged=L1+L2+domain, 3=L3 grounding)")
+    parser.add_argument("--classify-frames", type=int, default=64,
+                        help="Number of frames for Step 0 archetype classification")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",
                         help="OpenAI-compatible API base URL")
     parser.add_argument("--api-key", default="",
@@ -2051,11 +1084,7 @@ def main() -> None:
     print(f"API: {args.api_base}  model: {args.model}  workers: {args.workers}")
     print(f"resize_max_width={args.resize_max_width}  jpeg_quality={args.jpeg_quality}")
     if level == "merged":
-        print(f"Merged mode: L1 phases + L2 events + domain + summary in one VLM call")
-    elif level == "2c":
-        print(f"L2 check mode: model-based quality review & supplement for L2 events")
-    elif level == "3c":
-        print(f"L3 check mode: model-based quality review & supplement for L3 actions")
+        print(f"Merged mode: Step 0 classify ({args.classify_frames} frames) + Step 1 archetype-driven L1+L2")
     print(f"Frames: {frames_base}  Output: {output_dir}\n")
 
     ok_count = skipped_count = error_count = 0
@@ -2071,6 +1100,7 @@ def main() -> None:
                 args.jpeg_quality,
                 args.overwrite,
                 l3_frames_dir,
+                args.classify_frames,
             ): rec
             for rec in records
         }

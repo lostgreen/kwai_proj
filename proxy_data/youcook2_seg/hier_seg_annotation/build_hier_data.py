@@ -31,25 +31,27 @@ import random
 import sys
 from pathlib import Path
 
-# 添加 repo root 到 sys.path 以便 import prompts + shared
+# 添加 repo root 到 sys.path 以便 import archetypes + shared
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # SCRIPT_DIR = proxy_data/youcook2_seg/hier_seg_annotation/
 # → repo root 在上三级
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
-PROMPTS_DIR = SCRIPT_DIR  # prompts.py 就在同目录
+PROMPTS_DIR = SCRIPT_DIR  # archetypes.py 就在同目录
 PROXY_DATA_DIR = os.path.join(REPO_ROOT, "proxy_data")
 for _p in (PROMPTS_DIR, PROXY_DATA_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from prompts import (
-    get_level1_train_prompt_temporal,
-    get_level2_train_prompt,
+from archetypes import (
+    get_archetype_l1_train_prompt,
+    get_archetype_l2_train_prompt,
+    get_archetype_l3_train_prompt,
+    get_archetype_train_prompt_with_hint,
     get_level3_query_prompt,
     get_level3_seg_prompt,
-    get_level1_train_prompt_with_hint,
-    get_level2_train_prompt_with_hint,
     get_level3_seg_prompt_with_hint,
+    ARCHETYPE_IDS,
+    TOPOLOGY_TO_DEFAULT_ARCHETYPE,
 )
 from shared.seg_source import (
     load_annotations,
@@ -71,6 +73,15 @@ PROBLEM_TYPES = {
     "L3": "temporal_seg_hier_L3",
     "L3_seg": "temporal_seg_hier_L3_seg",
 }
+
+
+def _resolve_archetype(ann: dict) -> str:
+    """Resolve archetype from annotation, with backward compat for topology-only JSONs."""
+    archetype = ann.get("archetype")
+    if archetype and archetype in ARCHETYPE_IDS:
+        return archetype
+    topology = ann.get("topology_type", "")
+    return TOPOLOGY_TO_DEFAULT_ARCHETYPE.get(topology, "tutorial")
 
 
 # =====================================================================
@@ -112,6 +123,7 @@ def build_l1_records(
     source_video = ann.get("source_video_path") or ann.get("video_path", "")
     clip_key = ann.get("clip_key", "")
     duration = int(clip_duration)
+    archetype = _resolve_archetype(ann)
 
     # 提取 phase 边界 (真实秒数)
     spans = []
@@ -141,12 +153,12 @@ def build_l1_records(
         hint = ann.get("global_phase_hint") or ann.get("global_phase_criterion") or ""
         prompt = (
             "Watch the following video clip carefully:\n<video>\n\n"
-            + get_level1_train_prompt_with_hint(duration, hint)
+            + get_archetype_train_prompt_with_hint(archetype, "l1", duration, hint)
         )
     else:
         prompt = (
             "Watch the following video clip carefully:\n<video>\n\n"
-            + get_level1_train_prompt_temporal(duration)
+            + get_archetype_l1_train_prompt(archetype, duration)
         )
     answer = f"<events>{json.dumps(spans)}</events>"
 
@@ -164,7 +176,7 @@ def build_l1_records(
             "l1_fps": l1_fps,
             "source_video_path": source_video,  # 供 prepare_clips.py 使用
             "n_phases": len(spans),
-            "domain_l1": ann.get("domain_l1", "other"),
+            "archetype": archetype,
             "domain_l2": ann.get("domain_l2", "other"),
             "topology": ann.get("topology_type", ""),
             "output_count": len(spans),
@@ -199,6 +211,7 @@ def build_l2_records(
     events = l2.get("events", [])
     clip_key = ann.get("clip_key", "")
     video_path = ann.get("source_video_path") or ann.get("video_path", "")
+    archetype = _resolve_archetype(ann)
 
     # 生成窗口列表：-1 / 0 表示不切窗，直接用完整 clip
     if window_size > 0:
@@ -239,7 +252,7 @@ def build_l2_records(
 
         prompt = (
             "Watch the following video clip carefully:\n<video>\n\n"
-            + get_level2_train_prompt(duration)
+            + get_archetype_l2_train_prompt(archetype, duration)
         )
         answer = f"<events>{json.dumps(matched)}</events>"
 
@@ -257,7 +270,7 @@ def build_l2_records(
                 "window_start_sec": ws,
                 "window_end_sec": we,
                 "n_events_in_window": len(matched),
-                "domain_l1": ann.get("domain_l1", "other"),
+                "archetype": archetype,
                 "domain_l2": ann.get("domain_l2", "other"),
                 "topology": ann.get("topology_type", ""),
                 "output_count": len(matched),
@@ -295,6 +308,7 @@ def build_l2_phase_records(
     events = l2.get("events", [])
     clip_key = ann.get("clip_key", "")
     video_path = ann.get("source_video_path") or ann.get("video_path", "")
+    archetype = _resolve_archetype(ann)
 
     # Build phase → events mapping
     from collections import defaultdict
@@ -351,12 +365,12 @@ def build_l2_phase_records(
             hint = phase.get("event_split_hint") or phase.get("event_split_criterion") or ""
             prompt = (
                 "Watch the following video clip carefully:\n<video>\n\n"
-                + get_level2_train_prompt_with_hint(duration, hint)
+                + get_archetype_train_prompt_with_hint(archetype, "l2", duration, hint)
             )
         else:
             prompt = (
                 "Watch the following video clip carefully:\n<video>\n\n"
-                + get_level2_train_prompt(duration)
+                + get_archetype_l2_train_prompt(archetype, duration)
             )
         answer = f"<events>{json.dumps(matched)}</events>"
 
@@ -375,7 +389,7 @@ def build_l2_phase_records(
                 "phase_start_sec": ph_start,
                 "phase_end_sec": ph_end,
                 "n_events_in_phase": len(matched),
-                "domain_l1": ann.get("domain_l1", "other"),
+                "archetype": archetype,
                 "domain_l2": ann.get("domain_l2", "other"),
                 "topology": ann.get("topology_type", ""),
                 "output_count": len(matched),
@@ -412,6 +426,7 @@ def build_l3_records(
     clip_key = ann.get("clip_key", "")
     events = l2.get("events", [])
     all_results = l3.get("grounding_results", [])
+    archetype = _resolve_archetype(ann)
 
     records = []
     for event in events:
@@ -520,6 +535,7 @@ def build_l3_seg_records(
     clip_key = ann.get("clip_key", "")
     events = l2.get("events", [])
     all_results = l3.get("grounding_results", [])
+    archetype = _resolve_archetype(ann)
 
     records = []
     for event in events:
@@ -587,7 +603,7 @@ def build_l3_seg_records(
                 "clip_start_sec": clip_start,
                 "clip_end_sec": clip_end,
                 "n_actions": len(spans),
-                "domain_l1": ann.get("domain_l1", "other"),
+                "archetype": archetype,
                 "domain_l2": ann.get("domain_l2", "other"),
                 "topology": ann.get("topology_type", ""),
                 "output_count": len(spans),

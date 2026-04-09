@@ -37,7 +37,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from prompts import get_level2_train_prompt
+from archetypes import get_archetype_l2_train_prompt, TOPOLOGY_TO_DEFAULT_ARCHETYPE, ARCHETYPE_IDS
 
 
 def _ffmpeg_fps_resample(src: str, dst: Path, fps: int = 1) -> None:
@@ -156,9 +156,12 @@ def _process_l2(record: dict, clip_dir: Path) -> dict:
         new_answer = record["answer"]
 
     # Rebuild prompt (0-based duration)
+    archetype = meta.get("archetype", "")
+    if archetype not in ARCHETYPE_IDS:
+        archetype = TOPOLOGY_TO_DEFAULT_ARCHETYPE.get(meta.get("topology", ""), "tutorial")
     new_user_text = (
         "Watch the following video clip carefully:\n<video>\n\n"
-        + get_level2_train_prompt(duration)
+        + get_archetype_l2_train_prompt(archetype, duration)
     )
 
     rec = dict(record)

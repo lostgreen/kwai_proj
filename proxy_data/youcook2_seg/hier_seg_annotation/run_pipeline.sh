@@ -54,13 +54,14 @@ run_step "STEP1_EXTRACT_FRAMES_L1" \
         --output-dir "$DATA_ROOT/frames" \
         --fps 1 --workers "$WORKERS"
 
-# ── Step 2: Merged annotation (L1+L2+Topology+Criterion) ───────────
-run_step "STEP2_MERGED_ANNOTATION" \
+# ── Step 2: Classify archetype + Merged annotation (L1+L2) ─────────
+run_step "STEP2_CLASSIFY_AND_MERGED" \
     python "$SCRIPT_DIR/annotate.py" \
         --jsonl "$JSONL" \
         --frames-dir "$DATA_ROOT/frames" \
         --output-dir "$DATA_ROOT/annotations" \
         --level merged \
+        --classify-frames 64 \
         --model "$MODEL" --workers "$WORKERS"
 
 # ── Step 3: Extract L3 frames (leaf-node routing) ──────────────────
@@ -80,33 +81,10 @@ run_step "STEP4_L3_ANNOTATION" \
         --level 3 \
         --model "$MODEL" --workers "$WORKERS"
 
-# ── Step 5: Leaf-Node Audit (L3 review + parent shrinkage) ────────
-CHECK_MODEL="${CHECK_MODEL:-$MODEL}"
-CHECK_OUTPUT="${CHECK_OUTPUT:-$DATA_ROOT/annotations_checked}"
-
-run_step "STEP5_LEAF_AUDIT" \
-    python "$SCRIPT_DIR/annotate_check.py" \
-        --frames-dir "$DATA_ROOT/frames" \
-        --l3-frames-dir "$DATA_ROOT/frames_l3" \
-        --annotation-dir "$DATA_ROOT/annotations" \
-        --output-dir "$CHECK_OUTPUT" \
-        --levels leaf_c \
-        --model "$CHECK_MODEL" --workers "$WORKERS"
-
-# ── Step 6: L2 Review + L1 Shrinkage + Order Distinguishability ──
-run_step "STEP6_L2_SHRINK_CHECK" \
-    python "$SCRIPT_DIR/annotate_check.py" \
-        --frames-dir "$DATA_ROOT/frames" \
-        --annotation-dir "$CHECK_OUTPUT" \
-        --output-dir "$CHECK_OUTPUT" \
-        --levels 2c_shrink \
-        --model "$CHECK_MODEL" --workers "$WORKERS"
-
 # ── Summary ─────────────────────────────────────────────────────────
 log "========== PIPELINE COMPLETE =========="
-log "Annotations:         $DATA_ROOT/annotations/"
-log "Checked annotations: $CHECK_OUTPUT/"
-log "Full log:            $LOG_FILE"
+log "Annotations: $DATA_ROOT/annotations/"
+log "Full log:    $LOG_FILE"
 
 # Count results
 TOTAL=$(ls "$DATA_ROOT/annotations/"*.json 2>/dev/null | wc -l)

@@ -249,8 +249,6 @@ _DISPATCH = {
     "temporal_seg_hier_L2":     _l2_reward,      # F1-IoU
     "temporal_seg_hier_L3":     _l3_reward_v2,   # F1-IoU
     "temporal_seg_hier_L3_seg": _l3_reward_v2,   # 同上
-    "grounding_seg":            _l1_l2_reward,   # F1-IoU (Segment-as-CoT)
-    "grounding_seg_cot":        _l1_l2_reward,   # F1-IoU (with <think>)
     "sort":                     _sort_reward,     # Jigsaw Displacement
 }
 
