@@ -1,0 +1,1530 @@
+"""
+archetypes.py — Video paradigm definitions for universal hierarchical segmentation.
+
+v4: Paradigm-driven pipeline with 2-level domain taxonomy.
+
+Single source of truth for:
+  - System prompt (VLM role message)
+  - 2-level domain taxonomy (content classification, orthogonal to paradigm)
+  - 7 paradigm definitions with L1/L2/L3 configs
+  - Classification prompt (Stage 1: paradigm + domain + feasibility)
+  - Paradigm-driven annotation prompts (merged L1+L2, L3)
+  - Training prompt generators (L1/L2/L3 + hint variants)
+  - Backward compat: topology constants, archetype aliases
+
+Usage:
+    from archetypes import SYSTEM_PROMPT, PARADIGMS, get_paradigm
+    from archetypes import get_classification_prompt, get_paradigm_merged_prompt
+    from archetypes import get_paradigm_l1_train_prompt, DOMAIN_L1_ALL, DOMAIN_L2_ALL
+    # Backward compat aliases:
+    from archetypes import ARCHETYPES, get_archetype  # same as PARADIGMS / get_paradigm
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# System Prompt (injected as system role in every VLM call)
+# ─────────────────────────────────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """\
+You are an expert in structured video analysis with cross-domain cognitive ability, \
+specializing in temporal structure analysis of procedural, periodic, narrative, \
+and general activity content. \
+Your task is to accurately parse temporal actions, visual state transitions, \
+and semantic/narrative structure.
+
+Core annotation principles:
+1. [Sparsity over Continuity]: ONLY annotate segments with clear semantic meaning or \
+visual actions. Gaps between annotated segments are expected and encouraged. \
+Do NOT force adjacent segments to be contiguous.
+2. [Precise Boundaries]: Boundaries must reflect the exact moment an action begins \
+or the moment a visual state solidifies.
+3. [Information Delta]: Focus on moments where new information is produced or \
+irreversible state changes occur — physical, visual, or semantic.
+4. [Formatting]: Output strictly in valid JSON format."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Domain Taxonomy (V2) — 6 L1 Domains, ~3-4 L2 Categories per L1
+#
+# Domain = WHAT the video is about (content topic)
+# Paradigm = HOW the video is temporally structured
+#
+# References:
+#   Video-MME (2024): Knowledge, Film&TV, Sports, Art, Life Record, Multi-lang
+#   COIN (2019): 12 domains (Dishes, Vehicles, Gadgets, Housework, ...)
+#   ActivityNet: Sports, Household, Personal Care, Eating, Socializing, ...
+#   LongVideoBench (2024): Entertainment, Knowledge, Lifestyle
+# ─────────────────────────────────────────────────────────────────────────────
+
+DOMAIN_L1_ALL: set[str] = {
+    "knowledge_education",  # 知识科普、新闻、讲座、纪录片
+    "film_entertainment",   # 电影、电视剧、动画、综艺节目
+    "sports_esports",       # 竞技体育、健身、极限运动、电子竞技
+    "lifestyle_vlog",       # 日常生活、旅行风景、吃播探店、宠物
+    "arts_performance",     # 音乐、舞蹈、舞台剧、魔术视觉艺术
+    "task_howto",           # 做菜、手工DIY、维修、美妆穿搭教程
+}
+
+# L2 → L1 parent mapping (strict, every L2 has exactly one L1 parent)
+DOMAIN_L2_TO_L1: dict[str, str] = {
+    # knowledge_education (4)
+    "science_tech": "knowledge_education",
+    "humanities_history": "knowledge_education",
+    "lecture_speech": "knowledge_education",
+    "news_report": "knowledge_education",
+    # film_entertainment (3)
+    "movie_drama": "film_entertainment",
+    "animation_cg": "film_entertainment",
+    "variety_show": "film_entertainment",
+    # sports_esports (4)
+    "ball_sport": "sports_esports",
+    "athletics_fitness": "sports_esports",
+    "outdoor_extreme": "sports_esports",
+    "video_game": "sports_esports",
+    # lifestyle_vlog (4)
+    "daily_vlog": "lifestyle_vlog",
+    "travel_scenery": "lifestyle_vlog",
+    "food_tasting": "lifestyle_vlog",
+    "pet_animal": "lifestyle_vlog",
+    # arts_performance (3)
+    "music_audio": "arts_performance",
+    "dance_choreography": "arts_performance",
+    "theater_magic": "arts_performance",
+    # task_howto (4)
+    "food_cooking": "task_howto",
+    "crafts_diy": "task_howto",
+    "repair_assembly": "task_howto",
+    "beauty_grooming": "task_howto",
+}
+
+DOMAIN_L2_ALL: set[str] = set(DOMAIN_L2_TO_L1.keys()) | {"other"}
+
+# Reverse: L1 → list of L2
+DOMAIN_L1_TO_L2: dict[str, list[str]] = {}
+for _l2, _l1 in DOMAIN_L2_TO_L1.items():
+    DOMAIN_L1_TO_L2.setdefault(_l1, []).append(_l2)
+
+
+def resolve_domain_l1(domain_l2: str) -> str:
+    """Given a domain_l2, return its parent domain_l1. Returns 'other' for unknowns."""
+    return DOMAIN_L2_TO_L1.get(domain_l2, "other")
+
+
+def _format_domain_l2_for_prompt() -> str:
+    """Format domain_l2 values grouped by L1 for the classification prompt."""
+    lines = []
+    for l1 in sorted(DOMAIN_L1_ALL):
+        l2_list = sorted(DOMAIN_L1_TO_L2.get(l1, []))
+        lines.append(f"  {l1}: {', '.join(l2_list)}")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backward Compatibility: Topology constants (used during transition)
+# ─────────────────────────────────────────────────────────────────────────────
+
+TOPOLOGY_TYPES: set[str] = {"procedural", "periodic", "sequence", "flat"}
+
+TOPOLOGY_TO_L2_MODE: dict[str, str] = {
+    "procedural": "workflow",
+    "sequence": "episode",
+    "periodic": "optional",
+    "flat": "skip",
+}
+TOPOLOGY_TO_L3_MODE: dict[str, str] = {
+    "procedural": "state_change",
+    "periodic": "repetition_unit",
+    "sequence": "interaction_unit",
+    "flat": "skip",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Archetype Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paradigm Configuration (v4: replaces "Archetype" terminology)
+# ─────────────────────────────────────────────────────────────────────────────
+
+ParadigmID = Literal[
+    "tutorial",
+    "cyclical",       # was "performance"
+    "cinematic",
+    "vlog",
+    "educational",
+    "sports_match",
+    "continuous",      # new in v4
+]
+
+# Backward compat alias
+ArchetypeID = ParadigmID
+
+TopologyType = Literal["procedural", "periodic", "sequence", "flat", "observation"]
+
+PARADIGM_IDS: set[str] = {
+    "tutorial", "cyclical", "cinematic", "vlog",
+    "educational", "sports_match", "continuous",
+}
+# Backward compat alias
+ARCHETYPE_IDS = PARADIGM_IDS | {"performance", "talk", "ambient"}  # accept old names
+
+PARADIGM_TO_TOPOLOGY: dict[str, TopologyType] = {
+    "tutorial": "procedural",
+    "cyclical": "periodic",
+    "cinematic": "sequence",
+    "vlog": "sequence",
+    "educational": "procedural",
+    "sports_match": "sequence",
+    "continuous": "observation",
+}
+# Backward compat alias
+ARCHETYPE_TO_TOPOLOGY: dict[str, TopologyType] = {
+    **PARADIGM_TO_TOPOLOGY,
+    "performance": "periodic",  # old name
+    "talk": "flat",
+    "ambient": "flat",
+}
+
+# Reverse mapping: topology → default paradigm (for backward compat)
+TOPOLOGY_TO_DEFAULT_PARADIGM: dict[str, str] = {
+    "procedural": "tutorial",
+    "periodic": "cyclical",
+    "sequence": "cinematic",
+    "observation": "continuous",
+    "flat": "continuous",  # flat now maps to continuous (talk/ambient filtered out)
+}
+TOPOLOGY_TO_DEFAULT_ARCHETYPE = TOPOLOGY_TO_DEFAULT_PARADIGM  # alias
+
+# Migration map: old archetype → new paradigm (None = filtered in Stage 1)
+ARCHETYPE_TO_PARADIGM: dict[str, str | None] = {
+    "tutorial": "tutorial",
+    "performance": "cyclical",
+    "cinematic": "cinematic",
+    "vlog": "vlog",
+    "educational": "educational",
+    "sports_match": "sports_match",
+    "talk": None,      # filtered out
+    "ambient": None,   # filtered out
+    "continuous": "continuous",
+    "cyclical": "cyclical",
+}
+
+
+@dataclass(frozen=True)
+class LevelConfig:
+    """Configuration for a single annotation level (L1/L2/L3)."""
+    enabled: bool
+    name: str  # e.g., "Process Stage"
+    name_zh: str  # e.g., "过程阶段"
+    definition: str  # English definition for prompt injection
+    boundary_signals: str  # Visual signals for boundary detection
+    examples: tuple[str, ...] = ()  # Positive examples
+    anti_examples: tuple[str, ...] = ()  # What NOT to annotate
+    micro_type: str = ""  # L3 only: state_change, repetition_unit, etc.
+    parent: str = ""  # L3 only: "event" or "phase"
+
+
+@dataclass(frozen=True)
+class ArchetypeConfig:
+    """Complete archetype configuration with L1/L2/L3 definitions."""
+    archetype_id: ArchetypeID
+    display_name: str  # Chinese display name
+    display_name_en: str  # English display name
+    topology: TopologyType
+    description: str  # Brief description for classification prompt
+    typical_videos: tuple[str, ...]
+    classification_signals: str  # What visual signals identify this archetype
+
+    l1: LevelConfig
+    l2: LevelConfig
+    l3: LevelConfig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Archetype Definitions
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TUTORIAL = ArchetypeConfig(
+    archetype_id="tutorial",
+    display_name="教程/任务型",
+    display_name_en="Tutorial / Task",
+    topology="procedural",
+    description=(
+        "Step-by-step task-oriented process with meaningful physical sub-goals "
+        "progressing toward a tangible outcome."
+    ),
+    typical_videos=(
+        "cooking recipes", "furniture assembly", "car repair",
+        "DIY crafts", "electronics soldering", "home renovation",
+    ),
+    classification_signals=(
+        "Visible materials/tools being manipulated; "
+        "clear progression from raw to finished state; "
+        "person performing sequential physical operations."
+    ),
+
+    l1=LevelConfig(
+        enabled=True,
+        name="Process Stage",
+        name_zh="过程阶段",
+        definition=(
+            "A broad stage organized by overall intent or goal shift in the task. "
+            "Each phase represents a distinct functional milestone. "
+            "Typical pattern: Preparation → Processing → Assembly → Finishing."
+        ),
+        boundary_signals=(
+            "Goal/intent shift (from preparing to executing); "
+            "primary tool or material change; "
+            "completion of a major sub-result visible in workspace."
+        ),
+        examples=(
+            "Preparing and measuring dry ingredients for the base mixture",
+            "Assembling the frame by fitting and securing wooden planks",
+            "Finishing and decorating the cake with frosting and toppings",
+        ),
+        anti_examples=(
+            "Too vague: 'Preparation'",
+            "Too fine: 'Pouring flour into bowl' (this is L2/L3)",
+        ),
+    ),
+
+    l2=LevelConfig(
+        enabled=True,
+        name="Sub-goal Workflow",
+        name_zh="子目标工作流",
+        definition=(
+            "A multi-step workflow (10-60s) that completes a verifiable process "
+            "sub-goal. Groups related manipulations into a coherent unit with "
+            "clear beginning condition → process → result."
+        ),
+        boundary_signals=(
+            "Sub-goal completion (one mixture done, one component attached); "
+            "workspace state change; tool/material transition."
+        ),
+        examples=(
+            "Measure flour and sugar from bags into the mixing bowl",
+            "Whisk dry ingredients together until evenly blended",
+            "Attach side panel to the base using screws and drill",
+        ),
+        anti_examples=(
+            "Too coarse: 'Prepare all materials' (restates the phase)",
+            "Too fine: 'Pick up the whisk' (single atomic motion)",
+        ),
+    ),
+
+    l3=LevelConfig(
+        enabled=True,
+        name="Object State Change",
+        name_zh="物体状态变化",
+        definition=(
+            "A single, discrete physical interaction (2-6s) where exactly ONE "
+            "object undergoes ONE visible physical state change. "
+            "Start = contact/onset, End = new state established."
+        ),
+        boundary_signals=(
+            "Physical contact between tool and material; "
+            "visible object state transition (texture, color, shape, position); "
+            "release after transformation."
+        ),
+        examples=(
+            "Pour measured flour from the bag into the steel mixing bowl",
+            "Cut the carrot into thin slices on the cutting board",
+            "Tighten the screw into the wooden plank with the drill",
+        ),
+        anti_examples=(
+            "Reaching for a tool", "Idle pauses", "Pure hand repositioning",
+        ),
+        micro_type="state_change",
+        parent="event",
+    ),
+)
+
+
+_CYCLICAL = ArchetypeConfig(
+    archetype_id="cyclical",
+    display_name="周期/节律型",
+    display_name_en="Cyclical / Rhythmic Activity",
+    topology="periodic",
+    description=(
+        "Rhythm-oriented activity with repeated cycles of the same motion or "
+        "operation. Core action pattern repeats with intensity/speed variation."
+    ),
+    typical_videos=(
+        "fitness exercise", "yoga routine", "dance choreography",
+        "weightlifting sets", "jump rope", "martial arts drills",
+        "line dance", "assembly line",
+    ),
+    classification_signals=(
+        "Same motion pattern repeating; body returns to starting position; "
+        "intensity or speed changes across the video; "
+        "typical gym/studio/outdoor training environment."
+    ),
+
+    l1=LevelConfig(
+        enabled=True,
+        name="Macro-Unit / Routine",
+        name_zh="大循环单元",
+        definition=(
+            "A complete repetition logic or routine section organized by "
+            "intensity, rhythm, or movement type. "
+            "Typical pattern: Warm-up → High-intensity Sets → Cool-down."
+        ),
+        boundary_signals=(
+            "Movement type switch (stretching → lifting); "
+            "intensity change (slow → fast → slow); "
+            "rest/transition intervals."
+        ),
+        examples=(
+            "Warm-up dynamic stretching sequence targeting legs and hips",
+            "High-intensity interval of weighted squats with progressive load",
+            "Cool-down static stretches and deep breathing recovery",
+        ),
+        anti_examples=(
+            "One single repetition (too fine, belongs at L3)",
+        ),
+    ),
+
+    l2=LevelConfig(
+        enabled=True,  # v4: ENABLED (was disabled in v3 performance)
+        name="Sub-Unit / Set",
+        name_zh="小节单元",
+        definition=(
+            "A fixed action combination or exercise set within a routine section. "
+            "Groups 4-20 repetitions of the same movement into a coherent unit. "
+            "E.g., 'left step 4-beat → right step 4-beat' or '10 push-ups set'."
+        ),
+        boundary_signals=(
+            "Movement direction change (left→right); "
+            "brief pause between sets; "
+            "transition to different variation of the same exercise."
+        ),
+        examples=(
+            "Set of 10 bicep curls with the left arm",
+            "8-count step sequence to the right in line dance",
+            "One sun salutation flow in yoga",
+        ),
+        anti_examples=(
+            "A single repetition (too fine, belongs at L3)",
+            "The entire warm-up section (too coarse, belongs at L1)",
+        ),
+    ),
+
+    l3=LevelConfig(
+        enabled=True,
+        name="Beat / Step",
+        name_zh="单拍动作",
+        definition=(
+            "A single completed repetition, cycle, strike, or step. "
+            "Start = initiation of the motion. End = return to starting position. "
+            "Note: post_state may be similar or identical to pre_state."
+        ),
+        boundary_signals=(
+            "Start of movement initiation; "
+            "reaching peak position; "
+            "return to starting posture."
+        ),
+        examples=(
+            "One complete push-up: chest lowers to floor then pushes back up",
+            "One jump rope cycle: feet leave ground, rope passes under, feet land",
+            "One bicep curl: arm extends then curls weight to shoulder",
+        ),
+        anti_examples=(
+            "Half a repetition", "Rest pause between sets",
+        ),
+        micro_type="repetition_unit",
+        parent="event",  # v4: parent=event (L2 now enabled); falls back to phase if L2 empty
+    ),
+)
+
+
+_CINEMATIC = ArchetypeConfig(
+    archetype_id="cinematic",
+    display_name="影视/剧情型",
+    display_name_en="Cinematic / Scripted Narrative",
+    topology="sequence",
+    description=(
+        "Scripted or edited narrative content with scene structure, "
+        "story arc progression, and deliberate cinematography."
+    ),
+    typical_videos=(
+        "movie clips", "short films", "TV drama scenes",
+        "music videos with story", "animated sequences", "commercials with narrative",
+    ),
+    classification_signals=(
+        "Professional cinematography/editing; scene transitions; "
+        "multiple characters with dialogue; emotional arc (tension/release); "
+        "deliberate camera angles, lighting changes, score/music."
+    ),
+
+    l1=LevelConfig(
+        enabled=True,
+        name="Narrative Act / Scene Group",
+        name_zh="叙事幕/场景组",
+        definition=(
+            "A distinct narrative act, emotional stage, or scene group. "
+            "Organized by story arc progression. "
+            "Typical pattern: Setup → Confrontation → Climax → Resolution."
+        ),
+        boundary_signals=(
+            "Major narrative turning point; emotional tone shift (tense→relaxed); "
+            "significant spatiotemporal jump; character constellation change; "
+            "marked editing rhythm change (montage → slow)."
+        ),
+        examples=(
+            "Opening act: protagonist arrives at the abandoned warehouse alone",
+            "Confrontation: heated argument escalates in the office",
+            "Resolution: characters reconcile in the park at sunset",
+        ),
+        anti_examples=(
+            "Single camera cut (cuts ≠ scene boundaries)",
+            "One line of dialogue",
+        ),
+    ),
+
+    l2=LevelConfig(
+        enabled=True,
+        name="Scene Unit",
+        name_zh="场景单元",
+        definition=(
+            "A continuous narrative unit within the same space-time and character set. "
+            "Multiple shots/cuts belonging to the same scene are grouped together. "
+            "Look for: location changes, character entry/exit, topic/mood shifts."
+        ),
+        boundary_signals=(
+            "Location change; character enter/exit frame; "
+            "topic or emotional tone shift within the scene group; "
+            "transition from dialogue to action (or vice versa)."
+        ),
+        examples=(
+            "Two friends discuss travel plans while reviewing a map at the cafe table",
+            "Protagonist confronts the antagonist in the warehouse hallway",
+            "Family gathers around the dinner table for an emotional conversation",
+        ),
+        anti_examples=(
+            "A single shot or camera cut",
+            "A reaction shot (too fine)",
+        ),
+    ),
+
+    l3=LevelConfig(
+        enabled=True,
+        name="Interaction Beat / Expression Change",
+        name_zh="交互节拍/表情变化",
+        definition=(
+            "A complete social/physical interaction beat OR a distinct shift in "
+            "facial emotion or focus. "
+            "interaction_unit: handshake, object handover, dialogue turn with visual cue. "
+            "expression_change: smile→serious, surprise reaction, look away→eye contact."
+        ),
+        boundary_signals=(
+            "Social cue: hand extension, eye contact established/broken, head nod; "
+            "emotional cue: eyebrow raise, mouth corner lift, tension release; "
+            "camera/editing: cut to reaction shot, zoom to face."
+        ),
+        examples=(
+            "Handshake between two characters meeting for the first time",
+            "Character's expression shifts from confident smile to visible worry",
+            "Object handover — protagonist passes the envelope across the table",
+        ),
+        anti_examples=(
+            "Ambient background movement",
+            "Camera wobble or minor reframing",
+        ),
+        micro_type="interaction_unit",
+        parent="event",
+    ),
+)
+
+
+_VLOG = ArchetypeConfig(
+    archetype_id="vlog",
+    display_name="Vlog/日常型",
+    display_name_en="Vlog / Daily Life",
+    topology="sequence",
+    description=(
+        "Personal-perspective content driven by location changes, topic shifts, "
+        "or daily activity flow. Creator is typically on-camera or narrating."
+    ),
+    typical_videos=(
+        "travel vlog", "daily routine", "food/restaurant review",
+        "moving-in vlog", "shopping haul", "day-in-my-life",
+    ),
+    classification_signals=(
+        "First-person or creator-facing camera; location/environment transitions; "
+        "casual narration to camera; topic-driven segments; "
+        "transition effects or jump cuts between activities."
+    ),
+
+    l1=LevelConfig(
+        enabled=True,
+        name="Topic / Location Segment",
+        name_zh="话题/地点段落",
+        definition=(
+            "A segment organized by location change or topic shift. "
+            "Each phase covers a distinct place, activity context, or conversation topic. "
+            "Typical pattern: Hotel departure → Sightseeing A → Lunch → Sightseeing B."
+        ),
+        boundary_signals=(
+            "Location change (indoor→outdoor, restaurant→street); "
+            "explicit topic transition ('now let's talk about...'); "
+            "transition effects (fade, jump cut to new setting)."
+        ),
+        examples=(
+            "Morning routine and getting ready at the hotel room",
+            "Exploring the local market and trying street food stalls",
+            "Evening reflection and sunset viewing from the rooftop",
+        ),
+        anti_examples=(
+            "Single camera angle change within the same activity",
+        ),
+    ),
+
+    l2=LevelConfig(
+        enabled=True,
+        name="Activity / Interaction Clip",
+        name_zh="活动/交互片段",
+        definition=(
+            "A specific activity or interaction within a location/topic segment. "
+            "Has a clear start and end with distinctive visual content."
+        ),
+        boundary_signals=(
+            "Activity start/end; interaction partner change; "
+            "shift between passive watching and active engagement."
+        ),
+        examples=(
+            "Ordering and receiving food at the counter",
+            "Tasting the local specialty and giving reaction on camera",
+            "Walking through the garden path while describing the scenery",
+        ),
+        anti_examples=(
+            "Brief glance at something (too fine)",
+            "Entire afternoon at one location (too coarse)",
+        ),
+    ),
+
+    l3=LevelConfig(
+        enabled=True,
+        name="Key Moment",
+        name_zh="关键时刻",
+        definition=(
+            "A moment with clear information increment — first impression, "
+            "key reaction, discovery, or decision point. "
+            "Focus on moments where NEW information is produced."
+        ),
+        boundary_signals=(
+            "First-time reaction (first bite, first view); "
+            "emotional response (surprise, delight, disappointment); "
+            "decision moment (choosing an item, taking a turn)."
+        ),
+        examples=(
+            "First taste of the local dish with visible reaction",
+            "Turning the corner and seeing the landmark for the first time",
+            "Receiving unexpected good news visible in facial expression",
+        ),
+        anti_examples=(
+            "Walking without events", "Looking at camera with no information change",
+        ),
+        micro_type="interaction_unit",
+        parent="event",
+    ),
+)
+
+
+_EDUCATIONAL = ArchetypeConfig(
+    archetype_id="educational",
+    display_name="教育/知识型",
+    display_name_en="Educational / Knowledge",
+    topology="procedural",
+    description=(
+        "Knowledge delivery as the primary goal. May involve lectures, "
+        "demonstrations, experiments, or whiteboard explanations."
+    ),
+    typical_videos=(
+        "classroom lecture", "online course", "science experiment",
+        "whiteboard tutorial", "coding tutorial", "documentary with narration",
+    ),
+    classification_signals=(
+        "PPT/whiteboard/blackboard visible; instructor speaking to camera/audience; "
+        "structured knowledge delivery; demonstration of concepts; "
+        "text/diagrams appearing on screen."
+    ),
+
+    l1=LevelConfig(
+        enabled=True,
+        name="Knowledge Module",
+        name_zh="知识模块",
+        definition=(
+            "A distinct teaching topic or knowledge unit. "
+            "Each module covers one concept, theorem, or experimental setup. "
+            "Typical pattern: Introduction → Core Explanation → Demonstration → Summary."
+        ),
+        boundary_signals=(
+            "PPT slide change to new chapter; blackboard cleared and rewritten; "
+            "topic transition ('now let us move on to...'); "
+            "experimental setup replacement."
+        ),
+        examples=(
+            "Introduction of the concept of photosynthesis with diagrams",
+            "Step-by-step derivation of the quadratic formula on whiteboard",
+            "Live demonstration of chemical reaction between acid and base",
+        ),
+        anti_examples=(
+            "A single sentence or definition (too fine)",
+        ),
+    ),
+
+    l2=LevelConfig(
+        enabled=True,
+        name="Explanation / Demo Unit",
+        name_zh="讲解/演示单元",
+        definition=(
+            "A focused explanation or demonstration around one specific concept "
+            "or knowledge point within the module."
+        ),
+        boundary_signals=(
+            "Focus shift to new sub-concept; change of demonstration object; "
+            "transition from theory to example (or vice versa)."
+        ),
+        examples=(
+            "Explaining the role of chlorophyll using a diagram",
+            "Demonstrating the pH test with litmus paper on the sample",
+            "Working through example problem #3 step by step",
+        ),
+        anti_examples=(
+            "Writing a single word (too fine)",
+            "The entire chapter (too coarse)",
+        ),
+    ),
+
+    l3=LevelConfig(
+        enabled=True,
+        name="Key Info Beat",
+        name_zh="关键信息点",
+        definition=(
+            "A moment where new information appears or a key state change occurs: "
+            "new term first written, formula step completed, experiment visibly reacts."
+        ),
+        boundary_signals=(
+            "New text/symbol appearing on screen; "
+            "experimental substance visibly changing; "
+            "instructor pointing at key element; "
+            "graph/chart transition."
+        ),
+        examples=(
+            "Instructor writes 'E = mc²' on the whiteboard for the first time",
+            "Chemical solution changes from clear to purple upon adding reagent",
+            "New slide appears showing the comparison chart of results",
+        ),
+        anti_examples=(
+            "Instructor pacing without new content",
+            "Repeating previously shown information",
+        ),
+        micro_type="state_change",
+        parent="event",
+    ),
+)
+
+
+_SPORTS_MATCH = ArchetypeConfig(
+    archetype_id="sports_match",
+    display_name="比赛/竞技型",
+    display_name_en="Sports Match / Competition",
+    topology="sequence",
+    description=(
+        "Competitive event with structured rounds, periods, or plays. "
+        "Outcome-driven with scoring and rule-based phases."
+    ),
+    typical_videos=(
+        "football match", "basketball game", "tennis match",
+        "boxing round", "esports match", "swimming race",
+    ),
+    classification_signals=(
+        "Scoreboard visible; referee/officials present; "
+        "structured back-and-forth play; crowd/audience; "
+        "uniforms/team colors; starting whistle or signals."
+    ),
+
+    l1=LevelConfig(
+        enabled=True,
+        name="Match Phase",
+        name_zh="赛事阶段",
+        definition=(
+            "A structural period defined by the sport's rules. "
+            "Typical: First Half → Halftime → Second Half, or Round 1 → Round 2."
+        ),
+        boundary_signals=(
+            "Whistle/signal; scoreboard change showing period transition; "
+            "players leaving/entering the field; timeout/break visuals."
+        ),
+        examples=(
+            "First half of the football match from kickoff to halftime whistle",
+            "Third set of the tennis match starting from deuce court",
+            "Round 2 of the boxing match from bell to bell",
+        ),
+        anti_examples=(
+            "A single play/rally (too fine, belongs at L2)",
+        ),
+    ),
+
+    l2=LevelConfig(
+        enabled=True,
+        name="Rally / Play",
+        name_zh="回合/攻防",
+        definition=(
+            "A complete rally, play, or scoring sequence. "
+            "Starts with possession/serve, ends with score/turnover/dead ball."
+        ),
+        boundary_signals=(
+            "Ball possession change; serve initiation; "
+            "goal/point scored; out-of-bounds; dead ball/time stop."
+        ),
+        examples=(
+            "Counter-attack sequence ending with a shot on goal",
+            "Tennis rally from serve to point won by net volley",
+            "Fast break leading to a slam dunk and celebration",
+        ),
+        anti_examples=(
+            "Walking back to position (not an action sequence)",
+        ),
+    ),
+
+    l3=LevelConfig(
+        enabled=True,
+        name="Key Action",
+        name_zh="关键动作",
+        definition=(
+            "A decisive physical action within a play — the shot, score, foul, "
+            "save, or turning-point moment."
+        ),
+        boundary_signals=(
+            "Ball striking foot/bat/racket; ball entering goal/net; "
+            "body contact (foul/tackle); celebration start."
+        ),
+        examples=(
+            "Striker shoots the ball into the top-left corner of the goal",
+            "Goalkeeper dives right and deflects the penalty kick",
+            "Player executes a spinning backhand that lands on the baseline",
+        ),
+        anti_examples=(
+            "Players jogging without the ball",
+            "Camera panning across the crowd",
+        ),
+        micro_type="state_change",
+        parent="event",
+    ),
+)
+
+
+_CONTINUOUS = ArchetypeConfig(
+    archetype_id="continuous",
+    display_name="连续观察型",
+    display_name_en="Continuous Observation",
+    topology="observation",
+    description=(
+        "Long-take or minimally edited continuous recording focused on a "
+        "subject's ongoing activity. No human-imposed temporal structure."
+    ),
+    typical_videos=(
+        "wildlife documentary", "tightrope walking", "surveillance footage",
+        "nature timelapse", "extreme sports POV", "surgery recording",
+        "factory monitoring", "animal behavior study",
+    ),
+    classification_signals=(
+        "Single continuous shot or minimal cuts; "
+        "no human-imposed chapter structure; "
+        "focus on natural/ongoing activity without narration-driven segmentation; "
+        "slow state changes over extended periods."
+    ),
+
+    l1=LevelConfig(
+        enabled=True,
+        name="Focus State",
+        name_zh="焦点状态",
+        definition=(
+            "A major attention focus or state of the observed subject. "
+            "Shifts when the core object/activity fundamentally changes. "
+            "E.g., 'eagle perched' → 'eagle hunting' → 'eagle feeding'."
+        ),
+        boundary_signals=(
+            "Subject behavior mode change (resting → active → resting); "
+            "environment/lighting significant shift; "
+            "new subject entering the primary focus area."
+        ),
+        examples=(
+            "Lion pride resting in the shade during midday",
+            "Tightrope walker attempting the first crossing over the canyon",
+            "Storm cell approaching from the west horizon",
+        ),
+        anti_examples=(
+            "Minor head turn or tail flick (too fine)",
+            "Entire 30-minute observation (too coarse if multiple focus states)",
+        ),
+    ),
+
+    l2=LevelConfig(
+        enabled=True,
+        name="Behavior State",
+        name_zh="行为状态",
+        definition=(
+            "An observable behavioral state or sub-activity within a focus. "
+            "Marks when the subject's visible behavior noticeably transitions."
+        ),
+        boundary_signals=(
+            "Posture change; movement speed change; "
+            "interaction with new object/individual; "
+            "direction reversal; visible emotional state shift."
+        ),
+        examples=(
+            "Tightrope walker pauses to regain balance midway",
+            "Eagle dives from perch toward the water surface",
+            "Cat stalks prey behind the bush, crouching low",
+        ),
+        anti_examples=(
+            "Breathing rhythm change (too subtle)",
+        ),
+    ),
+
+    l3=LevelConfig(
+        enabled=True,
+        name="Movement Detail",
+        name_zh="动作细节",
+        definition=(
+            "A fine-grained physical adjustment or motion within a behavior state. "
+            "Captures the smallest visible intentional movement."
+        ),
+        boundary_signals=(
+            "Limb position change; weight shift; "
+            "head/gaze direction change; "
+            "tool/object manipulation onset/completion."
+        ),
+        examples=(
+            "Walker extends arms to the side for balance after a wobble",
+            "Eagle tucks wings and enters steep dive angle",
+            "Cat's hindquarters lower as it prepares to pounce",
+        ),
+        anti_examples=(
+            "Wind blowing fur/feathers (not intentional movement)",
+            "Camera shake or zoom (not subject movement)",
+        ),
+        micro_type="state_change",
+        parent="event",
+    ),
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Registry
+# ─────────────────────────────────────────────────────────────────────────────
+
+PARADIGMS: dict[str, ArchetypeConfig] = {
+    "tutorial": _TUTORIAL,
+    "cyclical": _CYCLICAL,
+    "cinematic": _CINEMATIC,
+    "vlog": _VLOG,
+    "educational": _EDUCATIONAL,
+    "sports_match": _SPORTS_MATCH,
+    "continuous": _CONTINUOUS,
+}
+
+# Backward compat: old archetype names → new paradigm configs
+ARCHETYPES: dict[str, ArchetypeConfig] = {
+    **PARADIGMS,
+    "performance": _CYCLICAL,  # old name → new config
+    # talk/ambient: not in registry → KeyError if accessed (filtered in Stage 1)
+}
+
+
+def get_paradigm(paradigm_id: str) -> ArchetypeConfig:
+    """Get paradigm config by ID. Supports old archetype names via migration."""
+    # Migrate old name if needed
+    if paradigm_id in ARCHETYPE_TO_PARADIGM:
+        migrated = ARCHETYPE_TO_PARADIGM[paradigm_id]
+        if migrated is None:
+            raise KeyError(
+                f"Archetype '{paradigm_id}' was removed in v4 "
+                f"(filtered in Stage 1). Valid paradigms: {sorted(PARADIGMS.keys())}"
+            )
+        paradigm_id = migrated
+
+    if paradigm_id not in PARADIGMS:
+        raise KeyError(
+            f"Unknown paradigm '{paradigm_id}'. "
+            f"Valid: {sorted(PARADIGMS.keys())}"
+        )
+    return PARADIGMS[paradigm_id]
+
+
+# Backward compat alias
+get_archetype = get_paradigm
+
+
+def archetype_to_topology(archetype_id: str) -> TopologyType:
+    """Map archetype to its topology type."""
+    return ARCHETYPE_TO_TOPOLOGY.get(archetype_id, "procedural")
+
+
+def topology_to_default_archetype(topology: str) -> str:
+    """Map topology back to a default paradigm (for backward compatibility)."""
+    return TOPOLOGY_TO_DEFAULT_PARADIGM.get(topology, "continuous")
+
+
+def get_active_levels(paradigm_id: str) -> list[str]:
+    """Return list of active level names for a paradigm: ['l1'], ['l1','l2'], etc."""
+    cfg = get_paradigm(paradigm_id)
+    levels = ["l1"]  # L1 always active
+    if cfg.l2.enabled:
+        levels.append("l2")
+    if cfg.l3.enabled:
+        levels.append("l3")
+    return levels
+
+
+def get_l3_parent_type(paradigm_id: str) -> str | None:
+    """Return L3 parent type ('event' or 'phase') or None if L3 disabled."""
+    cfg = get_paradigm(paradigm_id)
+    if not cfg.l3.enabled:
+        return None
+    return cfg.l3.parent
+
+
+def migrate_archetype_to_paradigm(archetype_id: str) -> str | None:
+    """Migrate old archetype name to new paradigm name. Returns None if filtered."""
+    return ARCHETYPE_TO_PARADIGM.get(archetype_id, archetype_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: Classification Prompt (paradigm + domain + feasibility)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _format_paradigm_table_for_prompt() -> str:
+    """Format paradigm descriptions as a list for the classification prompt."""
+    lines = []
+    for pid, cfg in PARADIGMS.items():
+        lines.append(
+            f"- **{pid}** ({cfg.display_name}): {cfg.description}\n"
+            f"  Typical: {', '.join(cfg.typical_videos[:3])}.\n"
+            f"  Signals: {cfg.classification_signals}"
+        )
+    return "\n".join(lines)
+
+
+_CLASSIFICATION_PROMPT = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+
+Your task has FOUR parts:
+1. Classify the video's temporal structure (paradigm)
+2. Classify the video's content topic (domain)
+3. Assess annotation feasibility
+4. Write a global video caption
+
+────────────────────────────────────────────────
+## PART 1 — PARADIGM (temporal structure)
+
+Classify into exactly ONE paradigm based on the video's dominant temporal structure:
+
+{paradigm_table}
+
+### If the video does NOT fit any paradigm above:
+- **Talk-dominant** (people in conversation, minimal physical action): set feasibility.skip=true, skip_reason="talk_dominant"
+- **Ambient/static** (no identifiable subject, no sequential progression): set feasibility.skip=true, skip_reason="ambient_static"
+
+────────────────────────────────────────────────
+## PART 2 — DOMAIN (content topic)
+
+Domain is WHAT the video is about — orthogonal to paradigm (HOW it is structured).
+A cooking tutorial and a cooking competition share the SAME domain but DIFFERENT paradigms.
+
+Choose domain_l2 (fine-grained) from this hierarchy — domain_l1 is determined automatically:
+{domain_l2_list}
+
+If none fits, use domain_l2="other".
+
+────────────────────────────────────────────────
+## PART 3 — FEASIBILITY
+
+Assess whether this video is worth annotating with hierarchical temporal structure.
+Consider: visual dynamics, number of distinct segments, clarity of boundaries.
+
+────────────────────────────────────────────────
+## PART 4 — VIDEO CAPTION
+
+Write a detailed description of the entire video (3-5 sentences).
+Cover: setting/environment, main subjects, key objects, overall progression, and outcome.
+Every statement must be grounded in what is visible in the frames.
+
+────────────────────────────────────────────────
+## OUTPUT JSON
+
+{{
+  "paradigm": "<one of: {paradigm_ids}>",
+  "paradigm_confidence": 0.85,
+  "paradigm_reason": "<one sentence explaining the paradigm decision>",
+  "domain_l2": "<one of the domain_l2 categories above, or 'other'>",
+  "video_caption": "<3-5 sentences: detailed description of the entire video>",
+  "feasibility": {{
+    "score": 0.85,
+    "skip": false,
+    "skip_reason": null,
+    "estimated_n_phases": 3,
+    "estimated_n_events": 8,
+    "visual_dynamics": "high"
+  }},
+  "video_metadata": {{
+    "has_text_overlay": false,
+    "has_narration": true,
+    "camera_style": "<static_tripod | handheld | multi_angle | first_person>",
+    "editing_style": "<continuous | jump_cut | montage | mixed>"
+  }}
+}}
+
+Rules:
+- paradigm_confidence: 0.0 to 1.0, your confidence in the paradigm choice.
+- feasibility.score: 0.0 to 1.0, how suitable this video is for hierarchical annotation.
+- feasibility.skip: true if the video should NOT be annotated (talk, ambient, low dynamics).
+- feasibility.skip_reason: null if skip=false, else one of: "talk_dominant", "ambient_static", "low_visual_dynamics", "too_short".
+- visual_dynamics: "high" (frequent visible state changes), "medium" (moderate), "low" (mostly static).
+- estimated_n_phases / estimated_n_events: rough count, not exact."""
+
+
+def get_classification_prompt(n_frames: int, duration_sec: int) -> str:
+    """Build the Stage 1 paradigm + domain + feasibility classification prompt."""
+    return _CLASSIFICATION_PROMPT.format(
+        n_frames=n_frames,
+        duration=duration_sec,
+        paradigm_table=_format_paradigm_table_for_prompt(),
+        paradigm_ids=", ".join(sorted(PARADIGM_IDS)),
+        domain_l2_list=_format_domain_l2_for_prompt(),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paradigm-Driven Level Prompts
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ARCHETYPE_MERGED_BASE = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+This video has been classified as archetype: **{archetype}** ({archetype_display}).
+
+Your task: Annotate this video with a hierarchical L1{l2_header}{l3_header} structure \
+using the archetype-specific definitions below.
+
+## L1 — {l1_name} ({l1_name_zh})
+
+**Definition**: {l1_definition}
+
+**Boundary Signals**: {l1_boundary_signals}
+
+**Good examples**: {l1_examples}
+**NOT valid at L1**: {l1_anti_examples}
+
+**Rules**:
+- Skip intros, outros, static non-activity spans.
+- Phases do NOT need to cover the entire video — gaps are expected.
+- Do NOT split by camera cuts alone.
+- A single-phase video is valid if it is one continuous {archetype} segment.
+- phase_name MUST be a descriptive phrase of 5–15 words.
+- narrative_summary MUST be 2–3 sentences.
+{l2_section}{l3_section}
+## VISUAL SIGNAL REFERENCE
+- Scene/Space: Background/layout/location change, character entry/exit.
+- Subject Behavior: Pose transition, gaze direction, speed change, interaction start/end.
+- Object State: Appearance/texture/color/position/quantity change.
+- Narrative/Emotion: Shift in emotional tone, topic change, conflict resolution.
+- Camera/Editing: Rhythm change, montage sequence, focus shift, cut to close-up.
+
+## OUTPUT JSON
+{{
+  "summary": "<one sentence summarizing the video>",
+  "global_phase_criterion": "<one sentence: why split into these phases>",
+  "macro_phases": [
+    {{
+      "phase_id": 1,
+      "start_time": 5,
+      "end_time": 60,
+      "phase_name": "<5-15 word descriptive phrase>",
+      "narrative_summary": "<2-3 sentences: what happens in this phase, objects involved, outcome>",
+      "event_split_criterion": "<one sentence: why this phase has/lacks events>"{events_field}
+    }}
+  ]
+}}
+
+## QUALITY CHECKLIST
+- [ ] Each L1 phase represents a distinct semantic stage?
+- [ ] Boundary triggers are specific and reproducible?
+- [ ] Criterion fields describe splitting LOGIC, not content?
+{l2_checklist}{l3_note}"""
+
+
+def _build_l2_section(cfg: ArchetypeConfig) -> str:
+    if not cfg.l2.enabled:
+        return (
+            '\n## L2 — Events\n'
+            'L2 events are **NOT applicable** for this archetype. '
+            'Output `"events": []` for every phase.\n'
+        )
+
+    examples_str = "; ".join(f'"{e}"' for e in cfg.l2.examples[:3])
+    anti_str = "; ".join(f'"{e}"' for e in cfg.l2.anti_examples[:2])
+
+    return f"""
+## L2 — {cfg.l2.name} ({cfg.l2.name_zh})
+
+**Definition**: {cfg.l2.definition}
+
+**Boundary Signals**: {cfg.l2.boundary_signals}
+
+**Good examples**: {examples_str}
+**NOT valid at L2**: {anti_str}
+
+**Rules**:
+- Detect events nested inside each L1 phase.
+- Events must not overlap. Use absolute integer seconds.
+- `"events": []` is valid if the phase has no sub-structure.
+- instruction MUST be 8–20 words: WHAT + WITH WHICH objects + WHAT outcome.
+"""
+
+
+def _build_l3_note(cfg: ArchetypeConfig) -> str:
+    if not cfg.l3.enabled:
+        return ""
+    return (
+        f"\n**Note**: After this annotation, L3 ({cfg.l3.name}) will be annotated "
+        f"in a separate pass with finer granularity."
+    )
+
+
+def get_archetype_merged_prompt(
+    archetype_id: str,
+    n_frames: int,
+    duration_sec: int,
+) -> str:
+    """Build the paradigm-driven merged L1(+L2) annotation prompt.
+
+    Accepts both old archetype names and new paradigm names.
+    v4: adds dense caption fields (scene_description for L1, dense_caption for L2).
+    """
+    cfg = get_paradigm(archetype_id)
+    # Resolve to canonical paradigm ID
+    paradigm_id = cfg.archetype_id
+
+    l1_examples = "; ".join(f'"{e}"' for e in cfg.l1.examples[:3])
+    l1_anti = "; ".join(f'"{e}"' for e in cfg.l1.anti_examples[:2])
+
+    l2_header = " / L2" if cfg.l2.enabled else ""
+    l3_header = ""  # L3 always a separate pass
+    l2_section = _build_l2_section(cfg)
+    events_field = (
+        ',\n      "events": [\n'
+        '        {\n'
+        '          "event_id": 1,\n'
+        '          "start_time": 5,\n'
+        '          "end_time": 28,\n'
+        '          "instruction": "<8-20 word description>",\n'
+        '          "dense_caption": "<2-4 sentences: detailed process description — actions, objects, spatial relations, state changes>",\n'
+        '          "visual_keywords": ["kw1", "kw2"]\n'
+        '        }\n'
+        '      ]'
+    ) if cfg.l2.enabled else ',\n      "events": []'
+
+    l2_checklist = (
+        "- [ ] Each L2 event completes a verifiable unit?\n"
+        "- [ ] Events are not too coarse (≈ phase) or too fine (single motion)?\n"
+    ) if cfg.l2.enabled else ""
+
+    return _ARCHETYPE_MERGED_BASE.format(
+        duration=duration_sec,
+        n_frames=n_frames,
+        archetype=paradigm_id,
+        archetype_display=cfg.display_name,
+        l1_name=cfg.l1.name,
+        l1_name_zh=cfg.l1.name_zh,
+        l1_definition=cfg.l1.definition,
+        l1_boundary_signals=cfg.l1.boundary_signals,
+        l1_examples=l1_examples,
+        l1_anti_examples=l1_anti,
+        l2_header=l2_header,
+        l3_header=l3_header,
+        l2_section=l2_section,
+        l3_section="",
+        events_field=events_field,
+        l2_checklist=l2_checklist,
+        l3_note=_build_l3_note(cfg),
+    )
+
+
+# Backward compat alias
+get_paradigm_merged_prompt = get_archetype_merged_prompt
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paradigm-Driven L3 Prompt
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ARCHETYPE_L3_BASE = """\
+You are a temporal grounding model. You are viewing frames from a clip \
+({clip_start}s to {clip_end}s).
+
+Video archetype: **{archetype}** ({archetype_display})
+The input query is: "{action_query}"
+
+Your task: Pinpoint every atomic micro-action in this clip.
+
+## L3 — {l3_name} ({l3_name_zh})
+
+**Definition**: {l3_definition}
+
+**Boundary Signals**: {l3_boundary_signals}
+
+**Good examples**: {l3_examples}
+**NOT valid at L3**: {l3_anti_examples}
+
+## RULES
+- Use absolute integer seconds from the FULL VIDEO timeline.
+- Allow gaps between micro-actions (do not force full coverage).
+- Merge uninterrupted motion belonging to the same single unit.
+- For each micro-action, provide:
+  - sub_action: concise action phrase (5-15 words).
+  - caption: 1-2 sentence dense description of the action (body movement, object dynamics, spatial detail).
+  - pre_state / post_state: optional but encouraged when a clear state change is visible.
+
+## OUTPUT FORMAT (JSON)
+{{
+  "micro_type": "{micro_type}",
+  "micro_split_criterion": "<one sentence explaining the granularity logic>",
+  "grounding_results": [
+    {{
+      "action_id": 1,
+      "start_time": 42,
+      "end_time": 47,
+      "sub_action": "<5-15 word complete action phrase>",
+      "caption": "<1-2 sentences: detailed description of the action>",
+      "pre_state": "<visual state before, or null if not applicable>",
+      "post_state": "<visual state after, or null if not applicable>",
+      "parent_event_id": null,
+      "parent_phase_id": 1
+    }}
+  ]
+}}
+
+## QUALITY CHECKLIST
+- [ ] Each micro-action represents exactly ONE visible unit?
+- [ ] caption describes what is visually observable, not inferred?
+- [ ] Boundaries align with visible onset/completion?
+- [ ] No hallucinated actions beyond what frames show?"""
+
+
+def get_archetype_l3_prompt(
+    archetype_id: str,
+    clip_start_sec: int,
+    clip_end_sec: int,
+    action_query: str,
+) -> str:
+    """Build the paradigm-driven L3 micro-grounding prompt."""
+    cfg = get_paradigm(archetype_id)
+    if not cfg.l3.enabled:
+        raise ValueError(f"L3 is not enabled for archetype '{archetype_id}'")
+
+    l3_examples = "; ".join(f'"{e}"' for e in cfg.l3.examples[:3])
+    l3_anti = "; ".join(f'"{e}"' for e in cfg.l3.anti_examples[:2])
+
+    return _ARCHETYPE_L3_BASE.format(
+        clip_start=clip_start_sec,
+        clip_end=clip_end_sec,
+        archetype=archetype_id,
+        archetype_display=cfg.display_name,
+        action_query=action_query,
+        l3_name=cfg.l3.name,
+        l3_name_zh=cfg.l3.name_zh,
+        l3_definition=cfg.l3.definition,
+        l3_boundary_signals=cfg.l3.boundary_signals,
+        l3_examples=l3_examples,
+        l3_anti_examples=l3_anti,
+        micro_type=cfg.l3.micro_type,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paradigm-Driven Training Prompts (simplified <events> output)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ARCHETYPE_L1_TRAIN = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}).
+This is a **{archetype}** ({archetype_display}) video.
+
+Segment the video into L1 macro phases: **{l1_name}**.
+
+{l1_definition}
+
+Granularity guide:
+- Output 1–6 phases. A single-phase video is valid.
+- Skip intros, outros, static non-activity spans.
+- Phases do NOT need to cover the entire video — gaps are expected.
+
+Output the start and end time (integer seconds, 0-based) for each phase:
+<events>[[start_time, end_time], ...]</events>"""
+
+
+_ARCHETYPE_L2_TRAIN = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}).
+This is a **{archetype}** ({archetype_display}) video.
+
+Detect all L2 events: **{l2_name}**.
+
+{l2_definition}
+
+Rules:
+- Events must not overlap. Skip idle, non-activity content. Gaps are expected.
+
+Output the start and end time (integer seconds, 0-based) for each event:
+<events>[[start_time, end_time], ...]</events>"""
+
+
+_ARCHETYPE_L3_TRAIN = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}).
+This is a **{archetype}** ({archetype_display}) video.
+
+Detect all L3 micro-actions: **{l3_name}**.
+
+{l3_definition}
+
+Rules:
+- Allow gaps. Skip idle and non-informative moments.
+
+Output the start and end time (integer seconds, 0-based) for each action:
+<events>[[start_time, end_time], ...]</events>"""
+
+
+def get_archetype_l1_train_prompt(archetype_id: str, duration: int) -> str:
+    """Training prompt for L1 segmentation (paradigm-aware)."""
+    cfg = get_paradigm(archetype_id)
+    return _ARCHETYPE_L1_TRAIN.format(
+        duration=duration,
+        archetype=archetype_id,
+        archetype_display=cfg.display_name,
+        l1_name=cfg.l1.name,
+        l1_definition=cfg.l1.definition,
+    )
+
+
+def get_archetype_l2_train_prompt(archetype_id: str, duration: int) -> str:
+    """Training prompt for L2 event detection (paradigm-aware)."""
+    cfg = get_paradigm(archetype_id)
+    if not cfg.l2.enabled:
+        raise ValueError(f"L2 is not enabled for archetype '{archetype_id}'")
+    return _ARCHETYPE_L2_TRAIN.format(
+        duration=duration,
+        archetype=archetype_id,
+        archetype_display=cfg.display_name,
+        l2_name=cfg.l2.name,
+        l2_definition=cfg.l2.definition,
+    )
+
+
+def get_archetype_l3_train_prompt(archetype_id: str, duration: int) -> str:
+    """Training prompt for L3 segmentation (paradigm-aware)."""
+    cfg = get_paradigm(archetype_id)
+    if not cfg.l3.enabled:
+        raise ValueError(f"L3 is not enabled for archetype '{archetype_id}'")
+    return _ARCHETYPE_L3_TRAIN.format(
+        duration=duration,
+        archetype=archetype_id,
+        archetype_display=cfg.display_name,
+        l3_name=cfg.l3.name,
+        l3_definition=cfg.l3.definition,
+    )
+
+
+def get_archetype_train_prompt_with_hint(
+    archetype_id: str,
+    level: str,
+    duration: int,
+    hint: str,
+) -> str:
+    """Training prompt with hint for any level (paradigm-aware)."""
+    if level == "l1":
+        base = get_archetype_l1_train_prompt(archetype_id, duration)
+    elif level == "l2":
+        base = get_archetype_l2_train_prompt(archetype_id, duration)
+    elif level == "l3":
+        base = get_archetype_l3_train_prompt(archetype_id, duration)
+    else:
+        raise ValueError(f"Unknown level '{level}'")
+    return base + f"\n\nHint: {hint}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paradigm-Agnostic Training Prompts (L3 query/seg)
+# These don't depend on paradigm — used across all video types.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LEVEL3_QUERY_BASE = """\
+You are given a {duration}s video clip and a numbered list of actions to locate. \
+Find the time segment for each action, answering in the given order.
+
+Actions to locate:
+{action_list}
+
+Rules:
+- answer in the same order as the list above (1, 2, 3, ...)
+- start_time / end_time are integer seconds from the start of the clip (0-based)
+- each segment must satisfy: 0 ≤ start_time < end_time ≤ {duration}
+
+Output one [start_time, end_time] pair per action in order:
+<events>[[start_time, end_time], ...]</events>
+
+Example: <events>[[3, 7], [0, 2], [10, 14]]</events>"""
+
+
+def get_level3_query_prompt(queries: list[str], duration: int) -> str:
+    """Build the Level 3 Query (query-conditioned grounding) user-turn prompt."""
+    action_list = "\n".join(f'{i + 1}. "{q}"' for i, q in enumerate(queries))
+    return _LEVEL3_QUERY_BASE.format(duration=duration, action_list=action_list)
+
+
+_LEVEL3_SEG_BASE = """\
+You are given a {duration}s video clip. \
+Detect all atomic beats (micro-actions) in this clip.
+
+Granularity guide — an atomic beat is the finest annotation level, representing \
+a moment of "irreversible state change" or "core information increment":
+- TOO COARSE (event-level): a multi-step workflow spanning 10–60s. \
+If an action covers multiple distinct state changes, split it.
+- CORRECT (atomic beat): a single, discrete unit (typically 2–6s) where \
+exactly ONE visible change occurs. Three types exist:
+  1. Physical Change: one object undergoes one visible state change \
+(cutting, pouring, attaching, flipping).
+  2. Visual Shift: purposeful camera/focus transition (push to close-up, \
+new prop enters frame, deliberate pan to new subject).
+  3. Semantic Beat: key information delivery or emotional burst \
+(decisive conclusion in dialogue, clear decision moment, strong reaction).
+- TOO FINE (sub-atomic): a partial body movement or camera wobble that \
+does not produce a complete change (reaching, gripping, adjusting posture). \
+Do NOT annotate these.
+
+Rules:
+- Allow gaps between actions — do not force full coverage.
+- Skip idle waiting, background chatter, tool pickup without progress, or reactions \
+that do not produce new information.
+- Merge uninterrupted motion belonging to one single state change / beat.
+
+Output the start and end time (integer seconds, 0-based) for each action in chronological order:
+<events>[[start_time, end_time], ...]</events>
+
+Example: <events>[[3, 7], [10, 14], [16, 22]]</events>"""
+
+
+def get_level3_seg_prompt(duration: int) -> str:
+    """Training prompt for Level 3 segmentation (no queries, detect all atomic actions)."""
+    return _LEVEL3_SEG_BASE.format(duration=duration)
+
+
+def get_level3_seg_prompt_with_hint(duration: int, hint: str) -> str:
+    """L3 seg training prompt with micro_split_hint appended."""
+    base = get_level3_seg_prompt(duration)
+    return base + f"\n\nHint: {hint}"
+

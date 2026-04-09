@@ -1,220 +1,419 @@
-# Topology-Adaptive 分层标注 Pipeline
+# Hierarchical Video Annotation Pipeline v4 — Design Document
 
-> 实现状态：**Phase 2 已完成** (2026-03-31) — Quality Check Pipeline
-
----
-
-## 1. 问题与动机
-
-原始 pipeline 假设所有视频都适合固定三层 `L1 → L2 → L3`，但这只对 procedural 类视频（做饭/装配/维修）天然成立。主要问题：
-
-| # | 问题 | 症状 |
-|---|------|------|
-| 1 | 固定三层假设过强 | periodic/sequence 视频被迫硬造层级 |
-| 2 | L3 定义过于 procedural | periodic 域 L3 空标注或 hallucinate |
-| 3 | L1/L2 容易塌缩 | 单一 routine 视频 L1 被强切 2-6 个 phase |
-| 4 | L3 抽帧绑定 L2 | periodic 无稳定 L2，经由 event 下钻很别扭 |
+> Target: NeurIPS 2026
+> Status: Design Draft (2026-04-09)
+> Replaces: v3 archetype-driven pipeline (8 archetypes)
 
 ---
 
-## 2. 解决方案：Topology-Adaptive
+## Quick Start
 
-核心思想：在 merged 标注阶段先判断视频的**时间拓扑类型**，再动态决定哪些层存在、以及每层的语义。
+```bash
+SCRIPT_DIR="proxy_data/youcook2_seg/hier_seg_annotation"
+DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation"
 
-### 四种拓扑类型
+# ── Stage 1: Classify + Filter ──────────────────────────────────
+# Step 0: Extract 64 frames per video (1fps, capped)
+python $SCRIPT_DIR/extract_frames.py \
+    --jsonl /path/to/screen_keep.jsonl \
+    --output-dir $DATA_ROOT/frames_stage1 \
+    --fps 1 --max-frames 64 --workers 8
 
-| 拓扑 | 典型视频 | 层级结构 | l2_mode | l3_mode |
-|------|---------|---------|---------|---------|
-| **procedural** | 做饭、维修、手工 | L1 → L2 → L3 | workflow | state_change |
-| **periodic** | 举重、拉伸、挥拍 | L1 → L3 | optional | repetition_unit |
-| **sequence** | 跑酷、训狗、滑雪 | L1 → L2 | episode | skip |
-| **flat** | 讲话、vlog、混杂 | L1 only | skip | skip |
+# Step 1: Paradigm + domain + feasibility classification
+python $SCRIPT_DIR/stage1_classify.py \
+    --jsonl /path/to/screen_keep.jsonl \
+    --frames-dir $DATA_ROOT/frames_stage1 \
+    --output-dir $DATA_ROOT/stage1_output \
+    --model pa/gemini-3.1-pro-preview --workers 4
 
-### 双阈值保守规则
+# Output: stage1_output/classify_keep.jsonl (passed videos)
+#         stage1_output/figures/ (paradigm + domain donut charts)
 
-- `topology_confidence < 0.5` → 降级为 flat（l2_mode=skip, l3_mode=skip）
-- `topology_confidence < 0.6` → l3_mode 强制 skip
+# ── Stage 2: Full Annotation Pipeline ───────────────────────────
+# Feed classify_keep.jsonl into the full pipeline:
+JSONL=$DATA_ROOT/stage1_output/classify_keep.jsonl \
+    bash $SCRIPT_DIR/run_pipeline.sh
+```
 
 ---
 
-## 3. 已实现内容 (Phase 1)
+## 1. Design Goals
 
-### 3.1 已修改文件
+1. **Stage 1 — Metadata + Domain + Feasibility**: Classify every video's **paradigm** (temporal structure) and **domain** (content category), then filter out low-value samples before expensive annotation.
+2. **Stage 2 — Paradigm-Driven Hierarchical Annotation**: 7 independent paradigms, each with archetype-specific L1/L2/L3 definitions and dense captions at every level.
+3. **Downstream Data Derivation**: A single annotation JSON simultaneously produces:
+   - Hierarchical temporal segmentation training data (L1/L2/L3)
+   - Event logic training data (next-event, middle-segment, temporal ordering, causal reasoning)
+   - Dense video caption training data (per-segment multi-granularity descriptions)
 
-| 文件 | 改动 |
-|------|------|
-| `prompts.py` | 新增拓扑常量 + 新版 merged/L3 prompt |
-| `annotate.py` | 解析拓扑字段 + topology-aware L3 路由 |
-| `extract_frames.py` | L3 抽帧按拓扑分流 |
-| `../../shared/seg_source.py` | complete_only 过滤 topology-aware |
+---
 
-### 3.2 Prompt — Merged (L1+L2+Topology)
+## 2. Two-Level Domain Taxonomy
 
-4 个 PART 一次调用完成：
+**Content-topic classification**, fully orthogonal to paradigm (temporal structure).
+Paradigm describes HOW a video is structured; domain describes WHAT the video is about.
 
-**PART 1 — DOMAIN CLASSIFICATION**
-- 输出 `domain_l1`, `domain_l2`（沿用现有二级分类）
+Example: A cooking video → domain = `food_cooking` (L1 = `task_howto`), but paradigm could be:
+- `tutorial` (step-by-step recipe)
+- `sports_match` (cooking competition)
+- `vlog` (restaurant review)
+- `educational` (food science lecture)
 
-**PART 2 — TOPOLOGY CLASSIFICATION** (新增)
-- 输出 `topology_type`: procedural | periodic | sequence | flat
-- 输出 `topology_confidence`: 0.0–1.0
-- 输出 `topology_reason`: 一句话解释
-- 关键规则：
-  - 拓扑看时间结构，不只看领域
-  - 重复 ≠ procedural
-  - 镜头切换 ≠ 拓扑边界
-  - 结构不清 → flat
+Reference datasets: COIN (12 domains), HowTo100M (12 categories), ActivityNet (200 activities), Kinetics-700.
 
-**PART 3 — VIDEO SUMMARY & MACRO PHASES (L1)**
-- 1–6 个 macro phases（原来是 2–6，现在允许单 phase）
-- 跳过片头片尾、静态段、纯讲话段
-- 单一 continuous routine 合法只输出 1 个 phase
+### 2.1 Domain L1 (Coarse — 6 content topics)
 
-**PART 4 — EVENT DETECTION (L2)**
-- 按 topology_type 条件定义事件语义：
-  - procedural → multi-second workflow
-  - sequence → complete episode/trial
-  - periodic → events 可选（允许 `[]`）
-  - flat → 强制 `events: []`
+| ID | Domain L1 | Description |
+|----|-----------|-------------|
+| `knowledge_education` | Knowledge & Education | Lectures, science experiments, tech, humanities, news |
+| `film_entertainment` | Film & Entertainment | Movies, TV dramas, animation, variety shows |
+| `sports_esports` | Sports & Esports | Ball sports, athletics, extreme sports, video games |
+| `lifestyle_vlog` | Lifestyle & Vlog | Daily life, travel, food tasting, pets |
+| `arts_performance` | Arts & Performance | Music, dance, theater, magic, visual arts |
+| `task_howto` | Task & How-to | Cooking, crafts/DIY, repair, beauty tutorials |
 
-输出 JSON 示例：
+### 2.2 Domain L2 (Fine — 22 content categories)
+
+| Domain L1 | Domain L2 | Typical Content |
+|-----------|-----------|-----------------|
+| **knowledge_education** | `science_tech` | Science experiments, tech reviews, programming |
+| | `humanities_history` | History, language, culture, social documentaries |
+| | `lecture_speech` | Classroom lectures, speeches, whiteboard explanations |
+| | `news_report` | News broadcasts, current affairs commentary |
+| **film_entertainment** | `movie_drama` | Movie clips, TV dramas, short films |
+| | `animation_cg` | 2D/3D animation, game CG, motion graphics |
+| | `variety_show` | Variety shows, reality TV, talk shows |
+| **sports_esports** | `ball_sport` | Basketball, football, tennis, volleyball |
+| | `athletics_fitness` | Track & field, gymnastics, gym workouts |
+| | `outdoor_extreme` | Surfing, skiing, racing, rock climbing |
+| | `video_game` | Game streams, esport matches |
+| **lifestyle_vlog** | `daily_vlog` | Personal daily life, shopping, social gatherings |
+| | `travel_scenery` | Travel vlogs, nature scenery, city walks |
+| | `food_tasting` | Mukbang, food reviews, restaurant visits |
+| | `pet_animal` | Pets, wildlife observation |
+| **arts_performance** | `music_audio` | Instrument playing, concerts, bands |
+| | `dance_choreography` | Street dance, ballet, traditional dance |
+| | `theater_magic` | Stage plays, magic shows, circus acts |
+| **task_howto** | `food_cooking` | Kitchen cooking, baking, food preparation |
+| | `crafts_diy` | Woodwork, sewing, origami, handmade crafts |
+| | `repair_assembly` | Electronics repair, furniture assembly, car repair |
+| | `beauty_grooming` | Makeup tutorials, hairstyling, personal care |
+
+### 2.3 Domain Classification Rules
+
+```
+IMPORTANT — Domain is orthogonal to paradigm:
+  Domain = WHAT the video is about (content topic)
+  Paradigm = HOW the video is temporally structured
+
+Rules:
+1. Domain L2 strictly determines Domain L1 (parent-child mapping, lookup table)
+2. If video spans multiple domains, classify by MAJORITY visible content
+3. "other" is allowed for L2 when no fine category fits → L1 = closest match
+4. Do NOT let paradigm influence domain:
+   - A dance tutorial → domain=arts_performance, paradigm=tutorial
+   - A dance competition → domain=arts_performance, paradigm=sports_match
+   - A dance documentary → domain=arts_performance, paradigm=cinematic
+```
+
+---
+
+## 3. Stage 1 — Metadata + Classification + Feasibility Filter
+
+### 3.1 Purpose
+
+Before expensive multi-step annotation, quickly classify and filter videos using a single VLM call with 64 uniformly sampled frames.
+
+### 3.2 Output Schema
 
 ```json
 {
-  "domain_l1": "cooking",
-  "domain_l2": "baking",
-  "topology_type": "procedural",
-  "topology_confidence": 0.92,
-  "topology_reason": "Step-by-step cake preparation with distinct phases",
-  "l2_mode": "workflow",
-  "summary": "A person prepares and bakes a chocolate cake.",
-  "macro_phases": [
-    {
-      "phase_id": 1,
-      "start_time": 5,
-      "end_time": 120,
-      "phase_name": "Ingredient preparation",
-      "narrative_summary": "...",
-      "events": [
-        {
-          "event_id": 1,
-          "start_time": 8,
-          "end_time": 45,
-          "instruction": "Mix dry ingredients in a bowl",
-          "visual_keywords": ["flour", "bowl", "whisk"]
-        }
-      ]
-    }
-  ]
+  "paradigm": "tutorial | educational | cinematic | vlog | sports_match | cyclical | continuous",
+  "paradigm_confidence": 0.85,
+  "paradigm_reason": "Step-by-step physical task with progressive stages...",
+
+  "domain_l1": "task_howto",
+  "domain_l2": "food_cooking",
+
+  "feasibility": {
+    "score": 0.92,
+    "skip": false,
+    "skip_reason": null,
+    "estimated_n_phases": 4,
+    "estimated_n_events": 12,
+    "visual_dynamics": "high"
+  },
+
+  "video_metadata": {
+    "has_text_overlay": true,
+    "has_narration": true,
+    "camera_style": "static_tripod | handheld | multi_angle | first_person",
+    "editing_style": "continuous | jump_cut | montage | mixed"
+  }
 }
 ```
 
-### 3.3 Prompt — L3 (Topology-Aware Micro Grounding)
+### 3.3 Feasibility Filter Rules
 
-双定义 prompt，按 `topology_type` 切换语义：
+| Condition | Action | Reason |
+|-----------|--------|--------|
+| `paradigm == "talk"` equivalent (detected as conversation-dominant) | `skip=true, skip_reason="talk_dominant"` | Low visual dynamics, language-driven |
+| `paradigm == "ambient"` equivalent (no subject/structure) | `skip=true, skip_reason="ambient_static"` | No temporal structure worth annotating |
+| `visual_dynamics == "low"` AND `estimated_n_events < 2` | `skip=true, skip_reason="low_visual_dynamics"` | Insufficient content for hierarchical annotation |
+| `feasibility.score < 0.4` | `skip=true, skip_reason="low_feasibility"` | VLM self-assessed low annotability |
+| `clip_duration < 15s` | `skip=true, skip_reason="too_short"` | Cannot form meaningful hierarchy |
 
-**procedural → state_change**
-- 对象发生可见物理变化的原子动作
-- pre_state / post_state 描述变化
-- 忽略伸手、停顿、纯手部调整
+### 3.4 Changes from v3
 
-**periodic → repetition_unit**
-- 单次完整重复/循环/击打/拉伸
-- start = 循环启动，end = 循环完成（回到起始姿态）
-- post_state 可以 ≈ pre_state
+| Aspect | v3 (Current) | v4 (Proposed) |
+|--------|-------------|---------------|
+| Archetype count | 8 (incl. talk, ambient) | 7 paradigms (talk/ambient filtered in Stage 1) |
+| Domain | Single `domain_l2` flat list (22 values) | Two-level: `domain_l1` (6) + `domain_l2` (22) |
+| Feasibility | None (all videos proceed) | Score + filter before annotation |
+| Camera/editing metadata | None | Captured for downstream analysis |
 
-输出 JSON 示例：
+---
+
+## 4. Stage 2 — 7 Independent Paradigms
+
+### 4.1 Paradigm Overview
+
+| Paradigm | Topology | L1 Name | L2 Name | L3 Name | L3 Micro Type | L3 Parent |
+|----------|----------|---------|---------|---------|---------------|-----------|
+| **tutorial** | procedural | Process Stage | Sub-goal Workflow | Object State Change | state_change | event |
+| **educational** | procedural | Knowledge Module | Explanation/Demo Unit | Key Info Beat | state_change | event |
+| **cinematic** | sequence | Narrative Act | Scene Unit | Interaction Beat | interaction_unit | event |
+| **vlog** | sequence | Topic/Location Segment | Activity Clip | Key Moment | interaction_unit | event |
+| **sports_match** | sequence | Match Phase | Rally/Play | Key Action | state_change | event |
+| **cyclical** | periodic | Macro-Unit/Routine | Sub-Unit (optional→enabled) | Beat/Step | repetition_unit | phase or event |
+| **continuous** | observation | Focus State | Behavior State | Movement Detail | state_change | event |
+
+### 4.2 Key Changes from v3
+
+| Change | Detail |
+|--------|--------|
+| `talk` removed | Filtered in Stage 1 |
+| `ambient` removed | Filtered in Stage 1 |
+| `performance` → `cyclical` | Renamed for generality; L2 now **enabled** (was disabled) |
+| `continuous` added | New paradigm for long-take observation videos (wildlife, surveillance, extreme sports) |
+| Dense caption fields | Added at ALL levels (L1/L2/L3) |
+
+### 4.3 Paradigm Definitions (Detailed)
+
+#### 4.3.1 tutorial — Step-by-Step Task
+
+> Videos where a person performs sequential physical operations toward a tangible outcome.
+
+- **L1 (Process Stage)**: Broad stage organized by intent/goal shift. Pattern: Preparation → Processing → Assembly → Finishing. Duration: 30-120s. Max: 6.
+- **L2 (Sub-goal Workflow)**: Multi-step workflow (10-60s) completing a verifiable sub-goal. Max: 5 per phase.
+- **L3 (Object State Change)**: Single discrete physical interaction (2-6s) where ONE object undergoes ONE visible state change.
+- **Typical domains**: `culinary.*`, `instructional.*`, `professional.manufacturing`
+- **Classification signals**: Visible materials/tools being manipulated; clear progression from raw to finished state; person performing sequential operations.
+
+#### 4.3.2 educational — Knowledge Delivery
+
+> Videos where structured knowledge is the primary deliverable.
+
+- **L1 (Knowledge Module)**: Distinct teaching topic or knowledge unit covering one concept/theorem/experiment. Duration: 30-300s. Max: 5.
+- **L2 (Explanation/Demo Unit)**: Focused explanation or demonstration of one sub-concept. Duration: 15-90s. Max: 4 per module.
+- **L3 (Key Info Beat)**: Moment where new information appears or key visual state change occurs. Duration: 3-15s.
+- **Typical domains**: `education_science.*`, `instructional.digital_creation`
+- **Classification signals**: PPT/whiteboard visible; instructor speaking to camera; structured knowledge delivery; text/diagrams on screen.
+
+#### 4.3.3 cinematic — Scripted Narrative
+
+> Professionally edited narrative content with scene structure and story arc.
+
+- **L1 (Narrative Act)**: Distinct emotional/narrative stage. Pattern: Setup → Confrontation → Climax → Resolution. Duration: 30-300s. Max: 5.
+- **L2 (Scene Unit)**: Continuous narrative within same space-time and character set. Duration: 10-90s. Max: 5 per act.
+- **L3 (Interaction Beat)**: Complete social/physical interaction or distinct emotional shift. Duration: 2-10s.
+- **Typical domains**: `performing_arts.theater_film`, `performing_arts.gaming`
+- **Classification signals**: Professional cinematography; scene transitions; multiple characters; emotional arc; deliberate camera work.
+
+#### 4.3.4 vlog — Topic/Location Driven
+
+> Personal-perspective content driven by location changes, topic shifts, or daily activity flow.
+
+- **L1 (Topic/Location Segment)**: Organized by location change or topic shift. Duration: 30-180s. Max: 6.
+- **L2 (Activity Clip)**: Specific activity within a location/topic. Duration: 10-60s. Max: 4 per segment.
+- **L3 (Key Moment)**: Information increment — first impression, reaction, discovery. Duration: 2-8s.
+- **Typical domains**: `lifestyle.travel_tourism`, `lifestyle.social_event`, `culinary.food_presentation`
+- **Classification signals**: First-person/creator-facing camera; location transitions; casual narration; topic-driven segments.
+
+#### 4.3.5 sports_match — Rule-Based Competition
+
+> Competitive events with structured rounds, periods, or plays defined by sport rules.
+
+- **L1 (Match Phase)**: Structural period defined by sport rules (halves, rounds, sets). Duration: 60-600s. Max: 4.
+- **L2 (Rally/Play)**: Complete rally, play, or scoring sequence. Duration: 5-30s. Max: 10 per phase.
+- **L3 (Key Action)**: Decisive physical action — shot, score, foul, save. Duration: 1-5s.
+- **Typical domains**: `sports_fitness.team_sport`, `sports_fitness.individual_sport`, `sports_fitness.combat_sport`
+- **Classification signals**: Scoreboard; referee; structured back-and-forth play; crowd; uniforms.
+
+#### 4.3.6 cyclical — Repeating Motion Patterns
+
+> Activities with rhythmic, repeating motion cycles in a stable environment.
+
+- **L1 (Macro-Unit/Routine)**: Complete repetition logic or routine section. Pattern: Warm-up → High-intensity → Cool-down. Duration: 30-180s. Max: 4.
+- **L2 (Sub-Unit)**: Fixed action combination within a cycle (e.g., left step 4-beat, right step 4-beat). Duration: 8-30s. Max: 6 per macro-unit. **[NEW: was disabled in v3]**
+- **L3 (Beat/Step)**: Single repetition, cycle, or step. Duration: 2-8s. Max: 20.
+- **L3 Parent**: `event` when L2 is populated, `phase` as fallback when L2 is empty.
+- **Typical domains**: `sports_fitness.fitness_exercise`, `sports_fitness.dance`, `performing_arts.music_instrument`
+- **Classification signals**: Same motion pattern repeating; body returns to starting position; intensity changes.
+
+#### 4.3.7 continuous — Unstructured Observation
+
+> Long-take or minimally edited continuous recording focused on a subject's ongoing activity. **[NEW paradigm]**
+
+- **L1 (Focus State)**: Core attention object or major state. Duration: 30-300s. Max: 5.
+- **L2 (Behavior State)**: Observable state change of the focus subject. Duration: 10-60s. Max: 5 per focus.
+- **L3 (Movement Detail)**: Fine-grained physical adjustment or motion. Duration: 2-8s.
+- **Typical domains**: `nature_environment.wildlife`, `sports_fitness.extreme_sport`, `professional.vehicle_operation`
+- **Classification signals**: Single continuous shot or minimal cuts; no human-imposed structure; focus on natural/ongoing activity; no narrator-driven segmentation.
+
+---
+
+## 5. Dense Caption Design
+
+### 5.1 Per-Level Caption Fields
+
+Dense captions are generated **within the same VLM call** as segmentation (no extra API cost).
+
+#### L1 — Phase-Level Caption
 
 ```json
 {
-  "micro_type": "state_change",
-  "grounding_results": [
-    {
-      "action_id": 1,
-      "start_time": 42,
-      "end_time": 47,
-      "sub_action": "Pour batter into pan",
-      "pre_state": "Batter in mixing bowl, empty pan",
-      "post_state": "Batter filling the pan"
-    }
-  ]
+  "phase_id": 1,
+  "start_time": 5,
+  "end_time": 60,
+  "phase_name": "Gathering ingredients and preparing dry mixture",
+  "narrative_summary": "The baker collects all necessary ingredients from the pantry and measures out dry components including flour, sugar, and cocoa powder. These are combined in a large stainless steel mixing bowl on the granite countertop.",
+  "scene_description": "Bright kitchen with overhead lighting. Wooden pantry to the left, granite countertop center frame. Ingredients arranged in a row: flour bag, sugar container, cocoa tin. Large steel bowl prominently placed.",
+  "event_split_criterion": "..."
 }
 ```
 
-### 3.4 代码路由逻辑
+| Field | Type | Description | New? |
+|-------|------|-------------|------|
+| `phase_name` | str, 5-15 words | Descriptive phase title | Existing |
+| `narrative_summary` | str, 2-3 sentences | What happens and why, temporal progression | Existing (enhanced) |
+| `scene_description` | str, 1-2 sentences | Visual environment: objects, layout, lighting | **NEW** |
 
-**`annotate.py` — annotate_clip() level "3" 分支：**
-
-```python
-topology_type = existing.get("topology_type", "procedural")
-topology_confidence = existing.get("topology_confidence", 1.0)
-l3_mode = existing.get("l3_mode") or TOPOLOGY_TO_L3_MODE.get(topology_type)
-
-if topology_confidence < 0.6:
-    l3_mode = "skip"
-
-if l3_mode == "skip":
-    # → 写空 level3, 不调 VLM
-elif topology_type == "periodic":
-    # → L3 from L1 phases, frame dirs: {clip_key}_ph{phase_id}/
-else:
-    # → L3 from L2 events, frame dirs: {clip_key}_ev{event_id}/
-```
-
-**`extract_frames.py` — 按拓扑抽帧：**
-
-| 拓扑 | L3 帧来源 | 目录前缀 |
-|------|----------|---------|
-| procedural | L2 events | `_ev{id}` |
-| periodic | L1 phases | `_ph{id}` |
-| sequence | 跳过 | — |
-| flat | 跳过 | — |
-
-**`seg_source.py` — complete_only 过滤：**
-- `l3_mode == "skip"` → 不要求 level3 存在
-- 无 topology 字段（旧标注）→ 仍要求 L1+L2+L3 都存在
-
-### 3.5 Annotation JSON Schema (Phase 1)
+#### L2 — Event-Level Caption
 
 ```json
 {
-  "clip_key": "video_0_120",
-  "video_path": "...",
-  "source_video_path": "...",
-  "clip_duration_sec": 120,
+  "event_id": 1,
+  "start_time": 5,
+  "end_time": 15,
+  "instruction": "Measure flour and sugar from bags into the mixing bowl",
+  "dense_caption": "The baker reaches for the flour bag on the left side of the counter, scoops flour with a metal measuring cup, and pours it into the steel bowl. A small cloud of flour rises. Then picks up the sugar container, measures one cup, and adds it to the bowl alongside the flour.",
+  "visual_keywords": ["measuring cup", "flour", "sugar", "steel bowl"],
+  "parent_phase_id": 1
+}
+```
 
-  "domain_l1": "cooking",
-  "domain_l2": "baking",
+| Field | Type | Description | New? |
+|-------|------|-------------|------|
+| `instruction` | str, 8-20 words | Concise action description (WHAT + WITH WHAT + OUTCOME) | Existing |
+| `dense_caption` | str, 2-4 sentences | Detailed process: action sequence, object interactions, spatial relations | **NEW** |
+| `visual_keywords` | list[str] | Key visible objects | Existing |
 
-  "topology_type": "procedural",
-  "topology_confidence": 0.92,
-  "topology_reason": "...",
-  "l2_mode": "workflow",
-  "l3_mode": "state_change",
+#### L3 — Action-Level Caption
 
-  "summary": "...",
+```json
+{
+  "action_id": 1,
+  "start_time": 5,
+  "end_time": 8,
+  "sub_action": "Pour measured flour from the bag into steel mixing bowl",
+  "pre_state": "Flour bag held above the empty steel bowl, measuring cup with flour on counter",
+  "post_state": "White flour visible in bowl bottom, measuring cup lowered to counter",
+  "action_detail": "Right hand tilts the flour bag at approximately 45 degrees over the bowl opening. Flour streams in a steady flow for 2 seconds. Left hand steadies the bowl rim.",
+  "parent_event_id": 1,
+  "parent_phase_id": 1
+}
+```
+
+| Field | Type | Description | New? |
+|-------|------|-------------|------|
+| `sub_action` | str, 5-15 words | Atomic action phrase | Existing |
+| `pre_state` | str, 1 sentence | Visual state BEFORE action | Existing |
+| `post_state` | str, 1 sentence | Visual state AFTER action | Existing |
+| `action_detail` | str, 1-2 sentences | Body movement trajectory, object dynamics, spatial specifics | **NEW** |
+
+### 5.2 Caption Quality Requirements
+
+1. **Grounded in visual evidence**: Every statement must be verifiable from frames. No inference about off-screen events.
+2. **Spatial specificity**: Use directional language (left/right, above/below, foreground/background).
+3. **Object identity consistency**: Same object must use the same referring expression across all levels.
+4. **Temporal progression**: L2 `dense_caption` must describe events in chronological order.
+5. **No redundancy across levels**: L1 summarizes the "what and why", L2 details the "how", L3 captures the "exact motion".
+
+---
+
+## 6. Complete Annotation JSON Schema (v4)
+
+```json
+{
+  // ─── Video Metadata ───
+  "clip_key": "video_abc_001",
+  "video_path": "path/to/video.mp4",
+  "source_video_path": "path/to/original.mp4",
+  "source_mode": "full_video | windowed_clip | full_video_prefix",
+  "clip_duration_sec": 120.0,
+  "n_frames": 120,
+  "frame_dir": "/path/to/frames/video_abc_001",
+
+  // ─── Stage 1: Classification (NEW in v4) ───
+  "paradigm": "tutorial",
+  "paradigm_confidence": 0.92,
+  "paradigm_reason": "Clear step-by-step physical task with progressive stages",
+  "domain_l1": "task_howto",
+  "domain_l2": "food_cooking",
+  "feasibility": {
+    "score": 0.92,
+    "skip": false,
+    "skip_reason": null,
+    "estimated_n_phases": 4,
+    "estimated_n_events": 12,
+    "visual_dynamics": "high"
+  },
+  "video_metadata": {
+    "has_text_overlay": true,
+    "has_narration": true,
+    "camera_style": "static_tripod",
+    "editing_style": "continuous"
+  },
+
+  // ─── Stage 2: Hierarchical Annotation ───
+  "summary": "A person prepares and bakes a chocolate cake from scratch",
+  "global_phase_criterion": "Organized by major goal shifts from preparation through finishing",
 
   "level1": {
     "macro_phases": [
       {
         "phase_id": 1,
         "start_time": 5,
-        "end_time": 120,
-        "phase_name": "...",
-        "narrative_summary": "..."
+        "end_time": 60,
+        "phase_name": "Gathering ingredients and preparing dry mixture",
+        "narrative_summary": "The baker collects ingredients and measures dry components...",
+        "scene_description": "Bright kitchen with overhead lighting, granite countertop...",
+        "event_split_criterion": "Events represent distinct measurement and mixing operations"
       }
     ],
-    "_sampling": { "n_sampled_frames": 30, "resize_max_width": 0, "jpeg_quality": 60 }
+    "_sampling": { "n_sampled_frames": 24, "jpeg_quality": 60 }
   },
 
   "level2": {
     "events": [
       {
         "event_id": 1,
-        "start_time": 8,
-        "end_time": 45,
-        "instruction": "...",
-        "visual_keywords": ["..."],
+        "start_time": 5,
+        "end_time": 15,
+        "instruction": "Measure flour and sugar from bags into the mixing bowl",
+        "dense_caption": "The baker reaches for the flour bag, scoops with measuring cup...",
+        "visual_keywords": ["measuring cup", "flour", "sugar", "bowl"],
         "parent_phase_id": 1
       }
     ]
@@ -222,1144 +421,327 @@ else:
 
   "level3": {
     "micro_type": "state_change",
+    "micro_split_criterion": "Each action = one object's one visible state change",
     "grounding_results": [
       {
         "action_id": 1,
-        "start_time": 42,
-        "end_time": 47,
-        "sub_action": "...",
-        "pre_state": "...",
-        "post_state": "...",
-        "parent_event_id": 1
+        "start_time": 5,
+        "end_time": 8,
+        "sub_action": "Pour measured flour from bag into steel mixing bowl",
+        "pre_state": "Flour bag held above empty steel bowl",
+        "post_state": "White flour visible in bowl bottom",
+        "action_detail": "Right hand tilts flour bag at 45 degrees, flour streams steadily for 2s",
+        "parent_event_id": 1,
+        "parent_phase_id": 1
       }
     ],
     "_segment_calls": [...]
-  }
-}
-```
+  },
 
-**periodic 视频的 level3：**
-```json
-{
-  "micro_type": "repetition_unit",
-  "grounding_results": [
-    {
-      "action_id": 1,
-      "start_time": 10,
-      "end_time": 14,
-      "sub_action": "One push-up rep",
-      "pre_state": "Arms extended, body in plank",
-      "post_state": "Arms extended, body in plank",
-      "parent_phase_id": 1
-    }
-  ]
-}
-```
-
-**sequence/flat 视频的 level3：**
-```json
-{
-  "micro_type": "skip",
-  "grounding_results": [],
-  "_skip_reason": "l3_mode=skip (topology=sequence, conf=0.88)"
+  "annotated_at": "2026-04-09T14:32:10.123456+00:00"
 }
 ```
 
 ---
 
-## 4. 向后兼容
+## 7. Event Logic Data Derivation
 
-| 场景 | 处理 |
-|------|------|
-| 旧标注无 topology_type | 所有代码默认 "procedural" — 行为不变 |
-| 新字段 topology_type/l2_mode/l3_mode/micro_type | 下游 builder 不读这些字段，安全 |
-| level2.events = [] (periodic/flat) | 下游 builder 已处理空 events |
-| level3 = {micro_type: "skip", ...} | 下游 builder 跳过空 L3 |
+From a single hierarchical annotation, automatically generate 4 types of event logic training data (NO extra VLM calls needed).
 
----
+### 7.1 Task Definitions
 
-## 5. 使用方式
+| Task | Input | Output | Form | Reward |
+|------|-------|--------|------|--------|
+| **Next-Event Prediction** | Video + first k events | Select next event from 4 candidates | MCQ (4-way) | Binary correctness |
+| **Middle-Segment Selection** | Video + event_before + event_after | Select missing middle event from 4 candidates | MCQ (4-way) | Binary correctness |
+| **Temporal Ordering** | Video + shuffled event list | Restore correct chronological order | Free-form permutation | Kendall's tau / exact match |
+| **Causal Reasoning** | Video + two adjacent events' dense_captions | Explain WHY event B follows event A | Open-ended QA | Semantic similarity to GT |
 
-### 路径约定
+### 7.2 Distractor Generation Strategy
 
-```bash
-# 脚本目录
-SCRIPT_DIR=proxy_data/youcook2_seg/hier_seg_annotation
+For MCQ tasks (Next-Event, Middle-Segment), distractors come from:
 
-# 数据根目录
-DATA_ROOT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation
+1. **Same video, different phase**: Events from a different L1 phase (temporal confusion).
+2. **Same domain, different video**: Events from another video with matching `domain_l2` (semantic confusion).
+3. **Random**: Events from unrelated videos (easy negative).
 
-# 输入 JSONL (dev 100 条 / 正式 1k 条)
-JSONL_DEV=/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampled/dev_100.jsonl
-JSONL_1K=/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampled/sampled_1k.jsonl
+Ratio per question: 1 correct + 1 same-video + 1 same-domain + 1 random = 4 options.
 
-# VLM 配置
-MODEL=pa/gemini-3.1-pro-preview
+### 7.3 Data Construction (in `build_hier_data.py`)
+
+```python
+def build_event_logic_records(ann: dict, all_anns: list[dict]) -> list[dict]:
+    """
+    From one annotation, generate event logic training records.
+    
+    Requires: level2.events with dense_caption field.
+    Uses all_anns for cross-video distractor mining.
+    """
+    events = ann["level2"]["events"]  # must have dense_caption
+    
+    records = []
+    
+    # 1. Next-Event Prediction
+    for i in range(1, len(events)):
+        context_events = events[:i]
+        target = events[i]
+        distractors = mine_distractors(target, ann, all_anns, n=3)
+        records.append(build_next_event_mcq(context_events, target, distractors))
+    
+    # 2. Middle-Segment Selection
+    for i in range(1, len(events) - 1):
+        before, target, after = events[i-1], events[i], events[i+1]
+        distractors = mine_distractors(target, ann, all_anns, n=3)
+        records.append(build_middle_segment_mcq(before, after, target, distractors))
+    
+    # 3. Temporal Ordering (per-phase groups)
+    for phase_events in group_events_by_phase(events):
+        if len(phase_events) >= 3:
+            records.append(build_ordering_task(phase_events))
+    
+    # 4. Causal Reasoning (using dense_caption)
+    for i in range(1, len(events)):
+        if events[i-1].get("dense_caption") and events[i].get("dense_caption"):
+            records.append(build_causal_qa(events[i-1], events[i]))
+    
+    return records
 ```
 
-### 完整 5 步流程
+### 7.4 Problem Types
 
-```bash
-# Step 1: 全视频 1fps 抽帧 (仅首次需要)
-python $SCRIPT_DIR/extract_frames.py \
-    --jsonl $JSONL_DEV \
-    --output-dir $DATA_ROOT/frames \
-    --fps 1 --workers 4
-
-# Step 2: Merged 标注 (L1+L2+Topology+Criterion)
-python $SCRIPT_DIR/annotate.py \
-    --jsonl $JSONL_DEV \
-    --frames-dir $DATA_ROOT/frames \
-    --output-dir $DATA_ROOT/annotations \
-    --level merged \
-    --model $MODEL --workers 4
-
-# Step 3: L3 帧提取 (leaf-node 路由: events→_ev{id}/, eventless phases→_ph{id}/)
-python $SCRIPT_DIR/extract_frames.py \
-    --annotation-dir $DATA_ROOT/annotations \
-    --output-dir $DATA_ROOT/frames_l3 \
-    --fps 2 --workers 4
-
-# Step 4: L3 标注 (自动跳过 sequence/flat)
-python $SCRIPT_DIR/annotate.py \
-    --jsonl $JSONL_DEV \
-    --frames-dir $DATA_ROOT/frames \
-    --l3-frames-dir $DATA_ROOT/frames_l3 \
-    --output-dir $DATA_ROOT/annotations \
-    --level 3 \
-    --model $MODEL --workers 8
-
-# Step 5: Leaf-Node Audit (L3 查漏补缺 + 父节点边界收缩)
-python $SCRIPT_DIR/annotate_check.py \
-    --frames-dir $DATA_ROOT/frames \
-    --l3-frames-dir $DATA_ROOT/frames_l3 \
-    --annotation-dir $DATA_ROOT/annotations \
-    --output-dir $DATA_ROOT/annotations_checked \
-    --levels leaf_c \
-    --model $MODEL --workers 4
-
-# Step 6 (可选): Criterion → 通用 Training Hint 改写
-python $SCRIPT_DIR/rewrite_criteria_hints.py \
-    --annotation-dir $DATA_ROOT/annotations_checked \
-    --api-base $API_BASE \
-    --model gpt-4o-mini \
-    --workers 4
-```
-
-### 续接 1k 数据集
-
-```bash
-# 将 JSONL 切换为 sampled_1k.jsonl，其余路径不变
-# 已标注的 clip 会被自动跳过 (按 clip_key 去重)
-
-# Merged 标注 (续接)
-python $SCRIPT_DIR/annotate.py \
-    --jsonl $JSONL_1K \
-    --frames-dir $DATA_ROOT/frames \
-    --output-dir $DATA_ROOT/annotations \
-    --level merged \
-    --model $MODEL --workers 4
-
-# L3 帧提取 (续接)
-python $SCRIPT_DIR/extract_frames.py \
-    --annotation-dir $DATA_ROOT/annotations \
-    --output-dir $DATA_ROOT/frames_l3 \
-    --fps 2 --workers 4
-
-# L3 标注 (续接)
-python $SCRIPT_DIR/annotate.py \
-    --jsonl $JSONL_1K \
-    --frames-dir $DATA_ROOT/frames \
-    --l3-frames-dir $DATA_ROOT/frames_l3 \
-    --output-dir $DATA_ROOT/annotations \
-    --level 3 \
-    --model $MODEL --workers 8
-```
+```python
+PROBLEM_TYPES_EVENT_LOGIC = {
+    "next_event": "event_logic_next_event",
+    "middle_segment": "event_logic_middle_segment",
+    "temporal_ordering": "event_logic_temporal_ordering",
+    "causal_reasoning": "event_logic_causal_reasoning",
+}
 ```
 
 ---
 
-## 6. Phase 1.5: Leaf-Node L3 路由 (已实现)
+## 8. Dense Caption Training Data
 
-### 6.1 问题
-`procedural` 视频中，某些 phase 只包含单一连续/循环动作（如"一直钉钉子 60 秒"），VLM 被迫造出与 phase 几乎一样的 event → L1 ≈ L2 冗余。
+### 8.1 Task Definitions
 
-### 6.2 核心设计：变长层级
+| Task | Input | Output | Granularity |
+|------|-------|--------|-------------|
+| **Phase Caption** | Video (L1 clip) + phase timestamps | `narrative_summary` + `scene_description` | L1 |
+| **Event Caption** | Video (L2 clip) + event timestamps | `dense_caption` | L2 |
+| **Action Caption** | Video (L3 clip) + action timestamps | `action_detail` + `pre_state` + `post_state` | L3 |
+| **Hierarchical Caption** | Full video | All-level structured output | L1+L2+L3 |
 
-放弃死板的 L1→L2→L3 固定三层，改为 **"父节点 → 子节点"** 的相对概念：
+### 8.2 Problem Types
 
-| 角色 | 定义 | 对应原层级 |
-|------|------|-----------|
-| **Macro (宏观阶段)** | 视频的必然组成部分 | L1 |
-| **Meso (中观事件)** | 完全可选。仅当 Macro 包含多个截然不同的子动作时才存在 | L2 |
-| **Micro (微观动作)** | 永远只挂载在**叶子节点**上 | L3 |
-
-**核心规则**: L3 标注目标 = 树的叶子节点（Leaf Nodes）
-
-```
-情况 A: Phase 有 events → events 是叶子 → L3 从 events 下钻
-         Phase ─┬─ Event 1 (leaf) ─── L3 micro
-                └─ Event 2 (leaf) ─── L3 micro
-
-情况 B: Phase 无 events → phase 自身是叶子 → L3 从 phase 直接下钻
-         Phase (leaf) ─── L3 micro
-
-情况 C: 混合 → 同一视频中两种情况并存
-         Phase 1 ─┬─ Event 1 (leaf) ─── L3 micro
-                  └─ Event 2 (leaf) ─── L3 micro
-         Phase 2 (leaf, 单一连续动作) ─── L3 micro
+```python
+PROBLEM_TYPES_CAPTION = {
+    "phase_caption": "dense_caption_L1",
+    "event_caption": "dense_caption_L2",
+    "action_caption": "dense_caption_L3",
+    "hier_caption": "dense_caption_hierarchical",
+}
 ```
 
-### 6.3 完整 Prompt：Merged (L1+L2+Topology)
+---
 
-> 对应 `prompts.py` 中 `_MERGED_L1L2_BASE` 模板。`{duration}`, `{n_frames}`, `{domain_taxonomy_str}` 为运行时填充。
+## 9. Pipeline Data Flow
 
 ```
-You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
-Your task has four parts.
+                            ┌─────────────────────────────────────┐
+                            │       Raw Video Collection          │
+                            └──────────────┬──────────────────────┘
+                                           │
+                          ┌────────────────▼─────────────────┐
+                          │   STAGE 1: Classification+Filter  │
+                          │   (64 frames, 1 VLM call/video)   │
+                          │                                    │
+                          │   Output:                          │
+                          │     - paradigm (7 types)           │
+                          │     - domain_l1 (6) + domain_l2 (22) │
+                          │     - feasibility score            │
+                          │     - video_metadata               │
+                          └──────┬───────────────┬─────────────┘
+                                 │               │
+                         feasibility.skip     feasibility.skip
+                           == false              == true
+                                 │               │
+                                 ▼               ▼
+                          ┌──────────┐    ┌────────────┐
+                          │ Continue │    │  Discard   │
+                          │ to Stage2│    │ (talk,     │
+                          └────┬─────┘    │  ambient,  │
+                               │          │  static)   │
+                               │          └────────────┘
+                               │
+              ┌────────────────▼─────────────────────┐
+              │     STAGE 2: Hierarchical Annotation   │
+              │     (paradigm-driven prompts)           │
+              │                                        │
+              │  Step 1: Merged L1+L2 (all frames)     │
+              │    → phases + events + dense captions   │
+              │                                        │
+              │  Step 2: L3 frame extraction            │
+              │    → per-event/phase high-fps frames    │
+              │                                        │
+              │  Step 3: L3 grounding (per source)     │
+              │    → micro-actions + state descriptions │
+              └──────────────────┬─────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │  Annotation JSON (v4)   │
+                    │  per-video .json file    │
+                    └────────────┬────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              │                  │                  │
+    ┌─────────▼──────┐  ┌───────▼────────┐  ┌─────▼──────────┐
+    │  Hier-Seg Data │  │ Event Logic    │  │ Dense Caption  │
+    │  (L1/L2/L3)    │  │ Data           │  │ Data           │
+    │                │  │                │  │                │
+    │ problem_types: │  │ problem_types: │  │ problem_types: │
+    │ temporal_seg_* │  │ event_logic_*  │  │ dense_caption_*│
+    └────────────────┘  └────────────────┘  └────────────────┘
+```
 
-## PART 1 — DOMAIN CLASSIFICATION
-Classify the video using a two-level taxonomy.
-Choose ONE broad category (domain_l1) and ONE fine-grained subcategory (domain_l2)
-from the list below:
-{domain_taxonomy_str}
+---
 
-## PART 2 — TOPOLOGY CLASSIFICATION (CRITICAL)
-Analyze the TEMPORAL STRUCTURE of the visible activity and assign exactly ONE topology_type.
+## 10. Training Data Statistics Schema
 
-Topology types:
-- procedural:
-  A step-by-step process with meaningful sub-goals that progress toward an outcome.
-  Typical examples: cooking, assembling, repairing, crafting.
+For paper reporting, collect statistics grouped by paradigm and domain:
 
-- periodic:
-  A repeated cycle of the same motion or operation.
-  Typical examples: stretching repetitions, weightlifting reps, repetitive factory motions.
+```
+Statistics axes:
+  1. By paradigm:    tutorial | educational | cinematic | vlog | sports_match | cyclical | continuous
+  2. By domain_l1:   knowledge_education | film_entertainment | sports_esports | lifestyle_vlog | arts_performance | task_howto
+  3. By domain_l2:   food_cooking | ball_sport | ... (22 categories)
+  4. By task type:   hier_seg | event_logic | dense_caption
+  5. By level:       L1 | L2 | L3
 
-- sequence:
-  A continuous traversal, trial, run, or episode with one coherent trajectory or attempt.
-  Typical examples: dog agility runs, parkour runs, skiing descents, obstacle traversals.
+Key metrics per group:
+  - n_videos: number of source videos
+  - n_samples: number of training samples
+  - avg_duration: average clip duration (seconds)
+  - avg_n_segments: average number of segments per sample
+  - avg_segment_duration: average segment duration (seconds)
+```
 
-- flat:
-  A single continuous activity with no stable internal hierarchy, or mixed/unclear
-  structure that should not be over-segmented.
-  Typical examples: idle talking, continuous walking vlog, loosely mixed footage.
+---
 
-Important topology rules:
-1. Topology is about temporal structure, NOT about domain label alone.
-2. Repetition alone does NOT imply procedural structure.
-3. Camera cuts do NOT define topology.
-4. If the structure is weak or unclear, choose flat rather than inventing hierarchy.
+## 11. Code Change Summary
 
-Also output:
-- topology_confidence: a float from 0.0 to 1.0
-- topology_reason: one brief sentence explaining the decision
+| File | Change Type | Details |
+|------|-------------|---------|
+| `archetypes.py` | **Major refactor** | Remove `talk`/`ambient`; rename `performance`→`cyclical` (enable L2); add `continuous`; add dense caption fields to `LevelConfig`; redesign classification prompt with feasibility; implement 2-level domain taxonomy |
+| `annotate.py` | **Moderate** | Stage 1: add feasibility scoring + skip logic; merged L1+L2: add `scene_description` (L1), `dense_caption` (L2) to prompt output schema; L3: add `action_detail` to prompt output schema |
+| `build_hier_data.py` | **Major addition** | Add `build_event_logic_records()`, `build_dense_caption_records()`, distractor mining; new problem types; update balanced sampling to use `domain_l1` |
+| `prepare_clips.py` | **Minor** | Support `cyclical` L2 clips (was skipped for `performance`) |
+| `run_pipeline.sh` | **Minor** | Add Stage 1 filter step before annotation |
+| `shared/seg_source.py` | **Minor** | Update `ARCHETYPE_IDS`, domain constants |
 
-## PART 3 — VIDEO SUMMARY & MACRO PHASES (L1)
-Write ONE sentence summarizing the video.
+---
 
-Then segment the video into 1–6 macro phases.
-A macro phase is a broad stage of activity organized by overall intent.
-- Skip intros, outros, static non-activity spans, and talking-only spans.
-- Phases do NOT need to cover the entire video.
-- Do NOT split by camera cuts.
-- It is valid to output only 1 macro phase if the entire video is one continuous routine.
+## 12. Migration from v3
 
-## PART 4 — EVENT DETECTION (L2)
-Detect events nested inside each macro phase.
-Apply the event definition STRICTLY based on topology_type:
+### 12.1 Backward Compatibility
 
-If topology_type = procedural:
-- An event is a multi-second workflow (typically 10–60s) that completes a process sub-goal.
-- Group related manipulations together.
-- Do NOT fragment into atomic tool motions.
-- **If a macro phase consists of a single continuous operation or a simple repetitive action
-  (e.g., "hammering nails for 60 seconds", "stirring continuously"), leave its "events": [].**
-- **ONLY create events when the phase contains distinct sequential sub-steps.**
+```python
+# Existing v3 annotations with old archetype names still work:
+PARADIGM_MIGRATION = {
+    "performance": "cyclical",   # renamed
+    "talk": None,                # filtered out (skip)
+    "ambient": None,             # filtered out (skip)
+    # All others: name unchanged
+}
 
-If topology_type = sequence:
-- An event is a complete episode, trial, or continuous traversal with one coherent
-  trajectory or objective.
-- Do NOT split by local body motions, individual obstacles, or camera cuts.
-- A whole run/trial should usually be one event.
+# Old topology → paradigm fallback (for pre-v3 annotations):
+TOPOLOGY_TO_DEFAULT_PARADIGM = {
+    "procedural": "tutorial",
+    "periodic": "cyclical",
+    "sequence": "cinematic",
+    "flat": None,  # skip
+}
+```
 
-If topology_type = periodic:
-- Events are optional.
-- You may leave "events": [] for a phase, or output ONE event only if it exactly
-  matches the whole phase as a container for later micro annotation.
-- Do NOT create one event per repetition.
+### 12.2 Re-annotation Strategy
 
-If topology_type = flat:
-- Output "events": [].
-- Do NOT invent L2 structure.
+1. **Existing v3 annotations**: Keep as-is for hier-seg training (paradigm names auto-mapped).
+2. **Dense caption fields**: Require re-annotation (or supplementary VLM call) since v3 lacks `dense_caption`, `scene_description`, `action_detail`.
+3. **Domain reclassification**: Run Stage 1 on all existing videos to populate two-level domain taxonomy.
 
-General L2 rules:
-- Events must not overlap.
-- Use absolute integer seconds.
-- **It is valid for a phase to contain zero events.**
-- **Do not force extra events to make the hierarchy deeper.**
+---
+
+## Appendix A: Paradigm Classification Prompt (Draft)
+
+```
+You are given a {duration}s video clip with {n_frames} frames.
+
+TASK 1 — PARADIGM CLASSIFICATION
+Classify the video's dominant temporal structure into exactly one paradigm:
+
+- **tutorial**: Step-by-step physical task with sub-goals → tangible outcome.
+  Signals: tools/materials being manipulated, raw→finished progression.
+- **educational**: Knowledge delivery via lecture, demo, or experiment.
+  Signals: PPT/whiteboard, instructor, structured explanation.
+- **cinematic**: Scripted narrative with scene structure and story arc.
+  Signals: professional editing, scene transitions, character dialogue.
+- **vlog**: Personal perspective, location/topic shifts, creator narration.
+  Signals: first-person camera, jump cuts, casual narration.
+- **sports_match**: Rule-based competition with structured periods/rounds.
+  Signals: scoreboard, referee, back-and-forth play, uniforms.
+- **cyclical**: Rhythmic repeating motion cycles in stable environment.
+  Signals: same motion repeating, body returns to start, intensity changes.
+- **continuous**: Long-take observation of ongoing activity, minimal editing.
+  Signals: single continuous shot, no imposed structure, natural activity.
+
+TASK 2 — DOMAIN CLASSIFICATION
+Classify the content domain at two levels:
+
+domain_l1: {domain_l1_list}
+domain_l2: {domain_l2_list}
+
+TASK 3 — FEASIBILITY ASSESSMENT
+Assess whether this video is worth annotating with hierarchical temporal structure.
 
 Output JSON:
 {
-  "domain_l1": "<one broad category>",
-  "domain_l2": "<one fine-grained subcategory>",
-  "topology_type": "procedural | periodic | sequence | flat",
-  "topology_confidence": 0.95,
-  "topology_reason": "<one sentence>",
-  "l2_mode": "workflow | episode | optional | skip",
-  "summary": "<one sentence>",
-  "macro_phases": [
-    {
-      "phase_id": 1,
-      "start_time": 5,
-      "end_time": 60,
-      "phase_name": "Material Preparation",
-      "narrative_summary": "Gather and organize all required materials.",
-      "events": [
-        {
-          "event_id": 1,
-          "start_time": 8,
-          "end_time": 25,
-          "instruction": "Sort and measure the raw materials",
-          "visual_keywords": ["hands", "materials", "measuring tool"]
-        }
-      ]
-    }
-  ]
-}
-```
-
-**Phase 1.5 关键约束（加粗部分）**:
-- **procedural events 按需留空**: 单一连续动作/简单循环动作的 phase → `"events": []`
-- **不强行加深层级**: 只有包含截然不同子步骤的 phase 才创建 events
-- **零 events 合法**: 任何 topology 下 phase 都允许 `events: []`
-
-### 6.4 完整 Prompt：L3 (Topology-Aware Micro Grounding)
-
-> 对应 `prompts.py` 中 `_LEVEL3_BASE` 模板。`{clip_start}`, `{clip_end}`, `{action_query}`, `{topology_type}` 为运行时填充。
-
-```
-You are a temporal grounding model. You are viewing frames from a clip
-({clip_start}s to {clip_end}s).
-The input query is: "{action_query}"
-The topology_type of the source video is: "{topology_type}".
-
-Your task is to pinpoint every atomic micro-action in this clip.
-
-IMPORTANT:
-- If topology_type is "sequence" or "flat", this prompt should not be used.
-- Use absolute integer seconds from the full video timeline.
-
-LEVEL 3 DEFINITIONS
-
-If topology_type = procedural:
-- micro_type = "state_change"
-- **Find brief atomic actions where an object undergoes a clear visible physical change.**
-- Valid examples: cutting, pouring into a container, attaching a part, spreading
-  material, separating pieces.
-- start_time = onset of the actual physical interaction or transformation
-- end_time = the moment the new visible state is established
-- **Ignore reaching, idle pauses, pure hand repositioning, and narration**
-
-If topology_type = periodic:
-- micro_type = "repetition_unit"
-- **Find each individual completed repetition, cycle, strike, or stretch.**
-- start_time = initiation of one repetition cycle
-- end_time = completion of that same repetition cycle, usually when the body/equipment
-  returns to its resting or starting position
-- **Ignore idle pauses between repetitions**
-- IMPORTANT: post_state may be similar or identical to pre_state if the repetition
-  returns to the starting posture
-
-General rules:
-1. Typical duration is 2–6 seconds, but use shorter or longer spans if the unit is
-   clearly visible.
-2. Allow gaps between micro-actions.
-3. Merge uninterrupted motion belonging to the same single repetition or same single
-   state change.
-4. Do not force full coverage.
-
-For each micro-action, provide:
-- action_id: Sequential integer starting from 1.
-- start_time / end_time: Timestamps in integer seconds (absolute within the full video).
-- sub_action: Brief description of the specific physical interaction or repetition.
-- pre_state: The EXPLICIT visual state BEFORE the interaction.
-- post_state: The EXPLICIT visual state AFTER the interaction.
-
-Output JSON:
-{
-  "micro_type": "state_change | repetition_unit",
-  "grounding_results": [
-    {
-      "action_id": 1,
-      "start_time": 42,
-      "end_time": 47,
-      "sub_action": "Transfer material A into container B",
-      "pre_state": "Empty container with prepared surface",
-      "post_state": "Material A distributed across the container surface"
-    }
-  ]
-}
-```
-
-**L3 Prompt 关键约束**:
-- **state_change**: 仅找可见物理变化的原子动作，忽略纯手部调整
-- **repetition_unit**: 找每个完整重复周期，post_state ≈ pre_state 是合法的
-- **不强制全覆盖**: 允许 micro-action 之间有间隔
-
-### 6.5 JSON 输出示例（含可选 L2）
-
-**屋顶维修视频**：Phase 1 有递进子步骤 → 产生 events；Phase 2 是单一循环动作 → events 为空
-
-```json
-{
-  "topology_type": "procedural",
-  "topology_confidence": 0.88,
-  "macro_phases": [
-    {
-      "phase_id": 1,
-      "start_time": 0,
-      "end_time": 51,
-      "phase_name": "Removing the Damaged Shingle",
-      "events": [
-        {"event_id": 1, "start_time": 0, "end_time": 30,
-         "instruction": "Pry up surrounding shingles with flat bar"},
-        {"event_id": 2, "start_time": 31, "end_time": 51,
-         "instruction": "Pull out the damaged shingle"}
-      ]
-    },
-    {
-      "phase_id": 2,
-      "start_time": 52,
-      "end_time": 157,
-      "phase_name": "Securing the New Shingle",
-      "events": []
-    }
-  ]
-}
-```
-
-→ Phase 1 的叶子: Event 1, Event 2（标注细粒度 state_change）
-→ Phase 2 的叶子: Phase 2 自身（直接标注 52s-157s 内的重复钉钉动作）
-
-### 6.6 运行流程图
-
-```
-                        ┌─────────────────────────────┐
-                        │  Step 1: extract_frames.py   │
-                        │  全视频 1fps 抽帧             │
-                        └──────────────┬──────────────┘
-                                       │
-                        ┌──────────────▼──────────────┐
-                        │  Step 2: annotate.py         │
-                        │  --level merged              │
-                        │  L1 + L2(可选) + Topology    │
-                        └──────────────┬──────────────┘
-                                       │
-                    ┌──────────────────▼──────────────────┐
-                    │     _split_merged_response()         │
-                    │  拆分为 level1 + level2 (可能为空)    │
-                    └──────────────────┬──────────────────┘
-                                       │
-                        ┌──────────────▼──────────────┐
-                        │  Step 3: extract_frames.py   │
-                        │  L3 帧提取 (leaf-node 路由)  │
-                        └──────────────┬──────────────┘
-                                       │
-                    ┌─────────────────▼─────────────────┐
-                    │          Leaf-Node 收集              │
-                    │                                      │
-                    │  for phase in macro_phases:           │
-                    │    if phase has events:               │
-                    │      → events 各自抽帧 (_ev{id}/)    │
-                    │    else:                              │
-                    │      → phase 整体抽帧 (_ph{id}/)     │
-                    └─────────────────┬─────────────────┘
-                                       │
-                        ┌──────────────▼──────────────┐
-                        │  Step 4: annotate.py         │
-                        │  --level 3                   │
-                        │  L3 标注 (leaf-node 路由)    │
-                        └──────────────┬──────────────┘
-                                       │
-                    ┌─────────────────▼─────────────────┐
-                    │    _annotate_level3() 内部路由       │
-                    │                                      │
-                    │  periodic?                           │
-                    │    → 所有 phases 作为 sources         │
-                    │  else (procedural/sequence):          │
-                    │    → leaf-node 收集:                  │
-                    │      有 events 的 phase → events      │
-                    │      无 events 的 phase → phase 自身  │
-                    │      无 L1 数据 → events fallback     │
-                    │                                      │
-                    │  每个 source 独立调用 VLM:            │
-                    │    event source → parent_event_id     │
-                    │    phase source → parent_phase_id     │
-                    └──────────────────────────────────┘
-```
-
-### 6.7 代码路由逻辑（更新后）
-
-**`_annotate_level3()` — leaf-node 收集**:
-
-```python
-# 1. periodic: 所有 phases 作为 sources (不变)
-if topology_type == "periodic" and l1_result is not None:
-    sources = [phase → source_type="phase" for phase in l1_result]
-
-# 2. 其他: leaf-node 收集
-else:
-    phase_events = {phase_id: [events...]} mapping
-    for phase in l1_phases:
-        if phase has events:
-            sources += [event → source_type="event" for event in phase_events[pid]]
-        else:
-            sources += [phase → source_type="phase"]
-
-    # 3. Fallback: 无 L1 数据时用 events (向后兼容旧标注)
-    if not l1_phases:
-        sources = [event → source_type="event" for event in events]
-```
-
-**`annotate_clip()` — level "3" 分支变更**:
-
-```python
-# 新增: procedural 分支也传入 l1_result
-else:
-    l1_result=existing.get("level1")  # ← 之前不传，现在传
-```
-
-### 6.8 改动文件
-| 文件 | 改动 |
-|------|------|
-| `prompts.py` | PART 4 procedural 规则：单一动作 phase → events=[] |
-| `annotate.py` | `_annotate_level3()` source 构建改为 leaf-node 收集 |
-| `annotate.py` | `annotate_clip()` procedural 分支传入 `l1_result` |
-| `extract_frames.py` | `run_l3_extraction()` 非 periodic 分支改为 leaf-node 路由 |
-
-### 6.9 向后兼容
-- 旧标注（所有 phase 都有 events）走原路径，行为不变
-- 无 events 的 phase 生成 `_ph{id}` 帧目录和 `parent_phase_id` 标记
-- **训练 builder 暂不改**：`build_l3_records` 仍按 `parent_event_id` 过滤，phase-based L3 数据被静默跳过（Phase 2 再支持）
-
-### 6.10 Split Criterion 字段（三层切分依据）
-
-标注阶段 VLM 在输出分割结果的同时，输出"切分依据"——解释为什么这样切。这些 criterion 未来作为训练数据中的 reasoning hint。
-
-| 字段 | 层级 | 生成阶段 | 存储位置 |
-|------|------|---------|---------|
-| `global_phase_criterion` | L1 | merged 标注 | 顶层 (与 summary 同级) |
-| `event_split_criterion` | L2 (per phase) | merged 标注 | `level1.macro_phases[].event_split_criterion` |
-| `micro_split_criterion` | L3 (per leaf) | L3 标注 | `level3.micro_split_criterion` + `_segment_calls[].micro_split_criterion` |
-
-**设计原则**：
-- criterion 描述**分割逻辑/粒度标准**，不描述视频内容
-- VLM 自主生成，我们只在 prompt 中指导输出格式
-- 向后兼容：旧标注无 criterion → `.get("field", "")` 返回空字符串
-
-**JSON 示例**：
-```json
-{
-  "summary": "A person first goes snow tubing, then builds a snowman.",
-  "global_phase_criterion": "Split by fundamental shift of activity type: unstructured recreation vs. goal-oriented procedural assembly.",
-  "topology_type": "procedural",
-
-  "level1": {
-    "macro_phases": [
-      {
-        "phase_id": 1,
-        "phase_name": "Snow Tubing",
-        "event_split_criterion": "Repetitive recreational activity with no sequential progression; no event segmentation needed.",
-        "events": []
-      },
-      {
-        "phase_id": 2,
-        "phase_name": "Building a Snowman",
-        "event_split_criterion": "Procedural task segmented by logical assembly progression: forming base, stacking body, decorating.",
-        "events": [{"event_id": 1, "instruction": "Roll the snowball to form the base"}, ...]
-      }
-    ]
+  "paradigm": "...",
+  "paradigm_confidence": 0.85,
+  "paradigm_reason": "...",
+  "domain_l1": "...",
+  "domain_l2": "...",
+  "feasibility": {
+    "score": 0.0-1.0,
+    "skip": true/false,
+    "skip_reason": null | "talk_dominant" | "ambient_static" | "too_short" | "low_visual_dynamics",
+    "estimated_n_phases": 3,
+    "estimated_n_events": 8,
+    "visual_dynamics": "high | medium | low"
   },
-
-  "level3": {
-    "micro_type": "state_change",
-    "micro_split_criterion": "Broke down by individual state-changing operations where material visibly transforms.",
-    "grounding_results": [...],
-    "_segment_calls": [
-      {"parent_event_id": 1, "micro_split_criterion": "Broke down by individual state-changing operations..."}
-    ]
+  "video_metadata": {
+    "has_text_overlay": true/false,
+    "has_narration": true/false,
+    "camera_style": "static_tripod | handheld | multi_angle | first_person",
+    "editing_style": "continuous | jump_cut | montage | mixed"
   }
 }
 ```
 
-### 6.11 Criterion → Training Hint 改写
-
-VLM 输出的 criterion 可能包含具体视频内容（对象名、动作细节），直接用于训练会让模型退化为 grounding。`rewrite_criteria_hints.py` 脚本调用 LLM 将 criterion 改写为内容无关的通用分割 hint。
-
-**改写规则**：去除所有具体视频内容引用，仅保留结构性分割逻辑。
-
-| 原始 criterion | 改写后 hint |
-|---|---|
-| "Segmented by removing wires, disconnecting hoses, and unbolting cover." | "Segmented by distinct sequential sub-tasks each completing a specific sub-goal." |
-| "Repetitive recreational activity; no event segmentation needed." | "Single repetitive activity with no sequential progression; no sub-event segmentation needed." |
-
-**新增字段**（写回同一 annotation JSON）：
-
-| 字段 | 来源 |
-|------|------|
-| `global_phase_hint` | 改写自 `global_phase_criterion` |
-| phases[].`event_split_hint` | 改写自 phases[].`event_split_criterion` |
-| level3.`micro_split_hint` | 改写自 level3.`micro_split_criterion` |
-
-**使用方式**：
-```bash
-python rewrite_criteria_hints.py \
-    --annotation-dir annotations/ \
-    --api-base $API_BASE \
-    --model gpt-4o-mini \
-    --workers 4
-
-# Dry run (不调 LLM，只显示哪些字段会被改写):
-python rewrite_criteria_hints.py --annotation-dir annotations/ --dry-run
-```
-
 ---
 
-## 7. Phase 2: Leaf-Node Audit (重新设计)
+## Appendix B: Dense Caption Prompt Addition (Merged L1+L2)
 
-### 7.1 核心理念：从"双重审计"到"叶子节点审计"
-
-**旧方案**的问题：
-- `merged_c` 审 L1+L2，`3c` 审 L3 → 两步串行，VLM 调用量大
-- L1/L2 审计在全视频尺度上看帧 → 审核者缺乏局部帧精度，改动效果有限
-- 父节点边界审核和 L3 微动作审核是分开的，但实际上两者天然耦合
-
-**新方案**核心思想：**不再单独审计 L1 和 L2**。只审计**叶子节点（Leaf Nodes）及其内部的 L3**。
-
-叶子节点定义（沿用 Phase 1.5）：
-- 如果叶子节点是 **L2 Event** → 审计 `[Event, L3s]`
-- 如果叶子节点是 **无 Event 的 L1 Phase** → 审计 `[Phase, L3s]`
-
-Check 只有**两个核心目标**：
-
-| # | 目标 | 说明 |
-|---|------|------|
-| 1 | **L3 查漏补缺** (Granularity & Completeness) | 微动作有没有遗漏？粒度对不对？ |
-| 2 | **父节点收缩** (Parent Shrinkage) | 父节点的 `[start_time, end_time]` 是否有大段"无动作真空区"？如有，强制往里缩，紧贴首尾 L3 动作 |
-
-**优势**：
-- **单步完成**：不再需要先 merged_c 再 3c，一次 `leaf_c` 搞定
-- **局部帧精度**：每次 VLM 调用只看叶子节点时间区间内的帧，分辨率更高
-- **父子联动**：L3 补全和父边界收缩在同一次调用中完成，保证一致性
-- **VLM 调用数 = 叶子节点数**：比旧方案的 (1 全局 merged_c + N 个 3c) 更精简
-
-### 7.2 Leaf-Node 收集逻辑
-
-```python
-def collect_leaf_nodes(ann: dict) -> list[LeafNode]:
-    """收集所有叶子节点，每个叶子节点包含其父信息和对应的 L3 结果。"""
-    phases = ann["level1"]["macro_phases"]
-    events = ann["level2"]["events"]
-    l3_results = ann["level3"]["grounding_results"]
-
-    # 按 parent_phase_id 索引 events
-    phase_events = group_by(events, key="parent_phase_id")
-    # 按 parent_event_id / parent_phase_id 索引 L3
-    l3_by_event = group_by(l3_results, key="parent_event_id")
-    l3_by_phase = group_by(l3_results, key="parent_phase_id")
-
-    leaves = []
-    for phase in phases:
-        pid = phase["phase_id"]
-        if phase_events.get(pid):
-            # 情况 A: Phase 有 events → events 是叶子
-            for event in phase_events[pid]:
-                eid = event["event_id"]
-                leaves.append(LeafNode(
-                    parent_type="event",
-                    parent_id=eid,
-                    parent_name=event["instruction"],
-                    parent_start=event["start_time"],
-                    parent_end=event["end_time"],
-                    l3_results=l3_by_event.get(eid, []),
-                    grandparent_phase=phase,  # 保留上层 context
-                ))
-        else:
-            # 情况 B: Phase 无 events → phase 自身是叶子
-            leaves.append(LeafNode(
-                parent_type="phase",
-                parent_id=pid,
-                parent_name=phase["phase_name"],
-                parent_start=phase["start_time"],
-                parent_end=phase["end_time"],
-                l3_results=l3_by_phase.get(pid, []),
-                grandparent_phase=None,
-            ))
-    return leaves
-```
-
-### 7.3 Check 数据流 (简化)
+The following fields are **added** to the existing merged prompt output schema:
 
 ```
-annotations/                      annotations_checked/
-├─ {clip}.json                    ├─ {clip}.json
-│  level1                         │  level1 (父节点边界可能被收缩)
-│  level2          ──(Step 5)──→  │  level2 (父节点边界可能被收缩)
-│  level3                         │  level3 + _check_stats
-│                                 │  _audit_meta
+For each L1 phase, ALSO output:
+  "scene_description": "<1-2 sentences: visual environment — objects present, spatial layout, lighting, camera angle>"
+
+For each L2 event, ALSO output:
+  "dense_caption": "<2-4 sentences: detailed chronological description of what happens — action sequence, object interactions, spatial movement, state changes>"
 ```
 
-**单步执行**:
-
-| Step | 命令 | 说明 |
-|------|------|------|
-| 5 | `annotate_check.py --levels leaf_c` | 遍历所有叶子节点 → 每个叶子独立调 VLM → 写回 L1/L2/L3 |
-
-### 7.4 每个叶子节点的 VLM 输入
-
-#### 7.4.1 传入帧
-
-| 帧来源 | 条件 | 说明 |
-|--------|------|------|
-| `frames_l3/{clip_key}_ev{eid}/` | parent_type=event, 目录存在 | 2fps per-event 帧 (高精度) |
-| `frames_l3/{clip_key}_ph{pid}/` | parent_type=phase, 目录存在 | 2fps per-phase 帧 (高精度) |
-| `frames/{clip_key}/` 中 `[parent_start, parent_end]` 区间 | 以上不存在时 fallback | 1fps 全视频帧裁切 |
-
-帧均匀采样至 `max_frames` (默认 32)，附带 timestamp label。
-
-#### 7.4.2 传入的结构化信息
-
-| 字段 | 内容 | 来源 |
-|------|------|------|
-| `parent_type` | `"event"` 或 `"phase"` | 叶子节点类型 |
-| `parent_name` | Event instruction 或 Phase name | L2 event / L1 phase |
-| `parent_start` | 父节点当前 start_time (秒) | L2 event / L1 phase |
-| `parent_end` | 父节点当前 end_time (秒) | L2 event / L1 phase |
-| `micro_type` | `"state_change"` / `"repetition_unit"` | `level3.micro_type` |
-| `micro_split_criterion` | 原始 L3 划分依据 | `level3.micro_split_criterion` |
-| `existing_l3` | 当前被审核的 L3 列表 (JSON) | `level3.grounding_results` 按 parent 过滤 |
-
-#### 7.4.3 完整 Prompt 模板 (`_LEAF_CHECK_BASE`)
-
-```
-You are a quality reviewer for hierarchical video annotations. You are viewing
-frames from a {parent_type} spanning [{parent_start}s – {parent_end}s].
-
-Parent {parent_type}: "{parent_name}"
-Micro-action type: {micro_type}
-Original splitting criterion: "{micro_split_criterion}"
-
-Below are the EXISTING L3 atomic action annotations within this {parent_type}:
-{existing_l3_json}
-
-You have TWO tasks:
-
-## TASK 1 — L3 MICRO-ACTION REVIEW (Granularity & Completeness)
-
-Review each existing L3 annotation AND identify any MISSING atomic actions.
-
-GRANULARITY SPECTRUM — use this to judge every annotation:
-
-  Parent {parent_type} (ABOVE — too coarse for L3):
-    If an annotation's sub_action essentially restates the parent description,
-    it is NOT a valid L3 action — it belongs at the parent level.
-
-  L3 Atomic Action (THIS LEVEL — correct granularity):
-    A single, discrete physical interaction (2–6 seconds) where exactly ONE
-    object undergoes ONE visible state change.
-
-  Sub-atomic motion (BELOW — too fine for L3):
-    A partial body movement that does not produce a complete object state change.
-    Reaching, gripping, adjusting posture are NOT valid L3 annotations.
-
-L3 REVIEW CRITERIA:
-1. [Granularity — Not Too Coarse]: Single physical state change, not multi-step?
-2. [Granularity — Not Too Fine]: Produces a complete visible state change?
-3. [Temporal Accuracy]: start = contact/onset, end = new state established.
-4. [State Description Quality]: pre/post_state are specific & visually verifiable?
-5. [Activity Relevance]: Real physical state change, not hand motion or idle?
-6. [Completeness]: Any visible atomic actions NOT covered by existing annotations?
-
-For each existing annotation, output a verdict:
-- "keep": Correct as-is.
-- "revise": Has issues — provide corrected fields.
-- "remove": Invalid (no real state change, wrong granularity, duplicate).
-
-Then list any MISSING actions as supplements.
-
-## TASK 2 — PARENT BOUNDARY SHRINKAGE (Critical)
-
-Examine the frames near the START and END of the parent's time range.
-
-Determine: does the parent's [{parent_start}s – {parent_end}s] contain "dead zones"
-— stretches of time at the beginning or end where NO meaningful physical action occurs?
-
-Rules:
-- If actual physical activity starts AFTER {parent_start}s (e.g., idle, talking,
-  static frames at the beginning), output a tighter `shrunk_start`.
-- If actual physical activity ends BEFORE {parent_end}s (e.g., idle tail,
-  static frames at the end), output a tighter `shrunk_end`.
-- The shrunk boundaries should tightly wrap the FIRST and LAST visible physical
-  actions (aligned with L3 annotations when possible).
-- If the boundaries are already tight, output `shrunk_start = {parent_start}`
-  and `shrunk_end = {parent_end}` (no change).
-- Shrinkage must preserve ALL kept/revised/supplemented L3 actions within bounds.
-- Use integer seconds.
-
-## OUTPUT FORMAT
-
-{{
-  "l3_reviews": [
-    {{
-      "action_id": 1,
-      "verdict": "keep"
-    }},
-    {{
-      "action_id": 2,
-      "verdict": "revise",
-      "issue": "too_fine|too_coarse|bad_boundary|bad_state_desc|overlap",
-      "revised": {{
-        "start_time": 45,
-        "end_time": 49,
-        "sub_action": "Corrected description",
-        "pre_state": "Specific pre-state",
-        "post_state": "Specific post-state"
-      }}
-    }},
-    {{
-      "action_id": 3,
-      "verdict": "remove",
-      "issue": "too_fine|too_coarse|not_relevant|duplicate",
-      "reason": "Brief explanation"
-    }}
-  ],
-  "l3_supplements": [
-    {{
-      "start_time": 55,
-      "end_time": 59,
-      "sub_action": "Description of missed action",
-      "pre_state": "Pre-state",
-      "post_state": "Post-state"
-    }}
-  ],
-  "shrunk_start": {parent_start},
-  "shrunk_end": {parent_end}
-}}
-
-IMPORTANT:
-- You MUST review every existing annotation by action_id.
-- "l3_supplements" can be an empty list if nothing is missing.
-- Do NOT invent actions not visible in the provided frames.
-- Always include the "issue" field for revise/remove verdicts.
-- shrunk_start/shrunk_end MUST satisfy: shrunk_start <= min(L3 start_times)
-  and shrunk_end >= max(L3 end_times) for all kept/revised/supplemented L3 actions.
-```
-
-### 7.5 VLM 输出处理逻辑
-
-每个叶子节点的 VLM 返回包含两部分，分别处理：
-
-#### 7.5.1 L3 Verdict 处理 (`_apply_leaf_l3_results`)
-
-与旧 `_apply_l3_check_results` 逻辑一致：
-
-```
-for review in l3_reviews:
-  keep    → 原样保留
-  revise  → 合并 revised 字段 (start_time, end_time, sub_action, pre_state, post_state)
-          → 校验 start < end → 标记 _checked=revised
-  remove  → 删除
-
-未被 review 到的 L3 → 默认 keep (safety net)
-l3_supplements → 追加，自动设置 parent_event_id 或 parent_phase_id，标记 _checked=supplemented
-排序 + 重编号 action_id
-```
-
-#### 7.5.2 Parent Shrinkage 处理 (`_apply_parent_shrinkage`)
-
-```python
-shrunk_start = parsed["shrunk_start"]
-shrunk_end = parsed["shrunk_end"]
-
-# 安全校验
-assert shrunk_start >= 0
-assert shrunk_end > shrunk_start
-assert shrunk_start <= min(l3.start_time for l3 in kept_l3s)  # 不割掉 L3
-assert shrunk_end >= max(l3.end_time for l3 in kept_l3s)      # 不割掉 L3
-
-# 写回父节点
-if parent_type == "event":
-    event["start_time"] = shrunk_start
-    event["end_time"] = shrunk_end
-    event["_shrunk"] = True  # 标记已收缩
-elif parent_type == "phase":
-    phase["start_time"] = shrunk_start
-    phase["end_time"] = shrunk_end
-    phase["_shrunk"] = True
-```
-
-**校验失败时** → 保留原始边界，不做收缩（保守策略）。
-
-### 7.6 `annotate_check.py` 新流程 (`leaf_c`)
-
-```python
-def check_clip_leaf(ann, frames_base, l3_frames_base, ...):
-    """Leaf-Node Audit: 单步遍历所有叶子节点。"""
-
-    # 1. 跳过不需要 L3 的拓扑类型
-    l3_mode = ann.get("l3_mode") or TOPOLOGY_TO_L3_MODE.get(ann.get("topology_type"))
-    if l3_mode == "skip":
-        return {"skipped": True, "reason": "l3_mode=skip"}
-
-    # 2. 收集叶子节点
-    leaves = collect_leaf_nodes(ann)
-
-    # 3. 逐叶子审计
-    all_checked_l3 = []
-    check_calls = []
-    stats = {"kept": 0, "revised": 0, "removed": 0, "supplemented": 0,
-             "parents_shrunk": 0, "parents_unchanged": 0}
-
-    for leaf in leaves:
-        # 3a. 加载帧
-        frames = load_leaf_frames(leaf, frames_base, l3_frames_base, clip_key)
-
-        # 3b. 构建 prompt
-        prompt = get_leaf_check_prompt(
-            parent_type=leaf.parent_type,
-            parent_name=leaf.parent_name,
-            parent_start=leaf.parent_start,
-            parent_end=leaf.parent_end,
-            existing_l3=leaf.l3_results,
-            micro_type=ann["level3"]["micro_type"],
-            micro_split_criterion=ann["level3"].get("micro_split_criterion", ""),
-        )
-
-        # 3c. 调 VLM
-        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt, frames)
-
-        # 3d. 处理 L3 verdicts
-        checked_l3 = _apply_leaf_l3_results(
-            leaf.l3_results, parsed, leaf.parent_type, leaf.parent_id
-        )
-        all_checked_l3.extend(checked_l3)
-        update_stats(stats, leaf.l3_results, checked_l3)
-
-        # 3e. 处理 Parent Shrinkage
-        shrunk = _apply_parent_shrinkage(parsed, leaf, checked_l3)
-        if shrunk:
-            stats["parents_shrunk"] += 1
-        else:
-            stats["parents_unchanged"] += 1
-
-        check_calls.append({...})
-
-    # 4. 全局排序 + 重编号 L3 action_id
-    all_checked_l3.sort(key=lambda r: (r["start_time"], r["end_time"]))
-    for i, r in enumerate(all_checked_l3, 1):
-        r["action_id"] = i
-
-    # 5. 写回
-    ann["level3"]["grounding_results"] = all_checked_l3
-    ann["level3"]["_check_calls"] = check_calls
-    ann["level3"]["_check_stats"] = stats
-```
-
-### 7.7 Skip (幂等) 机制
-
-```python
-# leaf_c: 检查 level3._check_stats 是否已存在
-if l3.get("_check_stats") is not None:
-    skip
-
-# 可用 --overwrite 强制重新 check
-```
-
-### 7.8 Check 输出 JSON Schema
-
-```json
-{
-  "level1": {
-    "macro_phases": [
-      {
-        "phase_id": 1,
-        "start_time": 5,
-        "end_time": 120,
-        "phase_name": "...",
-        "narrative_summary": "..."
-      },
-      {
-        "phase_id": 2,
-        "start_time": 52,
-        "end_time": 98,
-        "phase_name": "Securing the New Shingle",
-        "_shrunk": true,
-        "_shrunk_from": [52, 157]
-      }
-    ]
-  },
-
-  "level2": {
-    "events": [
-      {
-        "event_id": 1,
-        "start_time": 0,
-        "end_time": 28,
-        "instruction": "Pry up surrounding shingles",
-        "_shrunk": true,
-        "_shrunk_from": [0, 30]
-      }
-    ]
-  },
-
-  "level3": {
-    "micro_type": "state_change",
-    "grounding_results": [
-      {
-        "action_id": 1,
-        "start_time": 3,
-        "end_time": 8,
-        "sub_action": "Insert flat bar under shingle edge",
-        "pre_state": "Shingle flat on roof",
-        "post_state": "Shingle edge lifted, bar wedged underneath",
-        "parent_event_id": 1,
-        "_checked": "revised"
-      },
-      {
-        "action_id": 5,
-        "start_time": 55,
-        "end_time": 59,
-        "sub_action": "Hammer nail into new shingle",
-        "pre_state": "Nail positioned on shingle surface",
-        "post_state": "Nail flush with shingle, secured",
-        "parent_phase_id": 2,
-        "_checked": "supplemented"
-      }
-    ],
-    "_check_calls": [
-      {
-        "parent_type": "event",
-        "parent_id": 1,
-        "parent_name": "Pry up surrounding shingles",
-        "n_before": 3,
-        "n_after": 3,
-        "n_supplements": 0,
-        "shrunk": true,
-        "shrunk_from": [0, 30],
-        "shrunk_to": [0, 28]
-      },
-      {
-        "parent_type": "phase",
-        "parent_id": 2,
-        "parent_name": "Securing the New Shingle",
-        "n_before": 4,
-        "n_after": 5,
-        "n_supplements": 1,
-        "shrunk": true,
-        "shrunk_from": [52, 157],
-        "shrunk_to": [52, 98]
-      }
-    ],
-    "_check_stats": {
-      "kept": 5,
-      "revised": 1,
-      "removed": 0,
-      "supplemented": 2,
-      "parents_shrunk": 2,
-      "parents_unchanged": 0
-    }
-  },
-
-  "_audit_meta": {
-    "audit_model": "pa/gmn-2.5-pr",
-    "audit_levels": ["leaf_c"],
-    "audited_at": "2026-03-31T...",
-    "original_annotation": "annotations/clip_key.json"
-  }
-}
-```
-
-**新增字段说明**:
-
-| 字段 | 层级 | 说明 |
-|------|------|------|
-| `_shrunk` | L1 phase / L2 event | 是否被收缩过 |
-| `_shrunk_from` | L1 phase / L2 event | 收缩前的 `[start, end]`（用于审计溯源） |
-| `parents_shrunk` | `_check_stats` | 被收缩的叶子父节点数 |
-| `parents_unchanged` | `_check_stats` | 未变化的叶子父节点数 |
-
-### 7.9 Prompt 信息传递对照表
-
-| Check 层级 | 每次调用的作用域 | 传入的父节点信息 | 传入的 L3 信息 | 传入的帧 |
-|-----------|-----------------|----------------|---------------|---------|
-| `leaf_c` | 单个叶子节点 | parent_type, parent_name, start/end | 该叶子下的 L3 grounding_results | 叶子时间区间内 2fps (fallback 1fps) |
-
-### 7.10 与旧方案的对比
-
-| 维度 | 旧方案 (merged_c + 3c) | 新方案 (leaf_c) |
-|------|------------------------|-----------------|
-| VLM 调用步骤 | 2 步串行 | 1 步 |
-| L1/L2 结构审核 | 是 (可增删改 phase/event) | 否 (信任原始结构，仅收缩边界) |
-| L3 审核 | 是 (per-event) | 是 (per-leaf, 包含无 event 的 phase) |
-| 父边界调整 | 无 (保持原始) | 有 (shrinkage) |
-| 帧精度 | merged_c 全视频 1fps / 3c per-event 2fps | 统一 per-leaf 2fps (fallback 1fps) |
-| VLM 调用数 | 1 (merged_c) + N (3c) = N+1 | N (leaf 数) |
-| 输出复杂度 | 3 个 _check_stats (L1/L2/L3) | 1 个 _check_stats + parent _shrunk 标记 |
-| L3 覆盖 | 仅 event-based L3 | event-based + phase-based L3 (更完整) |
-
-### 7.11 运行方式
-
-```bash
-# 单步 Leaf-Node Audit
-python annotate_check.py \
-    --frames-dir $DATA_ROOT/frames \
-    --l3-frames-dir $DATA_ROOT/frames_l3 \
-    --annotation-dir $DATA_ROOT/annotations \
-    --output-dir $DATA_ROOT/annotations_checked \
-    --levels leaf_c \
-    --model pa/gmn-2.5-pr \
-    --workers 4
-
-# Dry run
-python annotate_check.py \
-    --annotation-dir $DATA_ROOT/annotations \
-    --levels leaf_c \
-    --dry-run
-```
-
-### 7.12 `--frames-dir` 的必要性
-
-即使 `leaf_c` 主要使用 per-leaf 帧，`--frames-dir`（1fps 帧目录）仍然必须提供:
-
-| 用途 | 说明 |
-|------|------|
-| 加载 `clip_duration` | 从 `frame_meta.json` 读取 |
-| 获取全局 fps | 从 `frame_meta.json` 读取，用于 fallback 帧时间计算 |
-| Fallback 帧源 | per-leaf 2fps 帧不存在时，从 1fps 全视频帧中按时间区间裁切 |
-
-### 7.13 边界情况处理
-
-| 场景 | 处理 |
-|------|------|
-| 叶子节点无 L3 结果 | 跳过 VLM 调用，记录 `skip_reason: "no existing L3"` |
-| VLM 返回 parse 失败 | 保留原始 L3，不做收缩，记录 `skip_reason: "parse failed"` |
-| shrunk 校验失败 (割掉 L3) | 保留原始边界，不收缩 |
-| `l3_mode == "skip"` 的拓扑 | 整个 clip 跳过，不进 leaf_c |
-| 旧标注无 topology 字段 | 默认 `"procedural"`，正常走叶子收集 |
-| Phase 2 被收缩后 Phase 1 end > Phase 2 start | 不处理 — shrinkage 只缩不扩，不改变 phase 间相对顺序 |
-
----
-
-## 8. 后续阶段（未实现）
-
-### Phase 3: Schema + 训练样本改造
-- training builder 支持 `parent_phase_id`，构建 phase-based L3 训练数据
-- `seg_source.py` 的 `get_l3_clip_path()` 和 `prepare_clips.py` 支持 `_L3_ph{id}_` 命名
-- 可选：统一训练 prompt 为 "parent → child" 通用模板
-- 加入控制 token: `<granularity=macro/meso/micro>`, `<micro_type=...>`
-
-### Phase 4: 筛选规则 + QC 联动
-- Route D 从固定 `events >= 3` 扩展到 topology-aware
-- 2c / 3c 检查 prompt 按 topology 改写
-- periodic/sequence 新增专用 QC 规则
+Quality rules for dense captions:
+- Every noun must be visually verifiable in the frames.
+- Use spatial language: left/right, foreground/background, above/below.
+- Describe temporal order: "first... then... finally..."
+- No inference about intent or off-screen events.
