@@ -9,31 +9,31 @@
 ## Quick Start
 
 ```bash
-SCRIPT_DIR="proxy_data/youcook2_seg/hier_seg_annotation"
-DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation"
+# ── One-shot pipeline (Stage 1 classify + Stage 2 annotate) ─────
+bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
 
-# ── Stage 1: Classify + Filter ──────────────────────────────────
-# Step 0: Extract 64 frames per video (1fps, capped)
-python $SCRIPT_DIR/extract_frames.py \
-    --jsonl /path/to/screen_keep.jsonl \
-    --output-dir $DATA_ROOT/frames_stage1 \
-    --fps 1 --max-frames 64 --workers 8
+# ── Test mode: process only 5 clips ─────────────────────────────
+LIMIT=5 bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
 
-# Step 1: Paradigm + domain + feasibility classification
-python $SCRIPT_DIR/stage1_classify.py \
-    --jsonl /path/to/screen_keep.jsonl \
-    --frames-dir $DATA_ROOT/frames_stage1 \
-    --output-dir $DATA_ROOT/stage1_output \
-    --model pa/gemini-3.1-pro-preview --workers 4
-
-# Output: stage1_output/classify_keep.jsonl (passed videos)
-#         stage1_output/figures/ (paradigm + domain donut charts)
-
-# ── Stage 2: Full Annotation Pipeline ───────────────────────────
-# Feed classify_keep.jsonl into the full pipeline:
-JSONL=$DATA_ROOT/stage1_output/classify_keep.jsonl \
-    bash $SCRIPT_DIR/run_pipeline.sh
+# ── Custom config ────────────────────────────────────────────────
+JSONL=/path/to/screen_keep.jsonl \
+MODEL=pa/gemini-3.1-pro-preview \
+WORKERS=8 \
+LIMIT=50 \
+    bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
 ```
+
+**Pipeline steps** (`run_pipeline.sh`):
+| Step | Script | Description |
+|------|--------|-------------|
+| S1.1 | `extract_frames.py` | Extract 64 frames/video for classification |
+| S1.2 | `stage1_classify.py` | VLM paradigm + domain + feasibility filtering |
+| S2.1 | `extract_frames.py` | Extract 1fps frames for annotation (keep-only) |
+| S2.2 | `annotate.py --level merged` | Classify archetype + merged L1+L2 annotation |
+| S2.3 | `extract_frames.py` | Extract 2fps L3 frames per L2 event |
+| S2.4 | `annotate.py --level 3` | L3 micro-action annotation |
+
+Environment variables: `JSONL`, `MODEL`, `WORKERS`, `LIMIT` (0=all).
 
 ---
 
@@ -390,6 +390,12 @@ Dense captions are generated **within the same VLM call** as segmentation (no ex
   "summary": "A person prepares and bakes a chocolate cake from scratch",
   "global_phase_criterion": "Organized by major goal shifts from preparation through finishing",
 
+  "l3_feasibility": {
+    "suitable": true,
+    "reason": "Clear object manipulations with visible state changes in each event",
+    "estimated_l3_actions": 12
+  },
+
   "level1": {
     "macro_phases": [
       {
@@ -631,8 +637,8 @@ Key metrics per group:
 
 | File | Change Type | Details |
 |------|-------------|---------|
-| `archetypes.py` | **Major refactor** | Remove `talk`/`ambient`; rename `performance`→`cyclical` (enable L2); add `continuous`; add dense caption fields to `LevelConfig`; redesign classification prompt with feasibility; implement 2-level domain taxonomy |
-| `annotate.py` | **Moderate** | Stage 1: add feasibility scoring + skip logic; merged L1+L2: add `scene_description` (L1), `dense_caption` (L2) to prompt output schema; L3: add `action_detail` to prompt output schema |
+| `archetypes.py` | **Major refactor** | Remove `talk`/`ambient`; rename `performance`→`cyclical` (enable L2); add `continuous`; add dense caption fields to `LevelConfig`; redesign classification prompt with feasibility; implement 2-level domain taxonomy (V2: 6 L1 / 22 L2); add L3 feasibility assessment to merged prompt |
+| `annotate.py` | **Moderate** | Stage 1: add feasibility scoring + skip logic; merged L1+L2: add `scene_description` (L1), `dense_caption` (L2), `l3_feasibility` to prompt output schema; L3: add `action_detail` to prompt output schema; skip L3 when `l3_feasibility.suitable=false` |
 | `build_hier_data.py` | **Major addition** | Add `build_event_logic_records()`, `build_dense_caption_records()`, distractor mining; new problem types; update balanced sampling to use `domain_l1` |
 | `prepare_clips.py` | **Minor** | Support `cyclical` L2 clips (was skipped for `performance`) |
 | `run_pipeline.sh` | **Minor** | Add Stage 1 filter step before annotation |

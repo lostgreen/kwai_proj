@@ -594,6 +594,16 @@ def annotate_clip(
                     "_segment_calls": [],
                     "_skip_reason": f"L3 disabled for archetype={archetype_id}",
                 }
+            # Check L3 feasibility from merged annotation (VLM assessment)
+            elif existing.get("l3_feasibility", {}).get("suitable") is False:
+                feas_reason = existing.get("l3_feasibility", {}).get("reason", "")
+                print(f"  [{key}] L3 skipped: not suitable ({feas_reason})", flush=True)
+                result_key, result_val = "level3", {
+                    "micro_type": "skip",
+                    "grounding_results": [],
+                    "_segment_calls": [],
+                    "_skip_reason": f"L3 not suitable: {feas_reason}",
+                }
             else:
                 l3_parent = get_l3_parent_type(archetype_id)
                 if l3_parent == "phase":
@@ -735,11 +745,24 @@ def _split_merged_response(
         },
     }
     level2 = {"events": all_events}
+
+    # L3 feasibility (assessed by VLM during merged pass)
+    l3_feas = parsed.get("l3_feasibility", {})
+    if not isinstance(l3_feas, dict):
+        l3_feas = {}
+    l3_feasibility = {
+        "suitable": bool(l3_feas.get("suitable", True)),
+        "reason": str(l3_feas.get("reason", "")),
+        "estimated_l3_actions": int(l3_feas.get("estimated_l3_actions", 0))
+            if isinstance(l3_feas.get("estimated_l3_actions"), (int, float)) else 0,
+    }
+
     return {
         "level1": level1,
         "level2": level2,
         "summary": summary,
         "global_phase_criterion": global_phase_criterion,
+        "l3_feasibility": l3_feasibility,
     }
 
 

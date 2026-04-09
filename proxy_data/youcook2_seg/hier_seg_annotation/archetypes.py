@@ -1130,6 +1130,17 @@ using the archetype-specific definitions below.
 - phase_name MUST be a descriptive phrase of 5–15 words.
 - narrative_summary MUST be 2–3 sentences.
 {l2_section}{l3_section}
+## L3 FEASIBILITY ASSESSMENT
+
+After annotating L1 and L2, assess whether this video supports fine-grained L3 annotation.
+
+{l3_feasibility_criteria}
+
+Consider:
+- Are there enough L2 events (>=3) with sufficient duration (>=5s each) for micro-action grounding?
+- Are fine-grained visual state changes or physical interactions clearly visible in the frames?
+- Is the framing/resolution adequate to observe micro-actions at 2fps?
+
 ## VISUAL SIGNAL REFERENCE
 - Scene/Space: Background/layout/location change, character entry/exit.
 - Subject Behavior: Pose transition, gaze direction, speed change, interaction start/end.
@@ -1141,6 +1152,11 @@ using the archetype-specific definitions below.
 {{
   "summary": "<one sentence summarizing the video>",
   "global_phase_criterion": "<one sentence: why split into these phases>",
+  "l3_feasibility": {{
+    "suitable": true,
+    "reason": "<1 sentence: why L3 micro-action annotation is/isn't feasible for this video>",
+    "estimated_l3_actions": 8
+  }},
   "macro_phases": [
     {{
       "phase_id": 1,
@@ -1198,6 +1214,21 @@ def _build_l3_note(cfg: ArchetypeConfig) -> str:
     )
 
 
+def _build_l3_feasibility_criteria(cfg: ArchetypeConfig) -> str:
+    """Build paradigm-specific L3 feasibility criteria for the merged prompt."""
+    if not cfg.l3.enabled:
+        return (
+            "L3 annotation is **disabled** for this paradigm. "
+            'Set `"l3_feasibility": {"suitable": false, "reason": "L3 disabled for this paradigm", "estimated_l3_actions": 0}`.'
+        )
+    return (
+        f"For **{cfg.archetype_id}** videos, L3 = **{cfg.l3.name}**: {cfg.l3.definition}\n\n"
+        f"L3 boundary signals: {cfg.l3.boundary_signals}\n\n"
+        f"Set `suitable=false` if: the video lacks clear visual detail for these micro-actions, "
+        f"or L2 events are too short/abstract to decompose further."
+    )
+
+
 def get_archetype_merged_prompt(
     archetype_id: str,
     n_frames: int,
@@ -1251,6 +1282,7 @@ def get_archetype_merged_prompt(
         l3_header=l3_header,
         l2_section=l2_section,
         l3_section="",
+        l3_feasibility_criteria=_build_l3_feasibility_criteria(cfg),
         events_field=events_field,
         l2_checklist=l2_checklist,
         l3_note=_build_l3_note(cfg),
