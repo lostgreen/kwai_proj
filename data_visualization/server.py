@@ -315,8 +315,9 @@ def build_subset_summary(
 
 
 def normalize_frame_range(start_sec: int, end_sec: int, n_frames: int) -> tuple[int, int]:
-    start_idx = max(1, int(start_sec))
-    end_idx = max(start_idx, int(end_sec))
+    # Convert 0-based seconds to 1-based ffmpeg frame indices (frame 1 = t=0s)
+    start_idx = max(1, int(start_sec) + 1)
+    end_idx = max(start_idx, int(end_sec) + 1)
     if n_frames > 0:
         start_idx = min(start_idx, n_frames)
         end_idx = min(max(start_idx, end_idx), n_frames)
@@ -888,7 +889,7 @@ class SegmentationStore:
                         src = image_to_data_url(image, max_width=320)
                 except Exception:
                     src = None
-            strip.append({"frame_idx": frame_idx, "timestamp": format_mmss(frame_idx), "sampled": frame_idx in sampled, "src": src})
+            strip.append({"frame_idx": frame_idx, "timestamp": format_mmss(frame_idx - 1), "sampled": frame_idx in sampled, "src": src})
         self.frame_cache[clip_key] = strip
         return strip
 

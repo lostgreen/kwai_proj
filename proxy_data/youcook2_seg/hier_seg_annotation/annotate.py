@@ -454,7 +454,7 @@ def _classify_archetype(
     frame_labels = []
     for fp in sampled:
         idx = frame_stem_to_index(fp, 0)
-        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+        frame_labels.append(f"[Timestamp {format_mmss(frame_index_to_sec(idx))} | Frame {idx}]")
 
     duration = int(clip_duration)
     prompt_text = get_classification_prompt(n_frames=len(sampled), duration_sec=duration)
@@ -880,7 +880,7 @@ def _annotate_merged_l1l2(
     frame_labels = []
     for fp in sampled:
         idx = frame_stem_to_index(fp, 0)
-        frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
+        frame_labels.append(f"[Timestamp {format_mmss(frame_index_to_sec(idx))} | Frame {idx}]")
 
     duration = int(clip_duration)
 
