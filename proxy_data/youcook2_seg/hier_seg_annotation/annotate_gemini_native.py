@@ -609,8 +609,18 @@ def main():
           f"model={args.model}, fps={args.fps}")
 
     for idx, rec in enumerate(video_list):
-        video_path = rec["video_path"]
-        clip_key = rec.get("clip_key") or _video_to_clip_key(video_path)
+        # Resolve video path — support both "video_path" and "videos" (list) formats
+        if "video_path" in rec:
+            video_path = rec["video_path"]
+        elif "videos" in rec and rec["videos"]:
+            video_path = rec["videos"][0]
+        else:
+            print(f"[{idx + 1}/{len(video_list)}] SKIP — no video_path or videos field", flush=True)
+            continue
+
+        # Resolve clip_key — check metadata.clip_key, then rec.clip_key, then filename stem
+        meta = rec.get("metadata", {})
+        clip_key = meta.get("clip_key") or rec.get("clip_key") or _video_to_clip_key(video_path)
         out_file = output_dir / f"{clip_key}.json"
 
         # Skip if already done
