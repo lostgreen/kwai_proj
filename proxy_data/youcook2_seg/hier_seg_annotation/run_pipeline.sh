@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# run_pipeline.sh — Unified annotation pipeline (v5)
-#
-# v5: Classification + L1/L2 annotation fused into a single VLM call.
-#     Stage 1 (separate classification) removed.
+# run_pipeline.sh — Hierarchical annotation pipeline (v6: 2-step)
 #
 # Steps:
 #   1. Extract 1fps frames
-#   2. Unified classify + L1/L2 annotation (single VLM call per clip)
+#   2. Classify (64 frames) + Paradigm-driven L1/L2 annotation (all frames)
 #   3. Extract L3 frames (leaf-node routing)
 #   4. L3 annotation
 #
@@ -87,12 +84,12 @@ run_step "S1_EXTRACT_FRAMES" \
         $LIMIT_FLAG
 
 # =====================================================================
-# STEP 2: Unified classify + L1/L2 annotation (single VLM call)
+# STEP 2: Classify (64 frames) + Paradigm-driven L1/L2 annotation
 # =====================================================================
 log ""
-log ">>>>>>>>>> STEP 2: UNIFIED CLASSIFY + ANNOTATE <<<<<<<<<<"
+log ">>>>>>>>>> STEP 2: CLASSIFY + ANNOTATE <<"
 
-run_step "S2_UNIFIED_MERGED" \
+run_step "S2_CLASSIFY_ANNOTATE" \
     python "$SCRIPT_DIR/annotate.py" \
         --jsonl "$JSONL" \
         --frames-dir "$DATA_ROOT/frames" \

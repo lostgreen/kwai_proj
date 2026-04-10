@@ -564,16 +564,30 @@ def annotate_clip(
 
     try:
         if level == "merged":
-            # Unified: classify + annotate in a single VLM call (v5)
+            # Step 0: Classify archetype + domain (64 frames, lightweight)
+            classify_result = _classify_archetype(
+                frame_dir, clip_duration,
+                api_base, api_key, model,
+                max_frames=classify_frames,
+                resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
+            )
+            archetype_id = classify_result["archetype"]
+            print(f"  [{key}] archetype={archetype_id} "
+                  f"conf={classify_result['archetype_confidence']:.2f} "
+                  f"domain={classify_result['domain_l2']}", flush=True)
+
+            # Step 1: Paradigm-driven merged L1+L2 annotation (all frames)
             merged_result = _annotate_merged_l1l2(
                 frame_dir, clip_duration,
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
+                archetype_id=archetype_id,
             )
-            archetype_id = merged_result.get("archetype", "tutorial")
-            print(f"  [{key}] archetype={archetype_id} "
-                  f"conf={merged_result.get('archetype_confidence', 0):.2f} "
-                  f"domain={merged_result.get('domain_l2', 'other')}"
+            # Merge classify metadata into annotation result
+            merged_result.update(classify_result)
+            print(f"  [{key}] "
+                  f"phases={len(merged_result.get('level1', {}).get('macro_phases', []))} "
+                  f"events={len(merged_result.get('level2', {}).get('events', []))}"
                   f"{' SKIP' if merged_result.get('feasibility', {}).get('skip') else ''}",
                   flush=True)
         elif level == "3":
@@ -879,16 +893,15 @@ def _annotate_merged_l1l2(
     clip_duration: float,
     api_base: str, api_key: str, model: str,
     max_frames: int, resize_max_width: int, jpeg_quality: int,
+    archetype_id: str = "tutorial",
 ) -> dict[str, Any]:
     """
-    Unified classify + annotate: single VLM call for paradigm classification,
-    domain, feasibility, metadata, and L1+L2 hierarchical annotation.
+    Paradigm-driven merged L1+L2 annotation (Step 1 of 2-step pipeline).
 
-    v5: replaces separate _classify_archetype() + archetype-driven annotation.
-    The model self-classifies paradigm and applies matching rules in one pass.
+    Uses archetype-specific prompts. Archetype/domain classification
+    is done separately in Step 0 (_classify_archetype).
 
-    Returns dict of annotation updates including level1, level2, summary,
-    archetype, domain_l2, feasibility, video_metadata, etc.
+    Returns dict of annotation updates including level1, level2, summary.
     """
     all_frames = get_all_frame_files(frame_dir)
     if not all_frames:
@@ -942,7 +955,8 @@ def _annotate_merged_l1l2(
             },
         }
 
-    prompt_text = get_universal_merged_prompt(
+    prompt_text = get_archetype_merged_prompt(
+        archetype_id=archetype_id,
         n_frames=len(sampled), duration_sec=duration,
     )
     parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
