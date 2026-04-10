@@ -263,11 +263,21 @@ def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
 
 def build_l3_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str, Any]]:
     segments = []
-    for idx, item in enumerate(raw_level.get("grounding_results") or [], 1):
+    # Flatten nested event-wrapper format (l2l3_first) into flat sub-action list
+    flat_items: list[tuple[dict, int | None]] = []  # (sub_action_dict, parent_event_id)
+    for item in raw_level.get("grounding_results") or []:
         if not isinstance(item, dict):
             continue
+        if "sub_actions" in item:
+            parent_eid = item.get("event_id")
+            for sa in item.get("sub_actions") or []:
+                if isinstance(sa, dict):
+                    flat_items.append((sa, parent_eid))
+        else:
+            flat_items.append((item, item.get("parent_event_id")))
+
+    for idx, (item, parent_event_id) in enumerate(flat_items, 1):
         action_id = item.get("action_id", idx)
-        parent_event_id = item.get("parent_event_id")
         start_sec = parse_mmss(item.get("start_time"))
         end_sec = parse_mmss(item.get("end_time"))
         if start_sec is None or end_sec is None:
