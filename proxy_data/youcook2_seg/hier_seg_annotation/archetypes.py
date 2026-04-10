@@ -1113,7 +1113,7 @@ This video has been classified as archetype: **{archetype}** ({archetype_display
 Your task: Annotate this video with a hierarchical L1{l2_header}{l3_header} structure \
 using the archetype-specific definitions below.
 
-## L1 — {l1_name} ({l1_name_zh})
+## L1 — {l1_name}
 
 **Definition**: {l1_definition}
 
@@ -1188,7 +1188,7 @@ def _build_l2_section(cfg: ArchetypeConfig) -> str:
     anti_str = "; ".join(f'"{e}"' for e in cfg.l2.anti_examples[:2])
 
     return f"""
-## L2 — {cfg.l2.name} ({cfg.l2.name_zh})
+## L2 — {cfg.l2.name}
 
 **Definition**: {cfg.l2.definition}
 
@@ -1273,9 +1273,8 @@ def get_archetype_merged_prompt(
         duration=duration_sec,
         n_frames=n_frames,
         archetype=paradigm_id,
-        archetype_display=cfg.display_name,
+        archetype_display=cfg.display_name_en,
         l1_name=cfg.l1.name,
-        l1_name_zh=cfg.l1.name_zh,
         l1_definition=cfg.l1.definition,
         l1_boundary_signals=cfg.l1.boundary_signals,
         l1_examples=l1_examples,
@@ -1308,7 +1307,7 @@ The input query is: "{action_query}"
 
 Your task: Pinpoint every atomic micro-action in this clip.
 
-## L3 — {l3_name} ({l3_name_zh})
+## L3 — {l3_name}
 
 **Definition**: {l3_definition}
 
@@ -1370,10 +1369,9 @@ def get_archetype_l3_prompt(
         clip_start=clip_start_sec,
         clip_end=clip_end_sec,
         archetype=archetype_id,
-        archetype_display=cfg.display_name,
+        archetype_display=cfg.display_name_en,
         action_query=action_query,
         l3_name=cfg.l3.name,
-        l3_name_zh=cfg.l3.name_zh,
         l3_definition=cfg.l3.definition,
         l3_boundary_signals=cfg.l3.boundary_signals,
         l3_examples=l3_examples,
@@ -1439,7 +1437,7 @@ def get_archetype_l1_train_prompt(archetype_id: str, duration: int) -> str:
     return _ARCHETYPE_L1_TRAIN.format(
         duration=duration,
         archetype=archetype_id,
-        archetype_display=cfg.display_name,
+        archetype_display=cfg.display_name_en,
         l1_name=cfg.l1.name,
         l1_definition=cfg.l1.definition,
     )
@@ -1453,7 +1451,7 @@ def get_archetype_l2_train_prompt(archetype_id: str, duration: int) -> str:
     return _ARCHETYPE_L2_TRAIN.format(
         duration=duration,
         archetype=archetype_id,
-        archetype_display=cfg.display_name,
+        archetype_display=cfg.display_name_en,
         l2_name=cfg.l2.name,
         l2_definition=cfg.l2.definition,
     )
@@ -1467,7 +1465,7 @@ def get_archetype_l3_train_prompt(archetype_id: str, duration: int) -> str:
     return _ARCHETYPE_L3_TRAIN.format(
         duration=duration,
         archetype=archetype_id,
-        archetype_display=cfg.display_name,
+        archetype_display=cfg.display_name_en,
         l3_name=cfg.l3.name,
         l3_definition=cfg.l3.definition,
     )
