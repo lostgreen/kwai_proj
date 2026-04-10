@@ -2105,24 +2105,45 @@ the event's core visual content. Choose frames near the temporal midpoint.
 Per-paradigm L2+L3 captioning guidance:
 {paradigm_l2l3_table}
 
-### 2C. L3 SUB-ACTIONS (per event)
+### 2C. L3 — VISUAL MICRO-SEGMENTS (per event)
 
 Always attempt to annotate `sub_actions` for every event. \
-Each sub-action is one continuous atomic visible action lasting 2-6 seconds.
+Each entry is a visually distinct 2-6 second micro-segment — it does NOT have to be \
+a physical action. ANY of the following qualifies as an L3 micro-segment:
+
+**Types of valid L3 micro-segments**:
+- **Physical action**: "right hand pours liquid into bowl", "person bends knees into squat"
+- **Camera shot / framing change**: "close-up of knife blade cutting through onion", \
+"wide establishing shot of kitchen workspace"
+- **Subject reaction / state change**: "person pauses, looks at camera", \
+"liquid in pan begins to bubble and darken"
+- **Object appearance / disappearance**: "a red pepper is placed onto the cutting board", \
+"person removes bowl from counter"
+- **Environmental / background event**: "steam rises from the pot in the background", \
+"a second person walks through the background"
+- **Transition within the event**: "camera pans left revealing additional counter space"
+
+The key criterion: does this 2-6 second window have **distinct visual content** different \
+from the adjacent windows? If yes, annotate it.
 
 Output `"sub_actions": []` ONLY when:
-- The event is extremely short (< 5 seconds) and contains no distinct action phases, OR
-- The entire event shows only static content (e.g., a title card, still frame)
+- The event is extremely short (< 5 seconds) with no distinct visual phases, OR
+- The entire event is truly static (e.g., a frozen frame or a plain title card)
 
-Otherwise, decompose the event into as many atomic sub-actions as you can observe. \
-Prefer over-annotating over under-annotating — it is better to include a sub-action \
-than to skip one.
+Prefer over-segmenting over under-segmenting. More L3 entries = better.
 
 **L3 Rules**:
-- Timestamps are absolute integer seconds from the full video timeline.
-- Sub-actions must fall within the parent event's [start_time, end_time].
-- Allow gaps between sub-actions — do NOT force full temporal coverage.
-- Minimum sub-action duration: 2 seconds. Maximum: 6 seconds.
+- Timestamps: absolute integer seconds from the full video timeline.
+- Must fall within the parent event's [start_time, end_time].
+- Allow gaps between entries — do NOT force full temporal coverage.
+- Duration: 2-6 seconds per entry.
+
+**`sub_action`** field (5-15 words): concise label describing the visual unit. \
+Examples: "close-up of hands folding dough", "camera pulls back to reveal full workspace", \
+"person looks off-frame to the right", "steam rising from pot surface".
+
+**`caption`** field (1-2 sentences): detailed visual description of this micro-segment \
+(same DVC rules as dense_caption — purely observable, no inference).
 
 **TEXT GENERATION RULES — Academic Dense Video Captioning Standard**:
 
