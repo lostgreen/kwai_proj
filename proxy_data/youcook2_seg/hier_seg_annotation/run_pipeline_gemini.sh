@@ -2,8 +2,9 @@
 # ─────────────────────────────────────────────────────────────────────
 # run_pipeline_gemini.sh — 3-level annotation via Gemini native API
 #
-# Single step: full video → Gemini → L1+L2+L3 in one call.
-# No frame extraction needed.
+# Steps:
+#   1. Extract 1fps frames (for visualization in data_visualization/)
+#   2. Full video → Gemini → L1+L2+L3 in one call
 #
 # Usage:
 #   tmux new -s anno_gemini
@@ -12,10 +13,13 @@
 # Test mode:
 #   LIMIT=3 bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline_gemini.sh
 #
+# Skip frame extraction (if already done):
+#   SKIP_FRAMES=1 bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline_gemini.sh
+#
 # With native API key instead of Vertex AI:
 #   AUTH_MODE=apikey GEMINI_API_KEY=xxx bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline_gemini.sh
 #
-# All clips are idempotent: already-completed ones are skipped.
+# All steps are idempotent: already-completed clips are skipped.
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 export PYTHONUNBUFFERED=1
@@ -29,16 +33,19 @@ MODEL="${MODEL:-gemini-2.5-pro}"
 FPS="${FPS:-2}"
 LIMIT="${LIMIT:-20}"
 WORKERS="${WORKERS:-4}"
+FRAME_WORKERS="${FRAME_WORKERS:-8}"
+SKIP_FRAMES="${SKIP_FRAMES:-0}"
 
 # Auth: "vertex" (default, uses credential JSON) or "apikey" (uses GEMINI_API_KEY)
 AUTH_MODE="${AUTH_MODE:-vertex}"
 CREDENTIAL_JSON="${CREDENTIAL_JSON:-/home/liuxiaokun/projects/gemini-api/chatgpt-client/keling-ylab-gemini-1038ec8509a2.json}"
 
-# Output goes to same annotations dir as the main pipeline
+# Output directories
+FRAMES_DIR="${DATA_ROOT}/frames"
 OUTPUT_DIR="${DATA_ROOT}/annotations"
 
 LOG_DIR="${DATA_ROOT}/logs"
-mkdir -p "$LOG_DIR" "$OUTPUT_DIR"
+mkdir -p "$LOG_DIR" "$OUTPUT_DIR" "$FRAMES_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${LOG_DIR}/gemini_native_${TIMESTAMP}.log"
 
@@ -61,21 +68,54 @@ log() {
     echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"
 }
 
+run_step() {
+    local step_name="$1"
+    shift
+    log "========== ${step_name} START =========="
+    log "CMD: $*"
+    if "$@" 2>&1 | tee -a "$LOG_FILE"; then
+        log "========== ${step_name} DONE =========="
+    else
+        log "========== ${step_name} FAILED (exit $?) =========="
+        log "Check log: $LOG_FILE"
+    fi
+}
+
 log "========== GEMINI NATIVE PIPELINE CONFIG =========="
-log "JSONL:      $JSONL"
-log "MODEL:      $MODEL"
-log "FPS:        $FPS"
-log "WORKERS:    $WORKERS"
-log "LIMIT:      ${LIMIT:-0 (all)}"
-log "AUTH:       $AUTH_MODE"
-log "OUTPUT_DIR: $OUTPUT_DIR"
-log "DATA_ROOT:  $DATA_ROOT"
+log "JSONL:         $JSONL"
+log "MODEL:         $MODEL"
+log "FPS:           $FPS"
+log "WORKERS:       $WORKERS"
+log "FRAME_WORKERS: $FRAME_WORKERS"
+log "LIMIT:         ${LIMIT:-0 (all)}"
+log "AUTH:          $AUTH_MODE"
+log "FRAMES_DIR:    $FRAMES_DIR"
+log "OUTPUT_DIR:    $OUTPUT_DIR"
+log "DATA_ROOT:     $DATA_ROOT"
 
 # =====================================================================
-# Single step: Full video → L1+L2+L3 annotation
+# STEP 1: Extract 1fps frames (for visualization)
+# =====================================================================
+if [[ "$SKIP_FRAMES" == "0" ]]; then
+    log ""
+    log ">>>>>>>>>> STEP 1: EXTRACT 1fps FRAMES <<<<<<<<<<"
+
+    run_step "S1_EXTRACT_FRAMES" \
+        python "$SCRIPT_DIR/extract_frames.py" \
+            --jsonl "$JSONL" \
+            --output-dir "$FRAMES_DIR" \
+            --fps 1 --workers "$FRAME_WORKERS" \
+            $LIMIT_FLAG
+else
+    log ""
+    log ">>>>>>>>>> STEP 1: SKIP (SKIP_FRAMES=1) <<<<<<<<<<"
+fi
+
+# =====================================================================
+# STEP 2: Full video → L1+L2+L3 annotation (Gemini native)
 # =====================================================================
 log ""
-log ">>>>>>>>>> Gemini Native 3-Level Annotation <<<<<<<<<<"
+log ">>>>>>>>>> STEP 2: Gemini Native 3-Level Annotation <<<<<<<<<<"
 
 CMD="python $SCRIPT_DIR/annotate_gemini_native.py \
     --data-path $JSONL \
@@ -98,6 +138,7 @@ fi
 # ── Summary ─────────────────────────────────────────────────────────
 log ""
 log "========== PIPELINE COMPLETE =========="
+log "Frames:      $FRAMES_DIR/"
 log "Annotations: $OUTPUT_DIR/"
 log "Full log:    $LOG_FILE"
 
