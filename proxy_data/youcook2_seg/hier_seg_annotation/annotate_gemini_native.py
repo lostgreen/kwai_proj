@@ -629,11 +629,17 @@ def _process_one(
                 with open(out_file, "r", encoding="utf-8") as f:
                     existing = json.load(f)
                 expected_frame_dir = str(frames_dir / clip_key)
+                needs_patch = False
                 if existing.get("frame_dir") != expected_frame_dir:
                     existing["frame_dir"] = expected_frame_dir
+                    needs_patch = True
+                if "n_frames" not in existing and existing.get("clip_duration_sec"):
+                    existing["n_frames"] = int(existing["clip_duration_sec"])
+                    needs_patch = True
+                if needs_patch:
                     with open(out_file, "w", encoding="utf-8") as f:
                         json.dump(existing, f, ensure_ascii=False, indent=2)
-                    print(f"[{idx}/{total}] {clip_key} — PATCHED frame_dir", flush=True)
+                    print(f"[{idx}/{total}] {clip_key} — PATCHED", flush=True)
                     return
             except Exception:
                 pass
@@ -676,6 +682,7 @@ def _process_one(
             "video_path": video_path,
             "source_video_path": video_path,
             "clip_duration_sec": duration,
+            "n_frames": int(duration),  # 1fps extraction → n_frames ≈ duration in seconds
             "annotation_fps": fps,
             "frame_dir": str(frames_dir / clip_key) if frames_dir else None,
             "archetype": result.get("paradigm"),
