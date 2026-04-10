@@ -1827,3 +1827,181 @@ def get_unified_merged_prompt(n_frames: int, duration_sec: int) -> str:
         l3_feasibility_ref=_format_l3_feasibility_all_paradigms(),
     )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Universal Merged Prompt (v6: universal L1/L2, no paradigm-specific rules)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_UNIVERSAL_MERGED_PROMPT = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+
+Your task has TWO parts:
+1. **CLASSIFY** the video (domain, feasibility, metadata, caption)
+2. **ANNOTATE** the video with hierarchical L1 + L2 temporal structure
+
+════════════════════════════════════════════════
+## PART 1 — CLASSIFICATION
+════════════════════════════════════════════════
+
+### 1A. DOMAIN (content topic)
+
+Choose domain_l2 from this hierarchy (domain_l1 is derived automatically):
+{domain_l2_list}
+If none fits, use domain_l2="other".
+
+### 1B. FEASIBILITY
+
+Assess whether this video supports hierarchical temporal annotation.
+- **Skip** if: people only talking with no visual action changes; ambient/static footage \
+with no identifiable progression; screen recordings of static content.
+- **Annotate** if: there are visually distinct activities, location/scene changes, \
+or progressive actions — even if the video also contains talking.
+
+### 1C. VIDEO CAPTION
+
+Write a detailed description of the entire video (3-5 sentences).
+Cover: setting/environment, main subjects, key objects, overall progression, and outcome.
+Every statement must be grounded in what is visible in the frames.
+
+════════════════════════════════════════════════
+## PART 2 — HIERARCHICAL ANNOTATION
+════════════════════════════════════════════════
+
+**If feasibility.skip=true**, output `"macro_phases": []` and skip annotation.
+
+### L1 — Thematic Segment
+
+**Definition**: A broad segment of the video unified by a single overarching theme, goal, \
+location, or activity mode. A new L1 phase starts when there is a **major shift** in what \
+the video is about.
+
+**Boundary Signals** (any ONE is sufficient):
+- **Goal/intent shift**: The purpose changes (preparing → cooking → plating).
+- **Location/setting change**: The scene moves to a visibly different place.
+- **Subject/topic switch**: The main focus shifts to a different person, object, or topic.
+- **Activity mode change**: The nature of activity changes (explaining → demonstrating, \
+warm-up → high-intensity, interview → B-roll montage).
+- **Explicit transition**: Fade/dissolve, title card, or clear editing break.
+
+**Rules**:
+- Output 1–6 phases. A single-phase video is valid.
+- Skip intros, outros, and static idle spans — phases do NOT need to cover the entire video.
+- Do NOT split by camera angle changes alone.
+
+### L2 — Visual Event (Dense Caption)
+
+**Definition**: A continuous visual segment focused on **one coherent activity, one primary \
+subject, and one consistent scene**. This is the fundamental unit of dense video captioning: \
+each event describes WHAT visually happens during that time span.
+
+**Critical Rule — Intra-Scene vs Inter-Scene Cuts**:
+- **Intra-Scene Cut** (do NOT split): Camera angle, zoom, or focal length change on the \
+SAME subject in the SAME location during the SAME ongoing activity. \
+Example: wide shot of person kneading dough → close-up of hands kneading = ONE event.
+- **Inter-Scene Cut** (MUST split into separate events): Cut to a DIFFERENT location, \
+subject, person, or visual modality. \
+Examples: host talking → B-roll footage; Person A → Person B; kitchen → dining room; \
+instructor on camera → screen recording.
+
+**Rules**:
+- Each event MUST be >= 5 seconds (anti-fragmentation), unless an inter-scene cut \
+creates a shorter segment.
+- Events must not overlap. Gaps between events are expected.
+- Events are nested within L1 phases: every event's timespan MUST fall within its parent phase.
+- `"events": []` is valid if a phase has no meaningful sub-structure.
+
+### ANNOTATION WORKFLOW
+
+For best results, follow this order:
+1. **Watch all frames** and identify major scene/topic changes → L1 phases.
+2. **Within each phase**, identify inter-scene cuts → L2 event boundaries.
+3. **Write descriptions first** (phase_name, narrative_summary, instruction, dense_caption), \
+then assign timestamps. This grounds your timestamps in visual evidence.
+
+### L3 FEASIBILITY (per-phase AND per-event)
+
+For EACH L1 phase AND each L2 event, assess whether fine-grained micro-action \
+annotation (2-6s atomic actions) is feasible.
+
+Set `l3_feasible=true` if: clear physical actions, object manipulations, or visible \
+state changes are present and observable at 2fps.
+Set `l3_feasible=false` if: dominated by talking/interviews, too abstract, \
+insufficient visual detail (distant/blurry), or no physical actions.
+
+### VISUAL SIGNAL REFERENCE
+- **Scene/Space**: Background change, location switch, character entry/exit.
+- **Subject**: Pose transition, gaze shift, speed change, new interaction.
+- **Object**: Appearance/position/quantity change.
+- **Camera/Editing**: Scene cut, focus shift, montage sequence, zoom change.
+
+════════════════════════════════════════════════
+## OUTPUT JSON
+════════════════════════════════════════════════
+
+{{
+  "domain_l2": "<one of the domain_l2 categories above, or 'other'>",
+  "video_caption": "<3-5 sentences describing the entire video>",
+  "feasibility": {{
+    "score": 0.85,
+    "skip": false,
+    "skip_reason": null,
+    "estimated_n_phases": 3,
+    "estimated_n_events": 8,
+    "visual_dynamics": "high"
+  }},
+  "video_metadata": {{
+    "has_text_overlay": false,
+    "has_narration": true,
+    "camera_style": "<static_tripod | handheld | multi_angle | first_person>",
+    "editing_style": "<continuous | jump_cut | montage | mixed>"
+  }},
+  "summary": "<one sentence summarizing the video>",
+  "global_phase_criterion": "<one sentence: why you split into these phases>",
+  "macro_phases": [
+    {{
+      "phase_id": 1,
+      "phase_name": "<5-15 word descriptive phrase>",
+      "narrative_summary": "<2-3 sentences: what happens, objects involved, outcome>",
+      "start_time": 5,
+      "end_time": 60,
+      "event_split_criterion": "<one sentence: why this phase has/lacks events>",
+      "l3_feasible": true,
+      "l3_reason": "<1 sentence>",
+      "events": [
+        {{
+          "event_id": 1,
+          "instruction": "<8-20 words: WHAT happens WITH WHICH objects>",
+          "dense_caption": "<2-4 sentences: detailed visual description>",
+          "start_time": 5,
+          "end_time": 28,
+          "visual_keywords": ["kw1", "kw2"],
+          "l3_feasible": true,
+          "l3_reason": "<1 sentence>"
+        }}
+      ]
+    }}
+  ]
+}}
+
+## RULES
+1. Output strictly valid JSON. No markdown code blocks.
+2. All timestamps: absolute integer seconds within [0, {duration}].
+3. Strict nesting: every L2 event MUST be within its parent L1 phase timespan.
+4. Anti-fragmentation: L2 events MUST be >= 5 seconds (except inter-scene cut segments).
+5. Feasibility enums: skip_reason is null or "talk_dominant" | "ambient_static"; \
+visual_dynamics is "high" | "medium" | "low".
+6. If feasibility.skip=true, output "macro_phases": []."""
+
+
+def get_universal_merged_prompt(n_frames: int, duration_sec: int) -> str:
+    """Build the universal classification + annotation prompt (v6).
+
+    Uses ONE set of universal L1/L2 definitions that work for all video types,
+    replacing the 7-paradigm annotation tables from v5.
+    """
+    return _UNIVERSAL_MERGED_PROMPT.format(
+        n_frames=n_frames,
+        duration=duration_sec,
+        domain_l2_list=_format_domain_l2_for_prompt(),
+    )
+

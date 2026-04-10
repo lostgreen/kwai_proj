@@ -109,6 +109,7 @@ from archetypes import (
     get_classification_prompt,
     get_archetype_merged_prompt,
     get_unified_merged_prompt,
+    get_universal_merged_prompt,
     get_archetype_l3_prompt,
     get_active_levels,
     get_l3_parent_type,
@@ -693,7 +694,7 @@ def _split_merged_response(
     summary = parsed.get("summary", "")
     global_phase_criterion = parsed.get("global_phase_criterion", "")
 
-    # ── Classification fields (unified prompt v5) ──────────────────────
+    # ── Classification fields (unified prompt v5/v6) ──────────────────
     archetype = parsed.get("paradigm", "tutorial")
     if archetype not in PARADIGM_IDS:
         archetype = "tutorial"
@@ -782,9 +783,10 @@ def _split_merged_response(
         st = phase.get("start_time")
         et = phase.get("end_time")
         if not (isinstance(st, (int, float)) and isinstance(et, (int, float)) and st < et):
+            print(f"    WARN: phase {phase_id} dropped (invalid timestamps: st={st} et={et})", flush=True)
             continue
-        phase["start_time"] = int(st)
-        phase["end_time"] = min(int(et), int(clip_duration))
+        phase["start_time"] = round(st)
+        phase["end_time"] = min(round(et), round(clip_duration))
         # Per-phase L3 feasibility (v5: replaces video-level l3_feasibility)
         phase.setdefault("l3_feasible", True)
         phase["l3_feasible"] = bool(phase["l3_feasible"])
@@ -798,9 +800,10 @@ def _split_merged_response(
             ev_st = ev.get("start_time")
             ev_et = ev.get("end_time")
             if not (isinstance(ev_st, (int, float)) and isinstance(ev_et, (int, float)) and ev_st < ev_et):
+                print(f"    WARN: event in phase {phase_id} dropped (invalid timestamps: st={ev_st} et={ev_et})", flush=True)
                 continue
-            ev["start_time"] = int(ev_st)
-            ev["end_time"] = min(int(ev_et), int(clip_duration))
+            ev["start_time"] = round(ev_st)
+            ev["end_time"] = min(round(ev_et), round(clip_duration))
             ev["parent_phase_id"] = phase_id
             # Per-event L3 feasibility
             ev.setdefault("l3_feasible", True)
@@ -919,7 +922,7 @@ def _annotate_merged_l1l2(
             },
         }
 
-    prompt_text = get_unified_merged_prompt(
+    prompt_text = get_universal_merged_prompt(
         n_frames=len(sampled), duration_sec=duration,
     )
     parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
