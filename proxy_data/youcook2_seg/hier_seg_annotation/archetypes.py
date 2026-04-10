@@ -2042,20 +2042,29 @@ Use these three operations to turn the {n_scenes} input scenes into well-formed 
 - `scene_ids: [k, k+1, ...]`, provide `merge_reason`
 - start_time = first scene's start_time; end_time = last scene's end_time
 
-**When to MERGE**: The single question to ask is:
-  "Is this the SAME ongoing activity seen from a different angle or framing?"
-  ✓ Wide shot → close-up of the SAME person doing the SAME thing → MERGE
-  ✓ Two consecutive shots of the same cooking/exercise/craft step from different angles → MERGE
-  ✓ Camera panned from left to right within the same scene, same activity → MERGE
-  ✗ Cut to a clearly different location → keep SEPARATE
-  ✗ A different person/subject becomes the focus → keep SEPARATE
-  ✗ A new step, sub-task, or activity starts (e.g., prep ends → cooking begins) → keep SEPARATE
-  ✗ Title card, transition shot, or establishing shot between activities → keep SEPARATE
+**When to MERGE** — ALL THREE conditions must hold simultaneously:
+  1. **Same subject**: The same primary person or object is the focal point in ALL merged scenes.
+  2. **Same semantic content type**: The scenes show the SAME type of content — not just the same topic.
+     Action footage stays with action footage; interviews stay with interviews; commentary stays with commentary.
+  3. **Continuous activity**: The same physical process, activity, or framing pattern continues — there is no meaningful shift in what is happening.
 
-**merge_reason**: 1-2 sentences of concrete visual evidence. Be specific:
-  - GOOD: "Wide shot and close-up both show the same person kneading dough — only the framing changed, the kneading motion is continuous."
-  - GOOD: "Scenes 4-5 show the same person selecting weights at the same rack from two angles."
-  - BAD: "Same location." / "They look similar." (too vague)
+A camera angle change or zoom is a valid merge ONLY when all three conditions above are also satisfied.
+
+**Always keep scenes SEPARATE if any of the following apply**:
+  ✗ Different content types, even if the same subject appears:
+    "athlete competing on field" + "athlete interviewed off-field" → SEPARATE (action vs. talk)
+    "match highlights montage" + "analyst commentary to camera" → SEPARATE (event vs. talk)
+    "cooking demonstration" + "host explaining technique to camera" → SEPARATE (action vs. talk)
+  ✗ Same person, different location AND different activity → SEPARATE
+  ✗ A new step, phase, or activity goal begins in the adjacent scene → SEPARATE
+  ✗ Transition shots (title card, replay graphic, establishing shot) → SEPARATE
+  ✗ One scene is B-roll and the adjacent is a talking head → SEPARATE
+
+**merge_reason**: 1-2 sentences of concrete visual evidence referencing ALL THREE conditions:
+  - GOOD: "Both scenes show the same person kneading dough on the same floured board from different angles — same subject, same physical action, only framing changed."
+  - GOOD: "Scenes 4-5 show the same athlete running the same sprint drill from wide then close — same subject, same action type, continuous effort."
+  - BAD: "Same person appears in both." (subject only — does not address content type or continuity)
+  - BAD: "Same sport / topic." (topic match is not sufficient — must verify same content type and action)
 ────────────────────────────────────────────
 **OPERATION 3: SPLIT** (break a long scene into sub-events)
 - `scene_ids: [k]`, provide `split_reason`, explicit `start_time` and `end_time`
