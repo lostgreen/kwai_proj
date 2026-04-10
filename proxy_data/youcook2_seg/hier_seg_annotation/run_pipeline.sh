@@ -104,6 +104,25 @@ run_step "S1_EXTRACT_FRAMES" \
         $LIMIT_FLAG
 
 # =====================================================================
+# STEP 1.5: Scene Detection (l2l3_first only — PySceneDetect)
+# =====================================================================
+if [[ "$ANNO_LEVEL" == "l2l3_first" ]]; then
+    log ""
+    log ">>>>>>>>>> STEP 1.5: SCENE DETECTION <<<<<<<<<<"
+
+    SCENE_DETECTOR="${SCENE_DETECTOR:-content}"
+    SCENE_THRESHOLD="${SCENE_THRESHOLD:-27.0}"
+
+    run_step "S1_5_SCENE_DETECT" \
+        python "$SCRIPT_DIR/detect_scenes.py" \
+            --frames-dir "$DATA_ROOT/frames" \
+            --detector "$SCENE_DETECTOR" \
+            --threshold "$SCENE_THRESHOLD" \
+            --workers "$WORKERS" \
+            $LIMIT_FLAG
+fi
+
+# =====================================================================
 # STEP 2: L2-first annotation + L1 aggregation (or old merged mode)
 # =====================================================================
 log ""
