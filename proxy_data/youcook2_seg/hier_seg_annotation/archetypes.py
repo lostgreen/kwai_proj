@@ -491,23 +491,26 @@ _CINEMATIC = ArchetypeConfig(
         name="Scene Unit",
         name_zh="场景单元",
         definition=(
-            "A continuous narrative unit within the same space-time and character set. "
+            "A continuous narrative unit within the SAME space-time and character set. "
             "Multiple shots/cuts belonging to the same scene are grouped together. "
-            "Look for: location changes, character entry/exit, topic/mood shifts."
+            "Intercut or parallel-edited sequences that jump to a DIFFERENT location "
+            "or character group MUST be separate events, even if the narrative links them."
         ),
         boundary_signals=(
-            "Location change; character enter/exit frame; "
-            "topic or emotional tone shift within the scene group; "
-            "transition from dialogue to action (or vice versa)."
+            "**Highest Priority**: Cut to a different location or character group "
+            "(e.g., office → flashback to childhood room, or cross-cutting between "
+            "two parallel storylines). "
+            "Other signals: character enter/exit frame; "
+            "topic or emotional tone shift within the scene group."
         ),
         examples=(
             "Two friends discuss travel plans while reviewing a map at the cafe table",
             "Protagonist confronts the antagonist in the warehouse hallway",
-            "Family gathers around the dinner table for an emotional conversation",
+            "Flashback sequence showing the character as a child in a garden",
         ),
         anti_examples=(
-            "A single shot or camera cut",
-            "A reaction shot (too fine)",
+            "A single shot or camera cut within the same scene",
+            "A reaction shot of the same character in the same location (too fine)",
         ),
     ),
 
@@ -589,21 +592,25 @@ _VLOG = ArchetypeConfig(
         name="Activity / Interaction Clip",
         name_zh="活动/交互片段",
         definition=(
-            "A specific activity or interaction within a location/topic segment. "
-            "Has a clear start and end with distinctive visual content."
+            "A continuous clip of a SINGLE, SPECIFIC activity within a "
+            "CONSISTENT VISUAL CONTEXT (same location, subject, and action type). "
+            "A host talking on-camera and the separate video clip they introduce are "
+            "TWO SEPARATE events, even if the host's voice continues over the clip."
         ),
         boundary_signals=(
-            "Activity start/end; interaction partner change; "
-            "shift between passive watching and active engagement."
+            "**Highest Priority**: A hard cut to a different location or subject "
+            "(e.g., host on rooftop → cut to gameplay/sports footage). "
+            "Other signals: activity start/end; interaction partner change."
         ),
         examples=(
-            "Ordering and receiving food at the counter",
-            "Tasting the local specialty and giving reaction on camera",
-            "Walking through the garden path while describing the scenery",
+            "Host speaking to camera on a rooftop, introducing a video",
+            "A dodgeball game shown on a YouTube interface",
+            "Tasting a local dish and giving a reaction to the camera",
         ),
         anti_examples=(
+            "Merging a host's commentary segment with the separate "
+            "video clip they are introducing — these MUST be two distinct events",
             "Brief glance at something (too fine)",
-            "Entire afternoon at one location (too coarse)",
         ),
     ),
 
@@ -684,20 +691,26 @@ _EDUCATIONAL = ArchetypeConfig(
         name_zh="讲解/演示单元",
         definition=(
             "A focused explanation or demonstration around one specific concept "
-            "or knowledge point within the module."
+            "within the module, in a CONSISTENT VISUAL CONTEXT. "
+            "An instructor speaking on camera and a separate screen recording, "
+            "animation, or experiment close-up they introduce are TWO SEPARATE events, "
+            "even if the instructor's narration continues over the visual."
         ),
         boundary_signals=(
-            "Focus shift to new sub-concept; change of demonstration object; "
+            "**Highest Priority**: A hard cut between instructor-on-camera and "
+            "screen recording / animation / diagram close-up / experiment footage. "
+            "Other signals: focus shift to new sub-concept; change of demonstration object; "
             "transition from theory to example (or vice versa)."
         ),
         examples=(
-            "Explaining the role of chlorophyll using a diagram",
-            "Demonstrating the pH test with litmus paper on the sample",
-            "Working through example problem #3 step by step",
+            "Instructor explaining a concept while pointing at the whiteboard",
+            "Screen recording showing code execution in an IDE",
+            "Close-up of a chemical reaction in a beaker on the lab bench",
         ),
         anti_examples=(
+            "Merging an instructor's on-camera lecture with the separate "
+            "screen recording or animation they are narrating — these MUST be two events",
             "Writing a single word (too fine)",
-            "The entire chapter (too coarse)",
         ),
     ),
 
@@ -1660,6 +1673,16 @@ the L1/L2 definitions for YOUR CHOSEN paradigm. IGNORE the rules for the other 6
 
 ### UNIVERSAL TEMPORAL & FORMATTING RULES (Apply to ALL paradigms)
 
+**Visual Priority (Overrides all other signals)**: A significant visual change \
+(e.g., a cut from an on-camera speaker to a demonstration clip, a location change from indoors to outdoors, \
+a switch from live footage to screen recording) MUST trigger a new L2 event boundary. \
+The visual boundary takes precedence over continuous audio narration or semantic context. \
+Do NOT merge two visually distinct scenes into one event just because the same person is talking over them.
+
+**No Audio Memory**: You are a VISUAL model — base ALL segmentation decisions on what you SEE in the frames. \
+Do NOT infer segment boundaries from assumed narration, dialogue, or audio cues that are not visible. \
+If a speaker's voice might continue over a visual cut, treat the cut as the boundary, not the voice.
+
 **Describe-before-timestamp**: For each L1 phase and L2 event, first write the descriptive fields \
 (phase_name, narrative_summary, instruction, dense_caption), then assign start_time/end_time. \
 This grounds your timestamps in actual visual evidence rather than guessing.
@@ -1668,7 +1691,7 @@ This grounds your timestamps in actual visual evidence rather than guessing.
 - **Sparsity & Gaps**: Phases/Events do NOT need to cover the entire video. Gaps between annotated segments are expected. Skip intros, outros, and idle spans.
 - **No Overlaps**: L2 events must NOT overlap each other in time.
 - **Strict Nesting**: Every L2 event MUST be strictly nested within its parent L1 phase timeframe.
-- **Anti-Fragmentation**: Do NOT split by camera cuts alone. An L2 event MUST be >= 5 seconds. Anything shorter belongs to L3 micro-actions (do not annotate L3 here).
+- **Anti-Fragmentation**: Do NOT split by camera ANGLE changes alone (e.g., close-up → wide shot of the same scene). An L2 event MUST be >= 5 seconds. However, a hard CUT to a visually different scene/location (per Visual Priority above) MUST create a new event even if the resulting segment is short.
 - **Empty L2**: `"events": []` is perfectly valid if an L1 phase has no meaningful sub-structure. A single-phase video is also valid.
 
 **Text Generation Constraints:**
