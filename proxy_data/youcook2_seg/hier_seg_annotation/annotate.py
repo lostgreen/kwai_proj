@@ -1079,6 +1079,7 @@ def _annotate_l1_aggregation(
     stage1_result: dict[str, Any],
     api_base: str, api_key: str, model: str,
     resize_max_width: int, jpeg_quality: int,
+    fps: float = 1.0,
 ) -> dict[str, Any]:
     """Stage 2 of bottom-up pipeline: L1 phase aggregation from L2 events.
 
@@ -1103,7 +1104,7 @@ def _annotate_l1_aggregation(
                 key_frame_files.append(fp)
                 key_frame_labels.append(
                     f"[Event {ev['event_id']} KeyFrame | "
-                    f"Timestamp {format_mmss(frame_index_to_sec(kf_idx))} | Frame {kf_idx}]"
+                    f"Timestamp {format_mmss(frame_index_to_sec(kf_idx, fps=fps))} | Frame {kf_idx}]"
                 )
 
     if not key_frame_files:
@@ -1278,6 +1279,7 @@ def annotate_clip(
                     frame_dir, clip_duration, stage1_result,
                     api_base, api_key, model,
                     resize_max_width, jpeg_quality,
+                    fps=fps,
                 )
                 # Inject L3 from Stage 1 inline sub-actions
                 merged_result["level3"] = _build_level3_from_stage1(

@@ -757,11 +757,33 @@ function segRenderHeader(){
   const warningCount=(clip.diagnostics.level1.overlap_count||0)+(clip.diagnostics.level2.overlap_count||0)+(clip.diagnostics.level3.overlap_count||0)+(clip.diagnostics.level2_parent_violations||[]).length+(clip.diagnostics.level3_parent_violations||[]).length;
   const coordLabel=clip.problem_type==='temporal_seg_hier_L1'?'warped frames (1-N)':clip.problem_type?'0-based sec in clip':'-';
   const aqHtml=clip.action_query?`<div style="margin-top:8px;padding:8px 12px;border-radius:10px;background:rgba(212,87,124,.08);border:1px solid rgba(212,87,124,.2);font-size:13px;color:#5b1e33"><strong>Query:</strong> ${esc(clip.action_query)}</div>`:'';
+  // v4 metadata badges
+  const _raw=clip.raw||{};
+  const _meta=_raw.metadata||_raw;
+  const _archetype=_meta.archetype||_meta.paradigm||'';
+  const _domainL1=_meta.domain_l1||'';
+  const _domainL2=_meta.domain_l2||'';
+  const _l3f=_raw.l3_feasibility||_meta.l3_feasibility||{};
+  const _summary=_raw.summary||_meta.summary||'';
+  const _gpc=_raw.global_phase_criterion||_meta.global_phase_criterion||'';
+  let badgeHtml='';
+  {
+    const chips=[];
+    if(_archetype) chips.push(`<span class="chip purple">${esc(_archetype)}</span>`);
+    if(_domainL2) chips.push(`<span class="chip amber">${esc(_domainL1?_domainL1+' / '+_domainL2:_domainL2)}</span>`);
+    if(_l3f.suitable===true) chips.push(`<span class="chip blue">L3 suitable</span>`);
+    else if(_l3f.suitable===false) chips.push(`<span class="badge warning">L3 not suitable${_l3f.reason?': '+esc(_l3f.reason):''}</span>`);
+    if(chips.length) badgeHtml=`<div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">${chips.join('')}</div>`;
+  }
+  let summaryHtml='';
+  if(_summary) summaryHtml=`<div class="meta-box" style="grid-column:1/-1"><div class="meta-k">Summary</div><div class="meta-v" style="font-style:italic">${esc(_summary)}</div></div>`;
+  if(_gpc) summaryHtml+=`<div class="meta-box" style="grid-column:1/-1"><div class="meta-k">Phase Criterion</div><div class="meta-v">${esc(_gpc)}</div></div>`;
   document.getElementById('seg-clipHeader').innerHTML=`
     <div class="clip-head-top">
       <div>
         <div class="clip-title">${esc(clip.clip_key)}</div>
         <div class="clip-subtitle">${esc(dataLabel)} · ${esc(clip.problem_type||clip.source_mode||'unknown')} · frame_dir: ${esc(clip.frame_dir||'-')}</div>
+        ${badgeHtml}
         ${aqHtml}
       </div>
       <div class="controls">
@@ -783,6 +805,7 @@ function segRenderHeader(){
       <div class="meta-box"><div class="meta-k">Coord</div><div class="meta-v">${esc(coordLabel)}</div></div>
       <div class="meta-box"><div class="meta-k">Sampling</div><div class="meta-v">${esc(samplingLabel)}</div></div>
       <div class="meta-box"><div class="meta-k">Warnings</div><div class="meta-v">${warningCount}</div></div>
+      ${summaryHtml}
     </div>`;
 }
 function segToggleLevel(lv,vis){
