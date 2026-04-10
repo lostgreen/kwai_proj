@@ -1277,12 +1277,14 @@ def _split_scene_first_response(
             merge_reason = None
         else:
             # KEEP / MERGE: timestamps derived from scene boundaries
-            # Check consecutiveness for MERGE (warn but don't drop)
+            # Enforce consecutiveness — non-consecutive merges are invalid
             if len(valid_sids) > 1:
                 expected = list(range(valid_sids[0], valid_sids[-1] + 1))
                 if valid_sids != expected:
-                    print(f"    WARN: scene_ids {valid_sids} are not consecutive for merge — keeping anyway",
-                          flush=True)
+                    # Non-consecutive merge: keep only the first scene to preserve timeline integrity
+                    print(f"    WARN: scene_ids {valid_sids} are NOT consecutive (interleaved merge) — "
+                          f"trimming to first scene [{valid_sids[0]}]", flush=True)
+                    valid_sids = [valid_sids[0]]
             ev_start = min(scenes_by_id[sid]["start_time"] for sid in valid_sids)
             ev_end = max(scenes_by_id[sid]["end_time"] for sid in valid_sids)
 

@@ -2068,8 +2068,29 @@ detector missed (e.g., a 45s scene where a person first chops vegetables then mo
 - split_reason: 1 sentence explaining what distinct activities were found in the scene
 ────────────────────────────────────────────
 
+**CRITICAL — CONSECUTIVE SCENES ONLY**:
+
+scene_ids represents a CONTIGUOUS BLOCK of the video timeline. \
+Scenes are ordered in TIME. scene_ids [2, 3, 4] means the event covers the time \
+from scene 2's start to scene 4's end — a contiguous time segment. \
+You CANNOT skip scenes or group non-adjacent scenes.
+
+  ✓ CORRECT: scene_ids [3, 4, 5]  — consecutive, covers a contiguous time block
+  ✗ WRONG:   scene_ids [2, 4, 6]  — NON-CONSECUTIVE, these are spread across the timeline
+  ✗ WRONG:   scene_ids [1, 3, 5, 7] — alternating scenes from different times
+
+The scenes list is ordered chronologically. Think of them as LEGO bricks on a timeline — \
+you can only merge adjacent bricks, not grab every other one.
+
+**PARTITION RULE**: Together, all events must cover every scene exactly once. \
+The events define a non-overlapping, gap-free partition of the full timeline.
+
+  Example with 5 scenes:
+  ✓ CORRECT: events with scene_ids [1], [2,3], [4], [5]   — full coverage, no gaps, no skips
+  ✗ WRONG:   events with scene_ids [1,3,5], [2,4]         — non-consecutive, interleaved
+
 **COVERAGE RULE**: The union of scene_ids across all events must cover every scene ID \
-from 1 to {n_scenes} at least once. No scene may be left uncovered.
+from 1 to {n_scenes}. No scene may be left uncovered.
 
 ### 2B. EVENT CAPTION
 
@@ -2220,8 +2241,8 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 
 1. Output strictly valid JSON. No markdown code blocks.
 2. If feasibility.skip=true, output `"events": []`.
-3. scene_ids coverage: the union of scene_ids across all events must include every ID in [1..{n_scenes}].
-4. MERGE: scene_ids must be consecutive [k, k+1, ..., k+m]; merge_reason required.
+3. scene_ids coverage: the union of scene_ids across all events must include every ID in [1..{n_scenes}], forming a complete partition of the timeline.
+4. MERGE: scene_ids MUST be consecutive integers [k, k+1, ..., k+m] with no gaps. NON-CONSECUTIVE merges (e.g., [2,4,6]) are INVALID — they interleave scenes from different time blocks.
 5. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
 6. All timestamps: absolute integer seconds in [0, {duration}].
 7. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
