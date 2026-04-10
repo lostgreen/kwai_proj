@@ -2101,23 +2101,28 @@ objects, spatial relations, and state changes in detail.
 - `visual_keywords`: 3-6 keyword tags reflecting the main visual elements.
 - `key_frame_indices`: 1-2 frame indices (integers in [1, {n_frames}]) best representing \
 the event's core visual content. Choose frames near the temporal midpoint.
-- `l3_feasible`: true if atomic sub-actions can be identified; false only for static or \
-very short events (< 3 seconds) with no observable action.
-- `l3_reason`: one sentence explaining the l3_feasible judgment.
 
 Per-paradigm L2+L3 captioning guidance:
 {paradigm_l2l3_table}
 
 ### 2C. L3 SUB-ACTIONS (per event)
 
-For each event with `l3_feasible=true`, annotate atomic micro-actions as `sub_actions`. \
+Always attempt to annotate `sub_actions` for every event. \
 Each sub-action is one continuous atomic visible action lasting 2-6 seconds.
+
+Output `"sub_actions": []` ONLY when:
+- The event is extremely short (< 5 seconds) and contains no distinct action phases, OR
+- The entire event shows only static content (e.g., a title card, still frame)
+
+Otherwise, decompose the event into as many atomic sub-actions as you can observe. \
+Prefer over-annotating over under-annotating — it is better to include a sub-action \
+than to skip one.
 
 **L3 Rules**:
 - Timestamps are absolute integer seconds from the full video timeline.
 - Sub-actions must fall within the parent event's [start_time, end_time].
 - Allow gaps between sub-actions — do NOT force full temporal coverage.
-- For events with `l3_feasible=false`, output `"sub_actions": []`.
+- Minimum sub-action duration: 2 seconds. Maximum: 6 seconds.
 
 **TEXT GENERATION RULES** (applies to all captions):
 Pretend you have NEVER seen this video before and know NOTHING about it. \
@@ -2173,8 +2178,6 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "dense_caption": "<2-4 sentences: detailed visual description>",
       "visual_keywords": ["kw1", "kw2", "kw3"],
       "key_frame_indices": [5, 10],
-      "l3_feasible": true,
-      "l3_reason": "<1 sentence>",
       "sub_actions": [
         {{
           "action_id": 1,
@@ -2198,8 +2201,6 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": ["kw1"],
       "key_frame_indices": [20],
-      "l3_feasible": true,
-      "l3_reason": "Multiple hand motions visible.",
       "sub_actions": []
     }},
     {{
@@ -2213,8 +2214,6 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": [],
       "key_frame_indices": [40],
-      "l3_feasible": true,
-      "l3_reason": "",
       "sub_actions": []
     }},
     {{
@@ -2228,8 +2227,6 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": [],
       "key_frame_indices": [55],
-      "l3_feasible": true,
-      "l3_reason": "",
       "sub_actions": []
     }}
   ]

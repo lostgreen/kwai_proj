@@ -1305,17 +1305,12 @@ def _split_scene_first_response(
                   f"(scene_ids={valid_sids}, {ev_start}-{ev_end})", flush=True)
             continue
 
-        # Per-event L3 feasibility
-        l3_feasible = bool(ev.get("l3_feasible", True))
-        if ev_end - ev_start < 10:
-            l3_feasible = False
+        # Per-event L3: always attempt — programmatic overrides only for talk/static
+        # l3_feasible is derived from actual sub_actions content, not model judgment
         _text = (str(ev.get("instruction", "")) + " " + str(ev.get("dense_caption", ""))).lower()
         _talk_kw = ("speak", "talk", "explain", "narrat", "interview", "convers", "describ", "discuss",
                      "announc", "comment", "address the camera", "to the camera", "voiceover")
-        if any(kw in _text for kw in _talk_kw):
-            l3_feasible = False
-            if not ev.get("l3_reason"):
-                ev["l3_reason"] = "talk/narration dominant"
+        _force_no_l3 = (ev_end - ev_start < 5) or any(kw in _text for kw in _talk_kw)
 
         # key_frame_indices
         raw_kf = ev.get("key_frame_indices", [])
@@ -1339,8 +1334,9 @@ def _split_scene_first_response(
             "dense_caption": str(ev.get("dense_caption", "")),
             "visual_keywords": ev.get("visual_keywords", []) if isinstance(ev.get("visual_keywords"), list) else [],
             "key_frame_indices": valid_kf[:2],
-            "l3_feasible": l3_feasible,
-            "l3_reason": str(ev.get("l3_reason", "")),
+            "l3_feasible": False,           # derived after sub_action extraction
+            "l3_reason": "",
+            "_force_no_l3": _force_no_l3,
             "_raw_sub_actions": ev.get("sub_actions", []),
         })
 
@@ -1365,6 +1361,7 @@ def _split_scene_first_response(
                 "key_frame_indices": [mid_frame],
                 "l3_feasible": False,
                 "l3_reason": "fallback — scene not covered by VLM",
+                "_force_no_l3": True,
                 "_raw_sub_actions": [],
             })
 
@@ -1373,13 +1370,19 @@ def _split_scene_first_response(
     for i, ev in enumerate(valid_events, 1):
         ev["event_id"] = i
 
-    # ── Extract L3 sub-actions ────────────────────────────────────────────────
+    # ── Extract L3 sub-actions + derive l3_feasible ───────────────────────────
     all_l3_results: list[dict] = []
     for ev in valid_events:
+        force_no_l3 = ev.pop("_force_no_l3", False)
         raw_subs = ev.pop("_raw_sub_actions", [])
-        if not raw_subs or not ev["l3_feasible"]:
+        if not raw_subs or force_no_l3:
+            ev["l3_feasible"] = False
+            ev["l3_reason"] = "talk/narration dominant or too short" if force_no_l3 else ""
             continue
         valid_subs = _validate_sub_actions(raw_subs, ev["start_time"], ev["end_time"], ev["event_id"])
+        # Derive l3_feasible from actual validated sub_actions
+        ev["l3_feasible"] = len(valid_subs) > 0
+        ev["l3_reason"] = f"{len(valid_subs)} sub-actions annotated" if valid_subs else "no valid sub-actions found"
         if valid_subs:
             all_l3_results.append({
                 "event_id": ev["event_id"],
