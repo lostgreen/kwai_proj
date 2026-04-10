@@ -2322,7 +2322,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 3. scene_ids coverage: the union of scene_ids across all events must include every ID in [1..{n_scenes}], forming a complete partition of the timeline.
 4. MERGE: scene_ids MUST be consecutive integers [k, k+1, ..., k+m] with no gaps. NON-CONSECUTIVE merges (e.g., [2,4,6]) are INVALID — they interleave scenes from different time blocks.
 5. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
-6. All timestamps: absolute integer seconds in [0, {duration}].
+6. All timestamps: absolute integer seconds in [0, {duration}]. Output as plain integers (e.g., 33, not "00:33" or "33s").
 7. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
 8. L3 sub_actions: 2-6 seconds each; within parent event's [start_time, end_time].
 9. L3 schema: ONLY `action_id`, `start_time`, `end_time`, `sub_action`, `caption`. \

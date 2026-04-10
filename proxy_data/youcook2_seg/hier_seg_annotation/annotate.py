@@ -1482,7 +1482,9 @@ def _annotate_scene_first(
     frame_labels = []
     for fp in sampled:
         idx = frame_stem_to_index(fp, 0)
-        ts_label = f"[Timestamp {format_mmss(frame_index_to_sec(idx, fps=fps))} | Frame {idx}]"
+        # Use plain seconds (not MM:SS) to match JSON output format and avoid confusion
+        ts_sec = int(round(frame_index_to_sec(idx, fps=fps)))
+        ts_label = f"[t={ts_sec}s]"
         if idx in scene_boundary_set:
             ts_label = f"[SCENE BREAK] {ts_label}"
         frame_labels.append(ts_label)
