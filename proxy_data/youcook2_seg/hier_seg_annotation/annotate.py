@@ -785,6 +785,10 @@ def _split_merged_response(
             continue
         phase["start_time"] = int(st)
         phase["end_time"] = min(int(et), int(clip_duration))
+        # Per-phase L3 feasibility (v5: replaces video-level l3_feasibility)
+        phase.setdefault("l3_feasible", True)
+        phase["l3_feasible"] = bool(phase["l3_feasible"])
+        phase.setdefault("l3_reason", "")
         l1_phases.append(phase)
 
         # Collect events with parent linkage
@@ -815,15 +819,13 @@ def _split_merged_response(
     }
     level2 = {"events": all_events}
 
-    # L3 feasibility (assessed by VLM during merged pass)
-    l3_feas = parsed.get("l3_feasibility", {})
-    if not isinstance(l3_feas, dict):
-        l3_feas = {}
+    # L3 feasibility: aggregate from per-phase l3_feasible flags
+    # Video is L3-feasible if ANY phase is L3-feasible
+    any_l3 = any(p.get("l3_feasible", True) for p in l1_phases)
     l3_feasibility = {
-        "suitable": bool(l3_feas.get("suitable", True)),
-        "reason": str(l3_feas.get("reason", "")),
-        "estimated_l3_actions": int(l3_feas.get("estimated_l3_actions", 0))
-            if isinstance(l3_feas.get("estimated_l3_actions"), (int, float)) else 0,
+        "suitable": any_l3,
+        "reason": "per-phase assessment",
+        "estimated_l3_actions": 0,
     }
 
     return {
@@ -960,6 +962,9 @@ def _annotate_level3(
         for phase in phases:
             if not isinstance(phase, dict):
                 continue
+            # Skip phases marked as L3-infeasible
+            if not phase.get("l3_feasible", True):
+                continue
             sources.append({
                 "source_id": phase.get("phase_id", len(sources) + 1),
                 "start_time": phase.get("start_time"),
@@ -972,6 +977,12 @@ def _annotate_level3(
         # phases with events contribute their events as leaf nodes.
         events = l2_result.get("events", [])
         l1_phases = (l1_result or {}).get("macro_phases", []) if l1_result else []
+
+        # Build phase_id → l3_feasible mapping
+        phase_l3_ok: dict[int, bool] = {}
+        for p in l1_phases:
+            if isinstance(p, dict):
+                phase_l3_ok[p.get("phase_id")] = p.get("l3_feasible", True)
 
         if l1_phases:
             # Build phase_id → events mapping
@@ -987,6 +998,9 @@ def _annotate_level3(
                 if not isinstance(phase, dict):
                     continue
                 pid = phase.get("phase_id")
+                # Skip phases marked as L3-infeasible
+                if not phase_l3_ok.get(pid, True):
+                    continue
                 children = phase_events.get(pid, [])
                 if children:
                     # Phase has events → events are leaf nodes

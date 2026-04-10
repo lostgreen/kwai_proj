@@ -1677,17 +1677,20 @@ This grounds your timestamps in actual visual evidence rather than guessing.
 - `instruction`: MUST be an objective description (8–20 words) stating WHAT the action is and WITH WHICH objects. Do NOT use imperative verbs (e.g., avoid "Watch...", "Observe...").
 - `dense_caption`: MUST be detailed visual descriptions (2–4 sentences) covering actions, objects, spatial relations, and state changes.
 
-### L3 FEASIBILITY ASSESSMENT
+### L3 FEASIBILITY (per-phase)
 
-After annotating L1 and L2, assess whether this video supports fine-grained L3 annotation.
+For EACH L1 phase, assess whether it supports fine-grained L3 micro-action annotation.
+Different phases in the same video may have very different L3 suitability \
+(e.g., an active cooking phase is feasible, but a conversation phase is not).
 
 Per-paradigm L3 reference:
 {l3_feasibility_ref}
 
-Consider:
-- Are there enough L2 events (>=3) with sufficient duration (>=5s each) for micro-action grounding?
-- Are fine-grained visual state changes clearly visible in the frames?
-- Is the framing/resolution adequate to observe micro-actions at 2fps?
+Set `l3_feasible=false` for a phase if:
+- It is dominated by talking, interviews, or static scenes with no physical actions.
+- Events within it are too short or abstract to decompose into micro-actions.
+- Visual detail is insufficient (distant shot, blurry, occluded).
+Set `l3_feasible=true` if the phase has clear, observable physical actions or state changes at 2fps.
 
 ### VISUAL SIGNAL REFERENCE
 - Scene/Space: Background/layout/location change, character entry/exit.
@@ -1722,11 +1725,6 @@ Consider:
   }},
   "summary": "<one sentence summarizing the video>",
   "global_phase_criterion": "<one sentence: why split into these phases>",
-  "l3_feasibility": {{
-    "suitable": true,
-    "reason": "<1 sentence: why L3 micro-action annotation is/isn't feasible>",
-    "estimated_l3_actions": 8
-  }},
   "macro_phases": [
     {{
       "phase_id": 1,
@@ -1735,6 +1733,8 @@ Consider:
       "phase_name": "<5-15 word descriptive phrase>",
       "narrative_summary": "<2-3 sentences>",
       "event_split_criterion": "<one sentence: why this phase has/lacks events>",
+      "l3_feasible": true,
+      "l3_reason": "<1 sentence: why this phase does/doesn't support L3 micro-action annotation>",
       "events": [
         {{
           "event_id": 1,
