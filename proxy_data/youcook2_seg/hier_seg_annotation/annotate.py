@@ -109,6 +109,7 @@ from archetypes import (
     get_l3_parent_type,
     get_l2l3_first_prompt,
     get_l1_aggregation_prompt,
+    get_scene_first_prompt,
 )
 
 
@@ -227,6 +228,35 @@ def load_scene_boundaries(frame_dir: Path) -> list[int]:
         return [int(i) for i in indices if isinstance(i, (int, float))]
     except Exception:
         return []
+
+
+def load_scenes_as_segments(frame_dir: Path, clip_duration: float) -> list[dict]:
+    """Convert scenes.json boundary data into ordered scene segment dicts.
+
+    Returns [{scene_id, start_time, end_time}] (start/end in whole seconds).
+    Falls back to a single full-clip segment when scenes.json is absent or empty.
+    """
+    scenes_path = frame_dir / "scenes.json"
+    if not scenes_path.exists():
+        return [{"scene_id": 1, "start_time": 0, "end_time": int(clip_duration)}]
+    try:
+        with open(scenes_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return [{"scene_id": 1, "start_time": 0, "end_time": int(clip_duration)}]
+
+    boundaries = data.get("boundary_timestamps_sec", [])
+    segment_starts = [0.0] + list(boundaries)
+    segment_ends = list(boundaries) + [clip_duration]
+
+    segments: list[dict] = []
+    for i, (st, et) in enumerate(zip(segment_starts, segment_ends), 1):
+        st_int = int(round(st))
+        et_int = min(int(round(et)), int(clip_duration))
+        if et_int > st_int:
+            segments.append({"scene_id": i, "start_time": st_int, "end_time": et_int})
+
+    return segments or [{"scene_id": 1, "start_time": 0, "end_time": int(clip_duration)}]
 
 
 def count_extracted_frames(frame_dir: Path) -> int:
@@ -1103,6 +1133,375 @@ def _annotate_l1_aggregation(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Scene-First Pipeline (v9): scene-anchored merge → caption → inline L3
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _split_scene_first_response(
+    parsed: dict,
+    scenes: list[dict],
+    n_sampled_frames: int,
+    resize_max_width: int,
+    jpeg_quality: int,
+    clip_duration: float,
+    fps: float = 2.0,
+) -> dict[str, Any]:
+    """Parse and validate the scene_first VLM response.
+
+    Key differences from _split_l2_first_response:
+    - Events reference scene_ids instead of raw timestamps.
+    - start_time / end_time are computed from the scenes lookup table.
+    - merge_reason is validated and required for multi-scene events.
+    - scene_ids must partition all input scenes without overlap.
+    """
+    # ── Classification fields (identical to _split_l2_first_response) ────────
+    summary = parsed.get("summary", "")
+    global_phase_criterion = parsed.get("global_phase_criterion", "")
+
+    archetype = parsed.get("paradigm", "tutorial")
+    if archetype not in PARADIGM_IDS:
+        archetype = "tutorial"
+
+    archetype_confidence = parsed.get("paradigm_confidence")
+    if not isinstance(archetype_confidence, (int, float)):
+        archetype_confidence = 0.5
+    archetype_confidence = max(0.0, min(1.0, float(archetype_confidence)))
+
+    archetype_reason = str(parsed.get("paradigm_reason", ""))
+
+    domain_l2 = parsed.get("domain_l2", "other")
+    if domain_l2 not in DOMAIN_L2_ALL:
+        domain_l2 = "other"
+
+    topology_type = PARADIGM_TO_TOPOLOGY.get(archetype, "procedural")
+    video_caption = str(parsed.get("video_caption", ""))
+
+    raw_feas = parsed.get("feasibility", {})
+    if not isinstance(raw_feas, dict):
+        raw_feas = {}
+    feas_score = raw_feas.get("score")
+    if not isinstance(feas_score, (int, float)):
+        feas_score = 0.5
+    feas_score = max(0.0, min(1.0, float(feas_score)))
+    feas_skip = bool(raw_feas.get("skip", False))
+    feas_skip_reason = raw_feas.get("skip_reason")
+    valid_skip_reasons = {"talk_dominant", "ambient_static", "low_visual_dynamics", "too_short", "low_feasibility"}
+    if feas_skip_reason not in valid_skip_reasons:
+        feas_skip_reason = None
+    est_events = raw_feas.get("estimated_n_events", 0)
+    visual_dynamics = raw_feas.get("visual_dynamics", "medium")
+    if visual_dynamics not in {"high", "medium", "low"}:
+        visual_dynamics = "medium"
+
+    if visual_dynamics == "low" and est_events < 2 and not feas_skip:
+        feas_skip = True
+        feas_skip_reason = "low_visual_dynamics"
+    if feas_score < 0.4 and not feas_skip:
+        feas_skip = True
+        feas_skip_reason = "low_feasibility"
+
+    feasibility = {
+        "score": feas_score,
+        "skip": feas_skip,
+        "skip_reason": feas_skip_reason,
+        "estimated_n_phases": 0,
+        "estimated_n_events": int(est_events) if isinstance(est_events, (int, float)) else 0,
+        "visual_dynamics": visual_dynamics,
+    }
+
+    raw_meta = parsed.get("video_metadata", {})
+    if not isinstance(raw_meta, dict):
+        raw_meta = {}
+    camera_style = raw_meta.get("camera_style", "unknown")
+    if camera_style not in {"static_tripod", "handheld", "multi_angle", "first_person"}:
+        camera_style = "unknown"
+    editing_style = raw_meta.get("editing_style", "unknown")
+    if editing_style not in {"continuous", "jump_cut", "montage", "mixed"}:
+        editing_style = "unknown"
+    video_metadata = {
+        "has_text_overlay": bool(raw_meta.get("has_text_overlay", False)),
+        "has_narration": bool(raw_meta.get("has_narration", False)),
+        "camera_style": camera_style,
+        "editing_style": editing_style,
+    }
+
+    # ── Build scenes lookup ──────────────────────────────────────────────────
+    scenes_by_id: dict[int, dict] = {s["scene_id"]: s for s in scenes}
+    all_scene_ids: set[int] = set(scenes_by_id.keys())
+    n_scenes = len(scenes)
+
+    # ── Validate and convert events ──────────────────────────────────────────
+    raw_events = parsed.get("events", [])
+    if not isinstance(raw_events, list):
+        raw_events = []
+
+    covered_scene_ids: set[int] = set()
+    valid_events: list[dict] = []
+
+    for ev in raw_events:
+        if not isinstance(ev, dict):
+            continue
+
+        split_reason = ev.get("split_reason")
+        is_split = bool(split_reason and str(split_reason).strip())
+
+        # Validate scene_ids
+        raw_sids = ev.get("scene_ids", [])
+        if not isinstance(raw_sids, list) or not raw_sids:
+            print(f"    WARN: event dropped — missing or empty scene_ids", flush=True)
+            continue
+        valid_sids = sorted({int(s) for s in raw_sids if isinstance(s, (int, float)) and int(s) in scenes_by_id})
+        if not valid_sids:
+            print(f"    WARN: event dropped — scene_ids {raw_sids} not in known scenes", flush=True)
+            continue
+
+        # Mark scenes as covered (for coverage check)
+        covered_scene_ids.update(valid_sids)
+
+        if is_split:
+            # SPLIT: model provides explicit timestamps; validate within parent scene bounds
+            if len(valid_sids) != 1:
+                print(f"    WARN: split event has {len(valid_sids)} scene_ids; using first", flush=True)
+                valid_sids = [valid_sids[0]]
+            parent_scene = scenes_by_id[valid_sids[0]]
+            ev_start_raw = ev.get("start_time")
+            ev_end_raw = ev.get("end_time")
+            if not (isinstance(ev_start_raw, (int, float)) and isinstance(ev_end_raw, (int, float))
+                    and ev_start_raw < ev_end_raw):
+                print(f"    WARN: split event in scene {valid_sids[0]} has invalid timestamps "
+                      f"({ev_start_raw}-{ev_end_raw}) — clamping to scene boundaries", flush=True)
+                ev_start = parent_scene["start_time"]
+                ev_end = parent_scene["end_time"]
+            else:
+                ev_start = max(int(round(ev_start_raw)), parent_scene["start_time"])
+                ev_end = min(int(round(ev_end_raw)), parent_scene["end_time"])
+            merge_reason = None
+        else:
+            # KEEP / MERGE: timestamps derived from scene boundaries
+            # Check consecutiveness for MERGE (warn but don't drop)
+            if len(valid_sids) > 1:
+                expected = list(range(valid_sids[0], valid_sids[-1] + 1))
+                if valid_sids != expected:
+                    print(f"    WARN: scene_ids {valid_sids} are not consecutive for merge — keeping anyway",
+                          flush=True)
+            ev_start = min(scenes_by_id[sid]["start_time"] for sid in valid_sids)
+            ev_end = max(scenes_by_id[sid]["end_time"] for sid in valid_sids)
+
+            # merge_reason validation
+            merge_reason = ev.get("merge_reason")
+            if len(valid_sids) > 1:
+                if not merge_reason or not str(merge_reason).strip():
+                    merge_reason = f"Merged scenes {valid_sids} (no explicit reason provided)"
+                    print(f"    WARN: merge event covers {valid_sids} but merge_reason is empty", flush=True)
+                else:
+                    merge_reason = str(merge_reason).strip()
+            else:
+                merge_reason = None
+
+        ev_end = min(ev_end, int(clip_duration))
+        if ev_end <= ev_start:
+            print(f"    WARN: event dropped — zero/negative duration after clamping "
+                  f"(scene_ids={valid_sids}, {ev_start}-{ev_end})", flush=True)
+            continue
+
+        # Per-event L3 feasibility
+        l3_feasible = bool(ev.get("l3_feasible", True))
+        if ev_end - ev_start < 10:
+            l3_feasible = False
+        _text = (str(ev.get("instruction", "")) + " " + str(ev.get("dense_caption", ""))).lower()
+        _talk_kw = ("speak", "talk", "explain", "narrat", "interview", "convers", "describ", "discuss",
+                     "announc", "comment", "address the camera", "to the camera", "voiceover")
+        if any(kw in _text for kw in _talk_kw):
+            l3_feasible = False
+            if not ev.get("l3_reason"):
+                ev["l3_reason"] = "talk/narration dominant"
+
+        # key_frame_indices
+        raw_kf = ev.get("key_frame_indices", [])
+        valid_kf: list[int] = []
+        if isinstance(raw_kf, list):
+            for idx in raw_kf:
+                if isinstance(idx, (int, float)) and 1 <= int(idx) <= n_sampled_frames:
+                    valid_kf.append(int(idx))
+        if not valid_kf:
+            mid_sec = (ev_start + ev_end) / 2
+            mid_frame = max(1, min(n_sampled_frames, round(mid_sec * fps) + 1))
+            valid_kf = [mid_frame]
+
+        valid_events.append({
+            "start_time": ev_start,
+            "end_time": ev_end,
+            "scene_ids": valid_sids,
+            "merge_reason": merge_reason,
+            "split_reason": str(split_reason).strip() if is_split else None,
+            "instruction": str(ev.get("instruction", "")),
+            "dense_caption": str(ev.get("dense_caption", "")),
+            "visual_keywords": ev.get("visual_keywords", []) if isinstance(ev.get("visual_keywords"), list) else [],
+            "key_frame_indices": valid_kf[:2],
+            "l3_feasible": l3_feasible,
+            "l3_reason": str(ev.get("l3_reason", "")),
+            "_raw_sub_actions": ev.get("sub_actions", []),
+        })
+
+    # ── Synthesize fallback events for uncovered scenes ───────────────────────
+    uncovered = sorted(all_scene_ids - covered_scene_ids)
+    if uncovered:
+        print(f"    WARN: {len(uncovered)} scene(s) not covered by VLM events — "
+              f"creating single-scene fallback events for: {uncovered}", flush=True)
+        for sid in uncovered:
+            sc = scenes_by_id[sid]
+            mid_sec = (sc["start_time"] + sc["end_time"]) / 2
+            mid_frame = max(1, min(n_sampled_frames, round(mid_sec * fps) + 1))
+            valid_events.append({
+                "start_time": sc["start_time"],
+                "end_time": sc["end_time"],
+                "scene_ids": [sid],
+                "merge_reason": None,
+                "split_reason": None,
+                "instruction": f"Scene {sid}: visual content (fallback — VLM did not annotate this scene)",
+                "dense_caption": "",
+                "visual_keywords": [],
+                "key_frame_indices": [mid_frame],
+                "l3_feasible": False,
+                "l3_reason": "fallback — scene not covered by VLM",
+                "_raw_sub_actions": [],
+            })
+
+    # Sort by start_time and number events
+    valid_events.sort(key=lambda e: (e["start_time"], e["end_time"]))
+    for i, ev in enumerate(valid_events, 1):
+        ev["event_id"] = i
+
+    # ── Extract L3 sub-actions ────────────────────────────────────────────────
+    all_l3_results: list[dict] = []
+    for ev in valid_events:
+        raw_subs = ev.pop("_raw_sub_actions", [])
+        if not raw_subs or not ev["l3_feasible"]:
+            continue
+        valid_subs = _validate_sub_actions(raw_subs, ev["start_time"], ev["end_time"], ev["event_id"])
+        if valid_subs:
+            all_l3_results.append({
+                "event_id": ev["event_id"],
+                "parent_phase_id": None,
+                "sub_actions": valid_subs,
+            })
+
+    return {
+        "_stage1_events": valid_events,
+        "_l3_results": all_l3_results,
+        "summary": summary,
+        "global_phase_criterion": global_phase_criterion,
+        "archetype": archetype,
+        "archetype_confidence": archetype_confidence,
+        "archetype_reason": archetype_reason,
+        "domain_l2": domain_l2,
+        "domain_l1": resolve_domain_l1(domain_l2),
+        "topology_type": topology_type,
+        "video_caption": video_caption,
+        "feasibility": feasibility,
+        "video_metadata": video_metadata,
+        "_sampling": {
+            "n_sampled_frames": n_sampled_frames,
+            "resize_max_width": resize_max_width,
+            "jpeg_quality": jpeg_quality,
+            "fps": fps,
+            "n_input_scenes": n_scenes,
+        },
+    }
+
+
+def _annotate_scene_first(
+    frame_dir: Path,
+    clip_duration: float,
+    api_base: str, api_key: str, model: str,
+    max_frames: int, resize_max_width: int, jpeg_quality: int,
+    fps: float = 2.0,
+) -> dict[str, Any]:
+    """Stage 1 of scene-first pipeline: merge scenes → caption events → inline L3.
+
+    Uses pre-detected scenes as hard anchors. The model decides which adjacent
+    scenes to merge, writes captions, and annotates L3 sub-actions.
+    Event timestamps are derived from scene_ids, not from VLM output.
+    """
+    all_frames = get_all_frame_files(frame_dir)
+    if not all_frames:
+        raise RuntimeError(f"no frames found in {frame_dir}")
+
+    sampled = sample_uniform(all_frames, max_frames)
+    frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
+
+    with Image.open(sampled[0]) as _img:
+        orig_w, orig_h = _img.size
+    avg_b64_len = sum(len(b) for b in frame_b64) // max(len(frame_b64), 1)
+    avg_jpeg_kb = avg_b64_len * 3 // 4 // 1024
+    print(f"  [scene-first] frames: {len(sampled)}/{len(all_frames)} orig={orig_w}x{orig_h} "
+          f"resize_max={resize_max_width} q={jpeg_quality} avg_jpeg={avg_jpeg_kb}KB fps={fps}", flush=True)
+
+    # Too short → skip
+    if clip_duration < 15:
+        return {
+            "_stage1_events": [], "_l3_results": [],
+            "summary": "", "global_phase_criterion": "",
+            "archetype": "tutorial", "archetype_confidence": 0.0,
+            "archetype_reason": "too short for annotation",
+            "domain_l2": "other", "domain_l1": "other", "topology_type": "procedural",
+            "video_caption": "",
+            "feasibility": {
+                "score": 0.0, "skip": True, "skip_reason": "too_short",
+                "estimated_n_phases": 0, "estimated_n_events": 0, "visual_dynamics": "low",
+            },
+            "video_metadata": {
+                "has_text_overlay": False, "has_narration": False,
+                "camera_style": "unknown", "editing_style": "unknown",
+            },
+            "_sampling": {
+                "n_sampled_frames": len(sampled), "resize_max_width": resize_max_width,
+                "jpeg_quality": jpeg_quality, "fps": fps, "n_input_scenes": 0,
+            },
+        }
+
+    # Load scenes (hard anchors)
+    scenes = load_scenes_as_segments(frame_dir, clip_duration)
+    n_scenes = len(scenes)
+    print(f"  [scene-first] input scenes: {n_scenes}", flush=True)
+
+    # Mark [SCENE BREAK] frames (same logic as l2l3_first)
+    scene_boundaries_raw = load_scene_boundaries(frame_dir)
+    sampled_indices = [frame_stem_to_index(fp, 0) for fp in sampled]
+    scene_boundary_set: set[int] = set()
+    for b_idx in scene_boundaries_raw:
+        if sampled_indices:
+            nearest = min(sampled_indices, key=lambda s, b=b_idx: abs(s - b))
+            if abs(nearest - b_idx) <= 1:
+                scene_boundary_set.add(nearest)
+
+    frame_labels = []
+    for fp in sampled:
+        idx = frame_stem_to_index(fp, 0)
+        ts_label = f"[Timestamp {format_mmss(frame_index_to_sec(idx, fps=fps))} | Frame {idx}]"
+        if idx in scene_boundary_set:
+            ts_label = f"[SCENE BREAK] {ts_label}"
+        frame_labels.append(ts_label)
+
+    import json as _json
+    scenes_json_str = _json.dumps(scenes, ensure_ascii=False)
+
+    prompt_text = get_scene_first_prompt(
+        n_frames=len(sampled),
+        duration_sec=int(clip_duration),
+        n_scenes=n_scenes,
+        scenes_json_str=scenes_json_str,
+    )
+
+    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+    if parsed is None:
+        raise RuntimeError("scene-first JSON parse failed after retry")
+
+    return _split_scene_first_response(
+        parsed, scenes, len(sampled), resize_max_width, jpeg_quality, clip_duration, fps=fps,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Per-clip annotation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1145,9 +1544,9 @@ def annotate_clip(
             existing = {}
 
     # Skip if the requested level is already done and not overwriting
-    if level in ("merged", "l2l3_first"):
+    if level in ("merged", "l2l3_first", "scene_first"):
         if not overwrite and existing.get("level1") is not None and existing.get("level2") is not None:
-            if level != "l2l3_first" or existing.get("level3") is not None:
+            if level not in ("l2l3_first", "scene_first") or existing.get("level3") is not None:
                 return {"clip_key": key, "ok": True, "error": None, "skipped": True}
 
     # Load frames metadata
@@ -1201,6 +1600,76 @@ def annotate_clip(
                     "level2": {"events": []},
                     "level3": {"micro_type": "sub_action", "grounding_results": []},
                     "l3_feasibility": {"suitable": False, "reason": "no events", "estimated_l3_actions": 0},
+                }
+                for k in ("summary", "global_phase_criterion", "archetype",
+                           "archetype_confidence", "archetype_reason",
+                           "domain_l2", "domain_l1", "topology_type",
+                           "video_caption", "feasibility", "video_metadata"):
+                    merged_result[k] = stage1_result.get(k, "")
+
+            n_phases = len(merged_result.get("level1", {}).get("macro_phases", []))
+            n_final_events = len(merged_result.get("level2", {}).get("events", []))
+            n_l3_final = len(merged_result.get("level3", {}).get("grounding_results", []))
+            print(f"  [{key}] L1-agg: {n_phases} phases, {n_final_events} events, {n_l3_final} L3 events",
+                  flush=True)
+
+        elif level == "scene_first":
+            # ── Scene-anchored bottom-up: Stage 1 (merge+caption+L3) + Stage 2 (L1 agg) ──
+            fps = float(frame_meta.get("fps") or 2.0)
+            stage1_result = _annotate_scene_first(
+                frame_dir, clip_duration,
+                api_base, api_key, model,
+                max_frames_per_call, resize_max_width, jpeg_quality,
+                fps=fps,
+            )
+            n_events = len(stage1_result.get("_stage1_events", []))
+            n_l3 = len(stage1_result.get("_l3_results", []))
+            n_merged = sum(
+                1 for ev in stage1_result.get("_stage1_events", [])
+                if len(ev.get("scene_ids", [])) > 1
+            )
+            n_split = sum(
+                1 for ev in stage1_result.get("_stage1_events", [])
+                if ev.get("split_reason")
+            )
+            n_scenes_in = stage1_result.get("_sampling", {}).get("n_input_scenes", 0)
+            print(f"  [{key}] scene-first: {n_scenes_in} scenes → {n_events} events "
+                  f"({n_merged} merged, {n_split} splits), {n_l3} with L3, "
+                  f"paradigm={stage1_result.get('archetype')} "
+                  f"domain={stage1_result.get('domain_l2')}"
+                  f"{' SKIP' if stage1_result.get('feasibility', {}).get('skip') else ''}",
+                  flush=True)
+
+            if stage1_result.get("_stage1_events"):
+                merged_result = _annotate_l1_aggregation(
+                    frame_dir, clip_duration, stage1_result,
+                    api_base, api_key, model,
+                    resize_max_width, jpeg_quality,
+                    fps=fps,
+                )
+                merged_result["level3"] = _build_level3_from_stage1(
+                    stage1_result, merged_result.get("level2", {}).get("events", []),
+                )
+                # Carry scene-level metadata into the annotation output
+                merged_result["scene_first_stats"] = {
+                    "n_input_scenes": n_scenes_in,
+                    "n_events": n_events,
+                    "n_merged_events": n_merged,
+                    "n_split_events": n_split,
+                    "n_single_scene_events": n_events - n_merged - n_split,
+                }
+            else:
+                merged_result = {
+                    "level1": {"macro_phases": [], "_sampling": stage1_result.get("_sampling", {})},
+                    "level2": {"events": []},
+                    "level3": {"micro_type": "sub_action", "grounding_results": []},
+                    "l3_feasibility": {"suitable": False, "reason": "no events", "estimated_l3_actions": 0},
+                    "scene_first_stats": {
+                        "n_input_scenes": n_scenes_in,
+                        "n_events": 0,
+                        "n_merged_events": 0,
+                        "n_single_scene_events": 0,
+                    },
                 }
                 for k in ("summary", "global_phase_criterion", "archetype",
                            "archetype_confidence", "archetype_reason",
@@ -1270,8 +1739,8 @@ def annotate_clip(
         "level3": None,
         **existing,
     }
-    if level in ("merged", "l2l3_first"):
-        ann.update(merged_result)  # overwrites level1, level2, (level3 for l2l3_first), archetype, domain_l2, summary
+    if level in ("merged", "l2l3_first", "scene_first"):
+        ann.update(merged_result)  # overwrites level1, level2, (level3 for l2l3_first/scene_first), archetype, domain_l2, summary
     ann["annotated_at"] = datetime.now(timezone.utc).isoformat()
 
     with open(out_file, "w", encoding="utf-8") as f:
@@ -1579,8 +2048,8 @@ def main() -> None:
                         help="Directory to write per-clip annotation JSON files")
     parser.add_argument("--l3-frames-dir", default=None,
                         help="High-FPS frames directory for L3 (falls back to --frames-dir)")
-    parser.add_argument("--level", type=str, choices=["merged", "l2l3_first"], default="l2l3_first",
-                        help="Annotation level (merged=top-down L1+L2, l2l3_first=bottom-up L2+L3→L1)")
+    parser.add_argument("--level", type=str, choices=["merged", "l2l3_first", "scene_first"], default="l2l3_first",
+                        help="Annotation level (merged=top-down L1+L2, l2l3_first=bottom-up L2+L3→L1, scene_first=scene-anchored merge→L1)")
     parser.add_argument("--classify-frames", type=int, default=64,
                         help="Number of frames for Step 0 archetype classification")
     parser.add_argument("--api-base", default="https://api.novita.ai/v3/openai",

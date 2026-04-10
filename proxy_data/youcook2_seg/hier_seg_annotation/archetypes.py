@@ -1963,3 +1963,289 @@ def get_l2l3_first_prompt(n_frames: int, duration_sec: int) -> str:
         domain_l2_list=_format_domain_l2_for_prompt(),
         paradigm_l2l3_table=_format_paradigm_l2l3_table(),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scene-First Prompt (v9: scene boundaries as hard anchors → merge → caption)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCENE_FIRST_PROMPT = """\
+You are given a {duration}s video clip with {n_frames} frames sampled at 2fps.
+
+An automatic shot detector has pre-segmented this clip into {n_scenes} scene(s). \
+These scenes are useful anchors — but not infallible. \
+Frames labeled [SCENE BREAK] mark where each detected scene starts.
+
+Pre-detected input scenes (start/end in whole seconds):
+```json
+{scenes_json}
+```
+
+Your task has THREE parts:
+1. **CLASSIFY** the video (paradigm, domain, feasibility, caption, metadata)
+2. **RESTRUCTURE + CAPTION + L3**: Merge adjacent scenes and/or split long scenes into \
+well-formed events, then caption each event and annotate L3 sub-actions
+3. **AGGREGATION HINTS**: one-sentence summary + phase grouping criterion
+
+════════════════════════════════════════════════
+## PART 1 — CLASSIFY
+════════════════════════════════════════════════
+
+### 1A. PARADIGM (temporal structure)
+
+Classify into exactly ONE paradigm based on the video's dominant temporal structure:
+
+{paradigm_table}
+
+If the video does NOT fit any paradigm above:
+- **Talk-dominant** (people in conversation, minimal physical action): set feasibility.skip=true, \
+skip_reason="talk_dominant"
+- **Ambient/static** (no identifiable subject, no sequential progression): set feasibility.skip=true, \
+skip_reason="ambient_static"
+
+### 1B. DOMAIN (content topic — orthogonal to paradigm)
+
+Choose domain_l2 from:
+{domain_l2_list}
+If none fits, use domain_l2="other".
+
+### 1C. FEASIBILITY
+
+Assess whether this video supports hierarchical temporal annotation.
+- **Skip** if: people only talking with no visual action changes; ambient/static footage; \
+screen recordings of static content.
+- **Annotate** if: visually distinct activities, location/scene changes, or progressive actions — \
+even if the video also contains talking.
+
+### 1D. VIDEO CAPTION
+
+Write a detailed description of the entire video (3-5 sentences). \
+Cover: setting/environment, main subjects, key objects, overall progression, and outcome. \
+Every statement must be grounded in what is visible in the frames.
+
+════════════════════════════════════════════════
+## PART 2 — RESTRUCTURE + CAPTION + L3
+════════════════════════════════════════════════
+
+**If feasibility.skip=true**, output `"events": []` and skip annotation entirely.
+
+### 2A. THREE OPERATIONS ON SCENES
+
+Use these three operations to turn the {n_scenes} input scenes into well-formed events:
+
+────────────────────────────────────────────
+**OPERATION 1: KEEP** (default — one scene = one event)
+- `scene_ids: [k]`, `merge_reason: null`, `split_reason: null`
+- start_time / end_time = scene k's known boundaries (from the scenes list above)
+────────────────────────────────────────────
+**OPERATION 2: MERGE** (combine consecutive scenes into one event)
+- `scene_ids: [k, k+1, ...]`, provide `merge_reason`
+- start_time = first scene's start_time; end_time = last scene's end_time
+
+**When to MERGE**: The single question to ask is:
+  "Is this the SAME ongoing activity seen from a different angle or framing?"
+  ✓ Wide shot → close-up of the SAME person doing the SAME thing → MERGE
+  ✓ Two consecutive shots of the same cooking/exercise/craft step from different angles → MERGE
+  ✓ Camera panned from left to right within the same scene, same activity → MERGE
+  ✗ Cut to a clearly different location → keep SEPARATE
+  ✗ A different person/subject becomes the focus → keep SEPARATE
+  ✗ A new step, sub-task, or activity starts (e.g., prep ends → cooking begins) → keep SEPARATE
+  ✗ Title card, transition shot, or establishing shot between activities → keep SEPARATE
+
+**merge_reason**: 1-2 sentences of concrete visual evidence. Be specific:
+  - GOOD: "Wide shot and close-up both show the same person kneading dough — only the framing changed, the kneading motion is continuous."
+  - GOOD: "Scenes 4-5 show the same person selecting weights at the same rack from two angles."
+  - BAD: "Same location." / "They look similar." (too vague)
+────────────────────────────────────────────
+**OPERATION 3: SPLIT** (break a long scene into sub-events)
+- `scene_ids: [k]`, provide `split_reason`, explicit `start_time` and `end_time`
+- Multiple events can share `scene_ids: [k]` — they are all sub-segments of scene k
+- Timestamps must be within scene k's time range (from the scenes list above)
+
+**When to SPLIT**: A single detected scene spans multiple distinct activities that the \
+detector missed (e.g., a 45s scene where a person first chops vegetables then moves to the stove).
+- Minimum sub-event duration: 5 seconds
+- split_reason: 1 sentence explaining what distinct activities were found in the scene
+────────────────────────────────────────────
+
+**COVERAGE RULE**: The union of scene_ids across all events must cover every scene ID \
+from 1 to {n_scenes} at least once. No scene may be left uncovered.
+
+### 2B. EVENT CAPTION
+
+For each event, write:
+- `instruction`: 8-20 words. WHAT happens WITH WHICH objects. Observable visual action, not intent.
+- `dense_caption`: 2-4 sentences. Dense video captioning style: describe visible actions, \
+objects, spatial relations, and state changes in detail.
+- `visual_keywords`: 3-6 keyword tags reflecting the main visual elements.
+- `key_frame_indices`: 1-2 frame indices (integers in [1, {n_frames}]) best representing \
+the event's core visual content. Choose frames near the temporal midpoint.
+- `l3_feasible`: true if atomic sub-actions can be identified; false only for static or \
+very short events (< 3 seconds) with no observable action.
+- `l3_reason`: one sentence explaining the l3_feasible judgment.
+
+Per-paradigm L2+L3 captioning guidance:
+{paradigm_l2l3_table}
+
+### 2C. L3 SUB-ACTIONS (per event)
+
+For each event with `l3_feasible=true`, annotate atomic micro-actions as `sub_actions`. \
+Each sub-action is one continuous atomic visible action lasting 2-6 seconds.
+
+**L3 Rules**:
+- Timestamps are absolute integer seconds from the full video timeline.
+- Sub-actions must fall within the parent event's [start_time, end_time].
+- Allow gaps between sub-actions — do NOT force full temporal coverage.
+- For events with `l3_feasible=false`, output `"sub_actions": []`.
+
+**TEXT GENERATION RULES** (applies to all captions):
+Pretend you have NEVER seen this video before and know NOTHING about it. \
+Describe ONLY what is visually observable. You cannot hear audio.
+- `instruction`: 8-20 words, visual action phrase.
+- `dense_caption`: 2-4 sentences, detailed visual description.
+- `sub_action`: 5-15 word action phrase.
+- `caption`: 1-2 sentences, detailed visual description of the atomic action.
+- FORBIDDEN words: "explains", "discusses", "describes", "talks about", "shows how to".
+- NO proper names — use descriptive labels ("a person", "the host", "a man in red shirt").
+
+════════════════════════════════════════════════
+## PART 3 — AGGREGATION HINTS
+════════════════════════════════════════════════
+
+Provide a one-sentence video summary and a one-sentence principle for how events could be \
+grouped into higher-level thematic phases (for downstream L1 aggregation).
+
+════════════════════════════════════════════════
+## OUTPUT JSON
+════════════════════════════════════════════════
+
+{{
+  "paradigm": "<one of: {paradigm_ids}>",
+  "paradigm_confidence": 0.85,
+  "paradigm_reason": "<one sentence explaining the paradigm decision>",
+  "domain_l2": "<one of the domain_l2 categories above, or 'other'>",
+  "video_caption": "<3-5 sentences describing the entire video>",
+  "feasibility": {{
+    "score": 0.85,
+    "skip": false,
+    "skip_reason": null,
+    "estimated_n_events": 6,
+    "visual_dynamics": "high"
+  }},
+  "video_metadata": {{
+    "has_text_overlay": false,
+    "has_narration": true,
+    "camera_style": "<static_tripod | handheld | multi_angle | first_person>",
+    "editing_style": "<continuous | jump_cut | montage | mixed>"
+  }},
+  "summary": "<one sentence: overall video summary>",
+  "global_phase_criterion": "<one sentence: principle for grouping events into thematic phases>",
+  "events": [
+    {{
+      "event_id": 1,
+      "scene_ids": [1],
+      "merge_reason": null,
+      "split_reason": null,
+      "start_time": 0,
+      "end_time": 12,
+      "instruction": "<8-20 words: WHAT happens WITH WHICH objects>",
+      "dense_caption": "<2-4 sentences: detailed visual description>",
+      "visual_keywords": ["kw1", "kw2", "kw3"],
+      "key_frame_indices": [5, 10],
+      "l3_feasible": true,
+      "l3_reason": "<1 sentence>",
+      "sub_actions": [
+        {{
+          "action_id": 1,
+          "start_time": 2,
+          "end_time": 7,
+          "sub_action": "<5-15 word action phrase>",
+          "caption": "<1-2 sentences: detailed visual description>",
+          "pre_state": "<visual state before, or null>",
+          "post_state": "<visual state after, or null>"
+        }}
+      ]
+    }},
+    {{
+      "event_id": 2,
+      "scene_ids": [2, 3],
+      "merge_reason": "Wide shot and close-up both show the same person chopping vegetables on the same board — only framing changed, the chopping is continuous.",
+      "split_reason": null,
+      "start_time": 12,
+      "end_time": 35,
+      "instruction": "<8-20 words>",
+      "dense_caption": "<2-4 sentences>",
+      "visual_keywords": ["kw1"],
+      "key_frame_indices": [20],
+      "l3_feasible": true,
+      "l3_reason": "Multiple hand motions visible.",
+      "sub_actions": []
+    }},
+    {{
+      "event_id": 3,
+      "scene_ids": [4],
+      "merge_reason": null,
+      "split_reason": "Scene 4 spans two distinct activities: chopping ends at 50s and stirring begins.",
+      "start_time": 35,
+      "end_time": 50,
+      "instruction": "<first activity in scene 4>",
+      "dense_caption": "<2-4 sentences>",
+      "visual_keywords": [],
+      "key_frame_indices": [40],
+      "l3_feasible": true,
+      "l3_reason": "",
+      "sub_actions": []
+    }},
+    {{
+      "event_id": 4,
+      "scene_ids": [4],
+      "merge_reason": null,
+      "split_reason": "Scene 4 spans two distinct activities: chopping ends at 50s and stirring begins.",
+      "start_time": 50,
+      "end_time": 65,
+      "instruction": "<second activity in scene 4>",
+      "dense_caption": "<2-4 sentences>",
+      "visual_keywords": [],
+      "key_frame_indices": [55],
+      "l3_feasible": true,
+      "l3_reason": "",
+      "sub_actions": []
+    }}
+  ]
+}}
+
+════════════════════════════════════════════════
+## VALIDATION RULES
+════════════════════════════════════════════════
+
+1. Output strictly valid JSON. No markdown code blocks.
+2. If feasibility.skip=true, output `"events": []`.
+3. scene_ids coverage: the union of scene_ids across all events must include every ID in [1..{n_scenes}].
+4. MERGE: scene_ids must be consecutive [k, k+1, ..., k+m]; merge_reason required.
+5. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
+6. All timestamps: absolute integer seconds in [0, {duration}].
+7. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
+8. L3 sub_actions: 2-6 seconds each; within parent event's [start_time, end_time]."""
+
+def get_scene_first_prompt(
+    n_frames: int,
+    duration_sec: int,
+    n_scenes: int,
+    scenes_json_str: str,
+) -> str:
+    """Build the scene-first prompt (v9 Stage 1: scene-anchored merge → caption → L3).
+
+    The model receives pre-detected scenes as hard anchors and decides which adjacent
+    scenes to merge into events, then captions each event with inline L3 sub-actions.
+    Event timestamps are NOT output by the model — they are derived from scene_ids.
+    """
+    return _SCENE_FIRST_PROMPT.format(
+        n_frames=n_frames,
+        duration=duration_sec,
+        n_scenes=n_scenes,
+        scenes_json=scenes_json_str,
+        paradigm_table=_format_paradigm_table_for_prompt(),
+        paradigm_ids=", ".join(sorted(PARADIGM_IDS)),
+        domain_l2_list=_format_domain_l2_for_prompt(),
+        paradigm_l2l3_table=_format_paradigm_l2l3_table(),
+    )

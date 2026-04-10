@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# run_pipeline.sh — Hierarchical annotation pipeline (v7/v8)
+# run_pipeline.sh — Hierarchical annotation pipeline (v7/v8/v9)
 #
 # Steps (l2_first — default bottom-up):
 #   1. Extract 1fps frames
@@ -12,6 +12,14 @@
 #   1. Extract 2fps frames
 #   2. L2+L3 annotation + L1 aggregation (2 VLM calls, no L3 step)
 #
+# Steps (scene_first — 2fps, scene-anchored merge+caption):
+#   1. Extract 2fps frames
+#   1.5. Scene detection (PySceneDetect → hard scene anchors)
+#   2. Merge-decision + event caption + L3 + L1 aggregation
+#      Model task: decide which adjacent scenes to merge (with reason),
+#      then caption each resulting event + annotate L3 sub-actions.
+#      Event timestamps are derived from scene_ids, not free-form.
+#
 # Usage:
 #   tmux new -s anno
 #   bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
@@ -19,6 +27,9 @@
 #
 # Test mode (process only N clips):
 #   LIMIT=5 bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
+#
+# Scene-first mode (v9, scene-anchored):
+#   ANNO_LEVEL=scene_first bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
 #
 # L2L3 mode (2fps, one-shot L2+L3):
 #   ANNO_LEVEL=l2l3_first bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
@@ -42,10 +53,10 @@ JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_in
 MODEL="${MODEL:-pa/gmn-2.5-fls}"
 WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-20}"
-ANNO_LEVEL="${ANNO_LEVEL:-l2_first}"  # "l2l3_first" | "l2_first" (bottom-up) | "merged" (old top-down)
+ANNO_LEVEL="${ANNO_LEVEL:-l2_first}"  # "scene_first" (v9, scene-anchored) | "l2l3_first" | "l2_first" (bottom-up) | "merged" (old top-down)
 
-# FPS: 2fps for l2l3_first, 1fps otherwise
-if [[ "$ANNO_LEVEL" == "l2l3_first" ]]; then
+# FPS: 2fps for l2l3_first and scene_first; 1fps otherwise
+if [[ "$ANNO_LEVEL" == "l2l3_first" || "$ANNO_LEVEL" == "scene_first" ]]; then
     EXTRACT_FPS="${EXTRACT_FPS:-2}"
 else
     EXTRACT_FPS="${EXTRACT_FPS:-1}"
@@ -104,11 +115,12 @@ run_step "S1_EXTRACT_FRAMES" \
         $LIMIT_FLAG
 
 # =====================================================================
-# STEP 1.5: Scene Detection (l2l3_first only — PySceneDetect)
+# STEP 1.5: Scene Detection (l2l3_first and scene_first — PySceneDetect)
 # =====================================================================
-if [[ "$ANNO_LEVEL" == "l2l3_first" ]]; then
+if [[ "$ANNO_LEVEL" == "l2l3_first" || "$ANNO_LEVEL" == "scene_first" ]]; then
     log ""
     log ">>>>>>>>>> STEP 1.5: SCENE DETECTION <<<<<<<<<<"
+    log "    scene_first: scenes are HARD ANCHORS — model merges adjacent scenes with explicit reasons"
 
     SCENE_DETECTOR="${SCENE_DETECTOR:-content}"
     SCENE_THRESHOLD="${SCENE_THRESHOLD:-27.0}"
@@ -138,11 +150,11 @@ run_step "S2_ANNOTATE" \
         $LIMIT_FLAG
 
 # =====================================================================
-# STEP 3 & 4: L3 frames + annotation (skip for l2l3_first — L3 is inline)
+# STEP 3 & 4: L3 frames + annotation (skip for l2l3_first/scene_first — L3 is inline)
 # =====================================================================
-if [[ "$ANNO_LEVEL" == "l2l3_first" ]]; then
+if [[ "$ANNO_LEVEL" == "l2l3_first" || "$ANNO_LEVEL" == "scene_first" ]]; then
     log ""
-    log ">>>>>>>>>> STEPS 3-4 SKIPPED (L3 inline in l2l3_first mode) <<<<<<<<<<"
+    log ">>>>>>>>>> STEPS 3-4 SKIPPED (L3 inline in l2l3_first / scene_first mode) <<<<<<<<<<"
 else
 # =====================================================================
 # STEP 3: Extract L3 frames (leaf-node routing)
