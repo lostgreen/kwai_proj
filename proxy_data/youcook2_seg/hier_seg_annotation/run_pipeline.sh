@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# run_pipeline.sh — Hierarchical annotation pipeline (v6: 2-step)
+# run_pipeline.sh — Hierarchical annotation pipeline (v7: bottom-up)
 #
 # Steps:
 #   1. Extract 1fps frames
-#   2. Classify (64 frames) + Paradigm-driven L1/L2 annotation (all frames)
+#   2. L2-first dense captioning + L1 aggregation (bottom-up)
 #   3. Extract L3 frames (leaf-node routing)
 #   4. L3 annotation
 #
@@ -15,6 +15,9 @@
 #
 # Test mode (process only N clips):
 #   LIMIT=5 bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
+#
+# Old top-down pipeline:
+#   ANNO_LEVEL=merged bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
 #
 # All steps are idempotent: already-completed clips are skipped.
 # Any per-clip crash is caught & logged, pipeline continues.
@@ -32,6 +35,7 @@ JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_in
 MODEL="${MODEL:-pa/gmn-2.5-fls}"
 WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-20}"
+ANNO_LEVEL="${ANNO_LEVEL:-l2_first}"  # "l2_first" (bottom-up) or "merged" (old top-down)
 
 LOG_DIR="${DATA_ROOT}/logs"
 mkdir -p "$LOG_DIR"
@@ -64,11 +68,12 @@ run_step() {
 }
 
 log "========== PIPELINE CONFIG =========="
-log "JSONL:    $JSONL"
-log "MODEL:    $MODEL"
-log "WORKERS:  $WORKERS"
-log "LIMIT:    ${LIMIT:-0 (all)}"
-log "DATA_ROOT: $DATA_ROOT"
+log "JSONL:      $JSONL"
+log "MODEL:      $MODEL"
+log "WORKERS:    $WORKERS"
+log "LIMIT:      ${LIMIT:-0 (all)}"
+log "ANNO_LEVEL: $ANNO_LEVEL"
+log "DATA_ROOT:  $DATA_ROOT"
 
 # =====================================================================
 # STEP 1: Extract 1fps frames
@@ -84,17 +89,17 @@ run_step "S1_EXTRACT_FRAMES" \
         $LIMIT_FLAG
 
 # =====================================================================
-# STEP 2: Classify (64 frames) + Paradigm-driven L1/L2 annotation
+# STEP 2: L2-first annotation + L1 aggregation (or old merged mode)
 # =====================================================================
 log ""
-log ">>>>>>>>>> STEP 2: CLASSIFY + ANNOTATE <<"
+log ">>>>>>>>>> STEP 2: ANNOTATE (${ANNO_LEVEL}) <<<<<<<<<<"
 
-run_step "S2_CLASSIFY_ANNOTATE" \
+run_step "S2_ANNOTATE" \
     python "$SCRIPT_DIR/annotate.py" \
         --jsonl "$JSONL" \
         --frames-dir "$DATA_ROOT/frames" \
         --output-dir "$DATA_ROOT/annotations" \
-        --level merged \
+        --level "$ANNO_LEVEL" \
         --model "$MODEL" --workers "$WORKERS" \
         $LIMIT_FLAG
 

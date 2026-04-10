@@ -2027,3 +2027,291 @@ def get_universal_merged_prompt(n_frames: int, duration_sec: int) -> str:
         domain_l2_list=_format_domain_l2_for_prompt(),
     )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v7  Bottom-Up Pipeline: L2-First Dense Captioning + L1 Aggregation
+# ─────────────────────────────────────────────────────────────────────────────
+
+_L2_FIRST_PROMPT = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+
+Your task has THREE parts:
+1. **CLASSIFY** the video (paradigm, domain, feasibility, caption, metadata)
+2. **ANNOTATE** L2 events (dense video captioning — the primary task)
+3. **PROVIDE** aggregation hints for downstream L1 phase grouping
+
+════════════════════════════════════════════════
+## PART 1 — CLASSIFICATION
+════════════════════════════════════════════════
+
+### 1A. PARADIGM (temporal structure — informational only, does NOT affect annotation)
+
+Classify into exactly ONE paradigm based on the video's dominant temporal structure:
+
+{paradigm_table}
+
+If the video does NOT fit any paradigm:
+- **Talk-dominant** (people in conversation, minimal physical action): \
+set feasibility.skip=true, skip_reason="talk_dominant"
+- **Ambient/static** (no identifiable subject, no progression): \
+set feasibility.skip=true, skip_reason="ambient_static"
+
+### 1B. DOMAIN (content topic)
+
+Choose domain_l2 from this hierarchy (domain_l1 is derived automatically):
+{domain_l2_list}
+If none fits, use domain_l2="other".
+
+### 1C. FEASIBILITY
+
+Assess whether this video supports dense event annotation.
+- **Skip** if: people only talking with no visual action changes; ambient/static footage \
+with no identifiable progression; screen recordings of static content.
+- **Annotate** if: there are visually distinct activities, location/scene changes, \
+or progressive actions — even if the video also contains talking.
+
+### 1D. VIDEO CAPTION
+
+Write a detailed description of the entire video (3-5 sentences).
+Cover: setting/environment, main subjects, key objects, overall progression, and outcome.
+Every statement must be grounded in what is visible in the frames.
+
+════════════════════════════════════════════════
+## PART 2 — L2 DENSE VIDEO CAPTIONING
+════════════════════════════════════════════════
+
+**If feasibility.skip=true**, output `"events": []` and skip annotation.
+
+### L2 — Visual Event (Dense Caption)
+
+**Definition**: A continuous visual segment focused on **one coherent activity, one primary \
+subject, and one consistent scene**. This is the fundamental unit of dense video captioning: \
+each event describes WHAT visually happens during that time span.
+
+**Critical Rule — Intra-Scene vs Inter-Scene Cuts**:
+Scan through the frames in order. When consecutive frames show a DIFFERENT background, \
+location, person, or visual modality, that is an **inter-scene cut** and you MUST start \
+a new event. This is the single most important rule for L2 segmentation.
+
+- **Intra-Scene Cut** (do NOT split): Camera angle, zoom, or focal length change on the \
+SAME subject in the SAME location during the SAME ongoing activity. \
+Example: wide shot of person kneading dough → close-up of hands kneading = ONE event.
+- **Inter-Scene Cut** (MUST split into separate events): Cut to a DIFFERENT location, \
+subject, person, or visual modality. Check the **background** — if it changes, it is \
+inter-scene. \
+Examples: gymnasium → rooftop; host on camera → B-roll footage; Person A interview → \
+Person B interview; kitchen → dining room; instructor on camera → screen recording.
+
+**Rules**:
+- Each event MUST be >= 5 seconds. If a segment between two inter-scene cuts is shorter \
+than 5s, you MUST merge it into the preceding or following event that shares the same \
+scene/location. Never output an event shorter than 5 seconds.
+- Events must not overlap. Gaps between events are expected.
+- `"events": []` is valid if the video has no meaningful sub-structure.
+
+### KEY FRAME SELECTION
+
+For EACH event, select 1-2 frame indices (from the input frames, numbered 1 to {n_frames}) \
+that best represent the event's core visual content. Choose frames that:
+- Show the main action or subject in the clearest view
+- Are near the temporal midpoint of the event (avoid the very first/last frame)
+- If 2 frames: pick one from the first half and one from the second half of the event
+
+### L3 FEASIBILITY (per-event)
+
+For EACH event, assess whether fine-grained micro-action annotation (2-6s atomic actions) \
+is feasible. Be STRICT:
+- Set `l3_feasible=true` ONLY if: the segment contains **clear physical actions** where \
+objects change state (cutting, pouring, assembling, scoring) visible at close enough range \
+to observe at 2fps. The segment must also be >= 10 seconds.
+- Set `l3_feasible=false` if: the segment shows talking/interviews, static scenes, \
+distant shots, walking/standing, talking to camera, or any segment < 10 seconds.
+
+### ANNOTATION WORKFLOW
+
+For best results, follow this order:
+1. **Watch all frames** and identify inter-scene cuts → event boundaries.
+2. **Write descriptions first** (instruction, dense_caption), then assign timestamps. \
+This grounds your timestamps in visual evidence.
+3. **Select key frames** for each event after boundaries are finalized.
+
+### TEXT GENERATION RULES
+
+All text fields MUST describe only what is **visually observable** in the frames:
+- **DO**: Describe actions, objects, body movements, spatial layout, colors, textures, \
+scene changes, camera movement, on-screen text/graphics.
+- **DO NOT**: Use people's names (say "a person", "the host", "a man in a blue shirt"), \
+infer dialogue content, assume narrative context, or describe sounds/music.
+- `instruction`: 8-20 words, objective description of WHAT happens WITH WHICH objects.
+- `dense_caption`: 2-4 sentences. Academic dense video captioning style: describe the \
+visual content in detail — actions, objects, spatial relations, and visible state changes.
+
+### VISUAL SIGNAL REFERENCE
+- **Scene/Space**: Background change, location switch, character entry/exit.
+- **Subject**: Pose transition, gaze shift, speed change, new interaction.
+- **Object**: Appearance/position/quantity change.
+- **Camera/Editing**: Scene cut, focus shift, montage sequence, zoom change.
+
+════════════════════════════════════════════════
+## PART 3 — AGGREGATION HINTS
+════════════════════════════════════════════════
+
+Provide a one-sentence summary and a one-sentence criterion for how the events could be \
+grouped into higher-level thematic phases. These help a downstream stage aggregate events.
+
+════════════════════════════════════════════════
+## OUTPUT JSON
+════════════════════════════════════════════════
+
+{{
+  "paradigm": "<one of: {paradigm_ids}>",
+  "paradigm_confidence": 0.85,
+  "paradigm_reason": "<one sentence explaining the paradigm decision>",
+  "domain_l2": "<one of the domain_l2 categories above, or 'other'>",
+  "video_caption": "<3-5 sentences describing the entire video>",
+  "feasibility": {{
+    "score": 0.85,
+    "skip": false,
+    "skip_reason": null,
+    "estimated_n_events": 8,
+    "visual_dynamics": "high"
+  }},
+  "video_metadata": {{
+    "has_text_overlay": false,
+    "has_narration": true,
+    "camera_style": "<static_tripod | handheld | multi_angle | first_person>",
+    "editing_style": "<continuous | jump_cut | montage | mixed>"
+  }},
+  "summary": "<one sentence summarizing the entire video>",
+  "global_phase_criterion": "<one sentence: principle for grouping events into thematic phases>",
+  "events": [
+    {{
+      "event_id": 1,
+      "instruction": "<8-20 words: WHAT happens WITH WHICH objects>",
+      "dense_caption": "<2-4 sentences: detailed visual description>",
+      "start_time": 5,
+      "end_time": 28,
+      "visual_keywords": ["kw1", "kw2"],
+      "key_frame_indices": [7, 15],
+      "l3_feasible": true,
+      "l3_reason": "<1 sentence>"
+    }}
+  ]
+}}
+
+## RULES
+1. Output strictly valid JSON. No markdown code blocks.
+2. All timestamps: absolute integer seconds within [0, {duration}].
+3. Anti-fragmentation: L2 events MUST be >= 5 seconds. Merge shorter segments \
+with adjacent same-scene events or drop entirely.
+4. No names: never use people's names. Use descriptive labels ("a person", "the host").
+5. Feasibility enums: skip_reason is null or "talk_dominant" | "ambient_static"; \
+visual_dynamics is "high" | "medium" | "low".
+6. If feasibility.skip=true, output "events": [].
+7. key_frame_indices: integers in [1, {n_frames}], 1-2 per event."""
+
+
+def get_l2_first_prompt(n_frames: int, duration_sec: int) -> str:
+    """Build the L2-first dense video captioning prompt (v7 Stage 1).
+
+    Produces flat L2 events with key frame indices and classification metadata.
+    L1 phases are NOT produced here — they come from a separate aggregation step.
+    """
+    return _L2_FIRST_PROMPT.format(
+        n_frames=n_frames,
+        duration=duration_sec,
+        paradigm_table=_format_paradigm_table_for_prompt(),
+        paradigm_ids=", ".join(sorted(PARADIGM_IDS)),
+        domain_l2_list=_format_domain_l2_for_prompt(),
+    )
+
+
+_L1_AGGREGATION_PROMPT = """\
+You are given key frames from {n_events} annotated events in a {duration}s video clip.
+
+Each frame is labeled with its parent event ID and timestamp.
+Below is the full event annotation from a previous analysis step:
+
+```json
+{events_json}
+```
+
+**Video summary**: {summary}
+**Phase grouping criterion**: {global_phase_criterion}
+
+Your task: Group these events into L1 macro-phases (thematic segments).
+
+════════════════════════════════════════════════
+## L1 — Thematic Segment
+════════════════════════════════════════════════
+
+**Definition**: A broad segment of the video unified by a single overarching theme, goal, \
+location, or activity mode. A new L1 phase starts when there is a **major shift** in what \
+the video is about.
+
+**Boundary Signals** (any ONE is sufficient):
+- **Goal/intent shift**: The purpose changes (preparing → cooking → plating).
+- **Location/setting change**: The scene moves to a visibly different place.
+- **Subject/topic switch**: The main focus shifts to a different person, object, or topic.
+- **Activity mode change**: The nature of activity changes (explaining → demonstrating, \
+warm-up → high-intensity, interview → B-roll montage).
+- **Explicit transition**: Fade/dissolve, title card, or clear editing break.
+
+════════════════════════════════════════════════
+## RULES
+════════════════════════════════════════════════
+
+1. Assign EVERY event to exactly one phase using `member_event_ids`.
+2. Output 1-6 phases. A single-phase grouping is valid for uniform-theme videos.
+3. Events within a phase must be temporally contiguous — no interleaving. \
+(Phase A's events must all come before Phase B's events in time.)
+4. `phase_name`: 5-15 word descriptive phrase for the thematic segment.
+5. `narrative_summary`: 2-3 sentences covering what happens in the phase.
+6. `event_split_criterion`: one sentence explaining why events within this phase are distinct.
+7. `l3_feasible`: true if ANY member event has l3_feasible=true in the event list above.
+8. Do NOT output start_time or end_time — these are computed automatically from member events.
+
+════════════════════════════════════════════════
+## OUTPUT JSON
+════════════════════════════════════════════════
+
+{{
+  "macro_phases": [
+    {{
+      "phase_id": 1,
+      "phase_name": "<5-15 word descriptive phrase>",
+      "narrative_summary": "<2-3 sentences>",
+      "event_split_criterion": "<one sentence>",
+      "l3_feasible": true,
+      "l3_reason": "<1 sentence>",
+      "member_event_ids": [1, 2, 3]
+    }}
+  ]
+}}
+
+## RULES
+1. Output strictly valid JSON. No markdown code blocks.
+2. Every event_id from the input MUST appear in exactly one phase's member_event_ids.
+3. member_event_ids within each phase must be in ascending order.
+4. Phases must be ordered by their earliest member event."""
+
+
+def get_l1_aggregation_prompt(
+    events_json: str,
+    summary: str,
+    global_phase_criterion: str,
+    n_events: int,
+    duration_sec: int,
+) -> str:
+    """Build the L1 aggregation prompt (v7 Stage 2).
+
+    Groups previously annotated L2 events into L1 phases using key frames
+    and the full event list as context.
+    """
+    return _L1_AGGREGATION_PROMPT.format(
+        events_json=events_json,
+        summary=summary,
+        global_phase_criterion=global_phase_criterion,
+        n_events=n_events,
+        duration=duration_sec,
+    )
