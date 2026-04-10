@@ -819,10 +819,12 @@ def _split_l2l3_first_response(
                 break
 
     # Validate sub-actions for each event
+    # In l2l3_first mode, trust VLM output: keep sub_actions even if l3_feasible was
+    # programmatically overridden to False (e.g. by the <10s or talk-keyword filters).
     all_l3_results: list[dict] = []
     for raw_ev, v_ev in raw_valid_pairs:
         raw_subs = raw_ev.get("sub_actions", [])
-        if not v_ev.get("l3_feasible", False) or not raw_subs:
+        if not raw_subs:
             continue
         valid_subs = _validate_sub_actions(
             raw_subs, v_ev["start_time"], v_ev["end_time"], v_ev["event_id"],

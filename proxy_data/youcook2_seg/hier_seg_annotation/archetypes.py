@@ -2494,15 +2494,14 @@ different activities/locations — SPLIT that event into multiple events NOW.
 
 ### L3 — Sub-Action Annotation (inline per event)
 
-For EACH L2 event where `l3_feasible=true`, annotate L3 micro-actions as `sub_actions` \
+For EACH L2 event, annotate L3 micro-actions as `sub_actions` \
 within that event. Each sub-action is an atomic, visible action of 2-6 seconds.
 
-**L3 FEASIBILITY** (per-event):
-- Set `l3_feasible=true` ONLY if: the segment contains **clear physical actions** where \
-objects change state (cutting, pouring, assembling, scoring) visible at close enough range \
-to observe at 2fps. The segment must also be >= 10 seconds.
-- Set `l3_feasible=false` if: the segment shows talking/interviews, static scenes, \
-distant shots, walking/standing, talking to camera, or any segment < 10 seconds.
+**L3 ANNOTATION** (per-event):
+- Always attempt to decompose the event into sub-actions. Set `l3_feasible=true` for \
+all events where you can identify at least one visible action or state change.
+- Only set `l3_feasible=false` if the event is extremely short (< 3 seconds) or contains \
+absolutely no observable action (e.g., a completely static frame with zero motion).
 - For events with `l3_feasible=false`, output `"sub_actions": []`.
 
 **L3 Rules**:
@@ -2526,7 +2525,7 @@ For best results, follow this order:
 2. **Write descriptions first** (instruction, dense_caption), then assign timestamps. \
 This grounds your timestamps in visual evidence.
 3. **Select key frames** for each event after boundaries are finalized.
-4. **Annotate L3 sub-actions** for events with l3_feasible=true.
+4. **Annotate L3 sub-actions** for all events (attempt decomposition for every event).
 
 ### TEXT GENERATION RULES
 
@@ -2622,9 +2621,19 @@ grouped into higher-level thematic phases. These help a downstream stage aggrega
       "end_time": 45,
       "visual_keywords": ["kw1", "kw2"],
       "key_frame_indices": [40],
-      "l3_feasible": false,
-      "l3_reason": "Talking to camera, no physical actions.",
-      "sub_actions": []
+      "l3_feasible": true,
+      "l3_reason": "Person gestures and moves position.",
+      "sub_actions": [
+        {{
+          "action_id": 1,
+          "start_time": 32,
+          "end_time": 37,
+          "sub_action": "<5-15 word action phrase>",
+          "caption": "<1-2 sentences>",
+          "pre_state": null,
+          "post_state": null
+        }}
+      ]
     }}
   ]
 }}
@@ -2640,7 +2649,7 @@ visual_dynamics is "high" | "medium" | "low".
 6. If feasibility.skip=true, output "events": [].
 7. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
 8. L3 sub_actions must be within parent event [start_time, end_time]; 2-6 seconds each.
-9. For events with l3_feasible=false, output "sub_actions": [].
+9. For events with l3_feasible=false, output "sub_actions": []. Prefer l3_feasible=true for most events.
 10. L3 timestamps: absolute integer seconds from the full video timeline."""
 
 
