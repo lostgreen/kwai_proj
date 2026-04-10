@@ -298,22 +298,28 @@ _TUTORIAL = ArchetypeConfig(
         name="Sub-goal Workflow",
         name_zh="子目标工作流",
         definition=(
-            "A multi-step workflow (10-60s) that completes a verifiable process "
-            "sub-goal. Groups related manipulations into a coherent unit with "
-            "clear beginning condition → process → result."
+            "A multi-step workflow that completes a verifiable sub-goal "
+            "(e.g., 'Kneading the dough until smooth'). "
+            "This workflow is ONE continuous event even if shown through multiple "
+            "camera angles (e.g., wide shot → close-up of hands). "
+            "Intra-scene angle changes do NOT break the event."
         ),
         boundary_signals=(
-            "Sub-goal completion (one mixture done, one component attached); "
-            "workspace state change; tool/material transition."
+            "**Valid Boundaries (Inter-Scene)**: Sub-goal completion "
+            "(dough finished kneading, one component attached); "
+            "switch to a completely different task (kneading → chopping vegetables). "
+            "**NOT Boundaries (Intra-Scene)**: Camera angle or zoom changes "
+            "within the same ongoing task."
         ),
         examples=(
-            "Measure flour and sugar from bags into the mixing bowl",
             "Whisk dry ingredients together until evenly blended",
             "Attach side panel to the base using screws and drill",
+            "Knead dough from start to finish (shown via wide + close-up shots)",
         ),
         anti_examples=(
-            "Too coarse: 'Prepare all materials' (restates the phase)",
-            "Too fine: 'Pick up the whisk' (single atomic motion)",
+            "Splitting 'Kneading the dough' into 'Wide shot of kneading' and "
+            "'Close-up of kneading' — these are ONE event with angle changes",
+            "A single atomic motion like 'Pick up the whisk' (this is L3)",
         ),
     ),
 
@@ -492,24 +498,26 @@ _CINEMATIC = ArchetypeConfig(
         name_zh="场景单元",
         definition=(
             "A continuous narrative unit within the SAME space-time and character set. "
-            "Multiple shots/cuts belonging to the same scene are grouped together. "
+            "All shots within the same scene (shot/reverse-shot, close-ups, wide shots) "
+            "are grouped into ONE event — these are intra-scene cuts. "
             "Intercut or parallel-edited sequences that jump to a DIFFERENT location "
-            "or character group MUST be separate events, even if the narrative links them."
+            "or character group are inter-scene cuts and MUST be separate events."
         ),
         boundary_signals=(
-            "**Highest Priority**: Cut to a different location or character group "
-            "(e.g., office → flashback to childhood room, or cross-cutting between "
+            "**Inter-Scene (split)**: Cut to a different location or time "
+            "(office → flashback to childhood room, cross-cutting between "
             "two parallel storylines). "
-            "Other signals: character enter/exit frame; "
-            "topic or emotional tone shift within the scene group."
+            "**Intra-Scene (do NOT split)**: Shot/reverse-shot during dialogue, "
+            "zoom to close-up within the same scene."
         ),
         examples=(
-            "Two friends discuss travel plans while reviewing a map at the cafe table",
-            "Protagonist confronts the antagonist in the warehouse hallway",
+            "Two friends discuss plans over coffee (shown through multiple cuts and angles)",
+            "A tense chase sequence through a warehouse hallway",
             "Flashback sequence showing the character as a child in a garden",
         ),
         anti_examples=(
-            "A single shot or camera cut within the same scene",
+            "Splitting one continuous dialogue scene into events per speaker turn "
+            "— shot/reverse-shot is intra-scene, keep as one event",
             "A reaction shot of the same character in the same location (too fine)",
         ),
     ),
@@ -592,25 +600,27 @@ _VLOG = ArchetypeConfig(
         name="Activity / Interaction Clip",
         name_zh="活动/交互片段",
         definition=(
-            "A continuous clip of a SINGLE, SPECIFIC activity within a "
-            "CONSISTENT VISUAL CONTEXT (same location, subject, and action type). "
-            "A host talking on-camera and the separate video clip they introduce are "
-            "TWO SEPARATE events, even if the host's voice continues over the clip."
+            "A continuous clip focused on a single activity, subject, and location. "
+            "Inter-scene cuts (host → B-roll footage, Person A → Person B interview) "
+            "create SEPARATE events. "
+            "Intra-scene cuts (zoom on the host's face, angle change on the same subject) "
+            "do NOT — keep as one event."
         ),
         boundary_signals=(
-            "**Highest Priority**: A hard cut to a different location or subject "
-            "(e.g., host on rooftop → cut to gameplay/sports footage). "
-            "Other signals: activity start/end; interaction partner change."
+            "**Inter-Scene (split)**: Cut to a different location, subject, or visual "
+            "modality (host → B-roll, Person A → Person B). "
+            "**Intra-Scene (do NOT split)**: Camera angle change on the same subject "
+            "in the same location."
         ),
         examples=(
-            "Host speaking to camera on a rooftop, introducing a video",
-            "A dodgeball game shown on a YouTube interface",
+            "Interview segment with participant Anthony",
+            "Kayaking action sequence shown as B-roll",
             "Tasting a local dish and giving a reaction to the camera",
         ),
         anti_examples=(
-            "Merging a host's commentary segment with the separate "
-            "video clip they are introducing — these MUST be two distinct events",
-            "Brief glance at something (too fine)",
+            "Merging an interview segment with the separate B-roll footage it describes "
+            "— these are inter-scene cuts and MUST be two events",
+            "Merging interviews from two different people into one event",
         ),
     ),
 
@@ -691,16 +701,18 @@ _EDUCATIONAL = ArchetypeConfig(
         name_zh="讲解/演示单元",
         definition=(
             "A focused explanation or demonstration around one specific concept "
-            "within the module, in a CONSISTENT VISUAL CONTEXT. "
-            "An instructor speaking on camera and a separate screen recording, "
-            "animation, or experiment close-up they introduce are TWO SEPARATE events, "
-            "even if the instructor's narration continues over the visual."
+            "within the module, in a consistent visual context. "
+            "Inter-scene cuts (instructor on camera → screen recording / animation / "
+            "experiment close-up) create SEPARATE events. "
+            "Intra-scene cuts (zoom on whiteboard, angle change on the same instructor) "
+            "do NOT — keep as one event."
         ),
         boundary_signals=(
-            "**Highest Priority**: A hard cut between instructor-on-camera and "
+            "**Inter-Scene (split)**: Cut between instructor-on-camera and "
             "screen recording / animation / diagram close-up / experiment footage. "
-            "Other signals: focus shift to new sub-concept; change of demonstration object; "
-            "transition from theory to example (or vice versa)."
+            "**Intra-Scene (do NOT split)**: Camera angle or zoom change on the "
+            "same instructor at the same whiteboard/desk. "
+            "Other signals: focus shift to new sub-concept; transition from theory to example."
         ),
         examples=(
             "Instructor explaining a concept while pointing at the whiteboard",
@@ -709,7 +721,7 @@ _EDUCATIONAL = ArchetypeConfig(
         ),
         anti_examples=(
             "Merging an instructor's on-camera lecture with the separate "
-            "screen recording or animation they are narrating — these MUST be two events",
+            "screen recording they are narrating — inter-scene cut, MUST be two events",
             "Writing a single word (too fine)",
         ),
     ),
@@ -1673,11 +1685,15 @@ the L1/L2 definitions for YOUR CHOSEN paradigm. IGNORE the rules for the other 6
 
 ### UNIVERSAL TEMPORAL & FORMATTING RULES (Apply to ALL paradigms)
 
-**Visual Priority (Overrides all other signals)**: A significant visual change \
-(e.g., a cut from an on-camera speaker to a demonstration clip, a location change from indoors to outdoors, \
-a switch from live footage to screen recording) MUST trigger a new L2 event boundary. \
-The visual boundary takes precedence over continuous audio narration or semantic context. \
-Do NOT merge two visually distinct scenes into one event just because the same person is talking over them.
+**Visual Priority — Intra-Scene vs Inter-Scene Cuts**: \
+Not all cuts are equal. You MUST distinguish two types:
+- **Intra-Scene Cut** (do NOT split): Camera angle, zoom, or focal length change on the SAME \
+subject in the SAME location during the SAME ongoing activity. Examples: wide shot → close-up \
+of hands kneading dough; shot/reverse-shot during a dialogue in one room.
+- **Inter-Scene Cut** (MUST split): Cut to a DIFFERENT location, subject, person, or visual modality. \
+Examples: host on camera → B-roll footage; instructor → screen recording; Person A interview → Person B interview; \
+office scene → flashback.
+An inter-scene cut MUST trigger a new L2 event boundary, regardless of audio or narrative continuity.
 
 **No Audio Memory**: You are a VISUAL model — base ALL segmentation decisions on what you SEE in the frames. \
 Do NOT infer segment boundaries from assumed narration, dialogue, or audio cues that are not visible. \
@@ -1691,7 +1707,7 @@ This grounds your timestamps in actual visual evidence rather than guessing.
 - **Sparsity & Gaps**: Phases/Events do NOT need to cover the entire video. Gaps between annotated segments are expected. Skip intros, outros, and idle spans.
 - **No Overlaps**: L2 events must NOT overlap each other in time.
 - **Strict Nesting**: Every L2 event MUST be strictly nested within its parent L1 phase timeframe.
-- **Anti-Fragmentation**: Do NOT split by camera ANGLE changes alone (e.g., close-up → wide shot of the same scene). An L2 event MUST be >= 5 seconds. However, a hard CUT to a visually different scene/location (per Visual Priority above) MUST create a new event even if the resulting segment is short.
+- **Anti-Fragmentation**: Intra-scene cuts (angle/zoom changes within the same scene) MUST NOT create new events. An L2 event MUST be >= 5 seconds. However, inter-scene cuts (different location/subject/modality) MUST create a new event even if the resulting segment is short.
 - **Empty L2**: `"events": []` is perfectly valid if an L1 phase has no meaningful sub-structure. A single-phase video is also valid.
 
 **Text Generation Constraints:**
