@@ -802,6 +802,10 @@ def _split_merged_response(
             ev["start_time"] = int(ev_st)
             ev["end_time"] = min(int(ev_et), int(clip_duration))
             ev["parent_phase_id"] = phase_id
+            # Per-event L3 feasibility
+            ev.setdefault("l3_feasible", True)
+            ev["l3_feasible"] = bool(ev["l3_feasible"])
+            ev.setdefault("l3_reason", "")
             all_events.append(ev)
 
     # Sort events by start_time and re-number globally
@@ -1005,6 +1009,9 @@ def _annotate_level3(
                 if children:
                     # Phase has events → events are leaf nodes
                     for ev in children:
+                        # Skip events marked as L3-infeasible
+                        if not ev.get("l3_feasible", True):
+                            continue
                         sources.append({
                             "source_id": ev.get("event_id", len(sources) + 1),
                             "start_time": ev.get("start_time"),

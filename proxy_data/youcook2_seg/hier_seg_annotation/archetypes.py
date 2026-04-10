@@ -1257,7 +1257,9 @@ def get_archetype_merged_prompt(
         '          "end_time": 28,\n'
         '          "instruction": "<8-20 word description>",\n'
         '          "dense_caption": "<2-4 sentences: detailed process description — actions, objects, spatial relations, state changes>",\n'
-        '          "visual_keywords": ["kw1", "kw2"]\n'
+        '          "visual_keywords": ["kw1", "kw2"],\n'
+        '          "l3_feasible": true,\n'
+        '          "l3_reason": "<1 sentence>"\n'
         '        }\n'
         '      ]'
     ) if cfg.l2.enabled else ',\n      "events": []'
@@ -1677,20 +1679,20 @@ This grounds your timestamps in actual visual evidence rather than guessing.
 - `instruction`: MUST be an objective description (8–20 words) stating WHAT the action is and WITH WHICH objects. Do NOT use imperative verbs (e.g., avoid "Watch...", "Observe...").
 - `dense_caption`: MUST be detailed visual descriptions (2–4 sentences) covering actions, objects, spatial relations, and state changes.
 
-### L3 FEASIBILITY (per-phase)
+### L3 FEASIBILITY (per-phase AND per-event)
 
-For EACH L1 phase, assess whether it supports fine-grained L3 micro-action annotation.
-Different phases in the same video may have very different L3 suitability \
-(e.g., an active cooking phase is feasible, but a conversation phase is not).
+For EACH L1 phase AND each L2 event, assess whether it supports fine-grained L3 micro-action annotation.
+Different phases/events in the same video may have very different L3 suitability \
+(e.g., an active cooking event is feasible, but a conversation event is not).
 
 Per-paradigm L3 reference:
 {l3_feasibility_ref}
 
-Set `l3_feasible=false` for a phase if:
+Set `l3_feasible=false` for a phase/event if:
 - It is dominated by talking, interviews, or static scenes with no physical actions.
-- Events within it are too short or abstract to decompose into micro-actions.
+- It is too short or abstract to decompose into micro-actions.
 - Visual detail is insufficient (distant shot, blurry, occluded).
-Set `l3_feasible=true` if the phase has clear, observable physical actions or state changes at 2fps.
+Set `l3_feasible=true` if it has clear, observable physical actions or state changes at 2fps.
 
 ### VISUAL SIGNAL REFERENCE
 - Scene/Space: Background/layout/location change, character entry/exit.
@@ -1742,7 +1744,9 @@ Set `l3_feasible=true` if the phase has clear, observable physical actions or st
           "end_time": 28,
           "instruction": "<8-20 word description>",
           "dense_caption": "<2-4 sentences: detailed process description>",
-          "visual_keywords": ["kw1", "kw2"]
+          "visual_keywords": ["kw1", "kw2"],
+          "l3_feasible": true,
+          "l3_reason": "<1 sentence: why this event does/doesn't support L3 micro-actions>"
         }}
       ]
     }}
