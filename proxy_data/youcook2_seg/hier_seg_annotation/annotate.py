@@ -794,6 +794,7 @@ def _split_merged_response(
         l1_phases.append(phase)
 
         # Collect events with parent linkage
+        phase_valid_events: list[dict] = []
         for ev in phase_events:
             if not isinstance(ev, dict):
                 continue
@@ -804,10 +805,6 @@ def _split_merged_response(
                 continue
             ev["start_time"] = round(ev_st)
             ev["end_time"] = min(round(ev_et), round(clip_duration))
-            # Enforce minimum event duration (anti-fragmentation)
-            if ev["end_time"] - ev["start_time"] < 5:
-                print(f"    WARN: event in phase {phase_id} dropped (too short: {ev['end_time'] - ev['start_time']}s)", flush=True)
-                continue
             ev["parent_phase_id"] = phase_id
             # Per-event L3 feasibility — force false for short events
             ev.setdefault("l3_feasible", True)
@@ -815,7 +812,24 @@ def _split_merged_response(
                 ev["l3_feasible"] = False
             ev["l3_feasible"] = bool(ev["l3_feasible"])
             ev.setdefault("l3_reason", "")
-            all_events.append(ev)
+            phase_valid_events.append(ev)
+
+        # Merge short events (<5s) into adjacent events within the same phase
+        merged_events: list[dict] = []
+        for ev in phase_valid_events:
+            dur = ev["end_time"] - ev["start_time"]
+            if dur >= 5:
+                merged_events.append(ev)
+            elif merged_events:
+                # Merge into the previous event by extending its end_time
+                prev = merged_events[-1]
+                prev["end_time"] = max(prev["end_time"], ev["end_time"])
+                print(f"    INFO: short event ({dur}s) in phase {phase_id} merged into previous event", flush=True)
+            else:
+                # No previous event — keep it anyway (first event in phase)
+                merged_events.append(ev)
+
+        all_events.extend(merged_events)
 
     # Sort events by start_time and re-number globally
     all_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))

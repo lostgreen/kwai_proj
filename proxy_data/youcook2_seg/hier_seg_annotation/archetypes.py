@@ -1909,9 +1909,9 @@ Examples: gymnasium → rooftop; host on camera → B-roll footage; Person A int
 Person B interview; kitchen → dining room; instructor on camera → screen recording.
 
 **Rules**:
-- Each event MUST be >= 5 seconds. If your proposed event is shorter than 5s, merge it \
-with an adjacent event of the same scene OR drop it. The ONLY exception is an inter-scene \
-cut that creates an unavoidably short segment.
+- Each event MUST be >= 5 seconds. If a segment between two inter-scene cuts is shorter \
+than 5s, you MUST merge it into the preceding or following event that shares the same \
+scene/location. Never output an event shorter than 5 seconds.
 - Events must not overlap. Gaps between events are expected.
 - Events are nested within L1 phases: every event's timespan MUST fall within its parent phase.
 - `"events": []` is valid if a phase has no meaningful sub-structure.
