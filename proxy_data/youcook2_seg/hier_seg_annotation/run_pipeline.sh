@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# run_pipeline.sh — Hierarchical annotation pipeline (v7: bottom-up)
+# run_pipeline.sh — Hierarchical annotation pipeline (v7/v8)
 #
-# Steps:
+# Steps (l2_first — default bottom-up):
 #   1. Extract 1fps frames
 #   2. L2-first dense captioning + L1 aggregation (bottom-up)
 #   3. Extract L3 frames (leaf-node routing)
 #   4. L3 annotation
+#
+# Steps (l2l3_first — 2fps, all-in-one L2+L3):
+#   1. Extract 2fps frames
+#   2. L2+L3 annotation + L1 aggregation (2 VLM calls, no L3 step)
 #
 # Usage:
 #   tmux new -s anno
@@ -15,6 +19,9 @@
 #
 # Test mode (process only N clips):
 #   LIMIT=5 bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
+#
+# L2L3 mode (2fps, one-shot L2+L3):
+#   ANNO_LEVEL=l2l3_first bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
 #
 # Old top-down pipeline:
 #   ANNO_LEVEL=merged bash proxy_data/youcook2_seg/hier_seg_annotation/run_pipeline.sh
@@ -35,7 +42,14 @@ JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_in
 MODEL="${MODEL:-pa/gmn-2.5-fls}"
 WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-20}"
-ANNO_LEVEL="${ANNO_LEVEL:-l2_first}"  # "l2_first" (bottom-up) or "merged" (old top-down)
+ANNO_LEVEL="${ANNO_LEVEL:-l2_first}"  # "l2l3_first" | "l2_first" (bottom-up) | "merged" (old top-down)
+
+# FPS: 2fps for l2l3_first, 1fps otherwise
+if [[ "$ANNO_LEVEL" == "l2l3_first" ]]; then
+    EXTRACT_FPS="${EXTRACT_FPS:-2}"
+else
+    EXTRACT_FPS="${EXTRACT_FPS:-1}"
+fi
 
 LOG_DIR="${DATA_ROOT}/logs"
 mkdir -p "$LOG_DIR"
@@ -73,19 +87,20 @@ log "MODEL:      $MODEL"
 log "WORKERS:    $WORKERS"
 log "LIMIT:      ${LIMIT:-0 (all)}"
 log "ANNO_LEVEL: $ANNO_LEVEL"
+log "EXTRACT_FPS: $EXTRACT_FPS"
 log "DATA_ROOT:  $DATA_ROOT"
 
 # =====================================================================
-# STEP 1: Extract 1fps frames
+# STEP 1: Extract frames (1fps or 2fps depending on ANNO_LEVEL)
 # =====================================================================
 log ""
-log ">>>>>>>>>> STEP 1: EXTRACT FRAMES <<<<<<<<<<"
+log ">>>>>>>>>> STEP 1: EXTRACT FRAMES (${EXTRACT_FPS}fps) <<<<<<<<<<"
 
 run_step "S1_EXTRACT_FRAMES" \
     python "$SCRIPT_DIR/extract_frames.py" \
         --jsonl "$JSONL" \
         --output-dir "$DATA_ROOT/frames" \
-        --fps 1 --workers "$WORKERS" \
+        --fps "$EXTRACT_FPS" --workers "$WORKERS" \
         $LIMIT_FLAG
 
 # =====================================================================
@@ -103,6 +118,13 @@ run_step "S2_ANNOTATE" \
         --model "$MODEL" --workers "$WORKERS" \
         $LIMIT_FLAG
 
+# =====================================================================
+# STEP 3 & 4: L3 frames + annotation (skip for l2l3_first — L3 is inline)
+# =====================================================================
+if [[ "$ANNO_LEVEL" == "l2l3_first" ]]; then
+    log ""
+    log ">>>>>>>>>> STEPS 3-4 SKIPPED (L3 inline in l2l3_first mode) <<<<<<<<<<"
+else
 # =====================================================================
 # STEP 3: Extract L3 frames (leaf-node routing)
 # =====================================================================
@@ -131,6 +153,7 @@ run_step "S4_L3_ANNOTATION" \
         --level 3 \
         --model "$MODEL" --workers "$WORKERS" \
         $LIMIT_FLAG
+fi
 
 # ── Summary ─────────────────────────────────────────────────────────
 log ""
