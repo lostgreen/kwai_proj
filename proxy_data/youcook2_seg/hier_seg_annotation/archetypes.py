@@ -2135,8 +2135,13 @@ output it as its own event — do NOT merge it into an adjacent event.
 - Events must not overlap. Gaps between events are expected.
 - `"events": []` is valid if the video has no meaningful sub-structure.
 
-**SELF-CHECK**: After writing all events, review each event's `dense_caption`. \
-If any caption describes more than one scene/location/subject, split that event.
+**SELF-CHECK** (mandatory before outputting JSON):
+1. Re-read each event's `instruction` and `dense_caption`. If any text contains \
+"then", "followed by", "next", "after that", "subsequently", or describes TWO \
+different activities/locations — SPLIT that event into multiple events NOW.
+2. Check each caption for non-visual language: "explains", "describes", "discusses", \
+"talks about". Replace with observable visual descriptions.
+3. Verify each event covers only ONE continuous scene with ONE consistent background.
 
 ### KEY FRAME SELECTION
 
@@ -2166,14 +2171,26 @@ This grounds your timestamps in visual evidence.
 
 ### TEXT GENERATION RULES
 
-All text fields MUST describe only what is **visually observable** in the frames:
+**CRITICAL — Visual-Only Descriptions**:
+Pretend you have NEVER seen this video before and know NOTHING about it. \
+You are a camera that can only describe what it records — shapes, colors, movements, \
+positions, objects, and spatial relations. You CANNOT hear audio or read context.
+
 - **DO**: Describe actions, objects, body movements, spatial layout, colors, textures, \
-scene changes, camera movement, on-screen text/graphics.
-- **DO NOT**: Use people's names (say "a person", "the host", "a man in a blue shirt"), \
-infer dialogue content, assume narrative context, or describe sounds/music.
-- `instruction`: 8-20 words, objective description of WHAT happens WITH WHICH objects.
+scene changes, camera movement, on-screen text/graphics as they appear in the frames.
+- **DO NOT**:
+  - Use people's names (say "a person", "the host", "a man in a blue shirt")
+  - Infer dialogue content, narration topics, or what someone is "explaining"
+  - Describe product features, brand names, or purposes that require external knowledge
+  - Use words like "explains", "discusses", "describes" (these imply audio understanding)
+  - Assume narrative context beyond what is visually shown
+- If someone is talking to the camera: describe their body language, gestures, and setting — \
+NOT what they might be saying. Write "A person gestures toward the floor" NOT "A host explains carpet features".
+- `instruction`: 8-20 words, objective visual description of WHAT happens WITH WHICH objects.
 - `dense_caption`: 2-4 sentences. Academic dense video captioning style: describe the \
 visual content in detail — actions, objects, spatial relations, and visible state changes.
+- **FORBIDDEN words in event descriptions**: "explains", "discusses", "describes", "talks about", \
+"demonstrates how to", "shows how". Replace with what is VISUALLY happening.
 
 ### VISUAL SIGNAL REFERENCE
 - **Scene/Space**: Background change, location switch, character entry/exit.

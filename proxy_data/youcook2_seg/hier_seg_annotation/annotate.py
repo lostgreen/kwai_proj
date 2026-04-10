@@ -634,6 +634,12 @@ def _split_l2_first_response(
             mid_frame = max(1, min(n_sampled_frames, round(mid_sec) + 1))
             valid_kf = [mid_frame]
         ev["key_frame_indices"] = valid_kf[:2]
+        # Warn about potential multi-scene events (VLM should have split these)
+        _desc = (str(ev.get("instruction", "")) + " " + str(ev.get("dense_caption", ""))).lower()
+        _seq_kw = (" then ", " followed by ", " next ", " after that ", " subsequently ", " before ")
+        if any(kw in f" {_desc} " for kw in _seq_kw):
+            print(f"    WARN: event {ev.get('event_id', '?')} may describe multiple scenes: "
+                  f"{str(ev.get('instruction', ''))[:80]}", flush=True)
         valid_events.append(ev)
 
     # Sort by start_time and re-number (no merging — short events are kept)
