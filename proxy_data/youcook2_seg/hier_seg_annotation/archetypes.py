@@ -2124,15 +2124,63 @@ than to skip one.
 - Allow gaps between sub-actions — do NOT force full temporal coverage.
 - Minimum sub-action duration: 2 seconds. Maximum: 6 seconds.
 
-**TEXT GENERATION RULES** (applies to all captions):
-Pretend you have NEVER seen this video before and know NOTHING about it. \
-Describe ONLY what is visually observable. You cannot hear audio.
-- `instruction`: 8-20 words, visual action phrase.
-- `dense_caption`: 2-4 sentences, detailed visual description.
-- `sub_action`: 5-15 word action phrase.
-- `caption`: 1-2 sentences, detailed visual description of the atomic action.
-- FORBIDDEN words: "explains", "discusses", "describes", "talks about", "shows how to".
-- NO proper names — use descriptive labels ("a person", "the host", "a man in red shirt").
+**TEXT GENERATION RULES — Academic Dense Video Captioning Standard**:
+
+These captions will be used as training data for Dense Video Captioning models. \
+The goal is purely visual grounding — the caption must be recoverable from the frames \
+alone, with no reliance on external knowledge, domain expertise, or audio inference.
+
+**Core principle**: Write as if you are a surveillance camera that can only see, not hear \
+or infer. Every word in the caption must correspond to something directly visible in the \
+frames of this event. No sentence may require knowledge beyond the visual pixels.
+
+**`instruction`** (8-20 words):
+- Pattern: [Subject] + [action verb] + [object/target] + [optional spatial/manner qualifier]
+- GOOD: "A person in white apron pours liquid from a measuring cup into a metal bowl"
+- GOOD: "Two hands stretch a piece of dough outward on a floured wooden surface"
+- BAD: "Making the sauce" (too vague, no subject or object)
+- BAD: "Demonstrating the technique" (implies intent/purpose not visible in frames)
+
+**`dense_caption`** (2-4 sentences):
+Each sentence must add NEW visual information. Target: 3-5 observable facts per sentence. \
+Structure each sentence around: **WHO/WHAT** does **WHAT ACTION** to **WHAT OBJECT** \
+**WHERE** (spatial position) with **VISIBLE STATE CHANGES**.
+
+Required coverage (include as many as are visible):
+1. Subject description: clothing, position, body pose, visible attributes
+2. Object description: shape, color, material, quantity, position in frame
+3. Primary action: precise motion verb + trajectory/direction
+4. Spatial arrangement: left/right/center, foreground/background, relative positions
+5. Visible state change: what changes from start to end of the event
+
+- GOOD: "A person wearing a white apron and blue gloves stands at a stainless steel counter. \
+They hold a dark-handled knife in their right hand and chop a pile of green herbs on a \
+wooden cutting board. The herbs are reduced to small pieces with each downward stroke, \
+accumulating into a mound on the left side of the board."
+- BAD: "The chef is making a sauce." (inferred from domain knowledge, not visual observation)
+- BAD: "This step involves seasoning the dish." (implies narrative context, not visual content)
+
+**`sub_action`** (5-15 words):
+- Single atomic motion: one verb + one object
+- GOOD: "right hand lifts cutting board edge"
+- BAD: "preparing ingredients" (too general, not one atomic motion)
+
+**`caption`** (sub-action caption, 1-2 sentences):
+Same rules as dense_caption but for the 2-6 second atomic action window only.
+
+**ABSOLUTE PROHIBITIONS** (these will corrupt training data):
+- Words implying hearing: "explains", "talks about", "says", "announces", "narrates"
+- Words implying purpose/intent: "demonstrates", "shows how to", "teaches", "prepares to"
+- Words requiring domain knowledge: specific dish/technique names unless visible as text on screen
+- Proper names of people, brands, places unless readable as on-screen text
+- Time-sequence language that spans beyond this event: "after adding", "before this step", \
+"following the previous", "to complete the recipe"
+- Evaluative language: "properly", "correctly", "well", "effectively", "successfully"
+
+Human names → "a person" / "the individual" / "a man/woman in [visible clothing]". \
+Brand names → "a metal container" / "a glass bottle with a green label". \
+Dish names → describe the visible food: "a white paste", "a dark red liquid", \
+"a pile of chopped green vegetables".
 
 ════════════════════════════════════════════════
 ## PART 3 — AGGREGATION HINTS
