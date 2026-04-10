@@ -804,9 +804,15 @@ def _split_merged_response(
                 continue
             ev["start_time"] = round(ev_st)
             ev["end_time"] = min(round(ev_et), round(clip_duration))
+            # Enforce minimum event duration (anti-fragmentation)
+            if ev["end_time"] - ev["start_time"] < 5:
+                print(f"    WARN: event in phase {phase_id} dropped (too short: {ev['end_time'] - ev['start_time']}s)", flush=True)
+                continue
             ev["parent_phase_id"] = phase_id
-            # Per-event L3 feasibility
+            # Per-event L3 feasibility — force false for short events
             ev.setdefault("l3_feasible", True)
+            if ev["end_time"] - ev["start_time"] < 10:
+                ev["l3_feasible"] = False
             ev["l3_feasible"] = bool(ev["l3_feasible"])
             ev.setdefault("l3_reason", "")
             all_events.append(ev)

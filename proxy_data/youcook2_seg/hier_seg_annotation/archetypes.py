@@ -1895,17 +1895,23 @@ subject, and one consistent scene**. This is the fundamental unit of dense video
 each event describes WHAT visually happens during that time span.
 
 **Critical Rule — Intra-Scene vs Inter-Scene Cuts**:
+Scan through the frames in order. When consecutive frames show a DIFFERENT background, \
+location, person, or visual modality, that is an **inter-scene cut** and you MUST start \
+a new event. This is the single most important rule for L2 segmentation.
+
 - **Intra-Scene Cut** (do NOT split): Camera angle, zoom, or focal length change on the \
 SAME subject in the SAME location during the SAME ongoing activity. \
 Example: wide shot of person kneading dough → close-up of hands kneading = ONE event.
 - **Inter-Scene Cut** (MUST split into separate events): Cut to a DIFFERENT location, \
-subject, person, or visual modality. \
-Examples: host talking → B-roll footage; Person A → Person B; kitchen → dining room; \
-instructor on camera → screen recording.
+subject, person, or visual modality. Check the **background** — if it changes, it is \
+inter-scene. \
+Examples: gymnasium → rooftop; host on camera → B-roll footage; Person A interview → \
+Person B interview; kitchen → dining room; instructor on camera → screen recording.
 
 **Rules**:
-- Each event MUST be >= 5 seconds (anti-fragmentation), unless an inter-scene cut \
-creates a shorter segment.
+- Each event MUST be >= 5 seconds. If your proposed event is shorter than 5s, merge it \
+with an adjacent event of the same scene OR drop it. The ONLY exception is an inter-scene \
+cut that creates an unavoidably short segment.
 - Events must not overlap. Gaps between events are expected.
 - Events are nested within L1 phases: every event's timespan MUST fall within its parent phase.
 - `"events": []` is valid if a phase has no meaningful sub-structure.
@@ -1914,19 +1920,33 @@ creates a shorter segment.
 
 For best results, follow this order:
 1. **Watch all frames** and identify major scene/topic changes → L1 phases.
-2. **Within each phase**, identify inter-scene cuts → L2 event boundaries.
+2. **Within each phase**, scan consecutive frames for background changes → L2 event boundaries.
 3. **Write descriptions first** (phase_name, narrative_summary, instruction, dense_caption), \
 then assign timestamps. This grounds your timestamps in visual evidence.
+
+### TEXT GENERATION RULES
+
+All text fields MUST describe only what is **visually observable** in the frames:
+- **DO**: Describe actions, objects, body movements, spatial layout, colors, textures, \
+scene changes, camera movement, on-screen text/graphics.
+- **DO NOT**: Use people's names (say "a person", "the host", "a man in a blue shirt"), \
+infer dialogue content, assume narrative context, or describe sounds/music. \
+You are a VISUAL model — describe what you SEE, not what you know or infer.
+- `instruction`: 8-20 words, objective description of WHAT happens WITH WHICH objects.
+- `dense_caption`: 2-4 sentences. Academic dense video captioning style: describe the \
+visual content of the segment in detail — actions, objects, spatial relations, and \
+visible state changes. No narrative framing or subjective interpretation.
 
 ### L3 FEASIBILITY (per-phase AND per-event)
 
 For EACH L1 phase AND each L2 event, assess whether fine-grained micro-action \
-annotation (2-6s atomic actions) is feasible.
+annotation (2-6s atomic actions) is feasible. Be STRICT:
 
-Set `l3_feasible=true` if: clear physical actions, object manipulations, or visible \
-state changes are present and observable at 2fps.
-Set `l3_feasible=false` if: dominated by talking/interviews, too abstract, \
-insufficient visual detail (distant/blurry), or no physical actions.
+Set `l3_feasible=true` ONLY if: the segment contains **clear physical actions** where \
+objects change state (cutting, pouring, assembling, scoring) and these are visible at \
+close enough range to observe at 2fps. The segment must also be >= 10 seconds.
+Set `l3_feasible=false` if: the segment shows talking/interviews, static scenes, \
+distant shots, person walking/standing, talking to camera, or any segment < 10 seconds.
 
 ### VISUAL SIGNAL REFERENCE
 - **Scene/Space**: Background change, location switch, character entry/exit.
@@ -1987,10 +2007,12 @@ insufficient visual detail (distant/blurry), or no physical actions.
 1. Output strictly valid JSON. No markdown code blocks.
 2. All timestamps: absolute integer seconds within [0, {duration}].
 3. Strict nesting: every L2 event MUST be within its parent L1 phase timespan.
-4. Anti-fragmentation: L2 events MUST be >= 5 seconds (except inter-scene cut segments).
-5. Feasibility enums: skip_reason is null or "talk_dominant" | "ambient_static"; \
+4. Anti-fragmentation: L2 events MUST be >= 5 seconds. If an event is shorter, merge \
+it with an adjacent same-scene event or drop it entirely.
+5. No names: never use people's names. Use descriptive labels ("a person", "the host").
+6. Feasibility enums: skip_reason is null or "talk_dominant" | "ambient_static"; \
 visual_dynamics is "high" | "medium" | "low".
-6. If feasibility.skip=true, output "macro_phases": []."""
+7. If feasibility.skip=true, output "macro_phases": []."""
 
 
 def get_universal_merged_prompt(n_frames: int, duration_sec: int) -> str:
