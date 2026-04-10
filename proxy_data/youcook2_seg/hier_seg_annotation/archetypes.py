@@ -2143,7 +2143,8 @@ Examples: "close-up of hands folding dough", "camera pulls back to reveal full w
 "person looks off-frame to the right", "steam rising from pot surface".
 
 **`caption`** field (1-2 sentences): detailed visual description of this micro-segment \
-(same DVC rules as dense_caption — purely observable, no inference).
+(same DVC rules as dense_caption — purely observable, no inference). \
+No `pre_state` or `post_state` fields needed.
 
 **TEXT GENERATION RULES — Academic Dense Video Captioning Standard**:
 
@@ -2252,10 +2253,15 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
           "action_id": 1,
           "start_time": 2,
           "end_time": 7,
-          "sub_action": "<5-15 word action phrase>",
-          "caption": "<1-2 sentences: detailed visual description>",
-          "pre_state": "<visual state before, or null>",
-          "post_state": "<visual state after, or null>"
+          "sub_action": "<5-15 word visual unit label>",
+          "caption": "<1-2 sentences: detailed visual description>"
+        }},
+        {{
+          "action_id": 2,
+          "start_time": 9,
+          "end_time": 12,
+          "sub_action": "<5-15 word label>",
+          "caption": "<1-2 sentences>"
         }}
       ]
     }},
@@ -2312,7 +2318,9 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 5. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
 6. All timestamps: absolute integer seconds in [0, {duration}].
 7. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
-8. L3 sub_actions: 2-6 seconds each; within parent event's [start_time, end_time]."""
+8. L3 sub_actions: 2-6 seconds each; within parent event's [start_time, end_time].
+9. L3 schema: ONLY `action_id`, `start_time`, `end_time`, `sub_action`, `caption`. \
+Do NOT output `pre_state` or `post_state` fields."""
 
 def get_scene_first_prompt(
     n_frames: int,
