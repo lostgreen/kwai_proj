@@ -30,7 +30,9 @@ import os
 import re
 import sys
 import time
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -425,10 +427,10 @@ def call_gemini(
     temperature: float = 0.2,
     max_retries: int = 3,
     fps: float = 2.0,
-) -> tuple[dict | None, str | None]:
+) -> tuple[dict | None, str | None, dict | None]:
     """
     Call Gemini with full video inline + structured prompt.
-    Returns (parsed_json, thinking_text) or (None, None) on failure.
+    Returns (parsed_json, thinking_text, usage_info) or (None, None, None) on failure.
     """
     with open(video_path, "rb") as f:
         video_bytes = f.read()
@@ -479,14 +481,24 @@ def call_gemini(
 
             parsed = _extract_json(caption)
             if parsed is not None:
-                return parsed, thinking
+                # Extract usage metadata
+                usage = {}
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    um = response.usage_metadata
+                    usage = {
+                        "prompt_tokens": getattr(um, "prompt_token_count", None),
+                        "candidates_tokens": getattr(um, "candidates_token_count", None),
+                        "total_tokens": getattr(um, "total_token_count", None),
+                        "thinking_tokens": getattr(um, "thinking_token_count", None),
+                    }
+                return parsed, thinking, usage
             print(f"  [attempt {attempt + 1}] JSON parse failed, retrying...", flush=True)
             print(f"  Raw output: {caption[:300]}...", flush=True)
         except Exception:
             traceback.print_exc()
         time.sleep(2 ** attempt)
 
-    return None, None
+    return None, None, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -507,6 +519,7 @@ def parse_args():
     p.add_argument("--project-id", default=None, help="GCP project ID (required for Vertex AI mode)")
     p.add_argument("--location", default="global", help="Vertex AI location (default: global)")
     p.add_argument("--overwrite", action="store_true", help="Re-annotate even if output JSON exists")
+    p.add_argument("--workers", type=int, default=1, help="Parallel workers (concurrent API calls)")
     p.add_argument("--total-card", type=int, default=1, help="Total parallel shards")
     p.add_argument("--cur-card", type=int, default=0, help="Current shard index")
     p.add_argument("--limit", type=int, default=0, help="Max videos to process (0=all)")
@@ -586,6 +599,109 @@ def _split_vlm_result(result: dict, duration: float) -> dict:
     }
 
 
+def _process_one(
+    rec: dict, idx: int, total: int,
+    client: genai.Client, model: str, fps: float,
+    output_dir: Path, overwrite: bool,
+    counter: dict, lock: threading.Lock,
+) -> None:
+    """Process a single video — thread-safe."""
+    # Resolve video path
+    if "video_path" in rec:
+        video_path = rec["video_path"]
+    elif "videos" in rec and rec["videos"]:
+        video_path = rec["videos"][0]
+    else:
+        print(f"[{idx}/{total}] SKIP — no video_path or videos field", flush=True)
+        return
+
+    meta = rec.get("metadata", {})
+    clip_key = meta.get("clip_key") or rec.get("clip_key") or _video_to_clip_key(video_path)
+    out_file = output_dir / f"{clip_key}.json"
+
+    if out_file.exists() and not overwrite:
+        print(f"[{idx}/{total}] {clip_key} — SKIP (exists)", flush=True)
+        return
+
+    print(f"[{idx}/{total}] {clip_key}", flush=True)
+
+    try:
+        t0 = time.time()
+        duration = _get_video_duration(video_path)
+        n_frames = int(duration * fps)
+
+        prompt = build_3level_prompt(n_frames=n_frames, duration_sec=int(duration))
+
+        result, thinking, usage = call_gemini(
+            client, model, video_path,
+            SYSTEM_PROMPT_NO_AUDIO, prompt,
+            fps=fps,
+        )
+
+        elapsed = time.time() - t0
+
+        # Accumulate token usage
+        if usage:
+            with lock:
+                for k, v in usage.items():
+                    if v is not None:
+                        counter[k] = counter.get(k, 0) + v
+                counter["n_calls"] = counter.get("n_calls", 0) + 1
+
+        if result is None:
+            print(f"  [{clip_key}] FAILED: no result after retries ({elapsed:.1f}s)", flush=True)
+            return
+
+        levels = _split_vlm_result(deepcopy(result), duration)
+
+        ann = {
+            "clip_key": clip_key,
+            "video_path": video_path,
+            "source_video_path": video_path,
+            "clip_duration_sec": duration,
+            "annotation_fps": fps,
+            "archetype": result.get("paradigm"),
+            "archetype_confidence": result.get("paradigm_confidence"),
+            "archetype_reason": result.get("paradigm_reason"),
+            "domain_l2": result.get("domain_l2"),
+            "domain_l1": DOMAIN_L2_TO_L1.get(result.get("domain_l2", ""), "other"),
+            "video_caption": result.get("video_caption"),
+            "feasibility": result.get("feasibility"),
+            "video_metadata": result.get("video_metadata"),
+            "summary": result.get("summary"),
+            "global_phase_criterion": result.get("global_phase_criterion"),
+            "level1": levels["level1"],
+            "level2": levels["level2"],
+            "level3": levels["level3"],
+            "annotation_model": model,
+            "annotation_thinking": thinking,
+            "token_usage": usage,
+            "annotated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(ann, f, ensure_ascii=False, indent=2)
+
+        n_ph = len(levels["level1"]["macro_phases"])
+        n_ev = len(levels["level2"]["events"])
+        n_l3 = len(levels["level3"]["grounding_results"])
+        paradigm = result.get("paradigm", "?")
+        domain = result.get("domain_l2", "?")
+        skip = result.get("feasibility", {}).get("skip", False)
+        tok_str = ""
+        if usage and usage.get("total_tokens"):
+            tok_str = f" | tokens={usage['total_tokens']}"
+            if usage.get("prompt_tokens"):
+                tok_str += f" (prompt={usage['prompt_tokens']}, out={usage.get('candidates_tokens', '?')})"
+        print(f"  [{clip_key}] {elapsed:.1f}s | paradigm={paradigm}, domain={domain}, "
+              f"{n_ph}ph/{n_ev}ev/{n_l3}l3{tok_str}"
+              f"{' [SKIP]' if skip else ''}", flush=True)
+
+    except Exception as e:
+        print(f"  [{clip_key}] ERROR: {e}", flush=True)
+        traceback.print_exc()
+
+
 def main():
     args = parse_args()
     client = _create_client(args)
@@ -606,101 +722,64 @@ def main():
     stride = len(video_list) // args.total_card + 1
     video_list = video_list[stride * args.cur_card : stride * (args.cur_card + 1)]
     print(f"Shard {args.cur_card}/{args.total_card}: {len(video_list)} videos, "
-          f"model={args.model}, fps={args.fps}")
+          f"model={args.model}, fps={args.fps}, workers={args.workers}")
 
-    for idx, rec in enumerate(video_list):
-        # Resolve video path — support both "video_path" and "videos" (list) formats
-        if "video_path" in rec:
-            video_path = rec["video_path"]
-        elif "videos" in rec and rec["videos"]:
-            video_path = rec["videos"][0]
-        else:
-            print(f"[{idx + 1}/{len(video_list)}] SKIP — no video_path or videos field", flush=True)
-            continue
+    # Global token counter
+    token_counter: dict = {}
+    counter_lock = threading.Lock()
 
-        # Resolve clip_key — check metadata.clip_key, then rec.clip_key, then filename stem
-        meta = rec.get("metadata", {})
-        clip_key = meta.get("clip_key") or rec.get("clip_key") or _video_to_clip_key(video_path)
-        out_file = output_dir / f"{clip_key}.json"
-
-        # Skip if already done
-        if out_file.exists() and not args.overwrite:
-            print(f"[{idx + 1}/{len(video_list)}] {clip_key} — SKIP (exists)", flush=True)
-            continue
-
-        print(f"[{idx + 1}/{len(video_list)}] {clip_key}", flush=True)
-
-        try:
-            t0 = time.time()
-            duration = _get_video_duration(video_path)
-            n_frames = int(duration * args.fps)
-
-            # Build 3-level prompt
-            prompt = build_3level_prompt(n_frames=n_frames, duration_sec=int(duration))
-
-            result, thinking = call_gemini(
-                client, args.model, video_path,
-                SYSTEM_PROMPT_NO_AUDIO, prompt,
-                fps=args.fps,
+    if args.workers <= 1:
+        # Sequential
+        for idx, rec in enumerate(video_list):
+            _process_one(
+                rec, idx + 1, len(video_list),
+                client, args.model, args.fps,
+                output_dir, args.overwrite,
+                token_counter, counter_lock,
             )
+    else:
+        # Parallel
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {}
+            for idx, rec in enumerate(video_list):
+                fut = pool.submit(
+                    _process_one,
+                    rec, idx + 1, len(video_list),
+                    client, args.model, args.fps,
+                    output_dir, args.overwrite,
+                    token_counter, counter_lock,
+                )
+                futures[fut] = idx
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    print(f"  Worker error: {e}", flush=True)
 
-            elapsed = time.time() - t0
-            print(f"  VLM call: {elapsed:.1f}s", flush=True)
-
-            if result is None:
-                print(f"  FAILED: no result after retries", flush=True)
-                continue
-
-            # Split into level1 / level2 / level3
-            levels = _split_vlm_result(deepcopy(result), duration)
-
-            # Build annotation JSON (same structure as annotate.py)
-            ann = {
-                "clip_key": clip_key,
-                "video_path": video_path,
-                "source_video_path": video_path,
-                "clip_duration_sec": duration,
-                "annotation_fps": args.fps,
-                # Classification fields
-                "archetype": result.get("paradigm"),
-                "archetype_confidence": result.get("paradigm_confidence"),
-                "archetype_reason": result.get("paradigm_reason"),
-                "domain_l2": result.get("domain_l2"),
-                "domain_l1": DOMAIN_L2_TO_L1.get(result.get("domain_l2", ""), "other"),
-                "video_caption": result.get("video_caption"),
-                "feasibility": result.get("feasibility"),
-                "video_metadata": result.get("video_metadata"),
-                "summary": result.get("summary"),
-                "global_phase_criterion": result.get("global_phase_criterion"),
-                # 3-level annotations
-                "level1": levels["level1"],
-                "level2": levels["level2"],
-                "level3": levels["level3"],
-                # Metadata
-                "annotation_model": args.model,
-                "annotation_thinking": thinking,
-                "annotated_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-            with open(out_file, "w", encoding="utf-8") as f:
-                json.dump(ann, f, ensure_ascii=False, indent=2)
-
-            # Quick summary
-            n_ph = len(levels["level1"]["macro_phases"])
-            n_ev = len(levels["level2"]["events"])
-            n_l3 = len(levels["level3"]["grounding_results"])
-            paradigm = result.get("paradigm", "?")
-            domain = result.get("domain_l2", "?")
-            skip = result.get("feasibility", {}).get("skip", False)
-            print(f"  → paradigm={paradigm}, domain={domain}, "
-                  f"{n_ph} phases, {n_ev} events, {n_l3} sub-actions"
-                  f"{' [SKIP]' if skip else ''}", flush=True)
-            print(f"  → {out_file}", flush=True)
-
-        except Exception as e:
-            print(f"  ERROR: {e}", flush=True)
-            traceback.print_exc()
-
+    # Print token usage summary
+    print("\n========== TOKEN USAGE SUMMARY ==========")
+    if token_counter:
+        n_calls = token_counter.get("n_calls", 0)
+        total_tok = token_counter.get("total_tokens", 0)
+        prompt_tok = token_counter.get("prompt_tokens", 0)
+        out_tok = token_counter.get("candidates_tokens", 0)
+        think_tok = token_counter.get("thinking_tokens", 0)
+        print(f"API calls:       {n_calls}")
+        print(f"Total tokens:    {total_tok:,}")
+        print(f"  Prompt tokens: {prompt_tok:,}")
+        print(f"  Output tokens: {out_tok:,}")
+        if think_tok:
+            print(f"  Think tokens:  {think_tok:,}")
+        if n_calls > 0:
+            print(f"  Avg per call:  {total_tok // n_calls:,}")
+        # Estimate: 1 image token ≈ 258 tokens (Gemini low-res image)
+        # Video at 2fps for Ns = 2N frames → ~2N*258 = 516N image tokens
+        if prompt_tok and n_calls:
+            avg_prompt = prompt_tok // n_calls
+            print(f"\n  Avg prompt tokens/video: {avg_prompt:,}")
+            print(f"  (Gemini video: ~258 tokens per frame at low-res)")
+    else:
+        print("No successful API calls.")
     print("Done.")
 
 

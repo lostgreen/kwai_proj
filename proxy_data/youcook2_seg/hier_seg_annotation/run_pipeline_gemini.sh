@@ -28,6 +28,7 @@ JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_in
 MODEL="${MODEL:-gemini-2.5-pro}"
 FPS="${FPS:-2}"
 LIMIT="${LIMIT:-20}"
+WORKERS="${WORKERS:-4}"
 
 # Auth: "vertex" (default, uses credential JSON) or "apikey" (uses GEMINI_API_KEY)
 AUTH_MODE="${AUTH_MODE:-vertex}"
@@ -64,6 +65,7 @@ log "========== GEMINI NATIVE PIPELINE CONFIG =========="
 log "JSONL:      $JSONL"
 log "MODEL:      $MODEL"
 log "FPS:        $FPS"
+log "WORKERS:    $WORKERS"
 log "LIMIT:      ${LIMIT:-0 (all)}"
 log "AUTH:       $AUTH_MODE"
 log "OUTPUT_DIR: $OUTPUT_DIR"
@@ -80,6 +82,7 @@ CMD="python $SCRIPT_DIR/annotate_gemini_native.py \
     --output-dir $OUTPUT_DIR \
     --model $MODEL \
     --fps $FPS \
+    --workers $WORKERS \
     $AUTH_FLAGS \
     $LIMIT_FLAG"
 
