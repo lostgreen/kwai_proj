@@ -96,15 +96,19 @@ def _accumulate_usage(usage, text_chars: int = 0, image_b64_bytes: int = 0, n_im
 from archetypes import (
     SYSTEM_PROMPT,
     DOMAIN_L2_ALL,
+    PARADIGM_IDS,
+    PARADIGM_TO_TOPOLOGY,
     TOPOLOGY_TYPES,
     TOPOLOGY_TO_L2_MODE,
     TOPOLOGY_TO_L3_MODE,
     ARCHETYPE_IDS,
     ARCHETYPE_TO_TOPOLOGY,
     TOPOLOGY_TO_DEFAULT_ARCHETYPE,
+    resolve_domain_l1,
     get_archetype,
     get_classification_prompt,
     get_archetype_merged_prompt,
+    get_unified_merged_prompt,
     get_archetype_l3_prompt,
     get_active_levels,
     get_l3_parent_type,
@@ -559,27 +563,18 @@ def annotate_clip(
 
     try:
         if level == "merged":
-            # Step 0: Classify archetype + domain
-            classify_result = _classify_archetype(
-                frame_dir, clip_duration,
-                api_base, api_key, model,
-                max_frames=classify_frames,
-                resize_max_width=resize_max_width, jpeg_quality=jpeg_quality,
-            )
-            archetype_id = classify_result["archetype"]
-            print(f"  [{key}] archetype={archetype_id} "
-                  f"conf={classify_result['archetype_confidence']:.2f} "
-                  f"domain={classify_result['domain_l2']}", flush=True)
-
-            # Step 1: Archetype-driven merged L1+L2 annotation
+            # Unified: classify + annotate in a single VLM call (v5)
             merged_result = _annotate_merged_l1l2(
                 frame_dir, clip_duration,
                 api_base, api_key, model,
                 max_frames_per_call, resize_max_width, jpeg_quality,
-                archetype_id=archetype_id,
             )
-            # Merge classify metadata into merged result
-            merged_result.update(classify_result)
+            archetype_id = merged_result.get("archetype", "tutorial")
+            print(f"  [{key}] archetype={archetype_id} "
+                  f"conf={merged_result.get('archetype_confidence', 0):.2f} "
+                  f"domain={merged_result.get('domain_l2', 'other')}"
+                  f"{' SKIP' if merged_result.get('feasibility', {}).get('skip') else ''}",
+                  flush=True)
         elif level == "3":
             # ── Archetype-aware L3 routing ──
             archetype_id = _resolve_archetype(existing)
@@ -686,16 +681,90 @@ def _split_merged_response(
     """Split merged VLM response into a flat dict of annotation fields.
 
     The VLM outputs events nested inside phases. This function:
-    1. Extracts and validates summary
-    2. Strips nested events out of phases → flat events list
-    3. Tags each event with parent_phase_id
-    4. Re-numbers event_id globally by start_time
+    1. Extracts and validates classification fields (paradigm, domain, feasibility)
+    2. Extracts and validates summary
+    3. Strips nested events out of phases → flat events list
+    4. Tags each event with parent_phase_id
+    5. Re-numbers event_id globally by start_time
 
-    Returns dict with keys: level1, level2, summary, global_phase_criterion.
-    Note: archetype/domain_l2/topology are set by Step 0 (classify), not here.
+    Returns dict with keys: level1, level2, summary, global_phase_criterion,
+    archetype, domain_l2, topology_type, feasibility, video_metadata, video_caption.
     """
     summary = parsed.get("summary", "")
     global_phase_criterion = parsed.get("global_phase_criterion", "")
+
+    # ── Classification fields (unified prompt v5) ──────────────────────
+    archetype = parsed.get("paradigm", "tutorial")
+    if archetype not in PARADIGM_IDS:
+        archetype = "tutorial"
+
+    archetype_confidence = parsed.get("paradigm_confidence")
+    if not isinstance(archetype_confidence, (int, float)):
+        archetype_confidence = 0.5
+    archetype_confidence = max(0.0, min(1.0, float(archetype_confidence)))
+
+    archetype_reason = str(parsed.get("paradigm_reason", ""))
+
+    domain_l2 = parsed.get("domain_l2", "other")
+    if domain_l2 not in DOMAIN_L2_ALL:
+        domain_l2 = "other"
+
+    topology_type = PARADIGM_TO_TOPOLOGY.get(archetype, "procedural")
+
+    video_caption = str(parsed.get("video_caption", ""))
+
+    # Feasibility
+    raw_feas = parsed.get("feasibility", {})
+    if not isinstance(raw_feas, dict):
+        raw_feas = {}
+    feas_score = raw_feas.get("score")
+    if not isinstance(feas_score, (int, float)):
+        feas_score = 0.5
+    feas_score = max(0.0, min(1.0, float(feas_score)))
+    feas_skip = bool(raw_feas.get("skip", False))
+    feas_skip_reason = raw_feas.get("skip_reason")
+    valid_skip_reasons = {"talk_dominant", "ambient_static", "low_visual_dynamics", "too_short", "low_feasibility"}
+    if feas_skip_reason not in valid_skip_reasons:
+        feas_skip_reason = None
+    est_phases = raw_feas.get("estimated_n_phases", 0)
+    est_events = raw_feas.get("estimated_n_events", 0)
+    visual_dynamics = raw_feas.get("visual_dynamics", "medium")
+    if visual_dynamics not in {"high", "medium", "low"}:
+        visual_dynamics = "medium"
+
+    # Programmatic override rules (ported from stage1_classify.py)
+    if visual_dynamics == "low" and est_events < 2 and not feas_skip:
+        feas_skip = True
+        feas_skip_reason = "low_visual_dynamics"
+    if feas_score < 0.4 and not feas_skip:
+        feas_skip = True
+        feas_skip_reason = "low_feasibility"
+
+    feasibility = {
+        "score": feas_score,
+        "skip": feas_skip,
+        "skip_reason": feas_skip_reason,
+        "estimated_n_phases": int(est_phases) if isinstance(est_phases, (int, float)) else 0,
+        "estimated_n_events": int(est_events) if isinstance(est_events, (int, float)) else 0,
+        "visual_dynamics": visual_dynamics,
+    }
+
+    # Video metadata
+    raw_meta = parsed.get("video_metadata", {})
+    if not isinstance(raw_meta, dict):
+        raw_meta = {}
+    camera_style = raw_meta.get("camera_style", "unknown")
+    if camera_style not in {"static_tripod", "handheld", "multi_angle", "first_person"}:
+        camera_style = "unknown"
+    editing_style = raw_meta.get("editing_style", "unknown")
+    if editing_style not in {"continuous", "jump_cut", "montage", "mixed"}:
+        editing_style = "unknown"
+    video_metadata = {
+        "has_text_overlay": bool(raw_meta.get("has_text_overlay", False)),
+        "has_narration": bool(raw_meta.get("has_narration", False)),
+        "camera_style": camera_style,
+        "editing_style": editing_style,
+    }
 
     raw_phases = parsed.get("macro_phases", [])
     l1_phases: list[dict] = []
@@ -763,6 +832,16 @@ def _split_merged_response(
         "summary": summary,
         "global_phase_criterion": global_phase_criterion,
         "l3_feasibility": l3_feasibility,
+        # Classification fields (unified prompt v5)
+        "archetype": archetype,
+        "archetype_confidence": archetype_confidence,
+        "archetype_reason": archetype_reason,
+        "domain_l2": domain_l2,
+        "domain_l1": resolve_domain_l1(domain_l2),
+        "topology_type": topology_type,
+        "video_caption": video_caption,
+        "feasibility": feasibility,
+        "video_metadata": video_metadata,
     }
 
 
@@ -771,15 +850,16 @@ def _annotate_merged_l1l2(
     clip_duration: float,
     api_base: str, api_key: str, model: str,
     max_frames: int, resize_max_width: int, jpeg_quality: int,
-    archetype_id: str = "tutorial",
 ) -> dict[str, Any]:
     """
-    Merged L1+L2: Single VLM call for phases, events, and summary.
+    Unified classify + annotate: single VLM call for paradigm classification,
+    domain, feasibility, metadata, and L1+L2 hierarchical annotation.
 
-    Uses archetype-specific prompts. Archetype/domain classification
-    is done separately in Step 0 (_classify_archetype).
+    v5: replaces separate _classify_archetype() + archetype-driven annotation.
+    The model self-classifies paradigm and applies matching rules in one pass.
 
-    Returns dict of annotation updates including level1, level2, summary.
+    Returns dict of annotation updates including level1, level2, summary,
+    archetype, domain_l2, feasibility, video_metadata, etc.
     """
     all_frames = get_all_frame_files(frame_dir)
     if not all_frames:
@@ -803,8 +883,38 @@ def _annotate_merged_l1l2(
         frame_labels.append(f"[Timestamp {format_mmss(idx)} | Frame {idx}]")
 
     duration = int(clip_duration)
-    prompt_text = get_archetype_merged_prompt(
-        archetype_id=archetype_id, n_frames=len(sampled), duration_sec=duration,
+
+    # Programmatic pre-check: too short → skip
+    if clip_duration < 15:
+        return {
+            "level1": {"macro_phases": [], "_sampling": {
+                "n_sampled_frames": len(sampled),
+                "resize_max_width": resize_max_width,
+                "jpeg_quality": jpeg_quality,
+            }},
+            "level2": {"events": []},
+            "summary": "",
+            "global_phase_criterion": "",
+            "l3_feasibility": {"suitable": False, "reason": "too short", "estimated_l3_actions": 0},
+            "archetype": "tutorial",
+            "archetype_confidence": 0.0,
+            "archetype_reason": "too short for annotation",
+            "domain_l2": "other",
+            "domain_l1": "other",
+            "topology_type": "procedural",
+            "video_caption": "",
+            "feasibility": {
+                "score": 0.0, "skip": True, "skip_reason": "too_short",
+                "estimated_n_phases": 0, "estimated_n_events": 0, "visual_dynamics": "low",
+            },
+            "video_metadata": {
+                "has_text_overlay": False, "has_narration": False,
+                "camera_style": "unknown", "editing_style": "unknown",
+            },
+        }
+
+    prompt_text = get_unified_merged_prompt(
+        n_frames=len(sampled), duration_sec=duration,
     )
     parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
     if parsed is None:

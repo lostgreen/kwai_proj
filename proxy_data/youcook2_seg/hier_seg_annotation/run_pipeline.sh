@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# run_pipeline.sh — Full annotation pipeline (Stage 1 + Stage 2)
+# run_pipeline.sh — Unified annotation pipeline (v5)
 #
-# Stage 1: Classify (paradigm + domain + feasibility filtering)
-# Stage 2: Annotate (L1+L2 merged + L3 leaf-node routing)
+# v5: Classification + L1/L2 annotation fused into a single VLM call.
+#     Stage 1 (separate classification) removed.
+#
+# Steps:
+#   1. Extract 1fps frames
+#   2. Unified classify + L1/L2 annotation (single VLM call per clip)
+#   3. Extract L3 frames (leaf-node routing)
+#   4. L3 annotation
 #
 # Usage:
 #   tmux new -s anno
@@ -23,12 +29,12 @@ export PYTHONUNBUFFERED=1
 
 # ── Config ──────────────────────────────────────────────────────────
 SCRIPT_DIR="proxy_data/youcook2_seg/hier_seg_annotation"
-DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation"
+DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1"
 
-JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/merged/sampled/sampled_1000.jsonl}"
-MODEL="${MODEL:-pa/gemini-3.1-pro-preview}"
-WORKERS="${WORKERS:-4}"
-LIMIT="${LIMIT:-0}"
+JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_instruct_164k/screen_keep.jsonl}"
+MODEL="${MODEL:-pa/gmn-2.5-fls}"
+WORKERS="${WORKERS:-8}"
+LIMIT="${LIMIT:-20}"
 
 LOG_DIR="${DATA_ROOT}/logs"
 mkdir -p "$LOG_DIR"
@@ -68,75 +74,55 @@ log "LIMIT:    ${LIMIT:-0 (all)}"
 log "DATA_ROOT: $DATA_ROOT"
 
 # =====================================================================
-# STAGE 1: Classification (paradigm + domain + feasibility)
+# STEP 1: Extract 1fps frames
 # =====================================================================
 log ""
-log ">>>>>>>>>> STAGE 1: CLASSIFICATION <<<<<<<<<<"
+log ">>>>>>>>>> STEP 1: EXTRACT FRAMES <<<<<<<<<<"
 
-# ── Step 1.1: Extract 64 frames for classification ───────────────────
-run_step "S1.1_EXTRACT_CLASSIFY_FRAMES" \
+run_step "S1_EXTRACT_FRAMES" \
     python "$SCRIPT_DIR/extract_frames.py" \
         --jsonl "$JSONL" \
-        --output-dir "$DATA_ROOT/frames_stage1" \
-        --fps 1 --max-frames 64 --workers "$WORKERS" \
-        $LIMIT_FLAG
-
-# ── Step 1.2: VLM classification + feasibility filtering ─────────────
-run_step "S1.2_CLASSIFY" \
-    python "$SCRIPT_DIR/stage1_classify.py" \
-        --jsonl "$JSONL" \
-        --frames-dir "$DATA_ROOT/frames_stage1" \
-        --output-dir "$DATA_ROOT/stage1_output" \
-        --model "$MODEL" --workers "$WORKERS" \
-        $LIMIT_FLAG
-
-# Use classify_keep.jsonl as input for Stage 2
-STAGE2_JSONL="$DATA_ROOT/stage1_output/classify_keep.jsonl"
-if [[ ! -f "$STAGE2_JSONL" ]]; then
-    log "ERROR: classify_keep.jsonl not found at $STAGE2_JSONL"
-    log "Stage 1 may have failed. Falling back to original JSONL."
-    STAGE2_JSONL="$JSONL"
-fi
-STAGE2_COUNT=$(wc -l < "$STAGE2_JSONL" | tr -d ' ')
-log "Stage 2 input: $STAGE2_COUNT clips from $STAGE2_JSONL"
-
-# =====================================================================
-# STAGE 2: Hierarchical Annotation (L1+L2 merged + L3)
-# =====================================================================
-log ""
-log ">>>>>>>>>> STAGE 2: ANNOTATION <<<<<<<<<<"
-
-# ── Step 2.1: Extract 1fps frames for annotation ─────────────────────
-run_step "S2.1_EXTRACT_ANNO_FRAMES" \
-    python "$SCRIPT_DIR/extract_frames.py" \
-        --jsonl "$STAGE2_JSONL" \
         --output-dir "$DATA_ROOT/frames" \
         --fps 1 --workers "$WORKERS" \
         $LIMIT_FLAG
 
-# ── Step 2.2: Classify archetype + Merged L1+L2 annotation ──────────
-run_step "S2.2_CLASSIFY_AND_MERGED" \
+# =====================================================================
+# STEP 2: Unified classify + L1/L2 annotation (single VLM call)
+# =====================================================================
+log ""
+log ">>>>>>>>>> STEP 2: UNIFIED CLASSIFY + ANNOTATE <<<<<<<<<<"
+
+run_step "S2_UNIFIED_MERGED" \
     python "$SCRIPT_DIR/annotate.py" \
-        --jsonl "$STAGE2_JSONL" \
+        --jsonl "$JSONL" \
         --frames-dir "$DATA_ROOT/frames" \
         --output-dir "$DATA_ROOT/annotations" \
         --level merged \
-        --classify-frames 64 \
         --model "$MODEL" --workers "$WORKERS" \
         $LIMIT_FLAG
 
-# ── Step 2.3: Extract L3 frames (leaf-node routing) ──────────────────
-run_step "S2.3_EXTRACT_FRAMES_L3" \
+# =====================================================================
+# STEP 3: Extract L3 frames (leaf-node routing)
+# =====================================================================
+log ""
+log ">>>>>>>>>> STEP 3: EXTRACT L3 FRAMES <<<<<<<<<<"
+
+run_step "S3_EXTRACT_FRAMES_L3" \
     python "$SCRIPT_DIR/extract_frames.py" \
         --annotation-dir "$DATA_ROOT/annotations" \
         --output-dir "$DATA_ROOT/frames_l3" \
         --fps 2 --workers "$WORKERS" \
         $LIMIT_FLAG
 
-# ── Step 2.4: L3 annotation (leaf-node routing) ──────────────────────
-run_step "S2.4_L3_ANNOTATION" \
+# =====================================================================
+# STEP 4: L3 annotation (leaf-node routing)
+# =====================================================================
+log ""
+log ">>>>>>>>>> STEP 4: L3 ANNOTATION <<<<<<<<<<"
+
+run_step "S4_L3_ANNOTATION" \
     python "$SCRIPT_DIR/annotate.py" \
-        --jsonl "$STAGE2_JSONL" \
+        --jsonl "$JSONL" \
         --frames-dir "$DATA_ROOT/frames" \
         --l3-frames-dir "$DATA_ROOT/frames_l3" \
         --output-dir "$DATA_ROOT/annotations" \
@@ -147,17 +133,11 @@ run_step "S2.4_L3_ANNOTATION" \
 # ── Summary ─────────────────────────────────────────────────────────
 log ""
 log "========== PIPELINE COMPLETE =========="
-log "Stage 1 output: $DATA_ROOT/stage1_output/"
-log "Annotations:    $DATA_ROOT/annotations/"
-log "Full log:       $LOG_FILE"
+log "Annotations: $DATA_ROOT/annotations/"
+log "Full log:    $LOG_FILE"
 
 # Count results
-if ls "$DATA_ROOT/stage1_output/classify_keep.jsonl" &>/dev/null; then
-    S1_KEEP=$(wc -l < "$DATA_ROOT/stage1_output/classify_keep.jsonl" | tr -d ' ')
-    S1_REJECT=$(wc -l < "$DATA_ROOT/stage1_output/classify_reject.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
-    log "Stage 1: ${S1_KEEP} keep, ${S1_REJECT} reject"
-fi
-
 TOTAL=$(ls "$DATA_ROOT/annotations/"*.json 2>/dev/null | wc -l | tr -d ' ')
 HAS_L3=$(grep -l '"level3"' "$DATA_ROOT/annotations/"*.json 2>/dev/null | wc -l | tr -d ' ')
-log "Stage 2: ${TOTAL} annotations, ${HAS_L3} with L3"
+SKIPPED=$(grep -l '"skip": true' "$DATA_ROOT/annotations/"*.json 2>/dev/null | wc -l | tr -d ' ')
+log "Total: ${TOTAL} annotations, ${HAS_L3} with L3, ${SKIPPED} skipped (feasibility)"

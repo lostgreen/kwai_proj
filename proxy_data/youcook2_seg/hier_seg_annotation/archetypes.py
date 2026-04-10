@@ -1560,3 +1560,229 @@ def get_level3_seg_prompt_with_hint(duration: int, hint: str) -> str:
     base = get_level3_seg_prompt(duration)
     return base + f"\n\nHint: {hint}"
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified Merged Prompt (v5: fuse classification + annotation into one call)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _format_paradigm_annotation_table() -> str:
+    """Build a compact per-paradigm reference table of L1/L2 definitions."""
+
+    # Per-topology annotation tips
+    topology_tips = {
+        "procedural": "Skip intros/outros/idle spans. Focus on task progress milestones.",
+        "periodic": "Organize by rhythm/intensity cycles. Rest intervals can be gaps.",
+        "sequence": "Follow narrative/topic/scene flow. Intros and transitions ARE valid phases.",
+        "observation": "Track subject behavior state changes. Long static spans are valid gaps.",
+    }
+
+    blocks = []
+    for pid, cfg in PARADIGMS.items():
+        l1_ex = "; ".join(f'"{e}"' for e in cfg.l1.examples[:2])
+        l2_ex = "; ".join(f'"{e}"' for e in cfg.l2.examples[:2])
+        tip = topology_tips.get(cfg.topology, "")
+        block = (
+            f"### {pid} ({cfg.display_name_en})\n"
+            f"- **L1 — {cfg.l1.name}**: {cfg.l1.definition}\n"
+            f"  Boundary signals: {cfg.l1.boundary_signals}\n"
+            f"  Good: {l1_ex}\n"
+            f"  NOT L1: {'; '.join(cfg.l1.anti_examples[:1])}\n"
+            f"- **L2 — {cfg.l2.name}**: {cfg.l2.definition}\n"
+            f"  Boundary signals: {cfg.l2.boundary_signals}\n"
+            f"  Good: {l2_ex}\n"
+            f"  NOT L2: {'; '.join(cfg.l2.anti_examples[:1])}\n"
+            f"- **Annotation tip**: {tip}"
+        )
+        blocks.append(block)
+    return "\n\n".join(blocks)
+
+
+def _format_l3_feasibility_all_paradigms() -> str:
+    """Build L3 feasibility reference for all paradigms."""
+    lines = []
+    for pid, cfg in PARADIGMS.items():
+        if cfg.l3.enabled:
+            lines.append(f"- **{pid}**: L3 = {cfg.l3.name} — {cfg.l3.definition[:80]}...")
+        else:
+            lines.append(f"- **{pid}**: L3 disabled")
+    return "\n".join(lines)
+
+
+_UNIFIED_MERGED_PROMPT = """\
+You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
+
+Your task has TWO parts:
+1. **CLASSIFY** the video (paradigm, domain, feasibility, metadata, caption)
+2. **ANNOTATE** the video with hierarchical L1 + L2 structure based on the paradigm you identified
+
+════════════════════════════════════════════════
+## PART 1 — CLASSIFICATION
+════════════════════════════════════════════════
+
+### 1A. PARADIGM (temporal structure)
+
+Classify into exactly ONE paradigm based on the video's dominant temporal structure:
+
+{paradigm_table}
+
+If the video does NOT fit any paradigm above:
+- **Talk-dominant** (people in conversation, minimal physical action): set feasibility.skip=true, skip_reason="talk_dominant"
+- **Ambient/static** (no identifiable subject, no sequential progression): set feasibility.skip=true, skip_reason="ambient_static"
+
+### 1B. DOMAIN (content topic)
+
+Domain is WHAT the video is about — orthogonal to paradigm (HOW it is structured).
+Choose domain_l2 from:
+{domain_l2_list}
+If none fits, use domain_l2="other".
+
+### 1C. FEASIBILITY
+
+Assess whether this video is worth annotating with hierarchical temporal structure.
+Consider: visual dynamics, number of distinct segments, clarity of boundaries.
+
+### 1D. VIDEO CAPTION
+
+Write a detailed description of the entire video (3-5 sentences).
+Cover: setting/environment, main subjects, key objects, overall progression, and outcome.
+Every statement must be grounded in what is visible in the frames.
+
+════════════════════════════════════════════════
+## PART 2 — HIERARCHICAL ANNOTATION
+════════════════════════════════════════════════
+
+CRITICAL: In Part 1, you chose ONE paradigm. In this section, you MUST ONLY read and apply \
+the L1/L2 definitions for YOUR CHOSEN paradigm. IGNORE the rules for the other 6 paradigms completely.
+
+**If feasibility.skip=true**, output `"macro_phases": []` and skip annotation.
+
+{paradigm_annotation_table}
+
+### UNIVERSAL TEMPORAL & FORMATTING RULES (Apply to ALL paradigms)
+
+**Describe-before-timestamp**: For each L1 phase and L2 event, first write the descriptive fields \
+(phase_name, narrative_summary, instruction, dense_caption), then assign start_time/end_time. \
+This grounds your timestamps in actual visual evidence rather than guessing.
+
+**Temporal Logic (Crucial):**
+- **Sparsity & Gaps**: Phases/Events do NOT need to cover the entire video. Gaps between annotated segments are expected. Skip intros, outros, and idle spans.
+- **No Overlaps**: L2 events must NOT overlap each other in time.
+- **Strict Nesting**: Every L2 event MUST be strictly nested within its parent L1 phase timeframe.
+- **Anti-Fragmentation**: Do NOT split by camera cuts alone. An L2 event MUST be >= 5 seconds. Anything shorter belongs to L3 micro-actions (do not annotate L3 here).
+- **Empty L2**: `"events": []` is perfectly valid if an L1 phase has no meaningful sub-structure. A single-phase video is also valid.
+
+**Text Generation Constraints:**
+- `phase_name`: MUST be a concise descriptive phrase (5–15 words).
+- `narrative_summary`: MUST be exactly 2–3 sentences detailing what happens and the outcome.
+- `instruction`: MUST be an objective description (8–20 words) stating WHAT the action is and WITH WHICH objects. Do NOT use imperative verbs (e.g., avoid "Watch...", "Observe...").
+- `dense_caption`: MUST be detailed visual descriptions (2–4 sentences) covering actions, objects, spatial relations, and state changes.
+
+### L3 FEASIBILITY ASSESSMENT
+
+After annotating L1 and L2, assess whether this video supports fine-grained L3 annotation.
+
+Per-paradigm L3 reference:
+{l3_feasibility_ref}
+
+Consider:
+- Are there enough L2 events (>=3) with sufficient duration (>=5s each) for micro-action grounding?
+- Are fine-grained visual state changes clearly visible in the frames?
+- Is the framing/resolution adequate to observe micro-actions at 2fps?
+
+### VISUAL SIGNAL REFERENCE
+- Scene/Space: Background/layout/location change, character entry/exit.
+- Subject Behavior: Pose transition, gaze direction, speed change, interaction start/end.
+- Object State: Appearance/texture/color/position/quantity change.
+- Narrative/Emotion: Shift in emotional tone, topic change, conflict resolution.
+- Camera/Editing: Rhythm change, montage sequence, focus shift, cut to close-up.
+
+════════════════════════════════════════════════
+## OUTPUT JSON
+════════════════════════════════════════════════
+
+{{
+  "paradigm": "<one of: {paradigm_ids}>",
+  "paradigm_confidence": 0.85,
+  "paradigm_reason": "<one sentence explaining the paradigm decision>",
+  "domain_l2": "<one of the domain_l2 categories above, or 'other'>",
+  "video_caption": "<3-5 sentences: detailed description of the entire video>",
+  "feasibility": {{
+    "score": 0.85,
+    "skip": false,
+    "skip_reason": null,
+    "estimated_n_phases": 3,
+    "estimated_n_events": 8,
+    "visual_dynamics": "high"
+  }},
+  "video_metadata": {{
+    "has_text_overlay": false,
+    "has_narration": true,
+    "camera_style": "<static_tripod | handheld | multi_angle | first_person>",
+    "editing_style": "<continuous | jump_cut | montage | mixed>"
+  }},
+  "summary": "<one sentence summarizing the video>",
+  "global_phase_criterion": "<one sentence: why split into these phases>",
+  "l3_feasibility": {{
+    "suitable": true,
+    "reason": "<1 sentence: why L3 micro-action annotation is/isn't feasible>",
+    "estimated_l3_actions": 8
+  }},
+  "macro_phases": [
+    {{
+      "phase_id": 1,
+      "start_time": 5,
+      "end_time": 60,
+      "phase_name": "<5-15 word descriptive phrase>",
+      "narrative_summary": "<2-3 sentences>",
+      "event_split_criterion": "<one sentence: why this phase has/lacks events>",
+      "events": [
+        {{
+          "event_id": 1,
+          "start_time": 5,
+          "end_time": 28,
+          "instruction": "<8-20 word description>",
+          "dense_caption": "<2-4 sentences: detailed process description>",
+          "visual_keywords": ["kw1", "kw2"]
+        }}
+      ]
+    }}
+  ]
+}}
+
+## RULES & CONSTRAINTS
+1. **Formatting**: Output strictly valid JSON. No markdown code blocks around it.
+2. **Timestamps**: All `start_time` and `end_time` MUST be absolute integer seconds within [0, {duration}].
+3. **Strict Nesting**: Every L2 event's `[start_time, end_time]` MUST be entirely within its parent L1 `macro_phase` boundaries. Do not hallucinate timestamps outside the phase.
+4. **Granularity (Anti-L3)**: L2 events are NOT momentary actions. Any event shorter than 5 seconds likely belongs to L3. Group related actions into a larger continuous event.
+5. **Enums & Values**:
+   - `paradigm_confidence` / `feasibility.score`: Float between 0.0 and 1.0.
+   - `feasibility.skip_reason`: null if skip=false, else one of: "talk_dominant", "ambient_static".
+   - `visual_dynamics`: "high" | "medium" | "low".
+   - `camera_style`: "static_tripod" | "handheld" | "multi_angle" | "first_person".
+   - `editing_style`: "continuous" | "jump_cut" | "montage" | "mixed".
+6. **Skip Logic**: If `feasibility.skip` is true, output `"macro_phases": []` (empty array).
+
+## QUALITY CHECKLIST
+- [ ] Each L1 phase represents a distinct semantic stage per the chosen paradigm's definition?
+- [ ] Boundary triggers match the paradigm-specific signals, not borrowed from other paradigms?
+- [ ] L2 event timestamps are strictly within parent L1 phase boundaries?
+- [ ] No L2 event is shorter than 5 seconds?
+- [ ] Descriptive fields (phase_name, instruction, dense_caption) are grounded in visible frames?"""
+
+
+def get_unified_merged_prompt(n_frames: int, duration_sec: int) -> str:
+    """Build the unified classification + annotation prompt (v5).
+
+    Replaces the separate get_classification_prompt() + get_archetype_merged_prompt() calls.
+    The model self-classifies paradigm and applies the matching annotation rules in one pass.
+    """
+    return _UNIFIED_MERGED_PROMPT.format(
+        n_frames=n_frames,
+        duration=duration_sec,
+        paradigm_table=_format_paradigm_table_for_prompt(),
+        paradigm_ids=", ".join(sorted(PARADIGM_IDS)),
+        domain_l2_list=_format_domain_l2_for_prompt(),
+        paradigm_annotation_table=_format_paradigm_annotation_table(),
+        l3_feasibility_ref=_format_l3_feasibility_all_paradigms(),
+    )
+
