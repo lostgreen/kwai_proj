@@ -1006,7 +1006,7 @@ def _format_paradigm_table_for_prompt() -> str:
     lines = []
     for pid, cfg in PARADIGMS.items():
         lines.append(
-            f"- **{pid}** ({cfg.display_name}): {cfg.description}\n"
+            f"- **{pid}** ({cfg.display_name_en}): {cfg.description}\n"
             f"  Typical: {', '.join(cfg.typical_videos[:3])}.\n"
             f"  Signals: {cfg.classification_signals}"
         )
