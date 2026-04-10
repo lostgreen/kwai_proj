@@ -611,6 +611,14 @@ def _split_l2_first_response(
         ev.setdefault("l3_feasible", True)
         if ev["end_time"] - ev["start_time"] < 10:
             ev["l3_feasible"] = False
+        # Programmatic override: force l3_feasible=False for speaking/talking events
+        _text = (str(ev.get("instruction", "")) + " " + str(ev.get("dense_caption", ""))).lower()
+        _talk_kw = ("speak", "talk", "explain", "narrat", "interview", "convers", "describ", "discuss",
+                     "announc", "comment", "address the camera", "to the camera", "voiceover")
+        if any(kw in _text for kw in _talk_kw):
+            ev["l3_feasible"] = False
+            if not ev.get("l3_reason"):
+                ev["l3_reason"] = "talk/narration dominant"
         ev["l3_feasible"] = bool(ev["l3_feasible"])
         ev.setdefault("l3_reason", "")
         # Validate key_frame_indices
@@ -628,26 +636,13 @@ def _split_l2_first_response(
         ev["key_frame_indices"] = valid_kf[:2]
         valid_events.append(ev)
 
-    # Merge short events (<5s) into adjacent events
-    merged_events: list[dict] = []
-    for ev in valid_events:
-        dur = ev["end_time"] - ev["start_time"]
-        if dur >= 5:
-            merged_events.append(ev)
-        elif merged_events:
-            prev = merged_events[-1]
-            prev["end_time"] = max(prev["end_time"], ev["end_time"])
-            print(f"    INFO: short event ({dur}s) merged into previous event", flush=True)
-        else:
-            merged_events.append(ev)
-
-    # Sort by start_time and re-number
-    merged_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
-    for i, ev in enumerate(merged_events, 1):
+    # Sort by start_time and re-number (no merging — short events are kept)
+    valid_events.sort(key=lambda e: (e.get("start_time", 0), e.get("end_time", 0)))
+    for i, ev in enumerate(valid_events, 1):
         ev["event_id"] = i
 
     return {
-        "_stage1_events": merged_events,
+        "_stage1_events": valid_events,
         "summary": summary,
         "global_phase_criterion": global_phase_criterion,
         "archetype": archetype,

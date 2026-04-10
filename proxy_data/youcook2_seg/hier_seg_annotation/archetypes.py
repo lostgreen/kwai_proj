@@ -2032,6 +2032,23 @@ def get_universal_merged_prompt(n_frames: int, duration_sec: int) -> str:
 # v7  Bottom-Up Pipeline: L2-First Dense Captioning + L1 Aggregation
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def _format_paradigm_l2_table() -> str:
+    """Build a compact per-paradigm L2-only reference table for the L2-first prompt."""
+    blocks = []
+    for pid, cfg in PARADIGMS.items():
+        l2_ex = "; ".join(f'"{e}"' for e in cfg.l2.examples[:2])
+        l2_anti = "; ".join(f'"{e}"' for e in cfg.l2.anti_examples[:1])
+        block = (
+            f"- **{pid}** — L2 = **{cfg.l2.name}**: {cfg.l2.definition}\n"
+            f"  Boundary signals: {cfg.l2.boundary_signals}\n"
+            f"  Good examples: {l2_ex}\n"
+            f"  NOT valid at L2: {l2_anti}"
+        )
+        blocks.append(block)
+    return "\n".join(blocks)
+
+
 _L2_FIRST_PROMPT = """\
 You are given a {duration}s video clip (timestamps 0 to {duration}) with {n_frames} frames.
 
@@ -2084,9 +2101,18 @@ Every statement must be grounded in what is visible in the frames.
 
 ### L2 — Visual Event (Dense Caption)
 
-**Definition**: A continuous visual segment focused on **one coherent activity, one primary \
-subject, and one consistent scene**. This is the fundamental unit of dense video captioning: \
-each event describes WHAT visually happens during that time span.
+**Universal definition**: A continuous visual segment focused on **one coherent activity, \
+one primary subject, and one consistent scene**.
+
+**IMPORTANT**: After choosing your paradigm in Part 1, use its L2 definition below to \
+determine event granularity and boundaries. Only apply the L2 rules for YOUR paradigm:
+
+{paradigm_l2_table}
+
+**ONE EVENT = ONE SCENE**: Every event must describe a SINGLE continuous scene. \
+If your description contains "then", "followed by", "next", "after that", or describes \
+two different activities/locations — you MUST split it into separate events. \
+A correct event description should read as ONE ongoing visual activity, not a sequence.
 
 **Critical Rule — Intra-Scene vs Inter-Scene Cuts**:
 Scan through the frames in order. When consecutive frames show a DIFFERENT background, \
@@ -2103,11 +2129,14 @@ Examples: gymnasium → rooftop; host on camera → B-roll footage; Person A int
 Person B interview; kitchen → dining room; instructor on camera → screen recording.
 
 **Rules**:
-- Each event MUST be >= 5 seconds. If a segment between two inter-scene cuts is shorter \
-than 5s, you MUST merge it into the preceding or following event that shares the same \
-scene/location. Never output an event shorter than 5 seconds.
+- Events of any duration are allowed, including short events (< 5 seconds). \
+If a brief but visually distinct segment exists (e.g., a quick cut-away, transition shot), \
+output it as its own event — do NOT merge it into an adjacent event.
 - Events must not overlap. Gaps between events are expected.
 - `"events": []` is valid if the video has no meaningful sub-structure.
+
+**SELF-CHECK**: After writing all events, review each event's `dense_caption`. \
+If any caption describes more than one scene/location/subject, split that event.
 
 ### KEY FRAME SELECTION
 
@@ -2202,8 +2231,8 @@ grouped into higher-level thematic phases. These help a downstream stage aggrega
 ## RULES
 1. Output strictly valid JSON. No markdown code blocks.
 2. All timestamps: absolute integer seconds within [0, {duration}].
-3. Anti-fragmentation: L2 events MUST be >= 5 seconds. Merge shorter segments \
-with adjacent same-scene events or drop entirely.
+3. Short events are fine — do NOT merge short segments into adjacent events. \
+Each visually distinct segment should be its own event regardless of duration.
 4. No names: never use people's names. Use descriptive labels ("a person", "the host").
 5. Feasibility enums: skip_reason is null or "talk_dominant" | "ambient_static"; \
 visual_dynamics is "high" | "medium" | "low".
@@ -2223,6 +2252,7 @@ def get_l2_first_prompt(n_frames: int, duration_sec: int) -> str:
         paradigm_table=_format_paradigm_table_for_prompt(),
         paradigm_ids=", ".join(sorted(PARADIGM_IDS)),
         domain_l2_list=_format_domain_l2_for_prompt(),
+        paradigm_l2_table=_format_paradigm_l2_table(),
     )
 
 
