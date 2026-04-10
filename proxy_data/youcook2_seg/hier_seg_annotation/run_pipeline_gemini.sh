@@ -120,6 +120,7 @@ log ">>>>>>>>>> STEP 2: Gemini Native 3-Level Annotation <<<<<<<<<<"
 CMD="python $SCRIPT_DIR/annotate_gemini_native.py \
     --data-path $JSONL \
     --output-dir $OUTPUT_DIR \
+    --frames-dir $FRAMES_DIR \
     --model $MODEL \
     --fps $FPS \
     --workers $WORKERS \

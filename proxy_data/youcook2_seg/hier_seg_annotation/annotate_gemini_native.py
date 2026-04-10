@@ -511,6 +511,9 @@ def parse_args():
                    help="Input JSONL with video_path field (one video per line)")
     p.add_argument("--output-dir", type=str, required=True,
                    help="Output directory — one {clip_key}.json per video")
+    p.add_argument("--frames-dir", type=str, default=None,
+                   help="Frames directory (for data_visualization). "
+                        "If set, writes frame_dir into each output JSON.")
     p.add_argument("--model", default="gemini-2.5-pro", help="Gemini model name")
     p.add_argument("--fps", type=float, default=2.0, help="FPS hint for Gemini video processing")
     p.add_argument("--api-key", default=None, help="Gemini API key (or set GEMINI_API_KEY env)")
@@ -602,7 +605,7 @@ def _split_vlm_result(result: dict, duration: float) -> dict:
 def _process_one(
     rec: dict, idx: int, total: int,
     client: genai.Client, model: str, fps: float,
-    output_dir: Path, overwrite: bool,
+    output_dir: Path, frames_dir: Path | None, overwrite: bool,
     counter: dict, lock: threading.Lock,
 ) -> None:
     """Process a single video — thread-safe."""
@@ -660,6 +663,7 @@ def _process_one(
             "source_video_path": video_path,
             "clip_duration_sec": duration,
             "annotation_fps": fps,
+            "frame_dir": str(frames_dir / clip_key) if frames_dir else None,
             "archetype": result.get("paradigm"),
             "archetype_confidence": result.get("paradigm_confidence"),
             "archetype_reason": result.get("paradigm_reason"),
@@ -727,6 +731,7 @@ def main():
     # Global token counter
     token_counter: dict = {}
     counter_lock = threading.Lock()
+    frames_dir = Path(args.frames_dir) if args.frames_dir else None
 
     if args.workers <= 1:
         # Sequential
@@ -734,7 +739,7 @@ def main():
             _process_one(
                 rec, idx + 1, len(video_list),
                 client, args.model, args.fps,
-                output_dir, args.overwrite,
+                output_dir, frames_dir, args.overwrite,
                 token_counter, counter_lock,
             )
     else:
@@ -746,7 +751,7 @@ def main():
                     _process_one,
                     rec, idx + 1, len(video_list),
                     client, args.model, args.fps,
-                    output_dir, args.overwrite,
+                    output_dir, frames_dir, args.overwrite,
                     token_counter, counter_lock,
                 )
                 futures[fut] = idx
