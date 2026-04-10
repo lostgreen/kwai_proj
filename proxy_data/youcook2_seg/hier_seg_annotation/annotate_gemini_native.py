@@ -623,6 +623,20 @@ def _process_one(
     out_file = output_dir / f"{clip_key}.json"
 
     if out_file.exists() and not overwrite:
+        # Patch frame_dir into existing JSONs that are missing it
+        if frames_dir:
+            try:
+                with open(out_file, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                expected_frame_dir = str(frames_dir / clip_key)
+                if existing.get("frame_dir") != expected_frame_dir:
+                    existing["frame_dir"] = expected_frame_dir
+                    with open(out_file, "w", encoding="utf-8") as f:
+                        json.dump(existing, f, ensure_ascii=False, indent=2)
+                    print(f"[{idx}/{total}] {clip_key} — PATCHED frame_dir", flush=True)
+                    return
+            except Exception:
+                pass
         print(f"[{idx}/{total}] {clip_key} — SKIP (exists)", flush=True)
         return
 
