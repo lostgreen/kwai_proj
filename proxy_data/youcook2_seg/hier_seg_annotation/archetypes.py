@@ -2111,9 +2111,6 @@ objects, spatial relations, and state changes in detail.
 - `key_frame_indices`: 1-2 frame indices (integers in [1, {n_frames}]) best representing \
 the event's core visual content. Choose frames near the temporal midpoint.
 
-Per-paradigm L2+L3 captioning guidance:
-{paradigm_l2l3_table}
-
 ### 2C. L3 — VISUAL MICRO-SEGMENTS (per event)
 
 Always attempt to annotate `sub_actions` for every event. \
@@ -2351,5 +2348,4 @@ def get_scene_first_prompt(
         paradigm_table=_format_paradigm_table_for_prompt(),
         paradigm_ids=", ".join(sorted(PARADIGM_IDS)),
         domain_l2_list=_format_domain_l2_for_prompt(),
-        paradigm_l2l3_table=_format_paradigm_l2l3_table(),
     )
