@@ -160,9 +160,19 @@ def build_subset_summary(
     }
 
 
-def normalize_frame_range(start_sec: int, end_sec: int, n_frames: int) -> tuple[int, int]:
-    start_idx = max(1, int(start_sec))
-    end_idx = max(start_idx, int(end_sec))
+def normalize_frame_range(start_sec: int, end_sec: int, n_frames: int, fps: float = 1.0) -> tuple[int, int]:
+    """Convert annotation timestamps (seconds) → 1-based frame indices.
+
+    Frame-index convention (matches annotate.py frame_index_to_sec):
+      frame_idx = round(second * fps) + 1
+      second     = (frame_idx - 1) / fps
+
+    At 1fps: frame 1 = 0s, frame 2 = 1s, ...
+    At 2fps: frame 1 = 0s, frame 2 = 0.5s, frame 3 = 1s, ...
+    """
+    fps = max(0.1, fps)
+    start_idx = max(1, int(round(start_sec * fps)) + 1)
+    end_idx = max(start_idx, int(round(end_sec * fps)) + 1)
     if n_frames > 0:
         start_idx = min(start_idx, n_frames)
         end_idx = min(max(start_idx, end_idx), n_frames)
@@ -190,7 +200,7 @@ def resolve_path(root: Path, path_text: str) -> Path:
     return resolved
 
 
-def build_l1_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str, Any]]:
+def build_l1_segments(raw_level: dict[str, Any], n_frames: int, fps: float = 1.0) -> list[dict[str, Any]]:
     segments = []
     for idx, item in enumerate(raw_level.get("macro_phases") or [], 1):
         if not isinstance(item, dict):
@@ -200,7 +210,7 @@ def build_l1_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
         end_sec = parse_mmss(item.get("end_time"))
         if start_sec is None or end_sec is None:
             continue
-        frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames)
+        frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames, fps)
         segments.append(
             {
                 "id": f"l1-{phase_id}",
@@ -225,7 +235,7 @@ def build_l1_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
     return sort_segments(segments)
 
 
-def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str, Any]]:
+def build_l2_segments(raw_level: dict[str, Any], n_frames: int, fps: float = 1.0) -> list[dict[str, Any]]:
     segments = []
     for idx, item in enumerate(raw_level.get("events") or [], 1):
         if not isinstance(item, dict):
@@ -236,7 +246,7 @@ def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
         end_sec = parse_mmss(item.get("end_time"))
         if start_sec is None or end_sec is None:
             continue
-        frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames)
+        frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames, fps)
         segments.append(
             {
                 "id": f"l2-{event_id}",
@@ -261,7 +271,7 @@ def build_l2_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
     return sort_segments(segments)
 
 
-def build_l3_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str, Any]]:
+def build_l3_segments(raw_level: dict[str, Any], n_frames: int, fps: float = 1.0) -> list[dict[str, Any]]:
     segments = []
     # Flatten nested event-wrapper format (l2l3_first) into flat sub-action list
     flat_items: list[tuple[dict, int | None]] = []  # (sub_action_dict, parent_event_id)
@@ -282,7 +292,7 @@ def build_l3_segments(raw_level: dict[str, Any], n_frames: int) -> list[dict[str
         end_sec = parse_mmss(item.get("end_time"))
         if start_sec is None or end_sec is None:
             continue
-        frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames)
+        frame_start, frame_end = normalize_frame_range(start_sec, end_sec, n_frames, fps)
         segments.append(
             {
                 "id": f"l3-{action_id}",
@@ -591,9 +601,13 @@ class SegmentationStore:
         duration_sec = int(safe_float(raw.get("clip_duration_sec") or raw.get("annotation_end_sec") or 0))
         n_frames = int(safe_float(raw.get("n_frames") or 0))
 
-        level1 = build_l1_segments(raw.get("level1") or {}, n_frames)
-        level2 = build_l2_segments(raw.get("level2") or {}, n_frames)
-        level3 = build_l3_segments(raw.get("level3") or {}, n_frames)
+        # Extract extraction fps from _sampling (l2l3_first / scene_first use 2fps)
+        sampling = (raw.get("level1") or {}).get("_sampling") or {}
+        fps = float(sampling.get("fps") or 1.0)
+
+        level1 = build_l1_segments(raw.get("level1") or {}, n_frames, fps)
+        level2 = build_l2_segments(raw.get("level2") or {}, n_frames, fps)
+        level3 = build_l3_segments(raw.get("level3") or {}, n_frames, fps)
         levels = {"level1": level1, "level2": level2, "level3": level3}
 
         diagnostics = {
@@ -644,7 +658,8 @@ class SegmentationStore:
             "scope_start_sec": raw.get("annotation_start_sec"),
             "scope_end_sec": raw.get("annotation_end_sec"),
             "levels": levels,
-            "sampling": (raw.get("level1") or {}).get("_sampling") or {},
+            "sampling": sampling,
+            "fps": fps,
             "warped_mapping": (raw.get("level1") or {}).get("_warped_mapping") or [],
             "segment_calls": {
                 "level2": (raw.get("level2") or {}).get("_phase_calls") or [],
@@ -886,6 +901,7 @@ class SegmentationStore:
         if clip_key in self.frame_cache:
             return self.frame_cache[clip_key]
 
+        fps = float(payload.get("fps") or 1.0)
         frame_dir_text = str(payload.get("frame_dir") or "")
         n_frames = int(payload.get("n_frames") or 0)
         sampled = set((payload.get("sampling") or {}).get("sampled_frame_indices") or [])
@@ -958,7 +974,7 @@ class SegmentationStore:
             strip.append(
                 {
                     "frame_idx": frame_idx,
-                    "timestamp": format_mmss(frame_idx),
+                    "timestamp": format_mmss((frame_idx - 1) / fps),
                     "sampled": frame_idx in sampled,
                     "src": src,
                 }
