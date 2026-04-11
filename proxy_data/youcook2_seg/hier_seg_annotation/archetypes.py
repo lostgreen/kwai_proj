@@ -1970,7 +1970,7 @@ def get_l2l3_first_prompt(n_frames: int, duration_sec: int) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SCENE_FIRST_PROMPT = """\
-You are given a {duration}s video clip with {n_frames} frames sampled at 2fps.
+You are given a {duration}s video clip with {n_frames} frames sampled at 1fps.
 
 An automatic shot detector has pre-segmented this clip into {n_scenes} scene(s). \
 These scenes are useful anchors — but not infallible. \
@@ -2101,6 +2101,11 @@ objects, spatial relations, and state changes in detail.
 - `visual_keywords`: 3-6 keyword tags reflecting the main visual elements.
 - `key_frame_indices`: 1-2 frame indices (integers in [1, {n_frames}]) best representing \
 the event's core visual content. Choose frames near the temporal midpoint.
+- `l3_worthy`: boolean. Set to `true` if this event contains rich internal dynamics that \
+would benefit from finer-grained L3 sub-segmentation. Indicators: multiple distinct \
+sub-actions within the event, visible action transitions, object state changes, or \
+camera movement revealing different activities. Set to `false` for static / uniform / \
+very short events where internal splitting adds no value.
 
 ════════════════════════════════════════════════
 ## PART 3 — AGGREGATION HINTS
@@ -2130,7 +2135,8 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<8-20 words: WHAT happens WITH WHICH objects>",
       "dense_caption": "<2-4 sentences: detailed visual description>",
       "visual_keywords": ["kw1", "kw2", "kw3"],
-      "key_frame_indices": [5, 10]
+      "key_frame_indices": [5, 10],
+      "l3_worthy": false
     }},
     {{
       "event_id": 2,
@@ -2142,7 +2148,8 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<8-20 words>",
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": ["kw1"],
-      "key_frame_indices": [20]
+      "key_frame_indices": [20],
+      "l3_worthy": true
     }},
     {{
       "event_id": 3,
@@ -2154,7 +2161,8 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<first activity in scene 4>",
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": [],
-      "key_frame_indices": [40]
+      "key_frame_indices": [40],
+      "l3_worthy": true
     }},
     {{
       "event_id": 4,
@@ -2166,7 +2174,8 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<second activity in scene 4>",
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": [],
-      "key_frame_indices": [55]
+      "key_frame_indices": [55],
+      "l3_worthy": false
     }}
   ]
 }}
@@ -2232,8 +2241,7 @@ one per original scene minimum, or finer-grained if the scenes are themselves sp
 
 **When to output `"sub_actions": []`**:
 - The event is a single continuous visual unit with no distinct internal phases
-- Very short event (< 5 seconds)
-- Static content (title card, frozen frame, text overlay)
+- Static content (title card, frozen frame, text overlay, talkshow interview with zero motion)
 
 **What counts as an L3 boundary** (any visually distinct window):
 - Physical action change: different motion/task begins
