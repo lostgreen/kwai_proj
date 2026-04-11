@@ -2101,36 +2101,32 @@ objects, spatial relations, and state changes in detail.
 - `key_frame_indices`: 1-2 frame indices (integers in [1, {n_frames}]) best representing \
 the event's core visual content. Choose frames near the temporal midpoint.
 
-### 2C. L3 — VISUAL MICRO-SEGMENTS (per event)
+### 2C. L3 — SUB-SPLITTING EVENTS INTO MICRO-SEGMENTS
 
-Always attempt to annotate `sub_actions` for every event. \
-Each entry is a visually distinct 2-6 second micro-segment — it does NOT have to be \
-a physical action. ANY of the following qualifies as an L3 micro-segment:
+L3 is the sub-split layer: each L3 entry represents a visually distinct 2-6 second \
+micro-segment within an L2 event. Think of it as applying the same split logic used \
+for scenes, but now applied WITHIN each event.
 
-**Types of valid L3 micro-segments**:
-- **Physical action**: "right hand pours liquid into bowl", "person bends knees into squat"
-- **Camera shot / framing change**: "close-up of knife blade cutting through onion", \
-"wide establishing shot of kitchen workspace"
-- **Subject reaction / state change**: "person pauses, looks at camera", \
-"liquid in pan begins to bubble and darken"
-- **Object appearance / disappearance**: "a red pepper is placed onto the cutting board", \
-"person removes bowl from counter"
-- **Environmental / background event**: "steam rises from the pot in the background", \
-"a second person walks through the background"
-- **Transition within the event**: "camera pans left revealing additional counter space"
+**When to annotate L3**:
+- **Single-scene event, splittable**: The event contains multiple visually distinct \
+phases (e.g., a 20s scene where the person first reaches for a tool, then uses it). \
+Split into L3 micro-segments.
+- **Multi-scene merged event (N scenes)**: MUST have at least N sub_actions — one \
+per original scene at minimum, or more fine-grained if the scenes themselves are splittable.
 
-The key criterion: does this 2-6 second window have **distinct visual content** different \
-from the adjacent windows? If yes, annotate it.
+**When to output `"sub_actions": []`**:
+- **Single-scene event, NOT splittable**: The event is a single continuous visual unit \
+with no distinct internal phases (e.g., a 10s clip of a person walking in one direction). \
+Do NOT force artificial splits.
+- **Very short event (< 5 seconds)**: Not enough content to sub-split meaningfully.
+- **Static content**: Title card, frozen frame, plain text overlay.
 
-Output `"sub_actions": []` ONLY when:
-- The event is extremely short (< 5 seconds) with no distinct visual phases, OR
-- The entire event is truly static (e.g., a frozen frame or a plain title card)
-
-Prefer over-segmenting over under-segmenting. More L3 entries = better.
-
-**L3 minimum for merged events**: If an event was created by MERGING N scenes, \
-it MUST have at least N sub_actions — at minimum one per original scene. \
-Each merged scene contributed distinct visual content; the L3 annotations must reflect that.
+**What counts as an L3 micro-segment** (any visually distinct 2-6s window):
+- Physical action: "right hand pours liquid into bowl"
+- Camera shot / framing change: "close-up of knife blade cutting through onion"
+- Subject state change: "person pauses, looks at camera"
+- Object appearance: "a red pepper is placed onto the cutting board"
+- Environmental event: "steam rises from the pot in the background"
 
 **L3 Rules**:
 - Timestamps: absolute integer seconds from the full video timeline.
