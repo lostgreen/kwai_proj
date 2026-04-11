@@ -95,7 +95,7 @@ log ">>>>>>>>>> STEP 1.5: SCENE DETECTION <<<<<<<<<<"
 log "    Scenes are HARD ANCHORS — Pass 1 (1fps) merges scenes + caption; Pass 2 (1fps) per-event L3"
 
 SCENE_DETECTOR="${SCENE_DETECTOR:-content}"
-SCENE_THRESHOLD="${SCENE_THRESHOLD:-27.0}"
+SCENE_THRESHOLD="${SCENE_THRESHOLD:-20.0}"
 
 run_step "S1_5_SCENE_DETECT" \
     python "$SCRIPT_DIR/detect_scenes.py" \

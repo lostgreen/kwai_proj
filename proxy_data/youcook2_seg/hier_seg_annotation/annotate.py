@@ -1011,6 +1011,7 @@ def _annotate_scene_first_l3(
     api_base: str, api_key: str, model: str,
     resize_max_width: int, jpeg_quality: int,
     fps: float = 1.0,
+    l3_log_dir: Path | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Pass 2: per-event L3 sub-split using only the event's frames at 1fps.
 
@@ -1046,17 +1047,17 @@ def _annotate_scene_first_l3(
         ev_duration = ev_end - ev_start
         n_scenes = len(ev.get("scene_ids", [1]))
 
-        # Deterministic L3 eligibility: multi-scene OR VLM-flagged l3_worthy
+        # Deterministic L3 eligibility: multi-scene OR (l3_worthy AND duration > 10s)
         if n_scenes >= 2:
             l3_eligible = True
-        elif ev.get("l3_worthy", False):
+        elif ev.get("l3_worthy", False) and ev_duration > 10:
             l3_eligible = True
         else:
             l3_eligible = False
 
         if not l3_eligible:
             ev["l3_feasible"] = False
-            ev["l3_reason"] = f"skip: {n_scenes} scene(s), {ev_duration}s, l3_worthy=False"
+            ev["l3_reason"] = f"skip: {n_scenes} scene(s), {ev_duration}s, l3_worthy={ev.get('l3_worthy', False)}"
             continue
 
         # Select frames within [ev_start, ev_end]
@@ -1106,9 +1107,35 @@ def _annotate_scene_first_l3(
                 print(f"    [L3] WARN: failed to save debug prompt: {_e}", flush=True)
             _annotate_scene_first_l3._prompt_logged = True
 
-        parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text,
+        raw_response = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, prompt_text,
                                 frame_b64, frame_labels, images_first=True)
-        if parsed is None:
+        parsed = parse_json_from_response(raw_response)
+        if parsed.get("_parse_error"):
+            # Retry once
+            raw_response = call_vlm(api_base, api_key, model, SYSTEM_PROMPT, prompt_text,
+                                    frame_b64, frame_labels, images_first=True)
+            parsed = parse_json_from_response(raw_response)
+
+        # Save raw VLM response to log directory
+        if l3_log_dir is not None:
+            clip_key = frame_dir.name
+            log_file = l3_log_dir / f"{clip_key}_ev{ev['event_id']}.json"
+            try:
+                log_data = {
+                    "clip_key": clip_key,
+                    "event_id": ev["event_id"],
+                    "event_range": f"{ev_start}-{ev_end}s",
+                    "n_scenes": n_scenes,
+                    "n_frames": len(event_frames),
+                    "frame_labels": frame_labels,
+                    "raw_vlm_response": raw_response,
+                    "parsed": parsed,
+                }
+                log_file.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+        if parsed.get("_parse_error"):
             ev["l3_feasible"] = False
             ev["l3_reason"] = "L3 VLM call failed"
             continue
@@ -1119,9 +1146,8 @@ def _annotate_scene_first_l3(
         ev["l3_reason"] = f"{len(valid_subs)} sub-actions" if valid_subs else "no valid sub-actions"
         if not valid_subs and raw_subs:
             # Debug: VLM returned sub_actions but all were invalid
-            import json as _json
             print(f"    [L3] DEBUG event {ev['event_id']}: VLM returned {len(raw_subs)} sub_actions, "
-                  f"all invalid. Raw: {_json.dumps(raw_subs, ensure_ascii=False)[:500]}", flush=True)
+                  f"all invalid. Raw: {json.dumps(raw_subs, ensure_ascii=False)[:500]}", flush=True)
         if valid_subs:
             l3_results.append({
                 "event_id": ev["event_id"],
@@ -1202,11 +1228,14 @@ def annotate_clip(
         # Pass 2: per-event L3 sub-split
         events = stage1_result.get("_stage1_events", [])
         if events:
+            l3_log_dir = output_dir.parent / "l3_logs"
+            l3_log_dir.mkdir(parents=True, exist_ok=True)
             events, l3_results = _annotate_scene_first_l3(
                 frame_dir, events, clip_duration,
                 api_base, api_key, model,
                 resize_max_width, jpeg_quality,
                 fps=fps,
+                l3_log_dir=l3_log_dir,
             )
             stage1_result["_stage1_events"] = events
             stage1_result["_l3_results"] = l3_results

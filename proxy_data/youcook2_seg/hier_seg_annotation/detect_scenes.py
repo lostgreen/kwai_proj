@@ -10,7 +10,7 @@ Usage:
     python detect_scenes.py \
         --frames-dir frames/ \
         --detector content \
-        --threshold 27.0 \
+        --threshold 20.0 \
         --workers 4
 """
 
@@ -25,7 +25,7 @@ def detect_scenes_for_clip(
     frame_dir: Path,
     overwrite: bool = False,
     detector_type: str = "content",
-    threshold: float = 27.0,
+    threshold: float = 20.0,
     min_scene_len: int = 15,
 ) -> dict:
     """Detect scene boundaries for a single clip.
@@ -37,7 +37,7 @@ def detect_scenes_for_clip(
         frame_dir:       Path to the clip's extracted frames directory.
         overwrite:       Re-detect even if scenes.json already exists.
         detector_type:   "content" (ContentDetector) or "adaptive" (AdaptiveDetector).
-        threshold:       Detection threshold (27.0 for content, 3.0 for adaptive).
+        threshold:       Detection threshold (20.0 for content, 3.0 for adaptive).
         min_scene_len:   Minimum scene length in source video frames.
 
     Returns:
@@ -139,8 +139,8 @@ def main() -> None:
     parser.add_argument("--detector", choices=["content", "adaptive"],
                         default="content",
                         help="Scene detection algorithm")
-    parser.add_argument("--threshold", type=float, default=27.0,
-                        help="Detection threshold (27.0 for content, 3.0 for adaptive)")
+    parser.add_argument("--threshold", type=float, default=20.0,
+                        help="Detection threshold (20.0 for content, 3.0 for adaptive)")
     parser.add_argument("--min-scene-len", type=int, default=15,
                         help="Minimum scene length in source video frames")
     parser.add_argument("--workers", type=int, default=4,
