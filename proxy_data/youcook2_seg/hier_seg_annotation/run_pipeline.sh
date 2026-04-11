@@ -121,6 +121,7 @@ run_step "S1_5_SCENE_DETECT" \
         --detector "$SCENE_DETECTOR" \
         --threshold "$SCENE_THRESHOLD" \
         --workers "$WORKERS" \
+        --annotations-dir "$DATA_ROOT/annotations" \
         $LIMIT_FLAG
 
 # =====================================================================

@@ -138,6 +138,7 @@ def detect_scenes_for_clip(
     threshold: float = 0.5,
     min_scene_len: int = 15,
     transnet_model=None,
+    annotations_dir: Path | None = None,
 ) -> dict:
     """Detect scene boundaries for a single clip.
 
@@ -148,6 +149,7 @@ def detect_scenes_for_clip(
         threshold:       Detection threshold (0.5 for transnet, 20.0 for content, 3.0 for adaptive).
         min_scene_len:   Minimum scene length in source video frames (PySceneDetect only).
         transnet_model:  Pre-loaded TransNetV2 model instance (required for transnet mode).
+        annotations_dir: If provided, skip clips that already have complete annotations.
 
     Returns:
         Status dict with clip_key, skipped, n_scenes, error.
@@ -156,6 +158,19 @@ def detect_scenes_for_clip(
     if not overwrite and scenes_path.exists():
         return {"clip_key": frame_dir.name, "skipped": True,
                 "n_scenes": -1, "error": None}
+
+    # Skip if this clip already has a complete annotation
+    if annotations_dir is not None:
+        ann_file = annotations_dir / f"{frame_dir.name}.json"
+        if ann_file.exists():
+            try:
+                with open(ann_file, encoding="utf-8") as f:
+                    ann = json.load(f)
+                if ann.get("level1") is not None and ann.get("level2") is not None and ann.get("level3") is not None:
+                    return {"clip_key": frame_dir.name, "skipped": True,
+                            "n_scenes": -1, "error": None}
+            except Exception:
+                pass
 
     meta_path = frame_dir / "meta.json"
     if not meta_path.exists():
@@ -232,6 +247,8 @@ def main() -> None:
                         help="Process at most N clips (0 = all)")
     parser.add_argument("--overwrite", action="store_true",
                         help="Re-detect even if scenes.json exists")
+    parser.add_argument("--annotations-dir", default=None,
+                        help="Skip clips that already have complete annotations in this directory")
     args = parser.parse_args()
 
     # Resolve default threshold per detector
@@ -270,6 +287,7 @@ def main() -> None:
             sys.exit(1)
 
     ok = skipped = errors = 0
+    annotations_dir = Path(args.annotations_dir) if args.annotations_dir else None
 
     if args.detector == "transnet":
         # TransNetV2 uses TF model — run sequentially to avoid GPU contention
@@ -279,6 +297,7 @@ def main() -> None:
                     fd, args.overwrite, args.detector,
                     args.threshold, args.min_scene_len,
                     transnet_model=transnet_model,
+                    annotations_dir=annotations_dir,
                 )
             except Exception as exc:
                 errors += 1
@@ -302,6 +321,7 @@ def main() -> None:
                     detect_scenes_for_clip,
                     fd, args.overwrite, args.detector,
                     args.threshold, args.min_scene_len,
+                    annotations_dir=annotations_dir,
                 ): fd
                 for fd in frame_dirs
             }
