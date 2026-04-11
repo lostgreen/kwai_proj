@@ -1080,6 +1080,18 @@ def _annotate_scene_first_l3(
             sec = int(round(frame_index_to_sec(idx, fps=fps)))
             frame_by_sec[sec] = fp
 
+    # Load scene boundaries for [SCENE BREAK] labels
+    scene_boundaries_raw = load_scene_boundaries(frame_dir)
+    sampled_indices = sorted(frame_by_sec.values(), key=lambda p: frame_stem_to_index(p, 0))
+    all_sampled_idx = [frame_stem_to_index(fp, 0) for fp in sampled_indices]
+    boundary_tol = 2 if fps >= 2.0 else 1
+    scene_boundary_set: set[int] = set()
+    for b_idx in scene_boundaries_raw:
+        if all_sampled_idx:
+            nearest = min(all_sampled_idx, key=lambda s, b=b_idx: abs(s - b))
+            if abs(nearest - b_idx) <= boundary_tol:
+                scene_boundary_set.add(nearest)
+
     l3_results: list[dict] = []
     for ev in events:
         ev_start = ev["start_time"]
@@ -1115,7 +1127,10 @@ def _annotate_scene_first_l3(
         for fp in event_frames:
             idx = frame_stem_to_index(fp, 0)
             ts_sec = int(round(frame_index_to_sec(idx, fps=fps)))
-            frame_labels.append(f"[t={ts_sec}s]")
+            ts_label = f"[t={ts_sec}s]"
+            if idx in scene_boundary_set:
+                ts_label = f"[SCENE BREAK] {ts_label}"
+            frame_labels.append(ts_label)
 
         prompt_text = get_scene_first_l3_prompt(
             n_frames=len(event_frames),
@@ -1126,6 +1141,23 @@ def _annotate_scene_first_l3(
             scene_ids=str(ev.get("scene_ids", [])),
             n_scenes=n_scenes,
         )
+
+        # One-time L3 prompt dump for verification
+        if not hasattr(_annotate_scene_first_l3, "_prompt_logged"):
+            _debug_l3_path = Path("_debug_scene_first_l3_prompt.txt")
+            try:
+                lines = [f"=== SYSTEM PROMPT ===\n{SYSTEM_PROMPT}\n",
+                         "=== USER MESSAGE (images_first=True) ===\n",
+                         "--- FRAMES (sent first) ---"]
+                for _lbl in frame_labels:
+                    lines.append(f"{_lbl}\n  [IMAGE_PLACEHOLDER]")
+                lines.append("--- FRAMES END ---\n")
+                lines.append(f"--- PROMPT TEXT ---\n{prompt_text}\n--- PROMPT TEXT END ---")
+                _debug_l3_path.write_text("\n".join(lines), encoding="utf-8")
+                print(f"    [L3] prompt saved to {_debug_l3_path.resolve()}", flush=True)
+            except Exception as _e:
+                print(f"    [L3] WARN: failed to save debug prompt: {_e}", flush=True)
+            _annotate_scene_first_l3._prompt_logged = True
 
         parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text,
                                 frame_b64, frame_labels, images_first=True)
