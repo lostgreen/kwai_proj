@@ -2043,6 +2043,9 @@ the same location.
 (e.g., prep ends → cooking begins).
   ✗ **B-Roll / Cut-away**: An establishing shot, title card, or illustrative B-roll \
 inserted between main actions.
+  ✗ **Title cards / Intro / Outro / Slideshows**: Scenes that contain static text overlays, \
+scrolling credits, logo bumpers, or slideshow-style content MUST be kept as standalone events — \
+NEVER merge them with adjacent content scenes.
 
 **merge_reason**: 1-2 sentences of concrete visual evidence explaining WHY the scenes \
 belong to the same unbroken event:
@@ -2124,6 +2127,10 @@ Output `"sub_actions": []` ONLY when:
 - The entire event is truly static (e.g., a frozen frame or a plain title card)
 
 Prefer over-segmenting over under-segmenting. More L3 entries = better.
+
+**L3 minimum for merged events**: If an event was created by MERGING N scenes, \
+it MUST have at least N sub_actions — at minimum one per original scene. \
+Each merged scene contributed distinct visual content; the L3 annotations must reflect that.
 
 **L3 Rules**:
 - Timestamps: absolute integer seconds from the full video timeline.
