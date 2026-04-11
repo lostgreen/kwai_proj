@@ -1983,8 +1983,8 @@ Pre-detected input scenes (start/end in whole seconds):
 
 Your task has THREE parts:
 1. **CLASSIFY** the video (domain + caption)
-2. **RESTRUCTURE + CAPTION + L3**: Merge adjacent scenes and/or split long scenes into \
-well-formed events, then caption each event and annotate L3 sub-actions
+2. **RESTRUCTURE + CAPTION**: Merge adjacent scenes and/or split long scenes into \
+well-formed events, then caption each event
 3. **AGGREGATION HINTS**: one-sentence summary + phase grouping criterion
 
 ════════════════════════════════════════════════
@@ -2005,7 +2005,7 @@ Cover: setting/environment, main subjects, key objects, overall progression, and
 Every statement must be grounded in what is visible in the frames.
 
 ════════════════════════════════════════════════
-## PART 2 — RESTRUCTURE + CAPTION + L3
+## PART 2 — RESTRUCTURE + CAPTION
 ════════════════════════════════════════════════
 
 ### 2A. THREE OPERATIONS ON SCENES
@@ -2102,104 +2102,6 @@ objects, spatial relations, and state changes in detail.
 - `key_frame_indices`: 1-2 frame indices (integers in [1, {n_frames}]) best representing \
 the event's core visual content. Choose frames near the temporal midpoint.
 
-### 2C. L3 — SUB-SPLITTING EVENTS INTO MICRO-SEGMENTS
-
-L3 is the sub-split layer: each L3 entry represents a visually distinct \
-micro-segment within an L2 event. Think of it as applying the same split logic used \
-for scenes, but now applied WITHIN each event.
-
-**When to annotate L3**:
-- **Single-scene event, splittable**: The event contains multiple visually distinct \
-phases (e.g., a 20s scene where the person first reaches for a tool, then uses it). \
-Split into L3 micro-segments.
-- **Multi-scene merged event (N scenes)**: MUST have at least N sub_actions — one \
-per original scene at minimum, or more fine-grained if the scenes themselves are splittable.
-
-**When to output `"sub_actions": []`**:
-- **Single-scene event, NOT splittable**: The event is a single continuous visual unit \
-with no distinct internal phases (e.g., a 10s clip of a person walking in one direction). \
-Do NOT force artificial splits.
-- **Very short event (< 5 seconds)**: Not enough content to sub-split meaningfully.
-- **Static content**: Title card, frozen frame, plain text overlay.
-
-**What counts as an L3 micro-segment** (any visually distinct 2-6s window):
-- Physical action: "right hand pours liquid into bowl"
-- Camera shot / framing change: "close-up of knife blade cutting through onion"
-- Subject state change: "person pauses, looks at camera"
-- Object appearance: "a red pepper is placed onto the cutting board"
-- Environmental event: "steam rises from the pot in the background"
-
-**L3 Rules**:
-- Timestamps: absolute integer seconds from the full video timeline.
-- Must fall within the parent event's [start_time, end_time].
-- Allow gaps between entries — do NOT force full temporal coverage.
-
-**`sub_action`** field (5-15 words): concise label describing the visual unit. \
-Examples: "close-up of hands folding dough", "camera pulls back to reveal full workspace", \
-"person looks off-frame to the right", "steam rising from pot surface".
-
-**`caption`** field (1-2 sentences): detailed visual description of this micro-segment \
-(same DVC rules as dense_caption — purely observable, no inference). \
-No `pre_state` or `post_state` fields needed.
-
-**TEXT GENERATION RULES — Academic Dense Video Captioning Standard**:
-
-These captions will be used as training data for Dense Video Captioning models. \
-The goal is purely visual grounding — the caption must be recoverable from the frames \
-alone, with no reliance on external knowledge, domain expertise, or audio inference.
-
-**Core principle**: Write as if you are a surveillance camera that can only see, not hear \
-or infer. Every word in the caption must correspond to something directly visible in the \
-frames of this event. No sentence may require knowledge beyond the visual pixels.
-
-**`instruction`** (8-20 words):
-- Pattern: [Subject] + [action verb] + [object/target] + [optional spatial/manner qualifier]
-- GOOD: "A person in white apron pours liquid from a measuring cup into a metal bowl"
-- GOOD: "Two hands stretch a piece of dough outward on a floured wooden surface"
-- BAD: "Making the sauce" (too vague, no subject or object)
-- BAD: "Demonstrating the technique" (implies intent/purpose not visible in frames)
-
-**`dense_caption`** (2-4 sentences):
-Each sentence must add NEW visual information. Target: 3-5 observable facts per sentence. \
-Structure each sentence around: **WHO/WHAT** does **WHAT ACTION** to **WHAT OBJECT** \
-**WHERE** (spatial position) with **VISIBLE STATE CHANGES**.
-
-Required coverage (include as many as are visible):
-1. Subject description: clothing, position, body pose, visible attributes
-2. Object description: shape, color, material, quantity, position in frame
-3. Primary action: precise motion verb + trajectory/direction
-4. Spatial arrangement: left/right/center, foreground/background, relative positions
-5. Visible state change: what changes from start to end of the event
-
-- GOOD: "A person wearing a white apron and blue gloves stands at a stainless steel counter. \
-They hold a dark-handled knife in their right hand and chop a pile of green herbs on a \
-wooden cutting board. The herbs are reduced to small pieces with each downward stroke, \
-accumulating into a mound on the left side of the board."
-- BAD: "The chef is making a sauce." (inferred from domain knowledge, not visual observation)
-- BAD: "This step involves seasoning the dish." (implies narrative context, not visual content)
-
-**`sub_action`** (5-15 words):
-- Single atomic motion: one verb + one object
-- GOOD: "right hand lifts cutting board edge"
-- BAD: "preparing ingredients" (too general, not one atomic motion)
-
-**`caption`** (sub-action caption, 1-2 sentences):
-Same rules as dense_caption but for the atomic action window only.
-
-**ABSOLUTE PROHIBITIONS** (these will corrupt training data):
-- Words implying hearing: "explains", "talks about", "says", "announces", "narrates"
-- Words implying purpose/intent: "demonstrates", "shows how to", "teaches", "prepares to"
-- Words requiring domain knowledge: specific dish/technique names unless visible as text on screen
-- Proper names of people, brands, places unless readable as on-screen text
-- Time-sequence language that spans beyond this event: "after adding", "before this step", \
-"following the previous", "to complete the recipe"
-- Evaluative language: "properly", "correctly", "well", "effectively", "successfully"
-
-Human names → "a person" / "the individual" / "a man/woman in [visible clothing]". \
-Brand names → "a metal container" / "a glass bottle with a green label". \
-Dish names → describe the visible food: "a white paste", "a dark red liquid", \
-"a pile of chopped green vegetables".
-
 ════════════════════════════════════════════════
 ## PART 3 — AGGREGATION HINTS
 ════════════════════════════════════════════════
@@ -2228,23 +2130,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<8-20 words: WHAT happens WITH WHICH objects>",
       "dense_caption": "<2-4 sentences: detailed visual description>",
       "visual_keywords": ["kw1", "kw2", "kw3"],
-      "key_frame_indices": [5, 10],
-      "sub_actions": [
-        {{
-          "action_id": 1,
-          "start_time": 2,
-          "end_time": 7,
-          "sub_action": "<5-15 word visual unit label>",
-          "caption": "<1-2 sentences: detailed visual description>"
-        }},
-        {{
-          "action_id": 2,
-          "start_time": 9,
-          "end_time": 12,
-          "sub_action": "<5-15 word label>",
-          "caption": "<1-2 sentences>"
-        }}
-      ]
+      "key_frame_indices": [5, 10]
     }},
     {{
       "event_id": 2,
@@ -2256,8 +2142,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<8-20 words>",
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": ["kw1"],
-      "key_frame_indices": [20],
-      "sub_actions": []
+      "key_frame_indices": [20]
     }},
     {{
       "event_id": 3,
@@ -2269,8 +2154,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<first activity in scene 4>",
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": [],
-      "key_frame_indices": [40],
-      "sub_actions": []
+      "key_frame_indices": [40]
     }},
     {{
       "event_id": 4,
@@ -2282,8 +2166,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
       "instruction": "<second activity in scene 4>",
       "dense_caption": "<2-4 sentences>",
       "visual_keywords": [],
-      "key_frame_indices": [55],
-      "sub_actions": []
+      "key_frame_indices": [55]
     }}
   ]
 }}
@@ -2297,10 +2180,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 3. MERGE: scene_ids MUST be consecutive integers [k, k+1, ..., k+m] with no gaps. NON-CONSECUTIVE merges (e.g., [2,4,6]) are INVALID — they interleave scenes from different time blocks.
 4. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
 5. All timestamps: absolute integer seconds in [0, {duration}]. Output as plain integers (e.g., 33, not "00:33" or "33s").
-6. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
-7. L3 sub_actions: within parent event's [start_time, end_time]. No duration constraint.
-8. L3 schema: ONLY `action_id`, `start_time`, `end_time`, `sub_action`, `caption`. \
-Do NOT output `pre_state` or `post_state` fields."""
+6. key_frame_indices: integers in [1, {n_frames}], 1-2 per event."""
 
 def get_scene_first_prompt(
     n_frames: int,
@@ -2308,10 +2188,10 @@ def get_scene_first_prompt(
     n_scenes: int,
     scenes_json_str: str,
 ) -> str:
-    """Build the scene-first prompt (v9 Stage 1: scene-anchored merge → caption → L3).
+    """Build the scene-first prompt (v9 Stage 1: scene-anchored merge → caption).
 
     The model receives pre-detected scenes as hard anchors and decides which adjacent
-    scenes to merge into events, then captions each event with inline L3 sub-actions.
+    scenes to merge into events, then captions each event. L3 is done in a separate pass.
     Event timestamps are NOT output by the model — they are derived from scene_ids.
     """
     return _SCENE_FIRST_PROMPT.format(
@@ -2320,4 +2200,104 @@ def get_scene_first_prompt(
         n_scenes=n_scenes,
         scenes_json=scenes_json_str,
         domain_l2_list=_format_domain_l2_for_prompt(),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scene-first L3 prompt (per-event sub-split, separate pass)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCENE_FIRST_L3_PROMPT = """\
+You are given {n_frames} frames from a video event spanning {start_time}s to {end_time}s \
+(duration: {duration}s). Frame labels show absolute timestamps [t=Xs].
+
+**Event context** (from a previous annotation pass):
+- **instruction**: {instruction}
+- **dense_caption**: {dense_caption}
+- **scene_ids**: {scene_ids} ({n_scenes} scene(s) in this event)
+
+Your task: Split this event into visually distinct micro-segments (L3 sub-actions).
+
+════════════════════════════════════════════════
+## L3 SUB-SPLIT RULES
+════════════════════════════════════════════════
+
+Each L3 entry represents a visually distinct micro-segment within this event. \
+Think of it as finding the natural internal boundaries.
+
+**When to create sub-actions**:
+- The event contains multiple visually distinct phases → split at boundaries
+- Multi-scene merged event ({n_scenes} scenes) → at least {n_scenes} sub_action(s), \
+one per original scene minimum, or finer-grained if the scenes are themselves splittable
+
+**When to output `"sub_actions": []`**:
+- The event is a single continuous visual unit with no distinct internal phases
+- Very short event (< 5 seconds)
+- Static content (title card, frozen frame, text overlay)
+
+**What counts as an L3 boundary** (any visually distinct window):
+- Physical action change: different motion/task begins
+- Camera shot / framing change: cut to different angle
+- Subject state change: person pauses, changes pose
+- Object appearance/disappearance: new object enters or exits frame
+- Environmental shift: lighting change, background change
+
+**Rules**:
+- Timestamps: absolute integer seconds (matching the [t=Xs] frame labels)
+- Must fall within [{start_time}, {end_time}]
+- Gaps between entries are OK — do NOT force full coverage
+- No duration constraint on individual entries
+
+**`sub_action`** (5-15 words): concise visual label. \
+Examples: "close-up of hands folding dough", "person looks off-frame to the right".
+
+**`caption`** (1-2 sentences): detailed visual description. \
+Purely observable facts — no inference, no audio, no domain knowledge. \
+Write as if you can only see, not hear.
+
+**PROHIBITIONS** (these corrupt training data):
+- Words implying hearing: "explains", "says", "narrates"
+- Words implying intent: "demonstrates", "shows how to", "prepares to"
+- Domain-specific names unless readable as on-screen text
+- Cross-event references: "after the previous step", "before this step"
+
+════════════════════════════════════════════════
+## OUTPUT JSON
+════════════════════════════════════════════════
+
+{{
+  "sub_actions": [
+    {{
+      "action_id": 1,
+      "start_time": {start_time},
+      "end_time": <integer>,
+      "sub_action": "<5-15 word visual label>",
+      "caption": "<1-2 sentences: detailed visual description>"
+    }}
+  ]
+}}
+
+Output strictly valid JSON. No markdown code blocks. \
+If no sub-actions, output `{{"sub_actions": []}}`."""
+
+
+def get_scene_first_l3_prompt(
+    n_frames: int,
+    start_time: int,
+    end_time: int,
+    instruction: str,
+    dense_caption: str,
+    scene_ids: str,
+    n_scenes: int,
+) -> str:
+    """Build the per-event L3 sub-split prompt for scene_first pass 2."""
+    return _SCENE_FIRST_L3_PROMPT.format(
+        n_frames=n_frames,
+        start_time=start_time,
+        end_time=end_time,
+        duration=end_time - start_time,
+        instruction=instruction,
+        dense_caption=dense_caption,
+        scene_ids=scene_ids,
+        n_scenes=n_scenes,
     )
