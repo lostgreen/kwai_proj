@@ -100,13 +100,18 @@ SCENE_THRESHOLD="${SCENE_THRESHOLD:-0.5}"
 # Create once: python -m venv ~/.venvs/transnet && source ~/.venvs/transnet/bin/activate && pip install tensorflow ffmpeg-python pillow && pip install git+https://github.com/soCzech/TransNetV2.git
 TRANSNET_VENV="${TRANSNET_VENV:-$HOME/.venvs/transnet}"
 
-if [[ "$SCENE_DETECTOR" == "transnet" && -f "$TRANSNET_VENV/bin/python" ]]; then
-    SCENE_PYTHON="$TRANSNET_VENV/bin/python"
-    log "    Using TransNetV2 venv: $TRANSNET_VENV"
-else
-    SCENE_PYTHON="python"
-    if [[ "$SCENE_DETECTOR" == "transnet" ]]; then
-        log "    WARN: TransNetV2 venv not found at $TRANSNET_VENV, using system python"
+SCENE_PYTHON="python"
+if [[ "$SCENE_DETECTOR" == "transnet" ]]; then
+    # Check if system python already has transnetv2
+    if python -c "import transnetv2" 2>/dev/null; then
+        SCENE_PYTHON="python"
+        log "    Using system python (transnetv2 available)"
+    elif [[ -f "$TRANSNET_VENV/bin/python" ]]; then
+        SCENE_PYTHON="$TRANSNET_VENV/bin/python"
+        log "    Using TransNetV2 venv: $TRANSNET_VENV"
+    else
+        log "    WARN: transnetv2 not found in system python or venv at $TRANSNET_VENV"
+        log "    Trying system python anyway..."
     fi
 fi
 
