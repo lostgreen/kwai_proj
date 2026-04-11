@@ -1995,7 +1995,8 @@ well-formed events, then caption each event and annotate L3 sub-actions
 
 Choose domain_l2 from:
 {domain_l2_list}
-If none fits, use domain_l2="other".
+If none fits, use domain_l2="other" and fill `domain_l2_note` with a short free-text \
+description of what domain this video belongs to (e.g., "medical surgery", "industrial assembly").
 
 ### 1B. VIDEO CAPTION
 
@@ -2212,6 +2213,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 
 {{
   "domain_l2": "<one of the domain_l2 categories above, or 'other'>",
+  "domain_l2_note": "<if domain_l2 is 'other', describe the domain here; otherwise null>",
   "video_caption": "<3-5 sentences describing the entire video>",
   "summary": "<one sentence: overall video summary>",
   "global_phase_criterion": "<one sentence: principle for grouping events into thematic phases>",

@@ -1054,6 +1054,7 @@ def _merge_l1_aggregation(
         "archetype_confidence": stage1_result.get("archetype_confidence", 0.5),
         "archetype_reason": stage1_result.get("archetype_reason", ""),
         "domain_l2": stage1_result.get("domain_l2", "other"),
+        "domain_l2_note": stage1_result.get("domain_l2_note", ""),
         "domain_l1": stage1_result.get("domain_l1", "other"),
         "topology_type": stage1_result.get("topology_type", "procedural"),
         "video_caption": stage1_result.get("video_caption", ""),
@@ -1169,6 +1170,7 @@ def _split_scene_first_response(
     domain_l2 = parsed.get("domain_l2", "other")
     if domain_l2 not in DOMAIN_L2_ALL:
         domain_l2 = "other"
+    domain_l2_note = str(parsed.get("domain_l2_note") or "") if domain_l2 == "other" else ""
 
     video_caption = str(parsed.get("video_caption", ""))
 
@@ -1369,6 +1371,7 @@ def _split_scene_first_response(
         "archetype_confidence": archetype_confidence,
         "archetype_reason": archetype_reason,
         "domain_l2": domain_l2,
+        "domain_l2_note": domain_l2_note,
         "domain_l1": resolve_domain_l1(domain_l2),
         "topology_type": topology_type,
         "video_caption": video_caption,
