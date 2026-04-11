@@ -539,7 +539,6 @@ def _merge_l1_aggregation(
 
         phase_start = min(ev["start_time"] for ev in member_events)
         phase_end = max(ev["end_time"] for ev in member_events)
-        l3_feasible = any(ev.get("l3_feasible", False) for ev in member_events)
 
         l1_phases.append({
             "phase_id": phase.get("phase_id", len(l1_phases) + 1),
@@ -548,8 +547,6 @@ def _merge_l1_aggregation(
             "phase_name": phase.get("phase_name", ""),
             "narrative_summary": phase.get("narrative_summary", ""),
             "event_split_criterion": phase.get("event_split_criterion", ""),
-            "l3_feasible": l3_feasible,
-            "l3_reason": phase.get("l3_reason", ""),
             "_member_event_ids": [eid for eid in member_ids if eid in events_by_id],
         })
         assigned_event_ids.update(eid for eid in member_ids if eid in events_by_id)
@@ -579,8 +576,6 @@ def _merge_l1_aggregation(
             "phase_name": stage1_result.get("summary", "Main activity")[:100],
             "narrative_summary": stage1_result.get("video_caption", ""),
             "event_split_criterion": "single-phase fallback",
-            "l3_feasible": any(events_by_id[eid].get("l3_feasible", False) for eid in orphan_ids),
-            "l3_reason": "fallback",
             "_member_event_ids": list(orphan_ids),
         })
 
@@ -611,29 +606,17 @@ def _merge_l1_aggregation(
     }
     level2 = {"events": events}
 
-    any_l3 = any(p.get("l3_feasible", False) for p in l1_phases)
-    l3_feasibility = {
-        "suitable": any_l3,
-        "reason": "per-phase assessment (bottom-up)",
-        "estimated_l3_actions": 0,
-    }
-
     return {
         "level1": level1,
         "level2": level2,
         "summary": stage1_result.get("summary", ""),
         "global_phase_criterion": stage1_result.get("global_phase_criterion", ""),
-        "l3_feasibility": l3_feasibility,
         "archetype": stage1_result.get("archetype", "tutorial"),
-        "archetype_confidence": stage1_result.get("archetype_confidence", 0.5),
-        "archetype_reason": stage1_result.get("archetype_reason", ""),
         "domain_l2": stage1_result.get("domain_l2", "other"),
         "domain_l2_note": stage1_result.get("domain_l2_note", ""),
         "domain_l1": stage1_result.get("domain_l1", "other"),
         "topology_type": stage1_result.get("topology_type", "procedural"),
         "video_caption": stage1_result.get("video_caption", ""),
-        "feasibility": stage1_result.get("feasibility", {}),
-        "video_metadata": stage1_result.get("video_metadata", {}),
     }
 
 
@@ -746,27 +729,9 @@ def _split_scene_first_response(
 
     video_caption = str(parsed.get("video_caption", ""))
 
-    # Paradigm / feasibility / metadata — no longer requested from VLM; hardcode defaults
+    # Paradigm / topology — hardcoded defaults (not requested from VLM in scene-first)
     archetype = "tutorial"
-    archetype_confidence = 0.0
-    archetype_reason = "not_classified"
     topology_type = "procedural"
-
-    feasibility = {
-        "score": 1.0,
-        "skip": False,
-        "skip_reason": None,
-        "estimated_n_phases": 0,
-        "estimated_n_events": 0,
-        "visual_dynamics": "medium",
-    }
-
-    video_metadata = {
-        "has_text_overlay": False,
-        "has_narration": False,
-        "camera_style": "unknown",
-        "editing_style": "unknown",
-    }
 
     # ── Build scenes lookup ──────────────────────────────────────────────────
     scenes_by_id: dict[int, dict] = {s["scene_id"]: s for s in scenes}
@@ -910,15 +875,11 @@ def _split_scene_first_response(
         "summary": summary,
         "global_phase_criterion": global_phase_criterion,
         "archetype": archetype,
-        "archetype_confidence": archetype_confidence,
-        "archetype_reason": archetype_reason,
         "domain_l2": domain_l2,
         "domain_l2_note": domain_l2_note,
         "domain_l1": resolve_domain_l1(domain_l2),
         "topology_type": topology_type,
         "video_caption": video_caption,
-        "feasibility": feasibility,
-        "video_metadata": video_metadata,
         "_sampling": {
             "n_sampled_frames": n_sampled_frames,
             "resize_max_width": resize_max_width,
@@ -965,18 +926,9 @@ def _annotate_scene_first(
         return {
             "_stage1_events": [], "_l3_results": [],
             "summary": "", "global_phase_criterion": "",
-            "archetype": "tutorial", "archetype_confidence": 0.0,
-            "archetype_reason": "too short for annotation",
+            "archetype": "tutorial",
             "domain_l2": "other", "domain_l1": "other", "topology_type": "procedural",
             "video_caption": "",
-            "feasibility": {
-                "score": 0.0, "skip": True, "skip_reason": "too_short",
-                "estimated_n_phases": 0, "estimated_n_events": 0, "visual_dynamics": "low",
-            },
-            "video_metadata": {
-                "has_text_overlay": False, "has_narration": False,
-                "camera_style": "unknown", "editing_style": "unknown",
-            },
             "_sampling": {
                 "n_sampled_frames": len(sampled), "resize_max_width": resize_max_width,
                 "jpeg_quality": jpeg_quality, "fps": fps, "effective_fps": effective_fps,
@@ -1290,7 +1242,6 @@ def annotate_clip(
                 "level1": {"macro_phases": [], "_sampling": stage1_result.get("_sampling", {})},
                 "level2": {"events": []},
                 "level3": {"micro_type": "sub_action", "grounding_results": []},
-                "l3_feasibility": {"suitable": False, "reason": "no events", "estimated_l3_actions": 0},
                 "scene_first_stats": {
                     "n_input_scenes": n_scenes_in,
                     "n_events": 0,
@@ -1299,9 +1250,8 @@ def annotate_clip(
                 },
             }
             for k in ("summary", "global_phase_criterion", "archetype",
-                       "archetype_confidence", "archetype_reason",
                        "domain_l2", "domain_l1", "topology_type",
-                       "video_caption", "feasibility", "video_metadata"):
+                       "video_caption"):
                 merged_result[k] = stage1_result.get(k, "")
 
         n_phases = len(merged_result.get("level1", {}).get("macro_phases", []))
