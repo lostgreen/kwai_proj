@@ -459,7 +459,9 @@ def _validate_sub_actions(
         sa_st = sa.get("start_time")
         sa_et = sa.get("end_time")
         if not (isinstance(sa_st, (int, float)) and isinstance(sa_et, (int, float)) and sa_st < sa_et):
-            print(f"    WARN: sub_action in event {event_id} dropped (invalid timestamps: st={sa_st} et={sa_et})", flush=True)
+            print(f"    WARN: sub_action in event {event_id} dropped "
+                  f"(invalid timestamps: st={sa_st} et={sa_et}, "
+                  f"label={str(sa.get('sub_action', ''))[:60]})", flush=True)
             continue
         sa_st = round(sa_st)
         sa_et = round(sa_et)
@@ -467,6 +469,8 @@ def _validate_sub_actions(
         sa_st = max(sa_st, event_start)
         sa_et = min(sa_et, event_end)
         if sa_et - sa_st < 1:
+            print(f"    WARN: sub_action in event {event_id} dropped after clamp "
+                  f"(duration<1s: {sa_st}-{sa_et}, bounds={event_start}-{event_end})", flush=True)
             continue
         sa["start_time"] = sa_st
         sa["end_time"] = sa_et
@@ -1113,6 +1117,11 @@ def _annotate_scene_first_l3(
         valid_subs = _validate_sub_actions(raw_subs, ev_start, ev_end, ev["event_id"])
         ev["l3_feasible"] = len(valid_subs) > 0
         ev["l3_reason"] = f"{len(valid_subs)} sub-actions" if valid_subs else "no valid sub-actions"
+        if not valid_subs and raw_subs:
+            # Debug: VLM returned sub_actions but all were invalid
+            import json as _json
+            print(f"    [L3] DEBUG event {ev['event_id']}: VLM returned {len(raw_subs)} sub_actions, "
+                  f"all invalid. Raw: {_json.dumps(raw_subs, ensure_ascii=False)[:500]}", flush=True)
         if valid_subs:
             l3_results.append({
                 "event_id": ev["event_id"],
