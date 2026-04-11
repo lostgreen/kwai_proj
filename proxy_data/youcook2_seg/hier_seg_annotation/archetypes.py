@@ -2103,7 +2103,7 @@ the event's core visual content. Choose frames near the temporal midpoint.
 
 ### 2C. L3 — SUB-SPLITTING EVENTS INTO MICRO-SEGMENTS
 
-L3 is the sub-split layer: each L3 entry represents a visually distinct 2-6 second \
+L3 is the sub-split layer: each L3 entry represents a visually distinct \
 micro-segment within an L2 event. Think of it as applying the same split logic used \
 for scenes, but now applied WITHIN each event.
 
@@ -2132,7 +2132,6 @@ Do NOT force artificial splits.
 - Timestamps: absolute integer seconds from the full video timeline.
 - Must fall within the parent event's [start_time, end_time].
 - Allow gaps between entries — do NOT force full temporal coverage.
-- Duration: 2-6 seconds per entry.
 
 **`sub_action`** field (5-15 words): concise label describing the visual unit. \
 Examples: "close-up of hands folding dough", "camera pulls back to reveal full workspace", \
@@ -2184,7 +2183,7 @@ accumulating into a mound on the left side of the board."
 - BAD: "preparing ingredients" (too general, not one atomic motion)
 
 **`caption`** (sub-action caption, 1-2 sentences):
-Same rules as dense_caption but for the 2-6 second atomic action window only.
+Same rules as dense_caption but for the atomic action window only.
 
 **ABSOLUTE PROHIBITIONS** (these will corrupt training data):
 - Words implying hearing: "explains", "talks about", "says", "announces", "narrates"
@@ -2297,7 +2296,7 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 4. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
 5. All timestamps: absolute integer seconds in [0, {duration}]. Output as plain integers (e.g., 33, not "00:33" or "33s").
 6. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
-7. L3 sub_actions: 2-6 seconds each; within parent event's [start_time, end_time].
+7. L3 sub_actions: within parent event's [start_time, end_time]. No duration constraint.
 8. L3 schema: ONLY `action_id`, `start_time`, `end_time`, `sub_action`, `caption`. \
 Do NOT output `pre_state` or `post_state` fields."""
 
