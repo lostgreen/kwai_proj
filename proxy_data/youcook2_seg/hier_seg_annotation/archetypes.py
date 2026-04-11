@@ -2218,7 +2218,8 @@ def get_scene_first_prompt(
 
 _SCENE_FIRST_L3_PROMPT = """\
 You are given {n_frames} frames from a video event spanning {start_time}s to {end_time}s \
-(duration: {duration}s). Frame labels show absolute timestamps [t=Xs].
+(duration: {duration}s). Frame labels show absolute timestamps [t=Xs]. \
+Frames labeled [SCENE BREAK] mark where a detected shot/scene boundary occurs within this event.
 
 **Event context** (from a previous annotation pass):
 - **instruction**: {instruction}
