@@ -2257,16 +2257,18 @@ one per original scene minimum, or finer-grained if the scenes are themselves sp
 - Gaps between entries are OK — do NOT force full coverage
 - No duration constraint on individual entries
 
-**`sub_action`** (5-15 words): concise visual label. \
+**`sub_action`** (5-15 words): concise visual label describing ONE specific action or shot. \
 Examples: "close-up of hands folding dough", "person looks off-frame to the right".
 
-**`caption`** (1-2 sentences): detailed visual description. \
+**`caption`** (1-2 sentences): detailed visual description of this specific segment. \
 Purely observable facts — no inference, no audio, no domain knowledge. \
 Write as if you can only see, not hear.
 
 **PROHIBITIONS** (these corrupt training data):
 - Words implying hearing: "explains", "says", "narrates"
 - Words implying intent: "demonstrates", "shows how to", "prepares to"
+- Summary language: "montage of", "a series of", "compilation of", "various shots of" — \
+each sub-action must describe ONE specific shot or action, not summarize multiple
 - Domain-specific names unless readable as on-screen text
 - Cross-event references: "after the previous step", "before this step"
 
