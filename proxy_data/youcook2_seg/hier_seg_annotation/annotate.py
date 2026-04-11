@@ -1469,6 +1469,23 @@ def _annotate_scene_first(
         scenes_json_str=scenes_json_str,
     )
 
+    # One-time prompt dump: save the first clip's full prompt for verification
+    if not hasattr(_annotate_scene_first, "_prompt_logged"):
+        _debug_path = Path("_debug_scene_first_prompt.txt")
+        try:
+            lines = [f"=== SYSTEM PROMPT ===\n{SYSTEM_PROMPT}\n",
+                     "=== USER MESSAGE (images_first=True) ===\n",
+                     "--- FRAMES (sent first) ---"]
+            for _lbl in frame_labels:
+                lines.append(f"{_lbl}\n  [IMAGE_PLACEHOLDER]")
+            lines.append("--- FRAMES END ---\n")
+            lines.append(f"--- PROMPT TEXT ---\n{prompt_text}\n--- PROMPT TEXT END ---")
+            _debug_path.write_text("\n".join(lines), encoding="utf-8")
+            print(f"  [scene-first] prompt saved to {_debug_path.resolve()}", flush=True)
+        except Exception as _e:
+            print(f"  [scene-first] WARN: failed to save debug prompt: {_e}", flush=True)
+        _annotate_scene_first._prompt_logged = True
+
     parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels,
                             images_first=True)
     if parsed is None:
