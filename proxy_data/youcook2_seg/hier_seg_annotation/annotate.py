@@ -22,6 +22,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -408,7 +409,6 @@ def parse_json_from_response(text: str) -> dict[str, Any]:
         return _ensure_dict(json.loads(text))
     except json.JSONDecodeError:
         pass
-    import re
     m = re.search(r"```(?:json)?\s*(\{[\s\S]+?\})\s*```", text)
     if m:
         try:
@@ -1140,7 +1140,24 @@ def _annotate_scene_first_l3(
             ev["l3_reason"] = "L3 VLM call failed"
             continue
 
+        # Handle VLM returning a bare JSON array instead of {"sub_actions": [...]}
         raw_subs = parsed.get("sub_actions", [])
+        if not raw_subs and parsed.get("_unwrapped_array"):
+            # Re-parse to recover the full array
+            try:
+                full = json.loads(raw_response.strip())
+                if isinstance(full, list):
+                    raw_subs = [x for x in full if isinstance(x, dict)]
+            except (json.JSONDecodeError, ValueError):
+                # Try extracting from code block
+                m = re.search(r"```(?:json)?\s*(\[[\s\S]+?\])\s*```", raw_response)
+                if m:
+                    try:
+                        full = json.loads(m.group(1))
+                        if isinstance(full, list):
+                            raw_subs = [x for x in full if isinstance(x, dict)]
+                    except (json.JSONDecodeError, ValueError):
+                        pass
         valid_subs = _validate_sub_actions(raw_subs, ev_start, ev_end, ev["event_id"])
         ev["l3_feasible"] = len(valid_subs) > 0
         ev["l3_reason"] = f"{len(valid_subs)} sub-actions" if valid_subs else "no valid sub-actions"
