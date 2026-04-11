@@ -88,7 +88,7 @@ run_step "S1_EXTRACT_FRAMES" \
         $LIMIT_FLAG
 
 # =====================================================================
-# STEP 1.5: Scene Detection (PySceneDetect → hard scene anchors)
+# STEP 1.5: Scene Detection (TransNetV2 or PySceneDetect → hard scene anchors)
 # =====================================================================
 log ""
 log ">>>>>>>>>> STEP 1.5: SCENE DETECTION <<<<<<<<<<"
@@ -96,9 +96,22 @@ log "    Scenes are HARD ANCHORS — Pass 1 (1fps) merges scenes + caption; Pass
 
 SCENE_DETECTOR="${SCENE_DETECTOR:-transnet}"
 SCENE_THRESHOLD="${SCENE_THRESHOLD:-0.5}"
+# For TransNetV2: use a separate venv to avoid TF/PyTorch conflicts
+# Create once: python -m venv ~/.venvs/transnet && source ~/.venvs/transnet/bin/activate && pip install tensorflow ffmpeg-python pillow && pip install git+https://github.com/soCzech/TransNetV2.git
+TRANSNET_VENV="${TRANSNET_VENV:-$HOME/.venvs/transnet}"
+
+if [[ "$SCENE_DETECTOR" == "transnet" && -f "$TRANSNET_VENV/bin/python" ]]; then
+    SCENE_PYTHON="$TRANSNET_VENV/bin/python"
+    log "    Using TransNetV2 venv: $TRANSNET_VENV"
+else
+    SCENE_PYTHON="python"
+    if [[ "$SCENE_DETECTOR" == "transnet" ]]; then
+        log "    WARN: TransNetV2 venv not found at $TRANSNET_VENV, using system python"
+    fi
+fi
 
 run_step "S1_5_SCENE_DETECT" \
-    python "$SCRIPT_DIR/detect_scenes.py" \
+    "$SCENE_PYTHON" "$SCRIPT_DIR/detect_scenes.py" \
         --frames-dir "$DATA_ROOT/frames" \
         --detector "$SCENE_DETECTOR" \
         --threshold "$SCENE_THRESHOLD" \
