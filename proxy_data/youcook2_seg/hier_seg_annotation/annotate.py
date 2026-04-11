@@ -4,7 +4,7 @@ annotate.py — Scene-first hierarchical video annotation pipeline.
 
 Two-pass architecture:
   Pass 1: Scene merge/split + event captioning + domain classification (1fps)
-  Pass 2: Per-event L3 sub-action annotation (2fps, only event frames)
+  Pass 2: Per-event L3 sub-action annotation (1fps, only event frames)
   + L1 phase aggregation from events
 
 Usage:
@@ -725,7 +725,7 @@ def _split_scene_first_response(
     resize_max_width: int,
     jpeg_quality: int,
     clip_duration: float,
-    fps: float = 2.0,
+    fps: float = 1.0,
     effective_fps: float | None = None,
 ) -> dict[str, Any]:
     """Parse and validate the scene_first VLM response.
@@ -935,7 +935,7 @@ def _annotate_scene_first(
     clip_duration: float,
     api_base: str, api_key: str, model: str,
     max_frames: int, resize_max_width: int, jpeg_quality: int,
-    fps: float = 2.0,
+    fps: float = 1.0,
 ) -> dict[str, Any]:
     """Stage 1 of scene-first pipeline: merge scenes → caption events → inline L3.
 
@@ -947,28 +947,17 @@ def _annotate_scene_first(
     if not all_frames:
         raise RuntimeError(f"no frames found in {frame_dir}")
 
-    # Pass 1 uses 1fps: subsample every other frame from 2fps set
-    # At 2fps, odd 1-based indices (1, 3, 5, ...) map to whole seconds (0s, 1s, 2s, ...)
-    if fps >= 2.0:
-        all_frames_pass1 = [
-            fp for fp in all_frames
-            if frame_stem_to_index(fp, 0) % 2 == 1  # odd indices → whole seconds
-        ]
-        if not all_frames_pass1:
-            all_frames_pass1 = all_frames  # fallback
-        effective_fps = fps / 2.0  # 1fps
-    else:
-        all_frames_pass1 = all_frames
-        effective_fps = fps
+    # Frames are already extracted at 1fps; use them directly
+    effective_fps = fps
 
-    sampled = sample_uniform(all_frames_pass1, max_frames)
+    sampled = sample_uniform(all_frames, max_frames)
     frame_b64 = encode_frame_files(sampled, resize_max_width=resize_max_width, jpeg_quality=jpeg_quality)
 
     with Image.open(sampled[0]) as _img:
         orig_w, orig_h = _img.size
     avg_b64_len = sum(len(b) for b in frame_b64) // max(len(frame_b64), 1)
     avg_jpeg_kb = avg_b64_len * 3 // 4 // 1024
-    print(f"  [scene-first] frames: {len(sampled)}/{len(all_frames_pass1)} (1fps from {len(all_frames)} @ {fps}fps) "
+    print(f"  [scene-first] frames: {len(sampled)}/{len(all_frames)} @ {fps}fps "
           f"orig={orig_w}x{orig_h} resize_max={resize_max_width} q={jpeg_quality} avg_jpeg={avg_jpeg_kb}KB", flush=True)
 
     # Too short → skip
@@ -1004,7 +993,7 @@ def _annotate_scene_first(
     scene_boundaries_raw = load_scene_boundaries(frame_dir)
     sampled_indices = [frame_stem_to_index(fp, 0) for fp in sampled]
     scene_boundary_set: set[int] = set()
-    boundary_tol = 2 if fps >= 2.0 else 1  # wider tolerance for 1fps subsampling
+    boundary_tol = 2 if fps >= 2.0 else 1  # tolerance for matching boundary to nearest frame
     for b_idx in scene_boundaries_raw:
         if sampled_indices:
             nearest = min(sampled_indices, key=lambda s, b=b_idx: abs(s - b))
@@ -1065,14 +1054,16 @@ def _annotate_scene_first_l3(
     clip_duration: float,
     api_base: str, api_key: str, model: str,
     resize_max_width: int, jpeg_quality: int,
-    fps: float = 2.0,
+    fps: float = 1.0,
 ) -> tuple[list[dict], list[dict]]:
-    """Pass 2: per-event L3 sub-split using only the event's frames.
+    """Pass 2: per-event L3 sub-split using only the event's frames at 1fps.
 
     Returns (updated_events, l3_results) where updated_events have l3_feasible set.
     """
     all_frames = get_all_frame_files(frame_dir)
-    # Build index: frame_stem (seconds) → Path
+
+    # Frames are already at 1fps; use them directly
+    # Build index: timestamp (seconds) → Path
     frame_by_sec: dict[int, Path] = {}
     for fp in all_frames:
         idx = frame_stem_to_index(fp, -1)
@@ -1238,8 +1229,8 @@ def annotate_clip(
     n_total_frames = count_extracted_frames(frame_dir)
 
     try:
-        # ── Scene-anchored: Pass 1 (merge+caption @1fps) → Pass 2 (per-event L3 @2fps) → L1 agg ──
-        fps = float(frame_meta.get("fps") or 2.0)
+        # ── Scene-anchored: Pass 1 (merge+caption @1fps) → Pass 2 (per-event L3 @1fps) → L1 agg ──
+        fps = float(frame_meta.get("fps") or 1.0)
         stage1_result = _annotate_scene_first(
             frame_dir, clip_duration,
             api_base, api_key, model,

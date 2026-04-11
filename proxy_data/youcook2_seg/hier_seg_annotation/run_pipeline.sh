@@ -3,11 +3,11 @@
 # run_pipeline.sh — Scene-first hierarchical annotation pipeline
 #
 # Steps:
-#   1. Extract 2fps frames
+#   1. Extract 1fps frames
 #   1.5. Scene detection (PySceneDetect → hard scene anchors)
 #   2. Annotate (scene-first, two-pass):
-#      Pass 1: Merge-decision + event caption + domain (1fps subsampled from 2fps)
-#      Pass 2: Per-event L3 sub-split (2fps, only event frames)
+#      Pass 1: Merge-decision + event caption + domain (1fps)
+#      Pass 2: Per-event L3 sub-split (1fps, only event frames)
 #      + L1 phase aggregation — all within annotate.py
 #
 # Usage:
@@ -34,7 +34,7 @@ JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_in
 MODEL="${MODEL:-pa/gmn-2.5-pr}"
 WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-5}"
-EXTRACT_FPS="${EXTRACT_FPS:-2}"
+EXTRACT_FPS="${EXTRACT_FPS:-1}"
 
 LOG_DIR="${DATA_ROOT}/logs"
 mkdir -p "$LOG_DIR"
@@ -92,7 +92,7 @@ run_step "S1_EXTRACT_FRAMES" \
 # =====================================================================
 log ""
 log ">>>>>>>>>> STEP 1.5: SCENE DETECTION <<<<<<<<<<"
-log "    Scenes are HARD ANCHORS — Pass 1 (1fps) merges scenes + caption; Pass 2 (2fps) per-event L3"
+log "    Scenes are HARD ANCHORS — Pass 1 (1fps) merges scenes + caption; Pass 2 (1fps) per-event L3"
 
 SCENE_DETECTOR="${SCENE_DETECTOR:-content}"
 SCENE_THRESHOLD="${SCENE_THRESHOLD:-27.0}"
