@@ -1982,7 +1982,7 @@ Pre-detected input scenes (start/end in whole seconds):
 ```
 
 Your task has THREE parts:
-1. **CLASSIFY** the video (paradigm, domain, feasibility, caption, metadata)
+1. **CLASSIFY** the video (domain + caption)
 2. **RESTRUCTURE + CAPTION + L3**: Merge adjacent scenes and/or split long scenes into \
 well-formed events, then caption each event and annotate L3 sub-actions
 3. **AGGREGATION HINTS**: one-sentence summary + phase grouping criterion
@@ -1991,33 +1991,13 @@ well-formed events, then caption each event and annotate L3 sub-actions
 ## PART 1 — CLASSIFY
 ════════════════════════════════════════════════
 
-### 1A. PARADIGM (temporal structure)
-
-Classify into exactly ONE paradigm based on the video's dominant temporal structure:
-
-{paradigm_table}
-
-If the video does NOT fit any paradigm above:
-- **Talk-dominant** (people in conversation, minimal physical action): set feasibility.skip=true, \
-skip_reason="talk_dominant"
-- **Ambient/static** (no identifiable subject, no sequential progression): set feasibility.skip=true, \
-skip_reason="ambient_static"
-
-### 1B. DOMAIN (content topic — orthogonal to paradigm)
+### 1A. DOMAIN (content topic)
 
 Choose domain_l2 from:
 {domain_l2_list}
 If none fits, use domain_l2="other".
 
-### 1C. FEASIBILITY
-
-Assess whether this video supports hierarchical temporal annotation.
-- **Skip** if: people only talking with no visual action changes; ambient/static footage; \
-screen recordings of static content.
-- **Annotate** if: visually distinct activities, location/scene changes, or progressive actions — \
-even if the video also contains talking.
-
-### 1D. VIDEO CAPTION
+### 1B. VIDEO CAPTION
 
 Write a detailed description of the entire video (3-5 sentences). \
 Cover: setting/environment, main subjects, key objects, overall progression, and outcome. \
@@ -2026,8 +2006,6 @@ Every statement must be grounded in what is visible in the frames.
 ════════════════════════════════════════════════
 ## PART 2 — RESTRUCTURE + CAPTION + L3
 ════════════════════════════════════════════════
-
-**If feasibility.skip=true**, output `"events": []` and skip annotation entirely.
 
 ### 2A. THREE OPERATIONS ON SCENES
 
@@ -2042,29 +2020,38 @@ Use these three operations to turn the {n_scenes} input scenes into well-formed 
 - `scene_ids: [k, k+1, ...]`, provide `merge_reason`
 - start_time = first scene's start_time; end_time = last scene's end_time
 
-**When to MERGE** — ALL THREE conditions must hold simultaneously:
-  1. **Same subject**: The same primary person or object is the focal point in ALL merged scenes.
-  2. **Same semantic content type**: The scenes show the SAME type of content — not just the same topic.
-     Action footage stays with action footage; interviews stay with interviews; commentary stays with commentary.
-  3. **Continuous activity**: The same physical process, activity, or framing pattern continues — there is no meaningful shift in what is happening.
+**⚠ CRITICAL — TIMESTAMP RULE FOR KEEP AND MERGE**: \
+For KEEP and MERGE operations, you MUST blindly copy the exact `start_time` of the \
+first scene and `end_time` of the last scene from the input JSON. \
+Do NOT alter, round, or recompute these timestamps.
 
-A camera angle change or zoom is a valid merge ONLY when all three conditions above are also satisfied.
+**When to MERGE**: Combine consecutive scenes into ONE event ONLY if they represent \
+the SAME unbroken temporal event in the SAME continuous space. Valid merge scenarios:
+  1. **Angle/Framing Change**: Wide shot → close-up of the SAME person doing the SAME \
+ongoing activity (e.g., cooking, exercising).
+  2. **Shot/Reverse-Shot (Dialogue)**: Alternating camera angles between two people talking \
+in the SAME room/location. Even though the subject and background strictly change per shot, \
+they share the same continuous space and time → MERGE.
+  3. **Continuous Pan/Tracking**: The camera continuously follows an action or pans across \
+the same location.
 
-**Always keep scenes SEPARATE if any of the following apply**:
-  ✗ Different content types, even if the same subject appears:
-    "athlete competing on field" + "athlete interviewed off-field" → SEPARATE (action vs. talk)
-    "match highlights montage" + "analyst commentary to camera" → SEPARATE (event vs. talk)
-    "cooking demonstration" + "host explaining technique to camera" → SEPARATE (action vs. talk)
-  ✗ Same person, different location AND different activity → SEPARATE
-  ✗ A new step, phase, or activity goal begins in the adjacent scene → SEPARATE
-  ✗ Transition shots (title card, replay graphic, establishing shot) → SEPARATE
-  ✗ One scene is B-roll and the adjacent is a talking head → SEPARATE
+**When to keep SEPARATE (Do NOT Merge)**:
+  ✗ **Location/Time jump**: Cut to a visibly different place, or a clearly different time \
+(e.g., day → night).
+  ✗ **Subject jump**: A completely different person/object becomes the focus in a different context.
+  ✗ **Activity shift**: A new step, sub-task, or phase begins \
+(e.g., prep ends → cooking begins).
+  ✗ **B-Roll / Cut-away**: An establishing shot, title card, or illustrative B-roll \
+inserted between main actions.
 
-**merge_reason**: 1-2 sentences of concrete visual evidence referencing ALL THREE conditions:
-  - GOOD: "Both scenes show the same person kneading dough on the same floured board from different angles — same subject, same physical action, only framing changed."
-  - GOOD: "Scenes 4-5 show the same athlete running the same sprint drill from wide then close — same subject, same action type, continuous effort."
-  - BAD: "Same person appears in both." (subject only — does not address content type or continuity)
-  - BAD: "Same sport / topic." (topic match is not sufficient — must verify same content type and action)
+**merge_reason**: 1-2 sentences of concrete visual evidence explaining WHY the scenes \
+belong to the same unbroken event:
+  - GOOD: "Both scenes show the same person kneading dough on the same floured board \
+from different angles — same activity, only framing changed."
+  - GOOD: "Shot/reverse-shot between two people talking across a table in the same café — \
+continuous dialogue in the same space."
+  - BAD: "Same person appears in both." (no evidence of continuous space/time)
+  - BAD: "Same sport / topic." (topic match is not spatial/temporal continuity)
 ────────────────────────────────────────────
 **OPERATION 3: SPLIT** (break a long scene into sub-events)
 - `scene_ids: [k]`, provide `split_reason`, explicit `start_time` and `end_time`
@@ -2222,24 +2209,8 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 ════════════════════════════════════════════════
 
 {{
-  "paradigm": "<one of: {paradigm_ids}>",
-  "paradigm_confidence": 0.85,
-  "paradigm_reason": "<one sentence explaining the paradigm decision>",
   "domain_l2": "<one of the domain_l2 categories above, or 'other'>",
   "video_caption": "<3-5 sentences describing the entire video>",
-  "feasibility": {{
-    "score": 0.85,
-    "skip": false,
-    "skip_reason": null,
-    "estimated_n_events": 6,
-    "visual_dynamics": "high"
-  }},
-  "video_metadata": {{
-    "has_text_overlay": false,
-    "has_narration": true,
-    "camera_style": "<static_tripod | handheld | multi_angle | first_person>",
-    "editing_style": "<continuous | jump_cut | montage | mixed>"
-  }},
   "summary": "<one sentence: overall video summary>",
   "global_phase_criterion": "<one sentence: principle for grouping events into thematic phases>",
   "events": [
@@ -2318,14 +2289,13 @@ grouped into higher-level thematic phases (for downstream L1 aggregation).
 ════════════════════════════════════════════════
 
 1. Output strictly valid JSON. No markdown code blocks.
-2. If feasibility.skip=true, output `"events": []`.
-3. scene_ids coverage: the union of scene_ids across all events must include every ID in [1..{n_scenes}], forming a complete partition of the timeline.
-4. MERGE: scene_ids MUST be consecutive integers [k, k+1, ..., k+m] with no gaps. NON-CONSECUTIVE merges (e.g., [2,4,6]) are INVALID — they interleave scenes from different time blocks.
-5. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
-6. All timestamps: absolute integer seconds in [0, {duration}]. Output as plain integers (e.g., 33, not "00:33" or "33s").
-7. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
-8. L3 sub_actions: 2-6 seconds each; within parent event's [start_time, end_time].
-9. L3 schema: ONLY `action_id`, `start_time`, `end_time`, `sub_action`, `caption`. \
+2. scene_ids coverage: the union of scene_ids across all events must include every ID in [1..{n_scenes}], forming a complete partition of the timeline.
+3. MERGE: scene_ids MUST be consecutive integers [k, k+1, ..., k+m] with no gaps. NON-CONSECUTIVE merges (e.g., [2,4,6]) are INVALID — they interleave scenes from different time blocks.
+4. SPLIT: split_reason required; start_time/end_time must be within source scene's boundaries.
+5. All timestamps: absolute integer seconds in [0, {duration}]. Output as plain integers (e.g., 33, not "00:33" or "33s").
+6. key_frame_indices: integers in [1, {n_frames}], 1-2 per event.
+7. L3 sub_actions: 2-6 seconds each; within parent event's [start_time, end_time].
+8. L3 schema: ONLY `action_id`, `start_time`, `end_time`, `sub_action`, `caption`. \
 Do NOT output `pre_state` or `post_state` fields."""
 
 def get_scene_first_prompt(
@@ -2345,7 +2315,5 @@ def get_scene_first_prompt(
         duration=duration_sec,
         n_scenes=n_scenes,
         scenes_json=scenes_json_str,
-        paradigm_table=_format_paradigm_table_for_prompt(),
-        paradigm_ids=", ".join(sorted(PARADIGM_IDS)),
         domain_l2_list=_format_domain_l2_for_prompt(),
     )

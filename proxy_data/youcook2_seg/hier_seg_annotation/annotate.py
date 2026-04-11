@@ -315,12 +315,14 @@ def call_vlm(
     max_tokens: int = 8192,
     temperature: float = 0.0,
     retries: int = 3,
+    images_first: bool = False,
 ) -> str:
     """
     Call a VLM endpoint with interleaved frame images.
 
     Args:
         frame_labels: Per-frame text labels (e.g. "[Frame 1]" or "[Timestamp 00:42 | Frame 42]").
+        images_first: If True, place interleaved [label+image] before the text prompt.
     """
     try:
         from openai import OpenAI
@@ -357,7 +359,9 @@ def call_vlm(
     else:
         client = OpenAI(api_key=key, base_url=api_base)
 
-    content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    content: list[dict[str, Any]] = []
+    if not images_first:
+        content.append({"type": "text", "text": user_text})
     for i, b64 in enumerate(frame_b64_list):
         label = frame_labels[i] if i < len(frame_labels) else f"[Frame {i + 1}]"
         content.append({"type": "text", "text": label})
@@ -365,6 +369,8 @@ def call_vlm(
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
         })
+    if images_first:
+        content.append({"type": "text", "text": user_text})
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -455,12 +461,15 @@ def call_and_parse(
     api_base: str, api_key: str, model: str,
     system_prompt: str, prompt_text: str,
     frame_b64: list[str], frame_labels: list[str],
+    images_first: bool = False,
 ) -> dict[str, Any] | None:
     """Call VLM and parse response. Retries once on parse failure. Returns None on final failure."""
-    raw = call_vlm(api_base, api_key, model, system_prompt, prompt_text, frame_b64, frame_labels)
+    raw = call_vlm(api_base, api_key, model, system_prompt, prompt_text, frame_b64, frame_labels,
+                   images_first=images_first)
     parsed = parse_json_from_response(raw)
     if parsed.get("_parse_error"):
-        raw = call_vlm(api_base, api_key, model, system_prompt, prompt_text, frame_b64, frame_labels)
+        raw = call_vlm(api_base, api_key, model, system_prompt, prompt_text, frame_b64, frame_labels,
+                       images_first=images_first)
         parsed = parse_json_from_response(raw)
         if parsed.get("_parse_error"):
             return None
@@ -1153,75 +1162,36 @@ def _split_scene_first_response(
     - merge_reason is validated and required for multi-scene events.
     - scene_ids must partition all input scenes without overlap.
     """
-    # ── Classification fields (identical to _split_l2_first_response) ────────
+    # ── Classification fields ─────────────────────────────────────────────────
     summary = parsed.get("summary", "")
     global_phase_criterion = parsed.get("global_phase_criterion", "")
-
-    archetype = parsed.get("paradigm", "tutorial")
-    if archetype not in PARADIGM_IDS:
-        archetype = "tutorial"
-
-    archetype_confidence = parsed.get("paradigm_confidence")
-    if not isinstance(archetype_confidence, (int, float)):
-        archetype_confidence = 0.5
-    archetype_confidence = max(0.0, min(1.0, float(archetype_confidence)))
-
-    archetype_reason = str(parsed.get("paradigm_reason", ""))
 
     domain_l2 = parsed.get("domain_l2", "other")
     if domain_l2 not in DOMAIN_L2_ALL:
         domain_l2 = "other"
 
-    topology_type = PARADIGM_TO_TOPOLOGY.get(archetype, "procedural")
     video_caption = str(parsed.get("video_caption", ""))
 
-    raw_feas = parsed.get("feasibility", {})
-    if not isinstance(raw_feas, dict):
-        raw_feas = {}
-    feas_score = raw_feas.get("score")
-    if not isinstance(feas_score, (int, float)):
-        feas_score = 0.5
-    feas_score = max(0.0, min(1.0, float(feas_score)))
-    feas_skip = bool(raw_feas.get("skip", False))
-    feas_skip_reason = raw_feas.get("skip_reason")
-    valid_skip_reasons = {"talk_dominant", "ambient_static", "low_visual_dynamics", "too_short", "low_feasibility"}
-    if feas_skip_reason not in valid_skip_reasons:
-        feas_skip_reason = None
-    est_events = raw_feas.get("estimated_n_events", 0)
-    visual_dynamics = raw_feas.get("visual_dynamics", "medium")
-    if visual_dynamics not in {"high", "medium", "low"}:
-        visual_dynamics = "medium"
-
-    if visual_dynamics == "low" and est_events < 2 and not feas_skip:
-        feas_skip = True
-        feas_skip_reason = "low_visual_dynamics"
-    if feas_score < 0.4 and not feas_skip:
-        feas_skip = True
-        feas_skip_reason = "low_feasibility"
+    # Paradigm / feasibility / metadata — no longer requested from VLM; hardcode defaults
+    archetype = "tutorial"
+    archetype_confidence = 0.0
+    archetype_reason = "not_classified"
+    topology_type = "procedural"
 
     feasibility = {
-        "score": feas_score,
-        "skip": feas_skip,
-        "skip_reason": feas_skip_reason,
+        "score": 1.0,
+        "skip": False,
+        "skip_reason": None,
         "estimated_n_phases": 0,
-        "estimated_n_events": int(est_events) if isinstance(est_events, (int, float)) else 0,
-        "visual_dynamics": visual_dynamics,
+        "estimated_n_events": 0,
+        "visual_dynamics": "medium",
     }
 
-    raw_meta = parsed.get("video_metadata", {})
-    if not isinstance(raw_meta, dict):
-        raw_meta = {}
-    camera_style = raw_meta.get("camera_style", "unknown")
-    if camera_style not in {"static_tripod", "handheld", "multi_angle", "first_person"}:
-        camera_style = "unknown"
-    editing_style = raw_meta.get("editing_style", "unknown")
-    if editing_style not in {"continuous", "jump_cut", "montage", "mixed"}:
-        editing_style = "unknown"
     video_metadata = {
-        "has_text_overlay": bool(raw_meta.get("has_text_overlay", False)),
-        "has_narration": bool(raw_meta.get("has_narration", False)),
-        "camera_style": camera_style,
-        "editing_style": editing_style,
+        "has_text_overlay": False,
+        "has_narration": False,
+        "camera_style": "unknown",
+        "editing_style": "unknown",
     }
 
     # ── Build scenes lookup ──────────────────────────────────────────────────
@@ -1499,7 +1469,8 @@ def _annotate_scene_first(
         scenes_json_str=scenes_json_str,
     )
 
-    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels)
+    parsed = call_and_parse(api_base, api_key, model, SYSTEM_PROMPT, prompt_text, frame_b64, frame_labels,
+                            images_first=True)
     if parsed is None:
         raise RuntimeError("scene-first JSON parse failed after retry")
 
