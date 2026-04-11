@@ -93,28 +93,61 @@ else
         --seed "$SEED"
 fi
 
-# ── Step 3: Rollout ──
+# ── Step 3: Rollout (with resume support) ──
 ROLLOUT_OUTPUT="$OUTPUT_ROOT/rollout_kept.jsonl"
 ROLLOUT_REPORT="$OUTPUT_ROOT/rollout_report.jsonl"
 ROLLOUT_DONE=0
+RESUME_INPUT=""
+
 if [ "$FORCE" != "1" ] && [ -s "$ROLLOUT_REPORT" ]; then
     REPORT_COUNT=$(wc -l < "$ROLLOUT_REPORT" | tr -d ' ')
     PILOT_COUNT=$(wc -l < "$PILOT_JSONL" | tr -d ' ')
     if [ "$REPORT_COUNT" -ge "$PILOT_COUNT" ]; then
         echo ""
-        echo "=== Step 3: rollout [已完成: $REPORT_COUNT reports — 跳过] ==="
+        echo "=== Step 3: rollout [已完成: $REPORT_COUNT/$PILOT_COUNT — 跳过] ==="
         ROLLOUT_DONE=1
+    else
+        # Partial progress — resume mode
+        echo ""
+        echo "=== Step 3: rollout [断点续传: 已完成 $REPORT_COUNT/$PILOT_COUNT] ==="
+        RESUME_INPUT="$OUTPUT_ROOT/_remaining.jsonl"
+
+        python "$SCRIPT_DIR/resume_helper.py" \
+            --input "$PILOT_JSONL" \
+            --report "$ROLLOUT_REPORT" \
+            --output "$RESUME_INPUT" || {
+                RESUME_EXIT=$?
+                if [ "$RESUME_EXIT" = "42" ]; then
+                    echo "  All items already processed!"
+                    ROLLOUT_DONE=1
+                else
+                    echo "  Resume helper failed (exit=$RESUME_EXIT)"
+                    exit 1
+                fi
+            }
     fi
 fi
 
 if [ "$ROLLOUT_DONE" = "0" ]; then
+    # Determine which input to use
+    EFFECTIVE_INPUT="${RESUME_INPUT:-$PILOT_JSONL}"
+    REMAINING_COUNT=$(wc -l < "$EFFECTIVE_INPUT" | tr -d ' ')
     echo ""
-    echo "=== Step 3: rollout (num_rollouts=$NUM_ROLLOUTS) ==="
+    echo "=== Step 3: rollout (${REMAINING_COUNT} items × rollout_n=$NUM_ROLLOUTS) ==="
+
+    # For resume: write to temp files, merge afterwards
+    if [ -n "$RESUME_INPUT" ]; then
+        RUN_OUTPUT="$OUTPUT_ROOT/_resume_kept.jsonl"
+        RUN_REPORT="$OUTPUT_ROOT/_resume_report.jsonl"
+    else
+        RUN_OUTPUT="$ROLLOUT_OUTPUT"
+        RUN_REPORT="$ROLLOUT_REPORT"
+    fi
 
     ROLLOUT_COMMON=(
-        --input_jsonl "$PILOT_JSONL"
-        --output_jsonl "$ROLLOUT_OUTPUT"
-        --report_jsonl "$ROLLOUT_REPORT"
+        --input_jsonl "$EFFECTIVE_INPUT"
+        --output_jsonl "$RUN_OUTPUT"
+        --report_jsonl "$RUN_REPORT"
         --model_path "$MODEL_PATH"
         --reward_function "$REWARD_FN"
         --backend vllm
@@ -140,17 +173,28 @@ if [ "$ROLLOUT_DONE" = "0" ]; then
                 "${ROLLOUT_COMMON[@]}" \
                 --tensor_parallel_size 1 \
                 --shard_id "$i" --num_shards "$NUM_GPUS" \
-                --output_jsonl "$OUTPUT_ROOT/rollout_kept_shard${i}.jsonl" \
-                --report_jsonl "$OUTPUT_ROOT/rollout_report_shard${i}.jsonl" &
+                --output_jsonl "$OUTPUT_ROOT/_shard${i}_kept.jsonl" \
+                --report_jsonl "$OUTPUT_ROOT/_shard${i}_report.jsonl" &
         done
         wait
-        cat "$OUTPUT_ROOT"/rollout_kept_shard*.jsonl > "$ROLLOUT_OUTPUT"
-        cat "$OUTPUT_ROOT"/rollout_report_shard*.jsonl > "$ROLLOUT_REPORT"
+        cat "$OUTPUT_ROOT"/_shard*_kept.jsonl > "$RUN_OUTPUT"
+        cat "$OUTPUT_ROOT"/_shard*_report.jsonl > "$RUN_REPORT"
+        rm -f "$OUTPUT_ROOT"/_shard*_kept.jsonl "$OUTPUT_ROOT"/_shard*_report.jsonl
     else
         echo "  Single GPU mode"
         python "$ROLLOUT_SCRIPT" \
             "${ROLLOUT_COMMON[@]}" \
             --tensor_parallel_size 1
+    fi
+
+    # Merge resume results with previous run
+    if [ -n "$RESUME_INPUT" ] && [ -s "$RUN_REPORT" ]; then
+        echo "  Merging resume results..."
+        cat "$RUN_OUTPUT" >> "$ROLLOUT_OUTPUT"
+        cat "$RUN_REPORT" >> "$ROLLOUT_REPORT"
+        rm -f "$RESUME_INPUT" "$RUN_OUTPUT" "$RUN_REPORT"
+        MERGED_COUNT=$(wc -l < "$ROLLOUT_REPORT" | tr -d ' ')
+        echo "  Merged report: $MERGED_COUNT total records"
     fi
 fi
 
