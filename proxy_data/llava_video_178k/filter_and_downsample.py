@@ -85,11 +85,11 @@ def main():
     for cell in sorted(acc_by_cell.keys()):
         accs = acc_by_cell[cell]
         mean_acc = sum(accs) / len(accs)
-        in_range = sum(1 for a in accs if args.min_acc < a < args.max_acc)
+        in_range = sum(1 for a in accs if args.min_acc <= a <= args.max_acc)
         total_in_range += in_range
         bucket, source = cell
         print(f"{bucket:>15s}  {source:>20s}  {len(accs):>6d}  {mean_acc:>10.4f}  {in_range:>10d}")
-    print(f"\nTotal in accuracy range ({args.min_acc}, {args.max_acc}): {total_in_range}")
+    print(f"\nTotal in accuracy range [{args.min_acc}, {args.max_acc}]: {total_in_range}")
 
     if args.stats_only:
         return
@@ -100,7 +100,7 @@ def main():
         idx = report.get("index", -1)
         mean_reward = report.get("mean_reward", 0.0)
 
-        if not (args.min_acc < mean_reward < args.max_acc):
+        if not (args.min_acc <= mean_reward <= args.max_acc):
             continue
         if idx < 0 or idx >= len(originals):
             continue

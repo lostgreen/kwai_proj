@@ -264,18 +264,23 @@ def main():
     before_recs = load_jsonl(args.before)
     print(f"  {len(before_recs)} records")
 
-    print(f"Loading after: {args.after}")
-    after_recs = load_jsonl(args.after)
-    print(f"  {len(after_recs)} records")
+    after_recs = []
+    if os.path.isfile(args.after):
+        print(f"Loading after: {args.after}")
+        after_recs = load_jsonl(args.after)
+        print(f"  {len(after_recs)} records")
+    else:
+        print(f"  After file not found: {args.after} (skipping comparison plots)")
 
     before_grid = count_grid(before_recs)
     after_grid = count_grid(after_recs)
 
-    print("\n== Source × Duration Heatmap ==")
-    plot_comparison_heatmap(before_grid, after_grid, args.outdir)
+    if after_recs:
+        print("\n== Source × Duration Heatmap ==")
+        plot_comparison_heatmap(before_grid, after_grid, args.outdir)
 
-    print("\n== Bar Chart Comparison ==")
-    plot_comparison_bars(before_grid, after_grid, args.outdir)
+        print("\n== Bar Chart Comparison ==")
+        plot_comparison_bars(before_grid, after_grid, args.outdir)
 
     if args.report and os.path.isfile(args.report):
         print("\n== Accuracy Distribution ==")
