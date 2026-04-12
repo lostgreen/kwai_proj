@@ -37,7 +37,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from archetypes import get_archetype_l2_train_prompt, TOPOLOGY_TO_DEFAULT_ARCHETYPE, ARCHETYPE_IDS
+# V4 shot-first prompt for rebuilding prompts after clipping
+_ablation_dir = str(Path(__file__).resolve().parent.parent.parent / "local_scripts" / "hier_seg_ablations" / "prompt_ablation")
+if _ablation_dir not in sys.path:
+    sys.path.insert(0, _ablation_dir)
+from prompt_variants_v4 import PROMPT_VARIANTS_V4
 
 
 def _ffmpeg_fps_resample(src: str, dst: Path, fps: int = 1) -> None:
@@ -155,13 +159,11 @@ def _process_l2(record: dict, clip_dir: Path) -> dict:
     else:
         new_answer = record["answer"]
 
-    # Rebuild prompt (0-based duration)
-    archetype = meta.get("archetype", "")
-    if archetype not in ARCHETYPE_IDS:
-        archetype = TOPOLOGY_TO_DEFAULT_ARCHETYPE.get(meta.get("topology", ""), "tutorial")
+    # Rebuild prompt (0-based duration) using V4 shot-first template
+    prompt_body = PROMPT_VARIANTS_V4["L2"]["V1"].format(duration=duration)
     new_user_text = (
         "Watch the following video clip carefully:\n<video>\n\n"
-        + get_archetype_l2_train_prompt(archetype, duration)
+        + prompt_body
     )
 
     rec = dict(record)
