@@ -2,14 +2,14 @@
 将 Time-R1 的 TimeRFT 训练数据 / TVGBench 评估数据转换为 EasyR1 JSONL 格式。
 
 用法:
-    # 生成 ≤256s 无 CoT 版本
+    # 生成 ≤256s 无 CoT 版本（默认）
     python build_dataset.py \
         --timerft_json /path/to/train_2k5.json \
         --tvgbench_json /path/to/tvgbench.json \
         --video_base /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset \
-        --output_dir ./data --max_duration 256 --mode no_cot
+        --output_dir ./data --max_duration 256
 
-    # 生成 ≤256s CoT 版本
+    # 生成 ≤256s CoT 版本（已弃用，CoT 容易陷入死循环）
     python build_dataset.py \
         --timerft_json /path/to/train_2k5.json \
         --video_base /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset \
@@ -31,9 +31,10 @@ PROMPT_TEMPLATE_NO_COT = (
     'This video is {duration:.1f} seconds long.\n\n'
     'To accurately pinpoint the event "{sentence}" in the video, '
     'determine the precise time period of the event.\n\n'
-    'Provide the start and end times (in seconds, precise to two decimal places) '
-    'in the format "start time to end time" within the <answer> </answer> tags. '
-    'For example: "12.54 to 17.83".'
+    'Provide the start and end times in **seconds** (as decimal numbers, e.g. 12.54), '
+    'NOT in mm:ss or hh:mm:ss format.\n'
+    'Use the format "X.XX to Y.YY" within the <answer> </answer> tags.\n'
+    'Example: <answer>12.54 to 17.83</answer>'
 )
 
 # ── Prompt 模板（CoT：鼓励模型在 <think> 中分析时间线）——————
@@ -281,12 +282,20 @@ def main():
         type=str,
         choices=["cot", "no_cot"],
         default="no_cot",
-        help="Prompt 模式: cot (带 CoT 思考) 或 no_cot (直接输出)",
+        help="Prompt 模式: cot (带 CoT 思考，已弃用) 或 no_cot (直接输出)",
+    )
+    parser.add_argument(
+        "--n_val",
+        type=int,
+        default=100,
+        help="验证集条数 (从合并数据中随机抽取)",
     )
     args = parser.parse_args()
 
     suffix = f"_{args.mode}" if args.mode != "no_cot" else ""
     dur_tag = f"_max{int(args.max_duration)}s" if args.max_duration else ""
+
+    all_records = []
 
     if args.timerft_json:
         print(f"读取 TimeRFT: {args.timerft_json}")
@@ -295,8 +304,15 @@ def main():
             timerft_items = json.load(f)
         records, stats = convert_timerft(timerft_items, args.video_base, args.max_duration, args.mode)
         print_stats("TimeRFT (train_2k5)", stats)
-        fname = f"timerft_train{dur_tag}{suffix}_easyr1.jsonl"
-        write_jsonl(records, os.path.join(args.output_dir, fname))
+
+        # 过滤 clip_start/clip_end 样本（视频文件未实际裁切，时长不匹配）
+        before = len(records)
+        records = [r for r in records if "clip_start" not in (r.get("metadata") or {})]
+        if before != len(records):
+            print(f"  [过滤] 移除 {before - len(records)} 条含 clip_start 的样本"
+                  f" (视频未实际裁切)")
+
+        all_records.extend(records)
 
     if args.tvgbench_json:
         print(f"\n读取 TVGBench: {args.tvgbench_json}")
@@ -304,11 +320,27 @@ def main():
             tvgbench_items = json.load(f)
         records, stats = convert_tvgbench(tvgbench_items, args.video_base, args.max_duration, args.mode)
         print_stats("TVGBench (eval)", stats)
-        fname = f"tvgbench_val{dur_tag}{suffix}_easyr1.jsonl"
-        write_jsonl(records, os.path.join(args.output_dir, fname))
+        all_records.extend(records)
 
-    if not args.timerft_json and not args.tvgbench_json:
+    if not all_records:
         print("请指定 --timerft_json 或 --tvgbench_json（至少一个）")
+        return
+
+    # Shuffle + train/val split
+    import random
+    rng = random.Random(42)
+    rng.shuffle(all_records)
+
+    n_val = min(args.n_val, len(all_records) // 5)
+    val_records = all_records[:n_val]
+    train_records = all_records[n_val:]
+
+    print(f"\n合并后: {len(all_records)} 条 → train {len(train_records)} + val {n_val}")
+
+    train_path = os.path.join(args.output_dir, f"tg_train{dur_tag}{suffix}.jsonl")
+    val_path = os.path.join(args.output_dir, f"tg_val{dur_tag}{suffix}.jsonl")
+    write_jsonl(train_records, train_path)
+    write_jsonl(val_records, val_path)
 
 
 if __name__ == "__main__":
