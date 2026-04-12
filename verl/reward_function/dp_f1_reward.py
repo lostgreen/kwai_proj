@@ -171,7 +171,7 @@ def _dp_f1_reward(
     ground_truth: str,
     sigma: float = SIGMA,
 ) -> Dict[str, float]:
-    """DP-F1 + Instance Count reward.  R_loc = R_num + R_match ∈ [0, 2]."""
+    """DP-F1 + Instance Count reward.  overall = R_num + R_match ∈ [0, 2]."""
     gt_segs = parse_segments(ground_truth)
     if not gt_segs:
         return dict(_ZERO)

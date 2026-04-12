@@ -1,7 +1,7 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
-Temporal Grounding Reward 函数 — IoU × distance_penalty (Time-R1 style)。
+Temporal Grounding Reward — IoU × distance_penalty (Time-R1 style)。
 
 适配 <answer>start to end</answer> 格式（兼容旧版 <events>[[s, e]]</events>）。
 
@@ -11,6 +11,8 @@ Reward 计算:
   3. 乘以归一化距离惩罚: (1 - |Δs/dur|) × (1 - |Δe/dur|)
      惩罚端点偏移，抑制超长片段的"懒惰最优解"
   4. 格式不合法时返回 0.0
+
+无 format 奖励 — overall = accuracy ∈ [0, 1]。
 
 输出格式（兼容 EasyR1 batch reward 接口）:
     {"overall": float, "format": float, "accuracy": float}
@@ -35,10 +37,7 @@ _SEGMENT_PATTERN = re.compile(
     r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*\]"
 )
 
-
-def _has_format_tag(text: str) -> bool:
-    """检查文本是否包含 <answer> 或 <events> 标签。"""
-    return bool(_ANSWER_PATTERN.search(text) or _EVENTS_PATTERN.search(text))
+_ZERO = {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
 
 def _parse_single_segment(text: str) -> Optional[Tuple[float, float]]:
@@ -82,39 +81,28 @@ def temporal_grounding_reward(
     metadata: Optional[Dict] = None,
 ) -> Dict[str, float]:
     """
-    Temporal Grounding iou_v2 reward: IoU × distance_penalty。
+    Temporal Grounding reward: IoU × distance_penalty ∈ [0, 1]。
 
-    Args:
-        response: 模型回复（包含 <answer>s to e</answer> 或 <events>[[s, e]]</events>）
-        ground_truth: 标准答案（同格式）
-        metadata: 需包含 "duration" 字段（视频总时长秒数）
-
-    Returns:
-        {"overall": float, "format": float, "accuracy": float}
+    无 format 奖励，overall = accuracy。
     """
     # 反黑客
     if response.count("<answer>") > 1 or response.count("</answer>") > 1:
-        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+        return dict(_ZERO)
     if response.count("<events>") > 1 or response.count("</events>") > 1:
-        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+        return dict(_ZERO)
     if re.search(r"\[\d+-\d+\]", response):
-        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-
-    # 格式检查
-    if not _has_format_tag(response):
-        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+        return dict(_ZERO)
 
     # 解析 GT
     gt_pair = _parse_single_segment(ground_truth)
     if gt_pair is None:
-        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+        return dict(_ZERO)
     gt_s, gt_e = gt_pair
 
     # 解析预测
     pred_pair = _parse_single_segment(response)
     if pred_pair is None:
-        # 格式标签存在但内容无法解析
-        return {"overall": 1.0, "format": 1.0, "accuracy": 0.0}  # r_form only
+        return dict(_ZERO)
     pred_s, pred_e = pred_pair
 
     # IoU
@@ -137,8 +125,8 @@ def temporal_grounding_reward(
         accuracy = iou
 
     return {
-        "overall": float(accuracy + 1.0),  # r_tIoU + r_form
-        "format": 1.0,
+        "overall": float(accuracy),
+        "format": 0.0,
         "accuracy": float(accuracy),
     }
 
@@ -146,8 +134,6 @@ def temporal_grounding_reward(
 # ===========================
 # Batch reward 接口
 # ===========================
-_ZERO = {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-
 
 def compute_score(
     reward_inputs: List[Dict[str, Any]],
@@ -155,6 +141,8 @@ def compute_score(
 ) -> List[Dict[str, float]]:
     """
     Batch reward 接口（与 EasyR1 BatchFunctionRewardManager 兼容）。
+
+    overall = tIoU × distance_penalty ∈ [0, 1]。
     """
     if not isinstance(reward_inputs, list):
         raise ValueError("Please use `reward_type=batch` for this reward function.")

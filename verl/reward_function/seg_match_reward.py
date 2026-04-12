@@ -137,7 +137,7 @@ def _seg_match_reward(
     response: str,
     ground_truth: str,
 ) -> Dict[str, float]:
-    """Segment Matching Reward.  r_M = (r_G + r_L) / 2 ∈ [0, 1]."""
+    """Segment Matching Reward.  overall = r_M ∈ [0, 1]."""
     gt_segs = parse_segments(ground_truth)
     if not gt_segs:
         return dict(_ZERO)

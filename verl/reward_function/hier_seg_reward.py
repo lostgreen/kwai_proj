@@ -47,7 +47,7 @@ _ZERO = {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 # ===========================
 
 def _f1_iou_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """F1-IoU reward — Hungarian 匹配 + NMS 去重，所有层共用。"""
+    """F1-IoU reward — Hungarian 匹配 + NMS 去重，所有层共用。overall ∈ [0, 1]。"""
     gt_segs = parse_segments(ground_truth)
     if not gt_segs:
         return dict(_ZERO)
