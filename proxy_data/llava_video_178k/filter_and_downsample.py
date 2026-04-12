@@ -47,9 +47,9 @@ def main():
     parser.add_argument("--output", required=True,
                         help="Output JSONL for RL training")
     parser.add_argument("--min-acc", type=float, default=0.25,
-                        help="Minimum mean accuracy to keep (exclusive)")
+                        help="Minimum mean accuracy to keep (inclusive, closed interval)")
     parser.add_argument("--max-acc", type=float, default=0.5,
-                        help="Maximum mean accuracy to keep (exclusive)")
+                        help="Maximum mean accuracy to keep (inclusive, closed interval)")
     parser.add_argument("--target-total", type=int, default=1000,
                         help="Target total number of records after downsampling")
     parser.add_argument("--seed", type=int, default=42)
@@ -64,18 +64,37 @@ def main():
     reports = load_jsonl(args.report)
     print(f"  {len(reports)} records in report")
 
-    # Load original input to pair by index
+    # Load original input — build content-based lookup
     print(f"Loading input: {args.input}")
     originals = load_jsonl(args.input)
     print(f"  {len(originals)} original records")
 
+    # Content-based lookup: (prompt, answer) → original record
+    originals_by_content: dict[tuple[str, str], dict] = {}
+    for rec in originals:
+        key = (rec.get("prompt", ""), rec.get("answer", ""))
+        originals_by_content[key] = rec
+
+    def _lookup_original(report_entry: dict) -> dict | None:
+        """Find original record matching a report entry (content-based, index fallback)."""
+        # Content match first
+        key = (report_entry.get("prompt", ""), report_entry.get("answer", ""))
+        rec = originals_by_content.get(key)
+        if rec is not None:
+            return rec
+        # Index fallback
+        idx = report_entry.get("index", -1)
+        if 0 <= idx < len(originals):
+            return originals[idx]
+        return None
+
     # --- Stats pass ---
     acc_by_cell: dict[tuple[str, str], list[float]] = defaultdict(list)
     for report in reports:
-        idx = report.get("index", -1)
         mean_reward = report.get("mean_reward", 0.0)
-        if 0 <= idx < len(originals):
-            meta = originals[idx].get("metadata", {})
+        rec = _lookup_original(report)
+        if rec is not None:
+            meta = rec.get("metadata", {})
             cell = (meta.get("duration_bucket", "unknown"), meta.get("source", "unknown"))
             acc_by_cell[cell].append(mean_reward)
 
@@ -97,15 +116,15 @@ def main():
     # --- Filter pass ---
     kept_by_cell: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for report in reports:
-        idx = report.get("index", -1)
         mean_reward = report.get("mean_reward", 0.0)
 
         if not (args.min_acc <= mean_reward <= args.max_acc):
             continue
-        if idx < 0 or idx >= len(originals):
+
+        rec = _lookup_original(report)
+        if rec is None:
             continue
 
-        rec = originals[idx]
         meta = rec.get("metadata", {})
         cell = (meta.get("duration_bucket", "unknown"), meta.get("source", "unknown"))
         kept_by_cell[cell].append(rec)

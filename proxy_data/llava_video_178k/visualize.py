@@ -220,14 +220,14 @@ def plot_accuracy_distribution(report_path: str, outdir: str):
         idx = r.get("index", -1)
         src_accs["all"].append(r.get("mean_reward", 0.0))
 
-    # Print stats
+    # Print stats — must match filter_and_downsample.py closed interval [0.25, 0.5]
     total = len(arr)
-    in_range = int(np.sum((arr > 0.25) & (arr < 0.5)))
-    too_easy = int(np.sum(arr >= 0.5))
-    too_hard = int(np.sum(arr <= 0.25))
+    in_range = int(np.sum((arr >= 0.25) & (arr <= 0.5)))
+    too_easy = int(np.sum(arr > 0.5))
+    too_hard = int(np.sum(arr < 0.25))
 
     # Pie chart of categories
-    labels = [f"Too easy\n(>0.5): {too_easy}", f"Keep zone\n(0.25-0.5): {in_range}", f"Too hard\n(<=0.25): {too_hard}"]
+    labels = [f"Too easy\n(>0.5): {too_easy}", f"Keep zone\n([0.25,0.5]): {in_range}", f"Too hard\n(<0.25): {too_hard}"]
     sizes = [too_easy, in_range, too_hard]
     colors = ["#ff9999", "#99ff99", "#9999ff"]
     ax2.pie(sizes, labels=labels, colors=colors, autopct="%1.1f%%", startangle=90)
@@ -242,9 +242,9 @@ def plot_accuracy_distribution(report_path: str, outdir: str):
     # Text summary
     print(f"\n  Accuracy Summary (N={total}):")
     print(f"    mean={arr.mean():.4f}, median={np.median(arr):.4f}")
-    print(f"    Too easy (>=0.5): {too_easy} ({too_easy/total*100:.1f}%)")
-    print(f"    Keep zone (0.25-0.5): {in_range} ({in_range/total*100:.1f}%)")
-    print(f"    Too hard (<=0.25): {too_hard} ({too_hard/total*100:.1f}%)")
+    print(f"    Too easy (>0.5): {too_easy} ({too_easy/total*100:.1f}%)")
+    print(f"    Keep zone [0.25,0.5]: {in_range} ({in_range/total*100:.1f}%)")
+    print(f"    Too hard (<0.25): {too_hard} ({too_hard/total*100:.1f}%)")
 
 
 def main():

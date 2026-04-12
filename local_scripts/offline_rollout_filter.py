@@ -482,6 +482,7 @@ def main() -> None:
 
         report = {
             "index": idx,
+            "metadata_id": item.get("metadata", {}).get("id", ""),
             "problem_type": item.get("problem_type", ""),
             "keep": keep,
             "has_diversity": has_diversity,
@@ -507,6 +508,7 @@ def main() -> None:
         dropped_by_type[ptype] = dropped_by_type.get(ptype, 0) + 1
         report = {
             "index": idx,
+            "metadata_id": item.get("metadata", {}).get("id", ""),
             "problem_type": item.get("problem_type", ""),
             "keep": False,
             "error": str(exc),

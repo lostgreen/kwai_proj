@@ -57,7 +57,7 @@ echo " Output:     $OUTPUT_ROOT"
 echo " GPUs:       $NUM_GPUS (TP=$TP_SIZE)"
 echo " Rollouts:   $NUM_ROLLOUTS"
 echo " Per Cell:   $PER_CELL"
-echo " Acc Range:  ($MIN_ACC, $MAX_ACC)"
+echo " Acc Range:  [$MIN_ACC, $MAX_ACC]"
 echo " Target:     $TARGET_TOTAL"
 echo "============================================="
 
@@ -204,7 +204,7 @@ echo ""
 echo "=== Step 4: filter_and_downsample ==="
 python "$SCRIPT_DIR/filter_and_downsample.py" \
     --report "$ROLLOUT_REPORT" \
-    --input "$PILOT_JSONL" \
+    --input "$MCQ_JSONL" \
     --output "$FINAL_JSONL" \
     --min-acc "$MIN_ACC" \
     --max-acc "$MAX_ACC" \
