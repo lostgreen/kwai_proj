@@ -124,7 +124,7 @@ TRAIN_CMD=(
 
 # 可选: 限制训练步数 (快速调试)
 if [[ -n "${MAX_STEPS}" ]]; then
-    TRAIN_CMD+=(trainer.total_training_steps="${MAX_STEPS}")
+    TRAIN_CMD+=(trainer.max_steps="${MAX_STEPS}")
 fi
 
 "${TRAIN_CMD[@]}"
