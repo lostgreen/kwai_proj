@@ -333,11 +333,21 @@ _EMA_STD_TRACKER = _EmaStdTracker()
 # ===== NEW: task key generation function =====
 def _task_key_of(sample_problem_type: str, sample_data_type: str | None) -> str:
     """
-    Task partition rule:
-    - By default, aggregate by problem_type;
-    - If problem_type == "segmentation", further split by data_type into
-      "segmentation/image" and "segmentation/video".
+    Coarse task grouping for EMA-GRPO advantage normalization.
+
+    Groups by reward type so that each EMA tracks a consistent reward distribution:
+      - "mcq": all choice-based tasks (binary/ternary {0,1})
+      - "seg": all temporal segmentation tasks (continuous F1-IoU [0,1])
+      - "segmentation/image", "segmentation/video": image/video segmentation
+      - Others (sort, temporal_grounding, etc.) keep their own key.
     """
+    if sample_problem_type in (
+        "add", "delete", "replace",
+        "aot_v2t", "aot_t2v", "aot_3way_v2t", "aot_3way_t2v",
+    ) or sample_problem_type.startswith("seg_aot_"):
+        return "mcq"
+    if sample_problem_type.startswith("temporal_seg"):
+        return "seg"
     if sample_problem_type == "segmentation":
         dt = (sample_data_type or "").lower()
         if dt in ("video", "image"):
@@ -421,10 +431,22 @@ def compute_ema_grpo_outcome_advantage(
     # Task partition rule: default by problem_type;
     # if problem_type == "segmentation", further split by data_type
     def _task_key_of(sample_problem_type: str, sample_data_type: str | None) -> str:
+        # Coarse grouping by reward type for stable EMA estimation.
+        # MCQ: all choice-based tasks share one EMA (binary/ternary {0,1})
+        if sample_problem_type in (
+            "add", "delete", "replace",
+            "aot_v2t", "aot_t2v", "aot_3way_v2t", "aot_3way_t2v",
+        ) or sample_problem_type.startswith("seg_aot_"):
+            return "mcq"
+        # Seg: all temporal segmentation tasks share one EMA (continuous F1-IoU)
+        if sample_problem_type.startswith("temporal_seg"):
+            return "seg"
+        # Segmentation (image/video) from other frameworks
         if sample_problem_type == "segmentation":
             dt = (sample_data_type or "").lower()
             if dt in ("video", "image"):
                 return f"segmentation/{dt}"
+        # Others (sort, temporal_grounding, etc.) keep own key
         return sample_problem_type
 
     task_to_pos: dict[str, list[int]] = {}
