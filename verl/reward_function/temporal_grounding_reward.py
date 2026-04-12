@@ -17,7 +17,7 @@ Reward 计算:
 """
 
 import re
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ===========================
@@ -141,3 +141,35 @@ def temporal_grounding_reward(
         "format": 1.0,
         "accuracy": float(accuracy),
     }
+
+
+# ===========================
+# Batch reward 接口
+# ===========================
+_ZERO = {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+
+
+def compute_score(
+    reward_inputs: List[Dict[str, Any]],
+    **kwargs,
+) -> List[Dict[str, float]]:
+    """
+    Batch reward 接口（与 EasyR1 BatchFunctionRewardManager 兼容）。
+    """
+    if not isinstance(reward_inputs, list):
+        raise ValueError("Please use `reward_type=batch` for this reward function.")
+
+    results: List[Dict[str, float]] = []
+
+    for item in reward_inputs:
+        try:
+            response = str(item.get("response", ""))
+            ground_truth = str(item.get("ground_truth", ""))
+            metadata = item.get("metadata") or {}
+            score = temporal_grounding_reward(response, ground_truth, metadata)
+        except Exception as e:
+            print(f"[temporal_grounding_reward] Error: {e}")
+            score = dict(_ZERO)
+        results.append(score)
+
+    return results
