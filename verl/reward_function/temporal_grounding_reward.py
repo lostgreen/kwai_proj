@@ -19,7 +19,7 @@ Reward 计算:
 import re
 from typing import Dict, Optional, Tuple
 
-from verl.reward_function.youcook2_temporal_seg_reward import (
+from verl.reward_function.reward_utils import (
     EVENTS_PATTERN,
     SEGMENT_PATTERN,
     has_events_tag,
@@ -88,7 +88,7 @@ def temporal_grounding_reward(
     pred_pair = _parse_single_segment(response)
     if pred_pair is None:
         # 格式标签存在但内容无法解析
-        return {"overall": 0.0, "format": 1.0, "accuracy": 0.0}
+        return {"overall": 1.0, "format": 1.0, "accuracy": 0.0}  # r_form only
     pred_s, pred_e = pred_pair
 
     # IoU
@@ -111,7 +111,7 @@ def temporal_grounding_reward(
         accuracy = iou
 
     return {
-        "overall": float(accuracy),
+        "overall": float(accuracy + 1.0),  # r_tIoU + r_form
         "format": 1.0,
         "accuracy": float(accuracy),
     }

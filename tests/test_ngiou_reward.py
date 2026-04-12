@@ -9,29 +9,29 @@ verl_rf = types.ModuleType("verl.reward_function")
 sys.modules["verl"] = verl_mod
 sys.modules["verl.reward_function"] = verl_rf
 
-# Load temporal_seg_reward
+# Load reward_utils
 spec_ts = importlib.util.spec_from_file_location(
-    "verl.reward_function.youcook2_temporal_seg_reward",
-    "verl/reward_function/youcook2_temporal_seg_reward.py",
+    "verl.reward_function.reward_utils",
+    "verl/reward_function/reward_utils.py",
 )
 mod_ts = importlib.util.module_from_spec(spec_ts)
-sys.modules["verl.reward_function.youcook2_temporal_seg_reward"] = mod_ts
+sys.modules["verl.reward_function.reward_utils"] = mod_ts
 spec_ts.loader.exec_module(mod_ts)
 
 # Load hier_seg_reward
 spec_hier = importlib.util.spec_from_file_location(
-    "verl.reward_function.youcook2_hier_seg_reward",
-    "verl/reward_function/youcook2_hier_seg_reward.py",
+    "verl.reward_function.hier_seg_reward",
+    "verl/reward_function/hier_seg_reward.py",
 )
 mod_hier = importlib.util.module_from_spec(spec_hier)
-sys.modules["verl.reward_function.youcook2_hier_seg_reward"] = mod_hier
+sys.modules["verl.reward_function.hier_seg_reward"] = mod_hier
 spec_hier.loader.exec_module(mod_hier)
 
-from verl.reward_function.youcook2_temporal_seg_reward import (
+from verl.reward_function.reward_utils import (
     ngiou, temporal_iou, compute_f1_ngiou, compute_f1_iou,
 )
-from verl.reward_function.youcook2_hier_seg_reward import (
-    _l1_reward, _l2_reward, _l3_reward_v2, _l1_l2_reward, compute_score,
+from verl.reward_function.hier_seg_reward import (
+    _f1_iou_reward, compute_score,
 )
 
 
@@ -152,16 +152,16 @@ def main():
     print(f"  Perfect + margin=5: {f1_perfect_margin:.4f} ✓")
 
     print("\n" + "=" * 50)
-    print("Test 5: _l1_reward / _l2_reward / _l3_reward_v2")
+    print("Test 5: _f1_iou_reward / _f1_iou_reward / _f1_iou_reward")
     print("=" * 50)
 
     gt_str = "<events>[[10.0, 30.0], [40.0, 60.0]]</events>"
 
     # Perfect match — L1 margin uses max(original, expanded), so perfect match → 1.0
     pred_str = "<events>[[10.0, 30.0], [40.0, 60.0]]</events>"
-    r1 = _l1_reward(pred_str, gt_str)
-    r2 = _l2_reward(pred_str, gt_str)
-    r3 = _l3_reward_v2(pred_str, gt_str)
+    r1 = _f1_iou_reward(pred_str, gt_str)
+    r2 = _f1_iou_reward(pred_str, gt_str)
+    r3 = _f1_iou_reward(pred_str, gt_str)
     approx(r1["overall"], 1.0)
     approx(r2["overall"], 1.0)
     approx(r3["overall"], 1.0)
@@ -169,24 +169,24 @@ def main():
 
     # Offset 3s on SHORT segments (20s) → L1 margin doesn't help (ngiou(pred,gt) already > ngiou(pred,expanded))
     pred_off_str = "<events>[[13.0, 33.0], [43.0, 63.0]]</events>"
-    r1_off = _l1_reward(pred_off_str, gt_str)
-    r2_off = _l2_reward(pred_off_str, gt_str)
-    r3_off = _l3_reward_v2(pred_off_str, gt_str)
+    r1_off = _f1_iou_reward(pred_off_str, gt_str)
+    r2_off = _f1_iou_reward(pred_off_str, gt_str)
+    r3_off = _f1_iou_reward(pred_off_str, gt_str)
     assert r1_off["overall"] >= r2_off["overall"], "L1 margin should never hurt"
     print(f"  3s offset (short segs): L1={r1_off['overall']:.4f} >= L2={r2_off['overall']:.4f} ✓")
 
     # Offset 5s on LONG segments (60s, realistic L1) → L1 margin helps significantly
     gt_l1_str = "<events>[[0.0, 60.0], [60.0, 120.0]]</events>"
     pred_l1_str = "<events>[[5.0, 65.0], [65.0, 125.0]]</events>"
-    r1_long = _l1_reward(pred_l1_str, gt_l1_str)
-    r2_long = _l2_reward(pred_l1_str, gt_l1_str)
+    r1_long = _f1_iou_reward(pred_l1_str, gt_l1_str)
+    r2_long = _f1_iou_reward(pred_l1_str, gt_l1_str)
     assert r1_long["overall"] >= r2_long["overall"], "L1 margin should help for long segments"
     print(f"  5s offset (60s segs): L1={r1_long['overall']:.4f} >= L2={r2_long['overall']:.4f} ✓")
 
     # Anti-hack checks
-    assert _l1_reward("no events", gt_str)["overall"] == 0.0
-    assert _l2_reward("<events>[]</events>", gt_str)["overall"] == 0.0
-    assert _l3_reward_v2("<events>[[1,2]]</events><events>[[3,4]]</events>", gt_str)["overall"] == 0.0
+    assert _f1_iou_reward("no events", gt_str)["overall"] == 0.0
+    assert _f1_iou_reward("<events>[]</events>", gt_str)["overall"] == 0.0
+    assert _f1_iou_reward("<events>[[1,2]]</events><events>[[3,4]]</events>", gt_str)["overall"] == 0.0
     print("  Anti-hack: all 0.0 ✓")
 
     # L2 and L3 should give same score (same logic, no margin)
@@ -219,17 +219,17 @@ def main():
     print("=" * 50)
 
     # V2 (NGIoU) vs V1 (F1-IoU) on same inputs — NGIoU always >= IoU
-    v1 = _l1_l2_reward(pred_off_str, gt_str)
-    v2_l1 = _l1_reward(pred_off_str, gt_str)
-    v2_l2 = _l2_reward(pred_off_str, gt_str)
+    v1 = _f1_iou_reward(pred_off_str, gt_str)
+    v2_l1 = _f1_iou_reward(pred_off_str, gt_str)
+    v2_l2 = _f1_iou_reward(pred_off_str, gt_str)
     print(f"  3s offset (short): V1(F1-IoU)={v1['overall']:.4f}, V2-L1={v2_l1['overall']:.4f}, V2-L2={v2_l2['overall']:.4f}")
     assert v2_l1["overall"] >= v1["overall"], "V2 L1 should be >= V1"
     assert v2_l2["overall"] >= v1["overall"], "V2 L2 (NGIoU) should be >= V1 (IoU)"
 
     # No overlap case
     pred_no_overlap = "<events>[[70.0, 90.0]]</events>"
-    v1_no = _l1_l2_reward(pred_no_overlap, gt_str)
-    v2_no = _l2_reward(pred_no_overlap, gt_str)
+    v1_no = _f1_iou_reward(pred_no_overlap, gt_str)
+    v2_no = _f1_iou_reward(pred_no_overlap, gt_str)
     print(f"  No overlap: V1={v1_no['overall']:.4f}, V2={v2_no['overall']:.4f}")
     assert v1_no["overall"] == 0.0, "V1 should be 0 for no overlap"
     assert v2_no["overall"] > 0.0, "V2 should be > 0 for no overlap (NGIoU gradient!)"

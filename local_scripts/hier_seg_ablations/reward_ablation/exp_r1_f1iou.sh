@@ -2,7 +2,7 @@
 # =============================================================
 # exp_r1_f1iou.sh — Reward Ablation 实验 1: F1-IoU (Baseline)
 #
-# 使用现有 youcook2_hier_seg_reward.py (匈牙利匹配 + F1-IoU)
+# 使用现有 hier_seg_reward.py (匈牙利匹配 + F1-IoU)
 # 数据：L1 + L2 + L3 三层均衡混合
 #
 # 用法:
@@ -17,7 +17,7 @@ _EXP_DIR="${SCRIPT_DIR}"
 source "${_EXP_DIR}/../common.sh"
 
 # ---- Reward: 使用 baseline F1-IoU ----
-REWARD_FUNCTION="${REPO_ROOT}/verl/reward_function/youcook2_hier_seg_reward.py:compute_score"
+REWARD_FUNCTION="${REPO_ROOT}/verl/reward_function/hier_seg_reward.py:compute_score"
 
 # ---- 实验命名 ----
 EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou}"

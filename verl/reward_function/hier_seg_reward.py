@@ -17,11 +17,10 @@ import random
 import re
 from typing import Any, Dict, List
 
-from verl.reward_function.youcook2_temporal_seg_reward import (
+from verl.reward_function.reward_utils import (
     compute_f1_iou,
     has_events_tag,
     parse_segments,
-    temporal_iou,
 )
 
 
@@ -44,11 +43,11 @@ _ZERO = {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
 
 # ===========================
-# L1 / L2 (legacy): F1-IoU
+# 统一 F1-IoU reward（L1/L2/L3 共用）
 # ===========================
 
-def _l1_l2_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """F1-IoU reward（旧版，保留供对比）。"""
+def _f1_iou_reward(response: str, ground_truth: str) -> Dict[str, float]:
+    """F1-IoU reward — Hungarian 匹配 + NMS 去重，所有层共用。"""
     gt_segs = parse_segments(ground_truth)
     if not gt_segs:
         return dict(_ZERO)
@@ -61,109 +60,6 @@ def _l1_l2_reward(response: str, ground_truth: str) -> Dict[str, float]:
         return dict(_ZERO)
     f1 = compute_f1_iou(pred_segs, gt_segs)
     return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
-
-
-# ===========================
-# V2 → V3: 统一 F1-IoU reward
-# ===========================
-
-
-def _parse_and_check(response: str, ground_truth: str):
-    """共用的解析+反作弊检查，返回 (pred_segs, gt_segs) 或 None。"""
-    gt_segs = parse_segments(ground_truth)
-    if not gt_segs:
-        return None
-    if not _anti_hack_check(response):
-        return None
-    if not has_events_tag(response):
-        return None
-    pred_segs = parse_segments(response)
-    if not pred_segs:
-        return None
-    return pred_segs, gt_segs
-
-
-def _l1_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """L1: F1-IoU（宏观阶段分割）。"""
-    result = _parse_and_check(response, ground_truth)
-    if result is None:
-        return dict(_ZERO)
-    pred_segs, gt_segs = result
-    f1 = compute_f1_iou(pred_segs, gt_segs)
-    return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
-
-
-def _l2_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """L2: F1-IoU（滑窗事件检测）。"""
-    result = _parse_and_check(response, ground_truth)
-    if result is None:
-        return dict(_ZERO)
-    pred_segs, gt_segs = result
-    f1 = compute_f1_iou(pred_segs, gt_segs)
-    return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
-
-
-def _l3_reward_v2(response: str, ground_truth: str) -> Dict[str, float]:
-    """L3: F1-IoU（原子操作分割）。"""
-    result = _parse_and_check(response, ground_truth)
-    if result is None:
-        return dict(_ZERO)
-    pred_segs, gt_segs = result
-    f1 = compute_f1_iou(pred_segs, gt_segs)
-    return {"overall": float(f1), "format": 0.0, "accuracy": float(f1)}
-
-
-# ===========================
-# L3: position-aligned mean tIoU
-# ===========================
-
-def compute_aligned_iou(
-    pred_segs: List[List[float]],
-    gt_segs: List[List[float]],
-) -> float:
-    """
-    位置对齐的 mean tIoU —— L3 专用。
-
-    pred[i] 与 gt[i] 直接配对，无需匈牙利匹配。
-
-    分母取 max(n_pred, n_gt)：
-      - 少输出：缺失段贡献 0，分母 = n_gt  → 自动惩罚
-      - 多输出：多余段不计分，分母 = n_pred → 精度被稀释
-      - 数目正确：退化为 standard mean tIoU
-    """
-    n_gt = len(gt_segs)
-    n_pred = len(pred_segs)
-    if n_gt == 0 or n_pred == 0:
-        return 0.0
-
-    n_eval = min(n_pred, n_gt)
-    sum_iou = sum(temporal_iou(pred_segs[i], gt_segs[i]) for i in range(n_eval))
-    return sum_iou / max(n_pred, n_gt)
-
-
-def _l3_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """
-    L3 query-conditioned grounding reward。
-
-    输出段数应等于 query 数（= GT 段数），位置一一对齐。
-    不使用 NMS（每段对应不同 query，语义不同不应合并）。
-    """
-    gt_segs = parse_segments(ground_truth)
-    if not gt_segs:
-        return dict(_ZERO)
-
-    if not _anti_hack_check(response):
-        return dict(_ZERO)
-
-    if not has_events_tag(response):
-        return dict(_ZERO)
-
-    pred_segs = parse_segments(response)
-    if not pred_segs:
-        return dict(_ZERO)
-
-    acc = compute_aligned_iou(pred_segs, gt_segs)
-    return {"overall": float(acc), "format": 0.0, "accuracy": float(acc)}
 
 
 # ===========================
@@ -245,11 +141,10 @@ def _sort_reward(response: str, ground_truth: str) -> Dict[str, float]:
 # ===========================
 
 _DISPATCH = {
-    "temporal_seg_hier_L1":     _l1_reward,      # F1-IoU
-    "temporal_seg_hier_L2":     _l2_reward,      # F1-IoU
-    "temporal_seg_hier_L3":     _l3_reward_v2,   # F1-IoU
-    "temporal_seg_hier_L3_seg": _l3_reward_v2,   # 同上
-    "sort":                     _sort_reward,     # Jigsaw Displacement
+    "temporal_seg_hier_L1":     _f1_iou_reward,   # F1-IoU
+    "temporal_seg_hier_L2":     _f1_iou_reward,   # F1-IoU
+    "temporal_seg_hier_L3_seg": _f1_iou_reward,   # F1-IoU
+    "sort":                     _sort_reward,      # Jigsaw Displacement
 }
 
 
@@ -277,7 +172,7 @@ def compute_score(
             if reward_fn is None:
                 # fallback: 如果 GT 里有 <events> 就用 F1-IoU；纯数字序列就用 sort
                 if has_events_tag(ground_truth):
-                    reward_fn = _l1_l2_reward
+                    reward_fn = _f1_iou_reward
                 elif re.match(r"^\d+$", ground_truth.strip()):
                     reward_fn = _sort_reward
                 else:

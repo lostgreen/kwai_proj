@@ -71,7 +71,7 @@ CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
 
 # ---- Reward: 使用 hier_seg 专用 reward（不是 mixed_proxy）----
-REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/youcook2_hier_seg_reward.py:compute_score}"
+REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/hier_seg_reward.py:compute_score}"
 
 # ---- 训练轮次 & 保存 ----
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"

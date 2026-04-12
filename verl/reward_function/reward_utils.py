@@ -1,25 +1,14 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
-YouCook2 视频时序分割 Reward 函数 — F1-IoU + NMS + 格式奖励。
+时序分割 Reward 工具库 — IoU / NMS / Hungarian 匹配 / F1 计算。
 
-参考自 youcook_proxy/reward.py（ms-swift 版本），适配 EasyR1 batch reward 接口。
-
-Reward = max(FORMAT_BONUS, matched_f1)
-
-  1. NMS 去重：合并 IoU > NMS_IOU_THR 的重叠预测段
-  2. 匈牙利匹配：一对一二分图匹配
-  3. F1-IoU = 2·R·P / (R+P)
-     - recall    = Σ IoU_matched / N_gt
-     - precision = Σ IoU_matched / N_pred (NMS 后)
-  4. 格式奖励：输出合法 <events>[...]</events> 给 FORMAT_BONUS 基础分
-
-注意：不依赖 scipy，使用纯 Python 匈牙利匹配实现。
+提供基础组件供 hier_seg_reward.py / dp_f1_reward.py / mixed_proxy_reward.py 导入。
+不再包含独立的 compute_score() 入口。
 """
 
-import random
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 # ===========================
@@ -330,99 +319,3 @@ def compute_f1_ngiou(
     precision = total_score / num_pred
     denom = recall + precision
     return float(2.0 * recall * precision / denom) if denom > 0.0 else 0.0
-
-
-# ===========================
-# 主接口 (EasyR1 batch reward)
-# ===========================
-def compute_score(
-    reward_inputs: List[Dict[str, Any]],
-    **kwargs,
-) -> List[Dict[str, float]]:
-    """
-    Batch reward 接口（与 EasyR1 兼容）。
-
-    返回 list of dict:
-        - overall: 综合分数 = 只看 f1_iou
-        - format: 这里不再给固定得保底分，只在严苛正确时有微小起步分(其实可以干脆置 0，全靠 accuracy)
-        - accuracy: F1-IoU 分数
-    """
-    if not isinstance(reward_inputs, list):
-        raise ValueError("Please use `reward_type=batch` for this reward function.")
-
-    results: List[Dict[str, float]] = []
-
-    for idx, item in enumerate(reward_inputs):
-        try:
-            raw_response = item.get("response", "") or ""
-            raw_gt = item.get("ground_truth", "") or ""
-
-            # 解析 GT segments
-            gt_segs = parse_segments(raw_gt)
-            if not gt_segs:
-                results.append({
-                    "overall": 0.0, "format": 0.0,
-                    "accuracy": 0.0, "structure_reward": 0.0,
-                })
-                continue
-
-            # --- 严格反黑客过滤 (Anti-Reward Hacking) ---
-            # 如果出现类似 "[数字-数字]" 的破折号畸形
-            if re.search(r"\[\d+-\d+\]", raw_response):
-                results.append({"overall": 0.0, "format": 0.0, "accuracy": 0.0, "structure_reward": 0.0})
-                continue
-
-            # 反多重标签复读 (比如模型疯狂重复 </events> 或者 <events>)
-            if raw_response.count("</events>") > 1 or raw_response.count("<events>") > 1:
-                results.append({"overall": 0.0, "format": 0.0, "accuracy": 0.0, "structure_reward": 0.0})
-                continue
-
-            # 格式检查
-            has_format = has_events_tag(raw_response)
-
-            if not has_format:
-                results.append({"overall": 0.0, "format": 0.0, "accuracy": 0.0, "structure_reward": 0.0})
-                continue
-
-            # 解析模型预测
-            pred_segs = parse_segments(raw_response)
-
-            if not pred_segs:
-                # 给定 format 要求下没有合法数字也直接0分，不再施舍 BONUS
-                results.append({
-                    "overall": 0.0, "format": 0.0,
-                    "accuracy": 0.0, "structure_reward": 0.0,
-                })
-                continue
-
-            # 计算 F1-IoU reward
-            f1_reward = compute_f1_iou(pred_segs, gt_segs)
-
-            # 彻底取消兜底，让 accuracy 和 overall 完全对齐
-            overall = f1_reward
-            format_score = 0.0 # 只有当模型真正有收益时才会体现出价值，不白给格式分
-
-            results.append({
-                "overall": float(overall),
-                "format": float(format_score),
-                "accuracy": float(f1_reward),
-                "structure_reward": 0.0,
-            })
-
-        except Exception:
-            results.append({
-                "overall": 0.0, "format": 0.0,
-                "accuracy": 0.0, "structure_reward": 0.0,
-            })
-
-    # 日志采样
-    if random.random() < 0.05: # 加大采样概率方便观察
-        for idx, item in enumerate(reward_inputs):
-            gt_segs = parse_segments(item.get("ground_truth", ""))
-            pred_segs = parse_segments(item.get("response", ""))
-            print(f"[YC2-Reward] GT_Raw:\n{item.get('ground_truth', '')}\nResp_Raw:\n{item.get('response', '')}")
-            print(f"[YC2-Reward] gt_segs={gt_segs}")
-            print(f"[YC2-Reward] pred_segs={pred_segs}")
-            print(f"[YC2-Reward] scores={results[idx]}")
-
-    return results

@@ -1,33 +1,21 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
-混合代理任务 + 时序分割统一 Reward 函数。
+混合代理任务统一 Reward 函数。
 
-支持 9 种任务类型（由 problem_type 字段区分）:
+支持任务类型（由 problem_type 字段区分）:
 
-1. add      — 选择题：选下一步视频，精确匹配字母
-2. delete   — 选择题：找出不属于序列的视频，精确匹配字母
-3. replace  — 选择题：选填缺失步骤的视频，精确匹配字母
-4. sort     — 排序题：按时间排列视频片段，jigsaw displacement reward
-5. temporal_seg — 时序分割：F1-IoU reward（复用 youcook2_temporal_seg_reward）
-6. aot_v2t      — 选择题：判断单段视频的时间方向 (A/B)
-7. aot_t2v      — 选择题：在双段视频中匹配描述 (A/B)
-8. aot_3way_v2t — 选择题：三选一视频-文本匹配 (A/B/C)
-9. aot_3way_t2v — 选择题：三选一文本-视频匹配 (A/B/C)
+1. seg_aot_*  — 选择题：时序箭头 MCQ (binary/3-way)
+2. sort       — 排序题：片段排序，jigsaw displacement reward
+3. temporal_grounding — 时间定位：tIoU reward
 
 格式要求（严格模式）:
-- add/delete/replace: 必须包含 <answer>字母</answer>，
-    缺少标签直接返回 0.0，不再回退到全文提取。
-- sort: 必须包含 <answer>数字序列</answer>，
-    缺少标签直接返回 0.0。
-- temporal_seg: 答案为事件标签格式 (<events>...</events>)，无标签返回 0.0。
+- MCQ: 必须包含 <answer>字母</answer>
+- sort: 必须包含 <answer>数字序列</answer>
+- temporal_grounding: <events>[[start, end]]</events>
 
 Reward 输出格式（兼容 EasyR1 batch reward 接口）:
-    {
-        "overall": float,    # 总分 (0.0 = 格式错误，0.0-1.0 = 准确率)
-        "format":  float,    # 格式分 (1.0 = <answer> 标签存在，0.0 = 缺标签)
-        "accuracy": float,   # 准确率奖励
-    }
+    {"overall": float, "format": float, "accuracy": float}
 """
 
 import random
@@ -37,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from verl.reward_function.temporal_grounding_reward import (
     temporal_grounding_reward,
 )
-from verl.reward_function.youcook2_temporal_seg_reward import (
+from verl.reward_function.reward_utils import (
     compute_f1_iou,
     has_events_tag,
     parse_segments,
@@ -225,37 +213,22 @@ def _sort_reward(response: str, ground_truth: str) -> Dict[str, float]:
 # ===================================================================
 
 
-def _temporal_seg_reward(response: str, ground_truth: str) -> Dict[str, float]:
-    """
-    时序分割 Reward：F1-IoU。
-    无格式奖励：无法解析 = 0.0。
-    """
+def _seg_f1_iou_fallback(response: str, ground_truth: str) -> Dict[str, float]:
+    """F1-IoU fallback for unregistered seg-like problem_types."""
     gt_segs = parse_segments(ground_truth)
     if not gt_segs:
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-
-    # 反黑客：畸形格式
     if re.search(r"\[\d+-\d+\]", response):
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
     if response.count("</events>") > 1 or response.count("<events>") > 1:
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-
-    has_format = has_events_tag(response)
-    if not has_format:
-        # 无 <events> 标签 → 无奖励
+    if not has_events_tag(response):
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-
     pred_segs = parse_segments(response)
     if not pred_segs:
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-
     f1_reward = compute_f1_iou(pred_segs, gt_segs)
-
-    return {
-        "overall": float(f1_reward),
-        "format": 0.0,
-        "accuracy": float(f1_reward),
-    }
+    return {"overall": float(f1_reward), "format": 0.0, "accuracy": float(f1_reward)}
 
 
 
@@ -265,31 +238,25 @@ def _temporal_seg_reward(response: str, ground_truth: str) -> Dict[str, float]:
 
 # 任务 → reward 函数映射
 _TASK_REWARD_DISPATCH = {
-    "add":          _choice_reward,
-    "delete":       _choice_reward,
-    "replace":      _choice_reward,
-    "aot_v2t":              _choice_reward,
-    "aot_t2v":              _choice_reward,
-    "aot_3way_v2t":         _choice_reward,
-    "aot_3way_t2v":         _choice_reward,
-    "seg_aot_phase_v2t":      _choice_reward,
-    "seg_aot_phase_t2v":      _choice_reward,
-    "seg_aot_action_v2t":     _choice_reward,
-    "seg_aot_action_t2v":     _choice_reward,
-    "seg_aot_event_v2t":      _choice_reward,
-    "seg_aot_event_t2v":      _choice_reward,
-    # New explicit binary/3-way types
+    # AOT: phase / event / action × direction × arity
+    "seg_aot_phase_v2t":          _choice_reward,
+    "seg_aot_phase_t2v":          _choice_reward,
+    "seg_aot_event_v2t":          _choice_reward,
+    "seg_aot_event_t2v":          _choice_reward,
     "seg_aot_event_v2t_binary":   _choice_reward,
     "seg_aot_event_t2v_binary":   _choice_reward,
-    "seg_aot_event_v2t_3way":    _choice_reward,
-    "seg_aot_event_t2v_3way":    _choice_reward,
+    "seg_aot_event_v2t_3way":     _choice_reward,
+    "seg_aot_event_t2v_3way":     _choice_reward,
+    "seg_aot_action_v2t":         _choice_reward,
+    "seg_aot_action_t2v":         _choice_reward,
     "seg_aot_action_v2t_binary":  _choice_reward,
     "seg_aot_action_t2v_binary":  _choice_reward,
-    "seg_aot_action_v2t_3way":   _choice_reward,
-    "seg_aot_action_t2v_3way":   _choice_reward,
-    "sort":         _sort_reward,
-    "temporal_seg": _temporal_seg_reward,
-    "temporal_grounding": None,  # 特殊处理：需要 metadata
+    "seg_aot_action_v2t_3way":    _choice_reward,
+    "seg_aot_action_t2v_3way":    _choice_reward,
+    # Sort
+    "sort":                       _sort_reward,
+    # Temporal grounding (special: needs metadata)
+    "temporal_grounding":         None,
 }
 
 
@@ -342,7 +309,7 @@ def compute_score(
                 if re.match(r"^\s*[A-Z]\s*$", ground_truth):
                     reward_fn = _choice_reward
                 elif "<events>" in ground_truth:
-                    reward_fn = _temporal_seg_reward
+                    reward_fn = _seg_f1_iou_fallback
                 elif re.match(r"^\d+$", ground_truth.strip()):
                     reward_fn = _sort_reward
                 else:

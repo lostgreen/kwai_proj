@@ -42,9 +42,9 @@ fi
 TRAIN_FILE="${TRAIN_FILE:-${DATA_DIR}/train${SUFFIX}_all.jsonl}"
 TEST_FILE="${TEST_FILE:-${DATA_DIR}/val${SUFFIX}_all.jsonl}"
 
-# ---- Reward: NGIoU V2 (已默认指向 youcook2_hier_seg_reward.py) ----
-# common.sh 中 REWARD_FUNCTION 已指向 youcook2_hier_seg_reward.py:compute_score
-# _DISPATCH 已更新为 NGIoU 版本 (_l1_reward / _l2_reward / _l3_reward_v2)
+# ---- Reward: F1-IoU (已默认指向 hier_seg_reward.py) ----
+# common.sh 中 REWARD_FUNCTION 已指向 hier_seg_reward.py:compute_score
+# _DISPATCH: L1/L2/L3/L3_seg 统一 _f1_iou_reward
 
 # ---- 检查数据是否存在 ----
 if [[ ! -f "${TRAIN_FILE}" ]]; then

@@ -16,8 +16,8 @@ from verl.reward_function.youcook2_hier_seg_reward_boundary import (
     _coverage_iou,
     compute_score,
 )
-from verl.reward_function.youcook2_hier_seg_reward import (
-    _l1_l2_reward as f1_iou_reward,
+from verl.reward_function.hier_seg_reward import (
+    _f1_iou_reward as f1_iou_reward,
 )
 
 

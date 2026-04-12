@@ -348,7 +348,7 @@ def main() -> None:
     # ── Load reward function ──
     reward_spec = args.reward_function
     if not reward_spec:
-        reward_spec = str(REPO_ROOT / "verl/reward_function/youcook2_hier_seg_reward.py") + ":compute_score"
+        reward_spec = str(REPO_ROOT / "verl/reward_function/hier_seg_reward.py") + ":compute_score"
     print(f"[eval] Loading reward function: {reward_spec}")
     reward_fn = load_reward_function(reward_spec)
 

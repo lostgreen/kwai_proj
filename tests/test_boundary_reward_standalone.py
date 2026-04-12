@@ -9,13 +9,13 @@ verl_rf = types.ModuleType("verl.reward_function")
 sys.modules["verl"] = verl_mod
 sys.modules["verl.reward_function"] = verl_rf
 
-# Load temporal_seg_reward
+# Load reward_utils
 spec_ts = importlib.util.spec_from_file_location(
-    "verl.reward_function.youcook2_temporal_seg_reward",
-    "verl/reward_function/youcook2_temporal_seg_reward.py",
+    "verl.reward_function.reward_utils",
+    "verl/reward_function/reward_utils.py",
 )
 mod_ts = importlib.util.module_from_spec(spec_ts)
-sys.modules["verl.reward_function.youcook2_temporal_seg_reward"] = mod_ts
+sys.modules["verl.reward_function.reward_utils"] = mod_ts
 spec_ts.loader.exec_module(mod_ts)
 
 # Load boundary reward
@@ -29,18 +29,18 @@ spec_bnd.loader.exec_module(mod_bnd)
 
 # Load baseline reward
 spec_bl = importlib.util.spec_from_file_location(
-    "verl.reward_function.youcook2_hier_seg_reward",
-    "verl/reward_function/youcook2_hier_seg_reward.py",
+    "verl.reward_function.hier_seg_reward",
+    "verl/reward_function/hier_seg_reward.py",
 )
 mod_bl = importlib.util.module_from_spec(spec_bl)
-sys.modules["verl.reward_function.youcook2_hier_seg_reward"] = mod_bl
+sys.modules["verl.reward_function.hier_seg_reward"] = mod_bl
 spec_bl.loader.exec_module(mod_bl)
 
 # Import functions
 from verl.reward_function.youcook2_hier_seg_reward_boundary import (
     _boundary_hit_f1, _boundary_reward, _count_accuracy, _coverage_iou, compute_score,
 )
-from verl.reward_function.youcook2_hier_seg_reward import _l1_l2_reward as f1_iou_reward
+from verl.reward_function.hier_seg_reward import _f1_iou_reward as f1_iou_reward
 
 gt = "<events>[[10.0, 20.0], [30.0, 45.0]]</events>"
 

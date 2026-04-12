@@ -18,13 +18,13 @@ import importlib.util
 # 直接加载模块，跳过 verl/__init__.py 的大量依赖
 train_dir = os.path.join(os.path.dirname(__file__), "..")
 
-# 先加载 youcook2_temporal_seg_reward (chain_seg 依赖它)
+# 先加载 reward_utils (chain_seg 依赖它)
 spec_tseg = importlib.util.spec_from_file_location(
-    "verl.reward_function.youcook2_temporal_seg_reward",
-    os.path.join(train_dir, "verl", "reward_function", "youcook2_temporal_seg_reward.py"),
+    "verl.reward_function.reward_utils",
+    os.path.join(train_dir, "verl", "reward_function", "reward_utils.py"),
 )
 mod_tseg = importlib.util.module_from_spec(spec_tseg)
-sys.modules["verl.reward_function.youcook2_temporal_seg_reward"] = mod_tseg
+sys.modules["verl.reward_function.reward_utils"] = mod_tseg
 spec_tseg.loader.exec_module(mod_tseg)
 
 # 再加载 chain_seg_reward

@@ -53,7 +53,7 @@ DISABLE_KL=false        # 必须 false：启用 ref model 计算 KL loss
 KL_COEF=0.05            # KL 系数适当加大，防止策略偏移过快
 
 # ---- Reward ----
-REWARD_FUNCTION="verl/reward_function/youcook2_temporal_seg_reward.py:compute_score"
+REWARD_FUNCTION="verl/reward_function/hier_seg_reward.py:compute_score"
 
 # ---- 启动训练 ----
 python3 -m verl.trainer.main \

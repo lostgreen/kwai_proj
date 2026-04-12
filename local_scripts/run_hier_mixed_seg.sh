@@ -49,7 +49,7 @@ DISABLE_KL=false
 KL_COEF=0.2
 
 # ---- Reward ----
-REWARD_FUNCTION="verl/reward_function/youcook2_temporal_seg_reward.py:compute_score"
+REWARD_FUNCTION="verl/reward_function/hier_seg_reward.py:compute_score"
 
 # ---- 启动训练 ----
 python3 -m verl.trainer.main \
