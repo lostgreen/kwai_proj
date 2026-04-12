@@ -1,10 +1,17 @@
 """
 prepare_prompt_data.py — Prompt Ablation 数据准备
 
-从 build_hier_data.py 的输出中读取，替换 prompt 为 V3 版本变体（V1-V4）。
+从 build_hier_data.py 的输出中读取，替换 prompt 为指定版本变体。
+
+支持:
+  --prompt-version v3: V1-V4 (boundary-criterion × CoT) / U1-U4 (universal)
+  --prompt-version v4: V1 (shot-first two-step, 单一变体)
 
 用法:
+    # V3 (旧)
     python prepare_prompt_data.py --levels L2 L3 --variant V2 --data-root /path/to/base --output-dir ./data/pa2
+    # V4 (shot-first)
+    python prepare_prompt_data.py --prompt-version v4 --levels L2 L3 --variant V1 --data-root /path/to/base --output-dir ./data/pa3
 """
 
 import argparse
@@ -14,14 +21,53 @@ import random
 import re
 from collections import Counter
 
-from prompt_variants_v3 import (
-    PROMPT_VARIANTS_V3 as PROMPT_VARIANTS,
-    VARIANT_DESCRIPTIONS_V3 as VARIANT_DESCRIPTIONS,
-    RESPONSE_LEN_HINTS,
-    PROMPT_VARIANTS_UNIVERSAL,
-    VARIANT_DESCRIPTIONS_UNIVERSAL,
-    RESPONSE_LEN_HINTS_UNIVERSAL,
-)
+
+def _load_prompt_registry(version: str):
+    """根据 prompt-version 加载对应的 registry。
+
+    返回: (PROMPT_VARIANTS, VARIANT_DESCRIPTIONS, RESPONSE_LEN_HINTS,
+           PROMPT_VARIANTS_UNIVERSAL, VARIANT_DESCRIPTIONS_UNIVERSAL, RESPONSE_LEN_HINTS_UNIVERSAL)
+    Universal 系列仅在 v3 存在，v4 返回空 dict。
+    """
+    if version == "v4":
+        from prompt_variants_v4 import (
+            PROMPT_VARIANTS_V4,
+            VARIANT_DESCRIPTIONS_V4,
+            RESPONSE_LEN_HINTS_V4,
+        )
+        return (
+            PROMPT_VARIANTS_V4,
+            VARIANT_DESCRIPTIONS_V4,
+            RESPONSE_LEN_HINTS_V4,
+            {},  # no universal variants
+            {},
+            {},
+        )
+    else:
+        from prompt_variants_v3 import (
+            PROMPT_VARIANTS_V3,
+            VARIANT_DESCRIPTIONS_V3,
+            RESPONSE_LEN_HINTS,
+        )
+        # Universal variants 可能不存在 (v3 文件中未必定义)
+        try:
+            from prompt_variants_v3 import (
+                PROMPT_VARIANTS_UNIVERSAL,
+                VARIANT_DESCRIPTIONS_UNIVERSAL,
+                RESPONSE_LEN_HINTS_UNIVERSAL,
+            )
+        except ImportError:
+            PROMPT_VARIANTS_UNIVERSAL = {}
+            VARIANT_DESCRIPTIONS_UNIVERSAL = {}
+            RESPONSE_LEN_HINTS_UNIVERSAL = {}
+        return (
+            PROMPT_VARIANTS_V3,
+            VARIANT_DESCRIPTIONS_V3,
+            RESPONSE_LEN_HINTS,
+            PROMPT_VARIANTS_UNIVERSAL,
+            VARIANT_DESCRIPTIONS_UNIVERSAL,
+            RESPONSE_LEN_HINTS_UNIVERSAL,
+        )
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -86,12 +132,18 @@ def extract_duration_from_prompt(prompt_text: str) -> int:
     return 128
 
 
-def rewrite_prompt(record: dict, level: str, variant: str) -> dict:
+def rewrite_prompt(
+    record: dict,
+    level: str,
+    variant: str,
+    prompt_variants: dict,
+    prompt_variants_universal: dict,
+) -> dict:
     """
     重写一条记录的 prompt 为指定变体。
 
     支持两套变体:
-    - V1-V4: 旧范式 (boundary-criterion × CoT)
+    - V1-V4: 旧范式 (boundary-criterion × CoT) / V4 shot-first
     - U1-U4: v2-Universal (information-delta × intent-progression)
 
     L1/L2/L3 全部统一使用 duration 参数。
@@ -102,9 +154,9 @@ def rewrite_prompt(record: dict, level: str, variant: str) -> dict:
 
     # 根据变体前缀选择对应的 registry
     if variant.startswith("U"):
-        template = PROMPT_VARIANTS_UNIVERSAL[level][variant]
+        template = prompt_variants_universal[level][variant]
     else:
-        template = PROMPT_VARIANTS[level][variant]
+        template = prompt_variants[level][variant]
     duration = extract_duration_from_prompt(old_prompt)
     new_prompt_body = template.format(duration=duration)
 
@@ -146,9 +198,12 @@ def load_records_by_level(data_root: str, levels: list[str]) -> dict[str, list[d
     return by_level
 
 
-def process_variant(levels, variant, data_root, rng, val_per_level, train_per_level):
+def process_variant(
+    levels, variant, data_root, rng, val_per_level, train_per_level,
+    prompt_variants, prompt_variants_universal, response_len_hints,
+):
     """
-    处理单个 V2 variant，返回 (train, val)。
+    处理单个 variant，返回 (train, val)。
 
     val_per_level:   每层取多少条 val（精确值）
     train_per_level: 每层最多取多少条 train（None = 全部剩余）
@@ -166,7 +221,10 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
             records = [r for r in records if not r.get("metadata", {}).get("shuffled", False)]
             print(f"  [L3] Filtered to sequential only: {len(records)} records")
 
-        rewritten = [rewrite_prompt(r, level, variant) for r in records]
+        rewritten = [
+            rewrite_prompt(r, level, variant, prompt_variants, prompt_variants_universal)
+            for r in records
+        ]
 
         rng_copy = random.Random(rng.random())
         rng_copy.shuffle(rewritten)
@@ -185,8 +243,9 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
         all_val.extend(level_val)
         all_train.extend(level_train)
 
+        max_resp = response_len_hints.get(variant, 512)
         print(f"  {level}/{variant}: {len(level_train)} train + {len(level_val)} val "
-              f"(available={len(rewritten)}, max_resp={RESPONSE_LEN_HINTS[variant]})")
+              f"(available={len(rewritten)}, max_resp={max_resp})")
 
     rng.shuffle(all_train)
     rng.shuffle(all_val)
@@ -194,7 +253,12 @@ def process_variant(levels, variant, data_root, rng, val_per_level, train_per_le
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prompt Ablation 数据准备（V3 / Universal prompt 模板）")
+    parser = argparse.ArgumentParser(description="Prompt Ablation 数据准备（V3 / V4 / Universal prompt 模板）")
+    parser.add_argument(
+        "--prompt-version", type=str, default="v3",
+        choices=["v3", "v4"],
+        help="Prompt 模块版本 (v3=boundary-criterion, v4=shot-first)",
+    )
     parser.add_argument(
         "--levels", nargs="+", required=True,
         choices=["L1", "L2", "L3"],
@@ -202,8 +266,7 @@ def main():
     )
     parser.add_argument(
         "--variant", type=str, required=True,
-        choices=["V1", "V2", "V3", "V4", "U1", "U2", "U3", "U4", "all", "all_universal"],
-        help="Prompt 变体 (V1-V4 旧范式 / U1-U4 v2-Universal) 或 all / all_universal",
+        help="Prompt 变体 (v3: V1-V4/U1-U4/all/all_universal; v4: V1)",
     )
     parser.add_argument(
         "--val-per-level", type=int, default=100,
@@ -219,6 +282,11 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    # 加载对应版本的 prompt registry
+    (PROMPT_VARIANTS, VARIANT_DESCRIPTIONS, RESPONSE_LEN_HINTS,
+     PROMPT_VARIANTS_UNIVERSAL, VARIANT_DESCRIPTIONS_UNIVERSAL,
+     RESPONSE_LEN_HINTS_UNIVERSAL) = _load_prompt_registry(args.prompt_version)
+
     rng = random.Random(args.seed)
     if args.variant == "all":
         variants = ["V1", "V2", "V3", "V4"]
@@ -228,8 +296,16 @@ def main():
         variants = [args.variant]
     train_per_level = None if args.train_per_level < 0 else args.train_per_level
 
+    # Validate variant against loaded registry
+    all_valid = set(PROMPT_VARIANTS.get("L1", {}).keys()) | set(PROMPT_VARIANTS_UNIVERSAL.get("L1", {}).keys())
+    for v in variants:
+        if v not in all_valid:
+            parser.error(f"Variant '{v}' not available in prompt-version={args.prompt_version}. "
+                         f"Valid: {sorted(all_valid)}")
+
     # Build combined description lookup
     all_descriptions = {**VARIANT_DESCRIPTIONS, **VARIANT_DESCRIPTIONS_UNIVERSAL}
+    combined_response_hints = {**RESPONSE_LEN_HINTS, **RESPONSE_LEN_HINTS_UNIVERSAL}
 
     for variant in variants:
         print(f"\n{'=' * 60}")
@@ -242,6 +318,7 @@ def main():
         train, val = process_variant(
             args.levels, variant, args.data_root,
             random.Random(rng.random()), args.val_per_level, train_per_level,
+            PROMPT_VARIANTS, PROMPT_VARIANTS_UNIVERSAL, combined_response_hints,
         )
 
         train_path = os.path.join(out_dir, "train.jsonl")
