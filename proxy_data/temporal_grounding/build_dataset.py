@@ -24,35 +24,31 @@ from collections import Counter
 # ── 服务器数据根目录 ──────────────────────────────────────────────
 DEFAULT_VIDEO_BASE = "/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset"
 
-# ── Prompt 模板（无 CoT）──────────────────────────────────────────
+# ── Prompt 模板（无 CoT）——————————————————————————
 PROMPT_TEMPLATE_NO_COT = (
     'Watch the following video carefully:\n'
     '<video>\n\n'
     'This video is {duration:.1f} seconds long.\n\n'
-    'Your task: Locate the time period of the event "{sentence}" in this video.\n\n'
-    'Output format (strictly follow this):\n'
-    '<events>\n'
-    '[start_time, end_time]\n'
-    '</events>\n\n'
-    'Where start_time and end_time are in seconds '
-    '(precise to one decimal place, e.g., [12.5, 17.8]).'
+    'To accurately pinpoint the event "{sentence}" in the video, '
+    'determine the precise time period of the event.\n\n'
+    'Provide the start and end times (in seconds, precise to two decimal places) '
+    'in the format "start time to end time" within the <answer> </answer> tags. '
+    'For example: "12.54 to 17.83".'
 )
 
-# ── Prompt 模板（CoT：鼓励模型在 <think> 中分析时间线）──────────
+# ── Prompt 模板（CoT：鼓励模型在 <think> 中分析时间线）——————
 PROMPT_TEMPLATE_COT = (
     'Watch the following video carefully:\n'
     '<video>\n\n'
     'This video is {duration:.1f} seconds long.\n\n'
-    'Your task: Locate the time period of the event "{sentence}" in this video.\n\n'
-    'First, think step by step inside <think></think> tags. '
-    'Describe what happens at different time periods in the video '
-    'and determine when the target event occurs.\n\n'
-    'Then, provide the precise time period in the following format:\n'
-    '<events>\n'
-    '[start_time, end_time]\n'
-    '</events>\n\n'
-    'Where start_time and end_time are in seconds '
-    '(precise to one decimal place, e.g., [12.5, 17.8]).'
+    'To accurately pinpoint the event "{sentence}" in the video, '
+    'determine the precise time period of the event.\n\n'
+    'Output your thought process within the <think> </think> tags, '
+    'including analysis with either specific time ranges (xx.xx to xx.xx) '
+    'in <timestep> </timestep> tags.\n\n'
+    'Then, provide the start and end times (in seconds, precise to two decimal places) '
+    'in the format "start time to end time" within the <answer> </answer> tags. '
+    'For example: "12.54 to 17.83".'
 )
 
 
@@ -62,9 +58,9 @@ def parse_source_from_qid(qid: str) -> str:
     return parts[1] if len(parts) >= 2 else "unknown"
 
 
-def round1(val):
-    """保留一位小数。"""
-    return round(val, 1)
+def round2(val):
+    """保留两位小数。"""
+    return round(val, 2)
 
 
 def convert_timerft(items: list, video_base: str, max_duration: float = None, mode: str = "no_cot") -> list:
@@ -101,7 +97,7 @@ def convert_timerft(items: list, video_base: str, max_duration: float = None, mo
         prompt = prompt_tpl.format(duration=duration, sentence=sentence)
 
         # 构建 answer
-        answer = f"<events>\n[{round1(gt_start)}, {round1(gt_end)}]\n</events>"
+        answer = f"<answer>{round2(gt_start):.2f} to {round2(gt_end):.2f}</answer>"
 
         # 构建 metadata
         qid = item.get("qid", "")
@@ -109,7 +105,7 @@ def convert_timerft(items: list, video_base: str, max_duration: float = None, mo
         metadata = {
             "video_id": video_filename.replace(".mp4", ""),
             "duration": duration,
-            "timestamp": [round1(gt_start), round1(gt_end)],
+            "timestamp": [round2(gt_start), round2(gt_end)],
             "sentence": sentence,
             "source": source,
             "difficulty": item.get("difficulty"),
@@ -169,12 +165,12 @@ def convert_tvgbench(items: list, video_base: str, max_duration: float = None, m
         video_path = os.path.join(video_base, "tvgbench_data", video_filename)
 
         prompt = prompt_tpl.format(duration=duration, sentence=sentence)
-        answer = f"<events>\n[{round1(gt_start)}, {round1(gt_end)}]\n</events>"
+        answer = f"<answer>{round2(gt_start):.2f} to {round2(gt_end):.2f}</answer>"
 
         metadata = {
             "video_id": video_filename.replace(".mp4", ""),
             "duration": duration,
-            "timestamp": [round1(gt_start), round1(gt_end)],
+            "timestamp": [round2(gt_start), round2(gt_end)],
             "sentence": sentence,
             "dataset_name": item.get("dataset_name", ""),
             "qsemtype": item.get("qsemtype", ""),

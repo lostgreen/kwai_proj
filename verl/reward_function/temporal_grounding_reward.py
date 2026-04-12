@@ -1,12 +1,12 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 # -*- coding: utf-8 -*-
 """
-Temporal Grounding Reward 函数 — IoU × distance_penalty (iou_v2)。
+Temporal Grounding Reward 函数 — IoU × distance_penalty (Time-R1 style)。
 
-适配 <events>[[start, end]]</events> 格式。
+适配 <answer>start to end</answer> 格式（兼容旧版 <events>[[s, e]]</events>）。
 
 Reward 计算:
-  1. 从 <events> 标签中解析预测的 [start, end]
+  1. 从 <answer> 或 <events> 标签中解析预测的 [start, end]
   2. 计算与 GT 的 temporal IoU
   3. 乘以归一化距离惩罚: (1 - |Δs/dur|) × (1 - |Δe/dur|)
      惩罚端点偏移，抑制超长片段的"懒惰最优解"
@@ -19,37 +19,61 @@ Reward 计算:
 import re
 from typing import Dict, Optional, Tuple
 
-from verl.reward_function.reward_utils import (
-    EVENTS_PATTERN,
-    SEGMENT_PATTERN,
-    has_events_tag,
+
+# ===========================
+# 解析模式
+# ===========================
+# <answer>12.54 to 17.83</answer>  (Time-R1 style)
+_ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+_TIME_RANGE_PATTERN = re.compile(
+    r"(\d+\.?\d*)\s+(?:to|and)\s+(\d+\.?\d*)", re.IGNORECASE
 )
+
+# <events>[[12.5, 17.8]]</events>  (legacy)
+_EVENTS_PATTERN = re.compile(r"<events>(.*?)</events>", re.DOTALL)
+_SEGMENT_PATTERN = re.compile(
+    r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*\]"
+)
+
+
+def _has_format_tag(text: str) -> bool:
+    """检查文本是否包含 <answer> 或 <events> 标签。"""
+    return bool(_ANSWER_PATTERN.search(text) or _EVENTS_PATTERN.search(text))
 
 
 def _parse_single_segment(text: str) -> Optional[Tuple[float, float]]:
     """
-    从 <events>...</events> 标签中提取第一个 [start, end] 对。
-    temporal grounding 任务只需要一个 segment。
+    解析单个时间段。优先从 <answer> 标签解析，其次从 <events> 标签。
     """
-    events_match = EVENTS_PATTERN.search(text)
-    if events_match is None:
-        return None
+    # 尝试 <answer>start to end</answer>
+    answer_match = _ANSWER_PATTERN.search(text)
+    if answer_match is not None:
+        content = answer_match.group(1)
+        m = _TIME_RANGE_PATTERN.search(content)
+        if m is not None:
+            try:
+                start = float(m.group(1))
+                end = float(m.group(2))
+                if start >= 0 and end >= 0 and start < end:
+                    return (start, end)
+            except (ValueError, TypeError):
+                pass
 
-    events_block = events_match.group(1)
-    m = SEGMENT_PATTERN.search(events_block)
-    if m is None:
-        return None
+    # 回退: <events>[[s, e]]</events>
+    events_match = _EVENTS_PATTERN.search(text)
+    if events_match is not None:
+        events_block = events_match.group(1)
+        m = _SEGMENT_PATTERN.search(events_block)
+        if m is not None:
+            try:
+                start = float(m.group(1))
+                end = float(m.group(2))
+                if start >= 0 and end >= 0 and start < end:
+                    return (start, end)
+            except (ValueError, TypeError):
+                pass
 
-    try:
-        start = float(m.group(1))
-        end = float(m.group(2))
-    except (ValueError, TypeError):
-        return None
-
-    if start < 0 or end < 0 or start >= end:
-        return None
-
-    return (start, end)
+    return None
 
 
 def temporal_grounding_reward(
@@ -61,7 +85,7 @@ def temporal_grounding_reward(
     Temporal Grounding iou_v2 reward: IoU × distance_penalty。
 
     Args:
-        response: 模型回复（包含 <events>[[s, e]]</events>）
+        response: 模型回复（包含 <answer>s to e</answer> 或 <events>[[s, e]]</events>）
         ground_truth: 标准答案（同格式）
         metadata: 需包含 "duration" 字段（视频总时长秒数）
 
@@ -69,13 +93,15 @@ def temporal_grounding_reward(
         {"overall": float, "format": float, "accuracy": float}
     """
     # 反黑客
+    if response.count("<answer>") > 1 or response.count("</answer>") > 1:
+        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
     if response.count("<events>") > 1 or response.count("</events>") > 1:
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
     if re.search(r"\[\d+-\d+\]", response):
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
     # 格式检查
-    if not has_events_tag(response):
+    if not _has_format_tag(response):
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
     # 解析 GT
