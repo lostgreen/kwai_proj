@@ -199,12 +199,14 @@ def load_records_by_level(data_root: str, levels: list[str]) -> dict[str, list[d
 
 
 def process_variant(
-    levels, variant, data_root, rng, val_per_level, train_per_level,
+    levels, variant, variant_map, data_root, rng, val_per_level, train_per_level,
     prompt_variants, prompt_variants_universal, response_len_hints,
 ):
     """
     处理单个 variant，返回 (train, val)。
 
+    variant:         默认 variant（用于 variant_map 中未指定的层）
+    variant_map:     per-level override，如 {"L2": "V2", "L3": "V1"}
     val_per_level:   每层取多少条 val（精确值）
     train_per_level: 每层最多取多少条 train（None = 全部剩余）
     """
@@ -215,6 +217,7 @@ def process_variant(
 
     for level in sorted(levels):
         records = records_by_level[level]
+        actual_variant = variant_map.get(level, variant)
 
         # L3: shuffled 版本只保留 sequential（一个 event clip 一条记录，不重复）
         if level == "L3":
@@ -222,7 +225,7 @@ def process_variant(
             print(f"  [L3] Filtered to sequential only: {len(records)} records")
 
         rewritten = [
-            rewrite_prompt(r, level, variant, prompt_variants, prompt_variants_universal)
+            rewrite_prompt(r, level, actual_variant, prompt_variants, prompt_variants_universal)
             for r in records
         ]
 
@@ -243,8 +246,8 @@ def process_variant(
         all_val.extend(level_val)
         all_train.extend(level_train)
 
-        max_resp = response_len_hints.get(variant, 512)
-        print(f"  {level}/{variant}: {len(level_train)} train + {len(level_val)} val "
+        max_resp = response_len_hints.get(actual_variant, 512)
+        print(f"  {level}/{actual_variant}: {len(level_train)} train + {len(level_val)} val "
               f"(available={len(rewritten)}, max_resp={max_resp})")
 
     rng.shuffle(all_train)
@@ -296,11 +299,25 @@ def main():
         variants = [args.variant]
     train_per_level = None if args.train_per_level < 0 else args.train_per_level
 
+    # Parse --variant-map (e.g. "L1=V2,L2=V2,L3=V1")
+    variant_map: dict[str, str] = {}
+    if args.variant_map:
+        for pair in args.variant_map.split(","):
+            pair = pair.strip()
+            if "=" not in pair:
+                parser.error(f"Invalid variant-map entry: '{pair}'. Expected 'LEVEL=VARIANT'.")
+            level, var = pair.split("=", 1)
+            variant_map[level.strip()] = var.strip()
+
     # Validate variant against loaded registry
     all_valid = set(PROMPT_VARIANTS.get("L1", {}).keys()) | set(PROMPT_VARIANTS_UNIVERSAL.get("L1", {}).keys())
     for v in variants:
         if v not in all_valid:
             parser.error(f"Variant '{v}' not available in prompt-version={args.prompt_version}. "
+                         f"Valid: {sorted(all_valid)}")
+    for lv, v in variant_map.items():
+        if v not in all_valid:
+            parser.error(f"Variant '{v}' (for {lv} in --variant-map) not available. "
                          f"Valid: {sorted(all_valid)}")
 
     # Build combined description lookup
@@ -308,15 +325,18 @@ def main():
     combined_response_hints = {**RESPONSE_LEN_HINTS, **RESPONSE_LEN_HINTS_UNIVERSAL}
 
     for variant in variants:
+        variant_label = variant
+        if variant_map:
+            variant_label = f"{variant} (map: {args.variant_map})"
         print(f"\n{'=' * 60}")
-        print(f"  Variant {variant}: {all_descriptions.get(variant, 'unknown')}")
+        print(f"  Variant {variant_label}: {all_descriptions.get(variant, 'unknown')}")
         print(f"  val_per_level={args.val_per_level}, train_per_level={train_per_level or 'all'}")
         print(f"{'=' * 60}")
 
         out_dir = os.path.join(args.output_dir, variant) if args.variant == "all" else args.output_dir
 
         train, val = process_variant(
-            args.levels, variant, args.data_root,
+            args.levels, variant, variant_map, args.data_root,
             random.Random(rng.random()), args.val_per_level, train_per_level,
             PROMPT_VARIANTS, PROMPT_VARIANTS_UNIVERSAL, combined_response_hints,
         )

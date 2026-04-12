@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 _EXP_DIR="${SCRIPT_DIR}"
 source "${_EXP_DIR}/../common.sh"
 
-# ---- Reward: DP-F1 + Instance Count (range [0, 2]) ----
+# ---- Reward: DP-F1 + Instance Count (range [0, 2]: R_num + R_match) ----
 REWARD_FUNCTION="${REPO_ROOT}/verl/reward_function/dp_f1_reward.py:compute_score"
 
 # ---- Online filtering 阈值适配 [0, 2] 范围 ----
@@ -69,11 +69,13 @@ if [[ ! -f "${TRAIN_FILE}" ]]; then
         --complete-only
     fi
 
-    echo "[reward_ablation] Step 2: Applying V3-prompt V2 variant (boundary-criterion, controlled variable) ..."
+    echo "[reward_ablation] Step 2: Applying V4-prompt (L2=V2/CoT, L3=V1/direct) ..."
     # shellcheck disable=SC2086
     python3 "${_EXP_DIR}/../prompt_ablation/prepare_prompt_data.py" \
+      --prompt-version v4 \
       --levels ${LEVELS} \
-      --variant V2 \
+      --variant V1 \
+      --variant-map "L2=V2,L3=V1" \
       --val-per-level "${VAL_PER_LEVEL}" \
       --train-per-level "${TRAIN_PER_LEVEL}" \
       --data-root "${BASE_DATA_DIR}" \

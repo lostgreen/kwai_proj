@@ -2,8 +2,8 @@
 # ============================================================
 # Temporal Grounding 训练脚本 (2-GPU, EMA-GRPO)
 #
-# 使用 Time-R1 风格 <answer> 格式 + tIoU × distance_penalty reward.
-# 单任务 (temporal_grounding) — 无需 task_homogeneous_batching.
+# 使用 Time-R1 风格 <answer> 格式，直接输出（无 CoT）。
+# Reward: tIoU × distance_penalty ∈ [0, 1]，无 format 奖励。
 #
 # 用法:
 #   bash local_scripts/run_tg_dapo.sh                    # 默认配置
@@ -27,8 +27,8 @@ exp_name="${EXP_NAME:-qwen3_vl_tg_dapo_2gpu}"
 
 # ---- 模型 & 数据 ----
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
-TRAIN_FILE="${TRAIN_FILE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_train_max256s_cot.jsonl}"
-TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_val_max256s_cot.jsonl}"
+TRAIN_FILE="${TRAIN_FILE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_train_max256s.jsonl}"
+TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_val_max256s.jsonl}"
 IMAGE_DIR="${IMAGE_DIR:-}"
 
 # ---- 训练超参数 ----
@@ -43,7 +43,7 @@ NNODES="${NNODES:-1}"
 
 # ---- 序列长度 & 视频 ----
 MAX_PROMPT_LEN=14000
-MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-1024}"
+MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-512}"
 VIDEO_FPS=2.0
 MAX_FRAMES=256
 MAX_PIXELS=49152
@@ -58,7 +58,7 @@ ENTROPY_COEFF=0.005
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.3
 
-# ---- Reward: Temporal Grounding (tIoU × distance_penalty, [0, 2]) ----
+# ---- Reward: Temporal Grounding (tIoU × distance_penalty, [0, 1], 无 format 奖励) ----
 REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/temporal_grounding_reward.py:compute_score}"
 
 # ---- 训练步数 ----
