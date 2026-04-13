@@ -130,18 +130,24 @@ def build_hierarchy(records: list[dict]) -> dict[str, Counter]:
     return dict(hierarchy)
 
 
-def draw_sunburst(ax, records: list[dict], title: str):
-    """Draw a sunburst: inner = source, outer = duration_bucket."""
+def draw_sunburst(
+    ax,
+    records: list[dict],
+    title: str,
+    src_order: list[str],
+    src_colors: dict[str, str],
+):
+    """Draw a sunburst: inner = source, outer = duration_bucket.
+
+    Args:
+        src_order: Globally-consistent source order (same across both charts).
+        src_colors: Globally-consistent {source: hex_color} mapping.
+    """
     hierarchy = build_hierarchy(records)
     total = len(records)
 
-    # Sort sources by total count descending
-    src_order = sorted(hierarchy.keys(), key=lambda s: sum(hierarchy[s].values()), reverse=True)
-
-    # Assign colors
-    src_colors = {}
-    for i, src in enumerate(src_order):
-        src_colors[src] = SOURCE_PALETTE[i % len(SOURCE_PALETTE)]
+    # Only draw sources that actually appear in this dataset
+    active_sources = [s for s in src_order if s in hierarchy]
 
     # Geometry
     INNER_R = 0.40
@@ -149,10 +155,10 @@ def draw_sunburst(ax, records: list[dict], title: str):
     OUTER_R = 1.25
     GAP = 1.0  # degrees between source groups
 
-    available = 360 - len(src_order) * GAP
+    available = 360 - len(active_sources) * GAP
     theta = 90  # start from top
 
-    for src in src_order:
+    for src in active_sources:
         src_total = sum(hierarchy[src].values())
         src_span = src_total / total * available
 
@@ -210,7 +216,28 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
 
+    # Load data
     has_before = args.before and os.path.isfile(args.before)
+    before_recs = []
+    if has_before:
+        print(f"Loading before: {args.before}")
+        before_recs = load_jsonl(args.before)
+        print(f"  {len(before_recs)} records")
+
+    print(f"Loading after: {args.after}")
+    after_recs = load_jsonl(args.after)
+    print(f"  {len(after_recs)} records")
+
+    # Build global source order & color mapping from union of both datasets
+    all_recs = before_recs + after_recs
+    global_src_counter: Counter = Counter()
+    for rec in all_recs:
+        src, _ = extract_fields(rec)
+        global_src_counter[src] += 1
+    src_order = [s for s, _ in global_src_counter.most_common()]
+    src_colors = {s: SOURCE_PALETTE[i % len(SOURCE_PALETTE)] for i, s in enumerate(src_order)}
+
+    # Draw
     ncols = 2 if has_before else 1
     fig, axes = plt.subplots(1, ncols, figsize=(11 * ncols, 11))
     fig.patch.set_facecolor("white")
@@ -219,16 +246,10 @@ def main():
 
     idx = 0
     if has_before:
-        print(f"Loading before: {args.before}")
-        before_recs = load_jsonl(args.before)
-        print(f"  {len(before_recs)} records")
-        draw_sunburst(axes[idx], before_recs, "Reference Dataset")
+        draw_sunburst(axes[idx], before_recs, "Reference Dataset", src_order, src_colors)
         idx += 1
 
-    print(f"Loading after: {args.after}")
-    after_recs = load_jsonl(args.after)
-    print(f"  {len(after_recs)} records")
-    draw_sunburst(axes[idx], after_recs, "Train (Downsampled)")
+    draw_sunburst(axes[idx], after_recs, "Train (Downsampled)", src_order, src_colors)
 
     fig.suptitle("LLaVA-Video-178K: Source × Duration", fontsize=16, fontweight="bold", y=0.98)
     fig.tight_layout()
