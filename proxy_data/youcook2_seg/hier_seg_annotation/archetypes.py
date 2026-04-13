@@ -62,44 +62,46 @@ irreversible state changes occur — physical, visual, or semantic.
 # ─────────────────────────────────────────────────────────────────────────────
 
 DOMAIN_L1_ALL: set[str] = {
-    "knowledge_education",  # 知识科普、新闻、讲座、纪录片
-    "film_entertainment",   # 电影、电视剧、动画、综艺节目
-    "sports_esports",       # 竞技体育、健身、极限运动、电子竞技
-    "lifestyle_vlog",       # 日常生活、旅行风景、吃播探店、宠物
-    "arts_performance",     # 音乐、舞蹈、舞台剧、魔术视觉艺术
-    "task_howto",           # 做菜、手工DIY、维修、美妆穿搭教程
+    "culinary_food",               # ~36%：美食烹饪（核心大类1）
+    "engineering_maintenance",     # ~25%：工程与维修（核心大类2）
+    "lifestyle_creation",          # ~23%：生活与创造（手工、日常、美妆）
+    "sports_outdoors",             # ~6%： 体育与户外
+    "culture_knowledge",           # ~8%： 文化、娱乐与知识（合并长尾）
+    "uncategorized",               # ~2%： 其他
 }
 
 # L2 → L1 parent mapping (strict, every L2 has exactly one L1 parent)
 DOMAIN_L2_TO_L1: dict[str, str] = {
-    # knowledge_education (4)
-    "science_tech": "knowledge_education",
-    "humanities_history": "knowledge_education",
-    "lecture_speech": "knowledge_education",
-    "news_report": "knowledge_education",
-    # film_entertainment (3)
-    "movie_drama": "film_entertainment",
-    "animation_cg": "film_entertainment",
-    "variety_show": "film_entertainment",
-    # sports_esports (4)
-    "ball_sport": "sports_esports",
-    "athletics_fitness": "sports_esports",
-    "outdoor_extreme": "sports_esports",
-    "video_game": "sports_esports",
-    # lifestyle_vlog (4)
-    "daily_vlog": "lifestyle_vlog",
-    "travel_scenery": "lifestyle_vlog",
-    "food_tasting": "lifestyle_vlog",
-    "pet_animal": "lifestyle_vlog",
-    # arts_performance (3)
-    "music_audio": "arts_performance",
-    "dance_choreography": "arts_performance",
-    "theater_magic": "arts_performance",
-    # task_howto (4)
-    "food_cooking": "task_howto",
-    "crafts_diy": "task_howto",
-    "repair_assembly": "task_howto",
-    "beauty_grooming": "task_howto",
+    # 1. culinary_food — 按物理相变与处理逻辑细分
+    "fine_grained_prep": "culinary_food",          # 细粒度预处理 (切菜、削皮、洗涤)
+    "thermal_state_change": "culinary_food",       # 热厨相变 (煎炒烹炸、烘焙)
+    "composition_assembly": "culinary_food",       # 组合与摆盘 (做汉堡、沙拉、调酒)
+    "food_tasting_vlog": "culinary_food",          # 试吃与探店
+
+    # 2. engineering_maintenance — 按对象尺度与空间拓扑细分
+    "electronics_gadgets": "engineering_maintenance",    # 电子维修 (焊电路板、拆手机)
+    "auto_heavy_mechanical": "engineering_maintenance",  # 汽修与机械 (修车、换轮胎)
+    "home_furniture_assembly": "engineering_maintenance", # 家居维修与组装 (拼IKEA、木工)
+    "science_tech_demo": "engineering_maintenance",      # 科技科普与实验
+
+    # 3. lifestyle_creation — 生活与创造
+    "crafts_diy": "lifestyle_creation",            # 手工DIY (折纸、陶艺)
+    "beauty_grooming": "lifestyle_creation",       # 美妆穿搭 (化妆、理发)
+    "daily_vlog_pet": "lifestyle_creation",        # 日常生活与宠物
+    "travel_scenery": "lifestyle_creation",        # 旅行与风景
+
+    # 4. sports_outdoors — 体育与户外
+    "athletics_fitness": "sports_outdoors",        # 田径与健身
+    "ball_sport": "sports_outdoors",               # 球类运动
+    "outdoor_extreme": "sports_outdoors",          # 户外极限运动
+
+    # 5. culture_knowledge — 文化、娱乐与知识 (合并长尾)
+    "music_dance_theater": "culture_knowledge",    # 表演艺术 (音乐、舞蹈、戏剧、魔术)
+    "movie_animation_game": "culture_knowledge",   # 虚拟与影视 (电影、动画、游戏)
+    "news_lecture_history": "culture_knowledge",   # 资讯与人文 (新闻、讲座、人文、综艺)
+
+    # 6. uncategorized
+    "other": "uncategorized",
 }
 
 DOMAIN_L2_ALL: set[str] = set(DOMAIN_L2_TO_L1.keys()) | {"other"}
@@ -111,8 +113,8 @@ for _l2, _l1 in DOMAIN_L2_TO_L1.items():
 
 
 def resolve_domain_l1(domain_l2: str) -> str:
-    """Given a domain_l2, return its parent domain_l1. Returns 'other' for unknowns."""
-    return DOMAIN_L2_TO_L1.get(domain_l2, "other")
+    """Given a domain_l2, return its parent domain_l1. Returns 'uncategorized' for unknowns."""
+    return DOMAIN_L2_TO_L1.get(domain_l2, "uncategorized")
 
 
 def _format_domain_l2_for_prompt() -> str:

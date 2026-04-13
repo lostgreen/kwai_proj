@@ -80,17 +80,51 @@ def get_token_usage() -> dict[str, int]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompt
+# Prompt — with per-L2 descriptions for better classification
 # ─────────────────────────────────────────────────────────────────────────────
 
+# L2 descriptions for the prompt (helps LLM pick the right one)
+_L2_DESCRIPTIONS: dict[str, str] = {
+    # culinary_food
+    "fine_grained_prep": "cutting, peeling, washing — physical state unchanged, fine motor actions",
+    "thermal_state_change": "frying, roasting, baking — raw→cooked, color/texture change",
+    "composition_assembly": "assembling burgers/salads, plating, mixing cocktails — spatial composition",
+    "food_tasting_vlog": "food review, restaurant visits, taste tests",
+    # engineering_maintenance
+    "electronics_gadgets": "soldering, phone repair, circuit board work — fine-grained spatial logic",
+    "auto_heavy_mechanical": "car repair, tire change, engine work — macro-scale causal logic",
+    "home_furniture_assembly": "IKEA assembly, woodworking, home repair — strong step dependencies",
+    "science_tech_demo": "science experiments, tech demos, educational STEM content",
+    # lifestyle_creation
+    "crafts_diy": "origami, pottery, knitting, painting — creative manual work",
+    "beauty_grooming": "makeup tutorials, haircuts, skincare — ordered cosmetic steps",
+    "daily_vlog_pet": "daily life, pet care, family activities",
+    "travel_scenery": "travel videos, sightseeing, nature scenery",
+    # sports_outdoors
+    "athletics_fitness": "track & field, gymnastics, weightlifting, gym workouts",
+    "ball_sport": "basketball, soccer, tennis, team ball sports",
+    "outdoor_extreme": "skiing, surfing, parkour, rock climbing",
+    # culture_knowledge
+    "music_dance_theater": "music performance, dance, theater, magic shows",
+    "movie_animation_game": "movie scenes, animation, CG, video games",
+    "news_lecture_history": "news reports, lectures, documentaries, variety shows, humanities",
+}
+
+
 def _build_domain_list() -> str:
-    """Format the 2-level domain taxonomy for the prompt."""
+    """Format the 2-level domain taxonomy with descriptions for the prompt."""
     lines = []
     for l1 in sorted(DOMAIN_L1_ALL):
         l2_list = sorted(DOMAIN_L1_TO_L2.get(l1, []))
         lines.append(f"  {l1}:")
         for l2 in l2_list:
-            lines.append(f"    - {l2}")
+            desc = _L2_DESCRIPTIONS.get(l2, "")
+            if l2 == "other":
+                lines.append(f"    - other: does not fit any of the above")
+            elif desc:
+                lines.append(f"    - {l2}: {desc}")
+            else:
+                lines.append(f"    - {l2}")
     return "\n".join(lines)
 
 
@@ -103,13 +137,17 @@ You are a video content classifier. Given a video caption, classify it into the 
 
 ## Rules
 1. Choose domain_l1 from: {domain_l1_list}
-2. Choose domain_l2 from the L2 categories under that L1.
+2. Choose domain_l2 from the L2 categories under that L1. Read the descriptions carefully.
 3. If the video clearly fits a category, choose it — do NOT default to "other".
-4. Only use domain_l2="other" if the video genuinely does not fit ANY of the 22 categories.
+4. Only use domain_l2="other" (uncategorized) if the video genuinely does not fit ANY category.
 5. If you pick domain_l2="other", you MUST provide a domain_l2_suggestion — a short free-text \
 label describing what the domain should be (e.g. "puzzle_toys", "medical_procedure").
-6. Consider the primary topic, not incidental elements. E.g. a cooking vlog is "food_cooking" \
-(task_howto), not "daily_vlog" (lifestyle_vlog).
+6. Focus on the PRIMARY activity. E.g.:
+   - Cutting vegetables → "fine_grained_prep" (culinary_food), NOT "crafts_diy"
+   - Assembling a burger → "composition_assembly" (culinary_food)
+   - Repairing a phone → "electronics_gadgets" (engineering_maintenance)
+   - Building IKEA furniture → "home_furniture_assembly" (engineering_maintenance)
+   - A cooking vlog with tasting → "thermal_state_change" or "fine_grained_prep" based on main action
 
 ## Video Caption
 {caption}
@@ -246,6 +284,8 @@ def reclassify_one(
     new_l1 = resolve_domain_l1(new_l2)  # authoritative L1 from L2 mapping
     if new_l2 == "other" and llm_l1 in DOMAIN_L1_ALL:
         new_l1 = llm_l1  # trust LLM's L1 when L2 is "other"
+    elif new_l2 == "other":
+        new_l1 = "uncategorized"
 
     suggestion = str(parsed.get("domain_l2_suggestion", "")).strip()
 
@@ -284,13 +324,12 @@ def reclassify_one(
 # ─────────────────────────────────────────────────────────────────────────────
 
 DOMAIN_L1_COLORS: dict[str, str] = {
-    "knowledge_education": "#4C72B0",
-    "film_entertainment": "#C44E52",
-    "sports_esports": "#CCB974",
-    "lifestyle_vlog": "#8172B2",
-    "arts_performance": "#55A868",
-    "task_howto": "#64B5CD",
-    "other": "#999999",
+    "culinary_food": "#E07B39",
+    "engineering_maintenance": "#4C72B0",
+    "lifestyle_creation": "#8172B2",
+    "sports_outdoors": "#55A868",
+    "culture_knowledge": "#C44E52",
+    "uncategorized": "#999999",
 }
 
 
