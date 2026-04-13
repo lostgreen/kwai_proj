@@ -93,6 +93,10 @@ def convert_timerft(items: list, video_base: str, max_duration: float = None, mo
         # 处理 video_start / video_end（部分样本需要裁切）
         video_start = item.get("video_start")
         video_end = item.get("video_end")
+        if video_start is not None and video_end is not None:
+            # 使用预裁切的 _clipped 视频文件
+            base, ext = os.path.splitext(video_path)
+            video_path = f"{base}_clipped{ext}"
 
         # 构建 prompt
         prompt = prompt_tpl.format(duration=duration, sentence=sentence)
@@ -112,10 +116,6 @@ def convert_timerft(items: list, video_base: str, max_duration: float = None, mo
             "difficulty": item.get("difficulty"),
             "qid": qid,
         }
-        if video_start is not None:
-            metadata["clip_start"] = video_start
-        if video_end is not None:
-            metadata["clip_end"] = video_end
 
         record = {
             "messages": [{"role": "user", "content": prompt}],
@@ -164,6 +164,13 @@ def convert_tvgbench(items: list, video_base: str, max_duration: float = None, m
 
         video_filename = os.path.basename(item["path"])
         video_path = os.path.join(video_base, "tvgbench_data", video_filename)
+
+        # 处理 start / end（部分样本需要裁切）
+        clip_start = item.get("start")
+        clip_end = item.get("end")
+        if clip_start is not None and clip_end is not None:
+            base, ext = os.path.splitext(video_path)
+            video_path = f"{base}_clipped{ext}"
 
         prompt = prompt_tpl.format(duration=duration, sentence=sentence)
         answer = f"<answer>{round2(gt_start):.2f} to {round2(gt_end):.2f}</answer>"
@@ -304,13 +311,6 @@ def main():
             timerft_items = json.load(f)
         records, stats = convert_timerft(timerft_items, args.video_base, args.max_duration, args.mode)
         print_stats("TimeRFT (train_2k5)", stats)
-
-        # 过滤 clip_start/clip_end 样本（视频文件未实际裁切，时长不匹配）
-        before = len(records)
-        records = [r for r in records if "clip_start" not in (r.get("metadata") or {})]
-        if before != len(records):
-            print(f"  [过滤] 移除 {before - len(records)} 条含 clip_start 的样本"
-                  f" (视频未实际裁切)")
 
         all_records.extend(records)
 
