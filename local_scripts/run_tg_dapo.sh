@@ -56,7 +56,7 @@ ONLINE_FILTERING=false
 DISABLE_KL=false
 ENTROPY_COEFF=0.005
 CLIP_RATIO_LOW=0.2
-CLIP_RATIO_HIGH=0.3
+CLIP_RATIO_HIGH=0.2    # symmetric clip — 避免与 KL loss 互搏导致震荡
 
 # ---- Reward: Temporal Grounding (tIoU × distance_penalty, [0, 1], 无 format 奖励) ----
 REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/temporal_grounding_reward.py:compute_score}"
@@ -95,6 +95,7 @@ TRAIN_CMD=(
     worker.actor.micro_batch_size_per_device_for_update="${MB_PER_UPDATE}"
     worker.actor.micro_batch_size_per_device_for_experience="${MB_PER_EXP}"
     worker.actor.model.model_path="${MODEL_PATH}"
+    worker.actor.model.freeze_vision_tower=true
     worker.actor.fsdp.torch_dtype=bf16
     worker.actor.optim.strategy=adamw_bf16
     worker.actor.optim.lr="${LR}"
