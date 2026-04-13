@@ -35,10 +35,13 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+from tqdm import tqdm
 
 from archetypes import (
     DOMAIN_L2_ALL,
@@ -47,6 +50,34 @@ from archetypes import (
     DOMAIN_L1_ALL,
     resolve_domain_l1,
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thread-safe token usage tracker
+# ─────────────────────────────────────────────────────────────────────────────
+
+_token_lock = threading.Lock()
+_token_usage = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "api_calls": 0,
+}
+
+
+def _accumulate_usage(usage) -> None:
+    if usage is None:
+        return
+    with _token_lock:
+        _token_usage["prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+        _token_usage["completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+        _token_usage["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+        _token_usage["api_calls"] += 1
+
+
+def get_token_usage() -> dict[str, int]:
+    with _token_lock:
+        return dict(_token_usage)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompt
@@ -129,6 +160,7 @@ def call_llm(
                 model=model, messages=messages,
                 max_tokens=max_tokens, temperature=temperature,
             )
+            _accumulate_usage(resp.usage)
             return resp.choices[0].message.content.strip()
         except Exception as e:
             last_error = e
@@ -433,6 +465,7 @@ def main():
 
     # Run reclassification
     results = []
+    ok_count = changed_count = err_count = skip_count = 0
     t0 = time.time()
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -444,30 +477,64 @@ def main():
             ): jp
             for jp in json_files
         }
-        for future in as_completed(futures):
+
+        pbar = tqdm(
+            as_completed(futures), total=len(futures),
+            desc="Reclassifying", unit="ann",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+        )
+        for future in pbar:
             try:
                 result = future.result()
             except Exception as e:
                 result = {"key": futures[future].stem, "status": "error", "error": str(e)}
             results.append(result)
 
-            # Live progress
+            # Update counters
             status = result["status"]
+            if status == "changed" or status == "would_change":
+                changed_count += 1
+            elif status == "unchanged":
+                ok_count += 1
+            elif status == "error":
+                err_count += 1
+            elif status == "skip":
+                skip_count += 1
+
+            # Update progress bar postfix
+            usage = get_token_usage()
+            pbar.set_postfix_str(
+                f"changed={changed_count} unchanged={ok_count} err={err_count} "
+                f"tok={usage['total_tokens']:,}",
+                refresh=False,
+            )
+
+            # Log changes/errors to tqdm
             key = result["key"]
             if status in ("changed", "would_change"):
-                print(f"  [{key}] {result['old']} → {result['new']}", flush=True)
+                pbar.write(f"  [{key}] {result['old']} → {result['new']}")
             elif status == "error":
-                print(f"  [{key}] ERROR: {result.get('error', '?')}", flush=True)
+                pbar.write(f"  [{key}] ERROR: {result.get('error', '?')}")
+
+        pbar.close()
 
     elapsed = time.time() - t0
 
     # Summary
+    usage = get_token_usage()
     status_counts = Counter(r["status"] for r in results)
     print(f"\n{'=' * 50}", flush=True)
     print(f"  Reclassification Summary ({elapsed:.1f}s)", flush=True)
     print(f"{'=' * 50}", flush=True)
     for s, cnt in status_counts.most_common():
         print(f"  {s:<16} {cnt:>5}", flush=True)
+    print(f"\n  Token usage:", flush=True)
+    print(f"    prompt:     {usage['prompt_tokens']:>10,}", flush=True)
+    print(f"    completion: {usage['completion_tokens']:>10,}", flush=True)
+    print(f"    total:      {usage['total_tokens']:>10,}", flush=True)
+    print(f"    api_calls:  {usage['api_calls']:>10,}", flush=True)
+    if usage['api_calls'] > 0:
+        print(f"    avg tok/call: {usage['total_tokens'] / usage['api_calls']:>8.0f}", flush=True)
 
     # Domain transition summary
     changed = [r for r in results if r["status"] in ("changed", "would_change")]
