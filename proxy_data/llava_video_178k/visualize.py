@@ -188,6 +188,53 @@ def plot_comparison_bars(
     print(f"  -> {path}")
 
 
+def plot_train_final_pie(records: list[dict], outdir: str):
+    """Pie charts: duration bucket & source distribution of train_final."""
+    bkt_counts: dict[str, int] = defaultdict(int)
+    src_counts: dict[str, int] = defaultdict(int)
+    for rec in records:
+        bucket, source = get_cell(rec)
+        bkt_counts[bucket] += 1
+        src_counts[source] += 1
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+
+    # --- Duration bucket pie ---
+    bkt_labels = sorted(bkt_counts.keys())
+    bkt_sizes = [bkt_counts[b] for b in bkt_labels]
+    bkt_display = [f"{b}\n({c})" for b, c in zip(bkt_labels, bkt_sizes)]
+    wedges1, texts1, autotexts1 = ax1.pie(
+        bkt_sizes, labels=bkt_display, autopct="%1.1f%%",
+        startangle=90, pctdistance=0.8,
+    )
+    for t in texts1:
+        t.set_fontsize(9)
+    for t in autotexts1:
+        t.set_fontsize(8)
+    ax1.set_title(f"Duration Bucket (N={sum(bkt_sizes)})", fontsize=12, fontweight="bold")
+
+    # --- Source pie ---
+    src_labels = sorted(src_counts.keys())
+    src_sizes = [src_counts[s] for s in src_labels]
+    src_display = [f"{s}\n({c})" for s, c in zip(src_labels, src_sizes)]
+    wedges2, texts2, autotexts2 = ax2.pie(
+        src_sizes, labels=src_display, autopct="%1.1f%%",
+        startangle=90, pctdistance=0.8,
+    )
+    for t in texts2:
+        t.set_fontsize(9)
+    for t in autotexts2:
+        t.set_fontsize(8)
+    ax2.set_title(f"Source Dataset (N={sum(src_sizes)})", fontsize=12, fontweight="bold")
+
+    fig.suptitle("Train Final Distribution", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    path = os.path.join(outdir, "train_final_pie.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  -> {path}")
+
+
 def plot_accuracy_distribution(report_path: str, outdir: str):
     """Plot rollout accuracy distribution from report JSONL."""
     reports = load_jsonl(report_path)
@@ -281,6 +328,9 @@ def main():
 
         print("\n== Bar Chart Comparison ==")
         plot_comparison_bars(before_grid, after_grid, args.outdir)
+
+        print("\n== Train Final Pie Charts ==")
+        plot_train_final_pie(after_recs, args.outdir)
 
     if args.report and os.path.isfile(args.report):
         print("\n== Accuracy Distribution ==")
