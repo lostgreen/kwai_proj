@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-LLaVA-Video-178K: 绘制 source 分布饼图（原始 vs 下采样后）。
+LLaVA-Video-178K: Sunburst chart — inner ring = source, outer ring = duration_bucket.
 
-生成两个子图:
-  左: 参考数据集来源 source 分布（mcq_all.jsonl）
-  右: 下采样过滤后 train 的 source 分布（train_final_combined.jsonl）
+Generates two side-by-side sunburst charts:
+  Left:  Reference dataset (mcq_all.jsonl)
+  Right: Downsampled train (train_final_combined.jsonl)
 
 Usage:
     python plot_source_pie.py \
@@ -12,7 +12,7 @@ Usage:
         --after  results/train_final_combined.jsonl \
         --outdir results/figures
 
-    # 仅画 after
+    # Only draw after
     python plot_source_pie.py \
         --after results/train_final_combined.jsonl \
         --outdir results/figures
@@ -23,11 +23,29 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 
+import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+# ============================================================
+# Font — Times New Roman globally
+# ============================================================
+matplotlib.rcParams["font.family"] = "serif"
+matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif"]
+
+FONT_SIZE_INNER = 11.0
+FONT_SIZE_OUTER = 9.0
+
+# Pastel colors for sources (cycle if more)
+SOURCE_PALETTE = [
+    "#F4978E", "#FFD166", "#89C2F5", "#86CFA3", "#C8A4D8",
+    "#F8AD9D", "#FFD97D", "#9ECEF8", "#9DDBB5", "#D4B5E0",
+    "#FBC4AB", "#FFE3A0", "#AED8FA", "#B2E5C8", "#DFC6E8",
+    "#E8E8E8", "#FDDBC5", "#FFECC2", "#C4E3FB", "#CCF0DB",
+]
 
 
 def load_jsonl(path: str) -> list[dict]:
@@ -40,59 +58,162 @@ def load_jsonl(path: str) -> list[dict]:
     return items
 
 
-def extract_source(rec: dict) -> str:
-    return rec.get("metadata", {}).get("source", "unknown")
+def extract_fields(rec: dict) -> tuple[str, str]:
+    meta = rec.get("metadata", {})
+    return meta.get("source", "unknown"), meta.get("duration_bucket", "unknown")
 
 
-def _make_pie(ax, counter: Counter, title: str, top_n: int = 12):
-    """Draw a pie chart on the given axes. Merge small slices into 'others'."""
-    total = sum(counter.values())
-    # Sort by count descending
-    ordered = counter.most_common()
+def _lighten(hex_color: str, factor: float = 0.35) -> str:
+    """Lighten a hex color by mixing with white."""
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    r = int(r + (255 - r) * factor)
+    g = int(g + (255 - g) * factor)
+    b = int(b + (255 - b) * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
-    if len(ordered) > top_n:
-        main = ordered[:top_n]
-        others_count = sum(c for _, c in ordered[top_n:])
-        main.append(("others", others_count))
-    else:
-        main = ordered
 
-    labels = [f"{name}\n({cnt})" for name, cnt in main]
-    sizes = [cnt for _, cnt in main]
+def _tangential_rotation(angle_mid: float) -> float:
+    a = angle_mid % 360
+    rot = a - 90
+    rot_norm = rot % 360
+    if 90 < rot_norm < 270:
+        rot += 180
+    return rot
 
-    cmap = plt.cm.Set3
-    colors = [cmap(i / max(len(main), 1)) for i in range(len(main))]
 
-    wedges, texts, autotexts = ax.pie(
-        sizes,
-        labels=labels,
-        autopct="%1.1f%%",
-        startangle=90,
-        pctdistance=0.78,
-        colors=colors,
+def _radial_rotation(angle_mid: float) -> float:
+    a = angle_mid % 360
+    if 90 < a < 270:
+        return a + 180
+    return a
+
+
+def draw_wedge(ax, r_in, r_out, theta1, theta2, color, alpha=1.0):
+    n = max(50, int(abs(theta2 - theta1)))
+    angles = np.linspace(np.radians(theta1), np.radians(theta2), n)
+    xs_out = r_out * np.cos(angles)
+    ys_out = r_out * np.sin(angles)
+    xs_in = r_in * np.cos(angles[::-1])
+    ys_in = r_in * np.sin(angles[::-1])
+    xs = np.concatenate([xs_out, xs_in])
+    ys = np.concatenate([ys_out, ys_in])
+    poly = plt.Polygon(
+        np.column_stack([xs, ys]),
+        facecolor=color, edgecolor="white", linewidth=1.5,
+        alpha=alpha, zorder=2,
     )
-    for t in texts:
-        t.set_fontsize(8)
-    for t in autotexts:
-        t.set_fontsize(7)
-        t.set_color("dimgray")
-    ax.set_title(f"{title}\n(N={total})", fontsize=12, fontweight="bold")
+    ax.add_patch(poly)
+
+
+def add_text(ax, angle_mid, r_mid, text, fontsize, bold=False, radial=False):
+    rad = np.radians(angle_mid)
+    x = r_mid * np.cos(rad)
+    y = r_mid * np.sin(rad)
+    rot = _radial_rotation(angle_mid) if radial else _tangential_rotation(angle_mid)
+    weight = "bold" if bold else "normal"
+    ax.text(
+        x, y, text,
+        ha="center", va="center",
+        fontsize=fontsize, fontweight=weight, fontfamily="serif",
+        color="#222222", rotation=rot, zorder=5,
+    )
+
+
+def build_hierarchy(records: list[dict]) -> dict[str, Counter]:
+    """Returns {source: Counter({duration_bucket: count})}."""
+    hierarchy: dict[str, Counter] = defaultdict(Counter)
+    for rec in records:
+        source, bucket = extract_fields(rec)
+        hierarchy[source][bucket] += 1
+    return dict(hierarchy)
+
+
+def draw_sunburst(ax, records: list[dict], title: str):
+    """Draw a sunburst: inner = source, outer = duration_bucket."""
+    hierarchy = build_hierarchy(records)
+    total = len(records)
+
+    # Sort sources by total count descending
+    src_order = sorted(hierarchy.keys(), key=lambda s: sum(hierarchy[s].values()), reverse=True)
+
+    # Assign colors
+    src_colors = {}
+    for i, src in enumerate(src_order):
+        src_colors[src] = SOURCE_PALETTE[i % len(SOURCE_PALETTE)]
+
+    # Geometry
+    INNER_R = 0.40
+    MID_R = 0.72
+    OUTER_R = 1.25
+    GAP = 1.0  # degrees between source groups
+
+    available = 360 - len(src_order) * GAP
+    theta = 90  # start from top
+
+    for src in src_order:
+        src_total = sum(hierarchy[src].values())
+        src_span = src_total / total * available
+
+        # Inner ring: source wedge
+        draw_wedge(ax, INNER_R, MID_R, theta, theta - src_span, src_colors[src])
+
+        # Label inner ring (only if span large enough)
+        if src_span > 8:
+            mid_angle = theta - src_span / 2
+            label = f"{src}\n({src_total})"
+            add_text(ax, mid_angle, (INNER_R + MID_R) / 2, label,
+                     fontsize=FONT_SIZE_INNER, bold=True, radial=False)
+
+        # Outer ring: duration buckets within this source
+        buckets = sorted(hierarchy[src].keys())
+        sub_theta = theta
+        for bkt in buckets:
+            bkt_count = hierarchy[src][bkt]
+            bkt_span = bkt_count / total * available
+            bkt_color = _lighten(src_colors[src], factor=0.3)
+            draw_wedge(ax, MID_R, OUTER_R, sub_theta, sub_theta - bkt_span, bkt_color)
+
+            # Label outer ring (only if span large enough)
+            if bkt_span > 5:
+                sub_mid = sub_theta - bkt_span / 2
+                bkt_label = f"{bkt}\n({bkt_count})"
+                add_text(ax, sub_mid, (MID_R + OUTER_R) / 2, bkt_label,
+                         fontsize=FONT_SIZE_OUTER, bold=False, radial=True)
+
+            sub_theta -= bkt_span
+
+        theta -= src_span + GAP
+
+    # Center circle
+    center = plt.Circle((0, 0), INNER_R, color="white", ec="white", linewidth=2, zorder=3)
+    ax.add_patch(center)
+
+    # Center text
+    ax.text(0, 0, f"N={total}", ha="center", va="center",
+            fontsize=14, fontweight="bold", fontfamily="serif", color="#555555", zorder=6)
+
+    ax.set_xlim(-1.5, 1.5)
+    ax.set_ylim(-1.5, 1.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=15)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Draw source distribution pie charts")
+    parser = argparse.ArgumentParser(description="Sunburst: source × duration_bucket")
     parser.add_argument("--before", default="", help="Original MCQ JSONL (before filtering)")
     parser.add_argument("--after", required=True, help="Final train JSONL (after downsampling)")
     parser.add_argument("--outdir", default="results/figures")
-    parser.add_argument("--top-n", type=int, default=12,
-                        help="Max number of source slices before merging into 'others'")
     args = parser.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
 
     has_before = args.before and os.path.isfile(args.before)
     ncols = 2 if has_before else 1
-    fig, axes = plt.subplots(1, ncols, figsize=(8 * ncols, 7))
+    fig, axes = plt.subplots(1, ncols, figsize=(11 * ncols, 11))
+    fig.patch.set_facecolor("white")
     if ncols == 1:
         axes = [axes]
 
@@ -101,22 +222,22 @@ def main():
         print(f"Loading before: {args.before}")
         before_recs = load_jsonl(args.before)
         print(f"  {len(before_recs)} records")
-        before_counter = Counter(extract_source(r) for r in before_recs)
-        _make_pie(axes[idx], before_counter, "Reference Dataset Source", top_n=args.top_n)
+        draw_sunburst(axes[idx], before_recs, "Reference Dataset")
         idx += 1
 
     print(f"Loading after: {args.after}")
     after_recs = load_jsonl(args.after)
     print(f"  {len(after_recs)} records")
-    after_counter = Counter(extract_source(r) for r in after_recs)
-    _make_pie(axes[idx], after_counter, "Train (Downsampled) Source", top_n=args.top_n)
+    draw_sunburst(axes[idx], after_recs, "Train (Downsampled)")
 
-    fig.suptitle("LLaVA-Video-178K Source Distribution", fontsize=14, fontweight="bold")
+    fig.suptitle("LLaVA-Video-178K: Source × Duration", fontsize=16, fontweight="bold", y=0.98)
     fig.tight_layout()
-    path = os.path.join(args.outdir, "source_pie_comparison.png")
-    fig.savefig(path, dpi=200, bbox_inches="tight")
+
+    for ext in ("png", "pdf"):
+        path = os.path.join(args.outdir, f"source_sunburst.{ext}")
+        fig.savefig(path, dpi=300, bbox_inches="tight", facecolor="white")
+        print(f"Saved: {path}")
     plt.close(fig)
-    print(f"\nSaved: {path}")
 
 
 if __name__ == "__main__":
