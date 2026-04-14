@@ -48,8 +48,9 @@ L3_MAX_CLIP_SEC: int = 128  # maximum L3 clip length in seconds
 def load_annotations(
     ann_dir: str | Path,
     complete_only: bool = False,
+    limit: int = 0,
 ) -> list[dict]:
-    """Load all annotation JSONs from *ann_dir*.
+    """Load annotation JSONs from *ann_dir*.
 
     Args:
         ann_dir:       Directory containing ``*.json`` annotation files.
@@ -61,6 +62,9 @@ def load_annotations(
                          (i.e., procedural and periodic topologies).
                        Falls back to requiring all three levels if no
                        topology metadata is present (backward compatible).
+        limit:         Stop after collecting this many valid annotations
+                       (0 = no limit). Applied during IO so large dirs are
+                       not fully scanned when only a small sample is needed.
 
     Returns:
         List of raw annotation dicts, sorted by filename (clip_key order).
@@ -103,6 +107,8 @@ def load_annotations(
                     continue
 
         annotations.append(ann)
+        if limit > 0 and len(annotations) >= limit:
+            break
 
     return annotations
 

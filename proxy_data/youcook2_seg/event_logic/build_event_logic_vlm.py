@@ -74,6 +74,9 @@ from prompts import (  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+# Suppress noisy HTTP-level logs from the openai library
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 ALL_TASKS = ("predict_next", "fill_blank", "sort")
 
@@ -331,6 +334,7 @@ def call_task_architect(
     max_tokens: int = 1024,
     temperature: float = 0.7,
     retries: int = 3,
+    label: str = "",
 ) -> str:
     """Call the LLM task architect. Returns raw response text."""
     from openai import OpenAI
@@ -361,6 +365,19 @@ def call_task_architect(
                 temperature=temperature,
             )
             _accumulate_usage(resp.usage)
+            usage = resp.usage
+            if usage:
+                with _token_lock:
+                    total_calls = _token_usage["api_calls"]
+                    total_tokens = _token_usage["total_tokens"]
+                log.info(
+                    "[LLM] %s  in=%d out=%d | cumulative: calls=%d tokens=%d",
+                    label or "call",
+                    getattr(usage, "prompt_tokens", 0) or 0,
+                    getattr(usage, "completion_tokens", 0) or 0,
+                    total_calls,
+                    total_tokens,
+                )
             return resp.choices[0].message.content.strip()
         except Exception as e:
             last_error = e
@@ -691,6 +708,7 @@ def process_one_annotation(
                 raw = call_task_architect(
                     api_base, api_key, model, user_prompt,
                     temperature=temperature,
+                    label=f"{clip_key}/{task_name}",
                 )
             except Exception as e:
                 result["errors"].append(f"{task_name}: LLM call failed: {e}")
@@ -871,9 +889,8 @@ def main():
 
     # ---- 1. Load annotations ----
     log.info("Loading annotations from: %s", args.annotation_dir)
-    annotations = load_annotations(args.annotation_dir, complete_only=False)
-    if args.limit > 0:
-        annotations = annotations[:args.limit]
+    annotations = load_annotations(args.annotation_dir, complete_only=False,
+                                   limit=args.limit if args.limit > 0 else 0)
     log.info("Loaded %d annotations", len(annotations))
 
     # ---- Dry run: only show script texts ----
