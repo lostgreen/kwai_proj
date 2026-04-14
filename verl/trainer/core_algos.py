@@ -346,6 +346,10 @@ def _task_key_of(sample_problem_type: str, sample_data_type: str | None) -> str:
         "aot_v2t", "aot_t2v", "aot_3way_v2t", "aot_3way_t2v",
     ) or sample_problem_type.startswith("seg_aot_"):
         return "mcq"
+    if sample_problem_type in ("event_logic_predict_next", "event_logic_fill_blank"):
+        return "mcq"
+    if sample_problem_type == "event_logic_sort":
+        return "sort"
     if sample_problem_type.startswith("temporal_seg"):
         return "seg"
     if sample_problem_type == "segmentation":

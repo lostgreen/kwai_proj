@@ -255,6 +255,10 @@ _TASK_REWARD_DISPATCH = {
     "seg_aot_action_t2v_3way":    _choice_reward,
     # Sort
     "sort":                       _sort_reward,
+    # Event Logic (VLM-curated)
+    "event_logic_predict_next":   _choice_reward,
+    "event_logic_fill_blank":     _choice_reward,
+    "event_logic_sort":           _sort_reward,
     # Temporal grounding (special: needs metadata)
     "temporal_grounding":         None,
 }

@@ -122,6 +122,85 @@ def get_replace_prompt(total_steps: int, missing_pos: int, options: list[str]) -
 # Output: digit sequence like "31245" (correct temporal order of clip indices)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_add_prompt_generic(num_ctx: int, options: list[str]) -> str:
+    """
+    Domain-generic Predict-Next prompt (no cooking references).
+
+    Args:
+        num_ctx: Number of context video clips.
+        options: List of candidate text descriptions (including the correct one).
+
+    Returns:
+        User-turn prompt string with <video> placeholders and CoT instructions.
+    """
+    labels = _option_labels(len(options))
+    lines = ["Context Video Sequence:"]
+    for i in range(num_ctx):
+        lines.append(f"{i + 1}. <video>")
+
+    lines += [
+        "",
+        "Based on the continuous actions shown in the Context Video Sequence above, "
+        "which of the following textual options shows the most logical next step?",
+        "Options:",
+    ]
+    for label, opt in zip(labels, options):
+        lines.append(f"{label}. {opt}")
+
+    lines += [
+        "",
+        "First, carefully observe the actions and visual content in each Context Video "
+        "to understand the progression. Then, reason about which text option best continues the sequence.",
+        "",
+        f"Think step by step inside <think> </think> tags, then provide your final answer "
+        f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
+    ]
+    return "\n".join(lines)
+
+
+def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list[str]) -> str:
+    """
+    Domain-generic Fill-in-the-Blank prompt (no cooking references).
+
+    Args:
+        total_steps: Total number of steps in the sequence (including the missing one).
+        missing_pos: Zero-based index of the missing step.
+        options: List of candidate text descriptions (including the correct one).
+
+    Returns:
+        User-turn prompt string with <video> placeholders and CoT instructions.
+    """
+    labels = _option_labels(len(options))
+    lines = [
+        "Watch the following process carefully. The sequence has a [MISSING] step.",
+        "Context Sequence:",
+    ]
+    for i in range(total_steps):
+        if i == missing_pos:
+            lines.append(f"Step {i + 1}: [MISSING]")
+        else:
+            lines.append(f"Step {i + 1}: <video>")
+
+    lines += [
+        "",
+        "Based on the chronological visual content of the sequence, "
+        "pick the correct textual option to fill in the [MISSING] step.",
+        "Options:",
+    ]
+    for label, opt in zip(labels, options):
+        lines.append(f"{label}. {opt}")
+
+    lines += [
+        "",
+        "First, carefully observe the Context Sequence to understand the flow "
+        "before and after the [MISSING] step. Then, reason about which text option best fills the gap.",
+        "",
+        f"Think step by step inside <think> </think> tags, then provide your final answer "
+        f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
+    ]
+    return "\n".join(lines)
+
+
 def get_sort_prompt(num_clips: int) -> str:
     """
     Build the Sort task prompt.
