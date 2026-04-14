@@ -389,6 +389,59 @@ def _ensure_black_placeholder(clip_dir: str, duration: float = 2.0, fps: int = 2
     return dst
 
 
+def _concat_clips_with_black(
+    before_paths: list[str],
+    after_paths: list[str],
+    black_path: str,
+    output_path: str,
+) -> bool:
+    """Concatenate before clips + black placeholder + after clips into one video.
+
+    Uses ffmpeg concat demuxer (stream copy — fast, no re-encoding).
+    Returns True on success.
+    """
+    if os.path.exists(output_path):
+        return True
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    all_paths = before_paths + [black_path] + after_paths
+
+    # Write concat file list
+    list_path = output_path + ".concat.txt"
+    try:
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in all_paths:
+                f.write(f"file '{p}'\n")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", list_path,
+            "-c", "copy",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        if result.returncode != 0:
+            # Fallback: re-encode if stream copy fails (mismatched codecs)
+            cmd_reencode = [
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", list_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-an",
+                output_path,
+            ]
+            subprocess.run(cmd_reencode, check=True, capture_output=True, timeout=120)
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        log.error("concat failed for %s: %s", output_path, exc)
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+        return False
+    finally:
+        if os.path.exists(list_path):
+            os.unlink(list_path)
+
+
 # =====================================================================
 # LLM call
 # =====================================================================
@@ -616,13 +669,21 @@ def _assemble_fill_blank(
 
     prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
 
-    # Videos: before clips → black placeholder at missing position → after clips
+    # Concatenate: before clips → black placeholder → after clips → single video
     black_path = _ensure_black_placeholder(clip_dir)
-    videos = (
-        [item["clip_path"] for item in before_items]  # type: ignore[union-attr]
-        + [black_path]
-        + [item["clip_path"] for item in after_items]  # type: ignore[union-attr]
-    )
+    before_paths = [item["clip_path"] for item in before_items]  # type: ignore[union-attr]
+    after_paths = [item["clip_path"] for item in after_items]  # type: ignore[union-attr]
+
+    # Output path: {clip_dir}/concat/{clip_key}_fill_{missing_id_safe}.mp4
+    missing_id_safe = missing_id.replace(" ", "_").replace(".", "_")
+    concat_dir = os.path.join(clip_dir, "concat")
+    concat_path = os.path.join(concat_dir, f"{clip_key}_{missing_id_safe}.mp4")
+
+    ok = _concat_clips_with_black(before_paths, after_paths, black_path, concat_path)
+    if not ok:
+        return []
+
+    videos = [concat_path]
 
     return [{
         "messages": [{"role": "user", "content": prompt}],
