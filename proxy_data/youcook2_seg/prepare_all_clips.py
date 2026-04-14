@@ -190,24 +190,37 @@ def _generate_l3_jobs(
     output_dir: Path,
     fps: int,
 ) -> list[dict]:
-    """为每个 L3 sub_action 生成切分 job。"""
+    """为每个 L3 sub_action 生成切分 job。
+
+    当前 schema（annotate.py 产生的嵌套格式）:
+        level3.grounding_results[i] = {
+            "event_id": <int>,
+            "sub_actions": [{"action_id": <int>, "start_time": ..., "end_time": ..., ...}]
+        }
+    旧格式（平铺）已废弃，不再支持。
+    """
     jobs: list[dict] = []
-    results = ann.get("level3", {}).get("grounding_results", [])
+    grounding_results = ann.get("level3", {}).get("grounding_results", [])
     clip_key = ann["clip_key"]
 
-    for r in results:
-        act_id = r.get("action_id", 0)
-        start = int(r.get("start_time", 0))
-        end = int(r.get("end_time", 0))
-        parent_ev = r.get("parent_event_id", 0)
-        if end <= start:
+    for gr in grounding_results:
+        if not isinstance(gr, dict):
             continue
-        dst = output_dir / "L3" / f"{clip_key}_L3_act{act_id}_ev{parent_ev}_{start}_{end}.mp4"
-        jobs.append({
-            "src": src_video, "dst": str(dst),
-            "start": start, "end": end, "fps": fps,
-            "level": "L3", "clip_key": clip_key,
-        })
+        parent_ev = gr.get("event_id", 0)
+        for sa in gr.get("sub_actions", []):
+            if not isinstance(sa, dict):
+                continue
+            act_id = sa.get("action_id", 0)
+            start = int(sa.get("start_time", 0))
+            end = int(sa.get("end_time", 0))
+            if end <= start:
+                continue
+            dst = output_dir / "L3" / f"{clip_key}_L3_act{act_id}_ev{parent_ev}_{start}_{end}.mp4"
+            jobs.append({
+                "src": src_video, "dst": str(dst),
+                "start": start, "end": end, "fps": fps,
+                "level": "L3", "clip_key": clip_key,
+            })
     return jobs
 
 
@@ -250,6 +263,10 @@ def main():
                         help="只切含 ≥ 此数量 actions 的 event 组 (0=不过滤)")
     parser.add_argument("--max-actions", type=int, default=999,
                         help="只切含 ≤ 此数量 actions 的 event 组")
+    parser.add_argument("--clip-list", default=None,
+                        help="只切此文件中列出的 clip 路径（每行一个绝对路径）。"
+                             "配合 build_event_logic_vlm.py --collect-clips-only 使用，"
+                             "跳过 LLM 判定为不需要的 clips。")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -279,9 +296,6 @@ def main():
         events = [e for e in l2.get("events", [])
                   if isinstance(e, dict) and isinstance(e.get("start_time"), (int, float))
                   and e.get("instruction", "").strip()]
-        actions = [a for a in l3.get("grounding_results", [])
-                   if isinstance(a, dict) and isinstance(a.get("start_time"), (int, float))
-                   and a.get("sub_action", "").strip()]
 
         cut_l1 = "L1" in levels and args.min_phases <= len(phases) <= args.max_phases
         # L2: 至少有一个 phase 拥有 [min_events, max_events] 个 child events
@@ -293,9 +307,12 @@ def main():
             for evs in events_by_phase.values()
         )
         # L3: 至少有一个 event 拥有 [min_actions, max_actions] 个 child actions
-        actions_by_event = {}
-        for a in actions:
-            actions_by_event.setdefault(a.get("parent_event_id"), []).append(a)
+        # 按 event_id 统计 sub_actions 数量（嵌套格式直接从 grounding_results 读）
+        actions_by_event = {
+            gr["event_id"]: gr.get("sub_actions", [])
+            for gr in l3.get("grounding_results", [])
+            if isinstance(gr, dict) and "event_id" in gr
+        }
         cut_l3 = "L3" in levels and any(
             args.min_actions <= len(acts) <= args.max_actions
             for acts in actions_by_event.values()
@@ -316,6 +333,20 @@ def main():
         sum(1 for j in all_jobs if j["level"] == "L3"),
         skipped_videos,
     )
+
+    # ---- 按需过滤: 只切 --clip-list 中指定的 clips ----
+    if args.clip_list:
+        if not os.path.isfile(args.clip_list):
+            log.error("--clip-list file not found: %s", args.clip_list)
+            raise SystemExit(1)
+        with open(args.clip_list, "r", encoding="utf-8") as f:
+            needed = {line.strip() for line in f if line.strip()}
+        before = len(all_jobs)
+        all_jobs = [j for j in all_jobs if j["dst"] in needed]
+        log.info(
+            "clip-list filter: %d → %d jobs (%d clips in list, %d not matched by any job)",
+            before, len(all_jobs), len(needed), len(needed) - len(all_jobs),
+        )
 
     if args.dry_run:
         for j in all_jobs:

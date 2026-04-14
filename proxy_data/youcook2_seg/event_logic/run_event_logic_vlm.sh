@@ -111,53 +111,127 @@ log "SKIP_CLIPS:    $SKIP_CLIPS"
 log "COMPLETE_ONLY: $COMPLETE_ONLY"
 log "LOG_FILE:      $LOG_FILE"
 
-# =====================================================================
-# STEP 1: Cut atomic L2/L3 clips (skip if SKIP_CLIPS=1 or DRY_RUN=1)
-# =====================================================================
-if [[ "$SKIP_CLIPS" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
-    log ""
-    log ">>>>>>>>>> STEP 1: CUT ATOMIC CLIPS (${CLIP_LEVELS}) <<<<<<<<<<"
+# ─────────────────────────────────────────────────────────────────────
+# THREE-STEP PIPELINE (annotation-first, then targeted clip cutting):
+#
+#   Step 1: LLM designs questions (text-only) → needed_clips.txt
+#   Step 2: Cut only the clips listed in needed_clips.txt
+#   Step 3: Assemble final training records (--complete-only)
+#
+# This avoids cutting ALL L2/L3 clips upfront; the LLM first decides
+# which annotations are suitable and which events to use, then we only
+# cut what's actually needed.
+#
+# Legacy behavior (SKIP_CLIPS=1 / old two-step) is preserved via env vars.
+# ─────────────────────────────────────────────────────────────────────
 
-    CLIP_FLAGS="--complete-only --levels $CLIP_LEVELS --l2l3-fps $CLIP_FPS --workers $CLIP_WORKERS"
-    if [[ -n "$SOURCE_VIDEO_DIR" ]]; then
-        CLIP_FLAGS="$CLIP_FLAGS --source-video-dir $SOURCE_VIDEO_DIR"
-    fi
+CLIPS_LIST="${OUTPUT_DIR}/needed_clips.txt"
 
-    run_step "S1_CUT_CLIPS" \
-        python "$CLIP_SCRIPT" \
-            --annotation-dir "$ANN_DIR" \
-            --output-dir "$CLIP_DIR" \
-            $CLIP_FLAGS
-else
-    log ""
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-        log ">>>>>>>>>> STEP 1: SKIP (dry-run mode) <<<<<<<<<<"
-    else
-        log ">>>>>>>>>> STEP 1: SKIP (SKIP_CLIPS=1) <<<<<<<<<<"
-    fi
-fi
-
-# =====================================================================
-# STEP 2: Build event logic questions via LLM Task Architect
-# =====================================================================
-log ""
-log ">>>>>>>>>> STEP 2: BUILD EVENT LOGIC DATA <<<<<<<<<<"
-
-FLAGS=""
+# ── Common flags for build_event_logic_vlm.py ────────────────────────
+VLM_FLAGS=""
 if [[ "$LIMIT" -gt 0 ]]; then
-    FLAGS="$FLAGS --limit $LIMIT"
-fi
-if [[ "$DRY_RUN" -eq 1 ]]; then
-    FLAGS="$FLAGS --dry-run"
-fi
-if [[ "$COMPLETE_ONLY" -eq 1 ]]; then
-    FLAGS="$FLAGS --complete-only"
+    VLM_FLAGS="$VLM_FLAGS --limit $LIMIT"
 fi
 if [[ "$TRAIN_BUDGET" -gt 0 ]]; then
-    FLAGS="$FLAGS --train-budget $TRAIN_BUDGET"
+    VLM_FLAGS="$VLM_FLAGS --train-budget $TRAIN_BUDGET"
 fi
 
-run_step "S2_EVENT_LOGIC_VLM" \
+# ── Common flags for prepare_all_clips.py ────────────────────────────
+CLIP_BASE_FLAGS="--complete-only --levels $CLIP_LEVELS --l2l3-fps $CLIP_FPS --workers $CLIP_WORKERS"
+if [[ -n "$SOURCE_VIDEO_DIR" ]]; then
+    CLIP_BASE_FLAGS="$CLIP_BASE_FLAGS --source-video-dir $SOURCE_VIDEO_DIR"
+fi
+
+# =====================================================================
+# DRY RUN: show script texts only, no API calls, no clip cutting
+# =====================================================================
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    log ""
+    log ">>>>>>>>>> DRY-RUN: build script texts only <<<<<<<<<<"
+    run_step "DRYRUN_SCRIPTS" \
+        python "$SCRIPT_DIR/build_event_logic_vlm.py" \
+            --annotation-dir "$ANN_DIR" \
+            --clip-dir "$CLIP_DIR" \
+            --output-dir "$OUTPUT_DIR" \
+            --api-base "$API_BASE" \
+            --model "$MODEL" \
+            --temperature "$TEMPERATURE" \
+            --workers "$WORKERS" \
+            --tasks $TASKS \
+            --cache-dir "$OUTPUT_DIR/cache" \
+            --seed "$SEED" \
+            --dry-run \
+            $VLM_FLAGS
+
+    log ""
+    log "========== DRY RUN COMPLETE =========="
+    log "Full log: $LOG_FILE"
+    exit 0
+fi
+
+# =====================================================================
+# STEP 1: LLM question design → needed_clips.txt
+#   (skipped if SKIP_CLIPS=1, assuming needed_clips.txt already exists)
+# =====================================================================
+if [[ "$SKIP_CLIPS" -eq 0 ]]; then
+    log ""
+    log ">>>>>>>>>> STEP 1: LLM QUESTION DESIGN → needed_clips.txt <<<<<<<<<<"
+    run_step "S1_COLLECT_CLIPS" \
+        python "$SCRIPT_DIR/build_event_logic_vlm.py" \
+            --annotation-dir "$ANN_DIR" \
+            --clip-dir "$CLIP_DIR" \
+            --output-dir "$OUTPUT_DIR" \
+            --api-base "$API_BASE" \
+            --model "$MODEL" \
+            --temperature "$TEMPERATURE" \
+            --workers "$WORKERS" \
+            --tasks $TASKS \
+            --cache-dir "$OUTPUT_DIR/cache" \
+            --seed "$SEED" \
+            --collect-clips-only \
+            $VLM_FLAGS
+else
+    log ""
+    log ">>>>>>>>>> STEP 1: SKIP (SKIP_CLIPS=1, using existing needed_clips.txt) <<<<<<<<<<"
+fi
+
+# =====================================================================
+# STEP 2: Cut only the needed clips
+# =====================================================================
+if [[ "$SKIP_CLIPS" -eq 0 ]]; then
+    if [[ ! -f "$CLIPS_LIST" ]]; then
+        log "ERROR: needed_clips.txt not found at $CLIPS_LIST — clip cutting skipped"
+    else
+        NEEDED_N=$(wc -l < "$CLIPS_LIST" | tr -d ' ')
+        log ""
+        log ">>>>>>>>>> STEP 2: CUT $NEEDED_N NEEDED CLIPS <<<<<<<<<<"
+        run_step "S2_CUT_CLIPS" \
+            python "$CLIP_SCRIPT" \
+                --annotation-dir "$ANN_DIR" \
+                --output-dir "$CLIP_DIR" \
+                --clip-list "$CLIPS_LIST" \
+                $CLIP_BASE_FLAGS
+    fi
+else
+    log ""
+    log ">>>>>>>>>> STEP 2: SKIP (SKIP_CLIPS=1) <<<<<<<<<<"
+fi
+
+# =====================================================================
+# STEP 3: Assemble final training records (clips now exist on disk)
+# =====================================================================
+log ""
+log ">>>>>>>>>> STEP 3: ASSEMBLE TRAINING RECORDS <<<<<<<<<<"
+
+ASSEMBLE_FLAGS="--complete-only"
+if [[ "$TRAIN_BUDGET" -gt 0 ]]; then
+    ASSEMBLE_FLAGS="$ASSEMBLE_FLAGS --train-budget $TRAIN_BUDGET"
+fi
+if [[ "$LIMIT" -gt 0 ]]; then
+    ASSEMBLE_FLAGS="$ASSEMBLE_FLAGS --limit $LIMIT"
+fi
+
+run_step "S3_ASSEMBLE" \
     python "$SCRIPT_DIR/build_event_logic_vlm.py" \
         --annotation-dir "$ANN_DIR" \
         --clip-dir "$CLIP_DIR" \
@@ -170,7 +244,7 @@ run_step "S2_EVENT_LOGIC_VLM" \
         --val-count "$VAL_COUNT" \
         --cache-dir "$OUTPUT_DIR/cache" \
         --seed "$SEED" \
-        $FLAGS
+        $ASSEMBLE_FLAGS
 
 # ── Summary ─────────────────────────────────────────────────────────
 log ""
@@ -183,6 +257,7 @@ if [[ -f "$OUTPUT_DIR/train.jsonl" ]]; then
     log "  val.jsonl:   $OUTPUT_DIR/val.jsonl"
     log "  stats.json:  $OUTPUT_DIR/stats.json"
     log "  cache:       $OUTPUT_DIR/cache/"
+    log "  needed_clips: $CLIPS_LIST"
 fi
 
 if [[ -d "$CLIP_DIR/L2" ]]; then

@@ -79,6 +79,51 @@ ALL_TASKS = ("predict_next", "fill_blank", "sort")
 
 
 # =====================================================================
+# Clip path collection helpers (for --collect-clips-only mode)
+# =====================================================================
+
+def _collect_clips_predict_next(parsed: dict, ann: dict, clip_dir: str) -> list[str]:
+    """Collect clip paths needed by predict_next task (context clips only)."""
+    paths = []
+    for cid in parsed.get("context_ids", []):
+        item = resolve_item(cid, ann, clip_dir)
+        if item:
+            paths.append(item["clip_path"])
+    return paths
+
+
+def _collect_clips_fill_blank(parsed: dict, ann: dict, clip_dir: str) -> list[str]:
+    """Collect clip paths needed by fill_blank task (before + after, not missing)."""
+    paths = []
+    for bid in parsed.get("before_ids", []):
+        item = resolve_item(bid, ann, clip_dir)
+        if item:
+            paths.append(item["clip_path"])
+    for aid in parsed.get("after_ids", []):
+        item = resolve_item(aid, ann, clip_dir)
+        if item:
+            paths.append(item["clip_path"])
+    return paths
+
+
+def _collect_clips_sort(parsed: dict, ann: dict, clip_dir: str) -> list[str]:
+    """Collect clip paths needed by sort task (all ordered clips)."""
+    paths = []
+    for oid in parsed.get("ordered_ids", []):
+        item = resolve_item(oid, ann, clip_dir)
+        if item:
+            paths.append(item["clip_path"])
+    return paths
+
+
+_TASK_CLIP_COLLECTORS = {
+    "predict_next": _collect_clips_predict_next,
+    "fill_blank": _collect_clips_fill_blank,
+    "sort": _collect_clips_sort,
+}
+
+
+# =====================================================================
 # Token tracking (thread-safe, same pattern as reclassify_domain.py)
 # =====================================================================
 
@@ -605,10 +650,14 @@ def process_one_annotation(
     temperature: float,
     cache_dir: str,
     rng_seed: int,
+    collect_only: bool = False,
 ) -> dict:
     """Process one annotation: build script, call LLM for each task, assemble records.
 
-    Returns dict with keys: clip_key, status, predict_next, fill_blank, sort, errors.
+    When collect_only=True: skips clip existence checks and returns needed clip paths
+    instead of assembled records (keys: clip_key, status, needed_clips, errors).
+
+    Otherwise returns dict with keys: clip_key, status, predict_next, fill_blank, sort, errors.
     """
     clip_key = ann.get("clip_key", "")
     rng = random.Random(rng_seed)
@@ -618,6 +667,7 @@ def process_one_annotation(
         "predict_next": [],
         "fill_blank": [],
         "sort": [],
+        "needed_clips": [],
         "errors": [],
     }
 
@@ -630,7 +680,6 @@ def process_one_annotation(
     # 2. Call LLM for each enabled task
     for task_name in tasks:
         prompt_builder = _TASK_PROMPT_BUILDERS[task_name]
-        assembler = _TASK_ASSEMBLERS[task_name]
 
         # Check cache
         cached = _load_cache(cache_dir, clip_key, task_name)
@@ -658,12 +707,19 @@ def process_one_annotation(
         if not parsed.get("suitable", False):
             continue
 
-        records = assembler(parsed, ann, clip_dir, complete_only, rng)
-        result[task_name].extend(records)
+        if collect_only:
+            # Collect clip paths without existence check
+            collector = _TASK_CLIP_COLLECTORS[task_name]
+            result["needed_clips"].extend(collector(parsed, ann, clip_dir))
+        else:
+            assembler = _TASK_ASSEMBLERS[task_name]
+            records = assembler(parsed, ann, clip_dir, complete_only, rng)
+            result[task_name].extend(records)
 
-    has_records = any(result[t] for t in ALL_TASKS if t in tasks)
-    if result["errors"] and not has_records:
-        result["status"] = "error"
+    if not collect_only:
+        has_records = any(result[t] for t in ALL_TASKS if t in tasks)
+        if result["errors"] and not has_records:
+            result["status"] = "error"
 
     return result
 
@@ -803,6 +859,10 @@ def main():
                         help="Cache LLM responses for resume")
     parser.add_argument("--dry-run", action="store_true",
                         help="Only build script texts, skip LLM calls")
+    parser.add_argument("--collect-clips-only", action="store_true",
+                        help="Run LLM design (using cache if available) and write needed "
+                             "clip paths to <output-dir>/needed_clips.txt without assembling "
+                             "records or checking clip existence. Use this before clip cutting.")
     parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
@@ -826,6 +886,48 @@ def main():
                 if ok <= 3:
                     log.info("=== Script [%s] ===\n%s", ann.get("clip_key", ""), script[:2000])
         log.info("Dry run: %d / %d annotations have valid script texts", ok, len(annotations))
+        return
+
+    # ---- Collect-clips-only: write needed clip paths, skip assembly ----
+    if args.collect_clips_only:
+        log.info("=== COLLECT-CLIPS-ONLY mode: gathering needed clip paths ===")
+        all_clip_paths: set[str] = set()
+
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {
+                pool.submit(
+                    process_one_annotation,
+                    ann, args.clip_dir,
+                    args.api_base, args.api_key, args.model,
+                    task_set, False, args.temperature,
+                    args.cache_dir,
+                    rng.randint(0, 2**31),
+                    True,  # collect_only
+                ): ann.get("clip_key", "")
+                for ann in annotations
+            }
+
+            done_count = 0
+            for fut in as_completed(futures):
+                done_count += 1
+                try:
+                    result = fut.result()
+                    all_clip_paths.update(result.get("needed_clips", []))
+                except Exception as e:
+                    clip_key = futures[fut]
+                    log.error("Error processing %s: %s", clip_key, e)
+
+                if done_count % 100 == 0 or done_count == len(futures):
+                    log.info("Progress: %d / %d  (collected %d clip paths so far)",
+                             done_count, len(futures), len(all_clip_paths))
+
+        os.makedirs(args.output_dir, exist_ok=True)
+        clips_list_path = os.path.join(args.output_dir, "needed_clips.txt")
+        with open(clips_list_path, "w", encoding="utf-8") as f:
+            for p in sorted(all_clip_paths):
+                f.write(p + "\n")
+        log.info("Written %d unique clip paths to: %s", len(all_clip_paths), clips_list_path)
+        log.info("Next step: prepare_all_clips.py --clip-list %s", clips_list_path)
         return
 
     # ---- 2. Process annotations in parallel ----
