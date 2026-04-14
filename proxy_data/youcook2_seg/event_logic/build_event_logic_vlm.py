@@ -317,6 +317,10 @@ def _check_granularity(id_list: list[str]) -> bool:
     for id_str in id_list:
         try:
             level, _, _ = parse_item_id(id_str)
+            levels.add(level)
+        except ValueError:
+            return False
+    return len(levels) == 1
 
 
 def _check_contiguity(id_list: list[str]) -> bool:
@@ -350,10 +354,6 @@ def _check_contiguity(id_list: list[str]) -> bool:
             return False
         return sub_ids == list(range(sub_ids[0], sub_ids[0] + len(sub_ids)))
     return False
-            levels.add(level)
-        except ValueError:
-            return False
-    return len(levels) == 1
 
 
 # =====================================================================
