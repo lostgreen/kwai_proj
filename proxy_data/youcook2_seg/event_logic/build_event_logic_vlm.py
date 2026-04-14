@@ -316,6 +316,39 @@ def _check_granularity(id_list: list[str]) -> bool:
     for id_str in id_list:
         try:
             level, _, _ = parse_item_id(id_str)
+
+
+def _check_contiguity(id_list: list[str]) -> bool:
+    """Return True if IDs form a contiguous sequence with no gaps.
+
+    For Event IDs: Event 1, Event 2, Event 3 → contiguous (1,2,3).
+    For Action IDs: Action 3.1, Action 3.2, Action 3.3 → contiguous
+    (same parent 3, sub-ids 1,2,3). Mixed parents → not contiguous.
+    """
+    if len(id_list) < 2:
+        return True
+    parsed = []
+    for id_str in id_list:
+        try:
+            level, primary, sub = parse_item_id(id_str)
+            parsed.append((level, primary, sub))
+        except ValueError:
+            return False
+
+    first_level = parsed[0][0]
+    if first_level == "Event":
+        ids = [p[1] for p in parsed]
+        return ids == list(range(ids[0], ids[0] + len(ids)))
+    elif first_level == "Action":
+        # All must share the same parent event
+        parents = {p[1] for p in parsed}
+        if len(parents) != 1:
+            return False
+        sub_ids = [p[2] for p in parsed if p[2] is not None]
+        if len(sub_ids) != len(parsed):
+            return False
+        return sub_ids == list(range(sub_ids[0], sub_ids[0] + len(sub_ids)))
+    return False
             levels.add(level)
         except ValueError:
             return False
@@ -448,7 +481,9 @@ def _assemble_predict_next(
     if not _check_granularity(all_ids):
         return []
 
-    # Resolve context items
+    # Contiguity: context + correct_next must be a gapless sequence
+    if not _check_contiguity(all_ids):
+        return []
     context_items = []
     for cid in context_ids:
         item = resolve_item(cid, ann, clip_dir)
@@ -518,7 +553,9 @@ def _assemble_fill_blank(
     if not _check_granularity(all_ids):
         return []
 
-    # Resolve all items
+    # Contiguity: before + missing + after must be a gapless sequence
+    if not _check_contiguity(all_ids):
+        return []
     before_items = [resolve_item(bid, ann, clip_dir) for bid in before_ids]
     after_items = [resolve_item(aid, ann, clip_dir) for aid in after_ids]
     missing_item = resolve_item(missing_id, ann, clip_dir)

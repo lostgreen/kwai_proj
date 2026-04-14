@@ -100,8 +100,10 @@ script above.
 Instructions:
 1. **Granularity**: Decide whether Event-level or Action-level produces \
 a more logically challenging question. Stick to ONE level throughout.
-2. Select 2-4 CONSECUTIVE items as the known context. Skip any \
-talking / explaining / pausing shots — context must be physical actions.
+2. Select 2-4 STRICTLY CONSECUTIVE items as the known context (NO GAPS \
+— e.g., Action 2.1 → 2.2 → 2.3, not 2.1 → 2.3). All context items \
+must be physical actions — if a non-action (talking shot) sits between \
+two good items, choose a different window that has no gaps.
 3. The item that IMMEDIATELY follows the context must be the unique, \
 logically necessary next step (the correct answer). It must also be a \
 purposeful physical action, NOT a talking or gesturing shot.
@@ -186,10 +188,14 @@ action script above.
 Instructions:
 1. **Granularity**: Decide whether Event-level or Action-level yields a \
 more meaningful "before → core change → after" pattern. Stick to ONE level.
-2. Find a chain of 3+ consecutive items where the MIDDLE item represents \
-a critical state change or transition (the "bridge" between cause and \
-effect). All items in the chain must be purposeful physical actions — \
-skip any talking / explaining / pausing shots.
+2. Find a chain of 3+ STRICTLY CONSECUTIVE items (NO GAPS — e.g., \
+Action 3.1 → 3.2 → 3.3, not 3.1 → 3.2 → 3.4) where the MIDDLE item \
+represents a critical state change or transition (the "bridge" between \
+cause and effect). All items in the chain must be purposeful physical \
+actions — skip any talking / explaining / pausing shots. If a \
+non-action item (talking shot) sits between two good action items, you \
+MUST NOT skip over it — instead, choose a different chain that has no \
+gaps.
 3. The BEFORE item(s) and AFTER item(s) will be shown as video context; \
 the middle item is REMOVED — the model must identify it.
 4. Write exactly 3 DISTRACTORS following BOTH the Anti-Shortcut rule \
