@@ -431,6 +431,7 @@ def _assemble_predict_next(
     clip_dir: str,
     complete_only: bool,
     rng: random.Random,
+    cot: bool = False,
 ) -> list[dict]:
     """Assemble Predict-Next MCQ record from validated LLM output."""
     context_ids = parsed.get("context_ids", [])
@@ -469,7 +470,7 @@ def _assemble_predict_next(
     correct_letter = chr(ord("A") + correct_idx)
     option_texts = [text for text, _ in options]
 
-    prompt = get_add_prompt_generic(len(context_items), option_texts)
+    prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
     videos = [item["clip_path"] for item in context_items]
 
     return [{
@@ -499,6 +500,7 @@ def _assemble_fill_blank(
     clip_dir: str,
     complete_only: bool,
     rng: random.Random,
+    cot: bool = False,
 ) -> list[dict]:
     """Assemble Fill-in-the-Blank MCQ record from validated LLM output."""
     before_ids = parsed.get("before_ids", [])
@@ -541,7 +543,7 @@ def _assemble_fill_blank(
     total_steps = len(before_ids) + 1 + len(after_ids)
     missing_pos = len(before_ids)  # 0-indexed
 
-    prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts)
+    prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
 
     # Videos: before clips in order, then after clips in order (no video for [MISSING])
     videos = (
@@ -577,6 +579,7 @@ def _assemble_sort(
     clip_dir: str,
     complete_only: bool,
     rng: random.Random,
+    cot: bool = False,
 ) -> list[dict]:
     """Assemble VLM-curated Sort record from validated LLM output."""
     ordered_ids = parsed.get("ordered_ids", [])
@@ -616,7 +619,7 @@ def _assemble_sort(
     answer = "".join(str(x) for x in inverse)
 
     shuffled_items = [items[i] for i in shuf_idx]
-    prompt = get_sort_prompt_generic(n)
+    prompt = get_sort_prompt_generic(n, cot=cot)
     videos = [item["clip_path"] for item in shuffled_items]
 
     return [{
@@ -668,6 +671,7 @@ def process_one_annotation(
     cache_dir: str,
     rng_seed: int,
     collect_only: bool = False,
+    cot: bool = False,
 ) -> dict:
     """Process one annotation: build script, call LLM for each task, assemble records.
 
@@ -731,7 +735,7 @@ def process_one_annotation(
             result["needed_clips"].extend(collector(parsed, ann, clip_dir))
         else:
             assembler = _TASK_ASSEMBLERS[task_name]
-            records = assembler(parsed, ann, clip_dir, complete_only, rng)
+            records = assembler(parsed, ann, clip_dir, complete_only, rng, cot=cot)
             result[task_name].extend(records)
 
     if not collect_only:
@@ -881,11 +885,15 @@ def main():
                         help="Run LLM design (using cache if available) and write needed "
                              "clip paths to <output-dir>/needed_clips.txt without assembling "
                              "records or checking clip existence. Use this before clip cutting.")
+    parser.add_argument("--prompt-style", choices=["direct", "cot"], default="direct",
+                        help="Prompt format: 'direct' omits <think> tags (default), "
+                             "'cot' includes chain-of-thought reasoning instructions.")
     parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
     rng = random.Random(args.seed)
     task_set = set(args.tasks)
+    use_cot = (args.prompt_style == "cot")
 
     # ---- 1. Load annotations ----
     log.info("Loading annotations from: %s", args.annotation_dir)
@@ -959,6 +967,8 @@ def main():
                 task_set, args.complete_only, args.temperature,
                 args.cache_dir,
                 rng.randint(0, 2**31),
+                False,   # collect_only
+                use_cot,
             ): ann.get("clip_key", "")
             for ann in annotations
         }
@@ -1020,6 +1030,15 @@ def main():
     val_path = os.path.join(args.output_dir, "val.jsonl")
     write_jsonl(all_train, train_path)
     write_jsonl(all_val, val_path)
+
+    # Per-task files
+    for task in args.tasks:
+        task_train = [r for r in all_train if r.get("problem_type", "").endswith(task)]
+        task_val = [r for r in all_val if r.get("problem_type", "").endswith(task)]
+        write_jsonl(task_train, os.path.join(args.output_dir, f"train_{task}.jsonl"))
+        write_jsonl(task_val, os.path.join(args.output_dir, f"val_{task}.jsonl"))
+        log.info("  %s: %d train + %d val → train_%s.jsonl / val_%s.jsonl",
+                 task, len(task_train), len(task_val), task, task)
 
     # Stats
     stats = {

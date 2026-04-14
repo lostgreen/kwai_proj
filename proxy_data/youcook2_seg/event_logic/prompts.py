@@ -122,16 +122,18 @@ def get_replace_prompt(total_steps: int, missing_pos: int, options: list[str]) -
 # Output: digit sequence like "31245" (correct temporal order of clip indices)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_add_prompt_generic(num_ctx: int, options: list[str]) -> str:
+def get_add_prompt_generic(num_ctx: int, options: list[str], cot: bool = False) -> str:
     """
     Domain-generic Predict-Next prompt (no cooking references).
 
     Args:
         num_ctx: Number of context video clips.
         options: List of candidate text descriptions (including the correct one).
+        cot:     If True, include <think>...</think> CoT instruction.
+                 If False (default), ask for direct <answer> only.
 
     Returns:
-        User-turn prompt string with <video> placeholders and CoT instructions.
+        User-turn prompt string with <video> placeholders.
     """
     labels = _option_labels(len(options))
     lines = ["Context Video Sequence:"]
@@ -147,18 +149,23 @@ def get_add_prompt_generic(num_ctx: int, options: list[str]) -> str:
     for label, opt in zip(labels, options):
         lines.append(f"{label}. {opt}")
 
-    lines += [
-        "",
-        "First, carefully observe the actions and visual content in each Context Video "
-        "to understand the progression. Then, reason about which text option best continues the sequence.",
-        "",
-        f"Think step by step inside <think> </think> tags, then provide your final answer "
-        f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
-    ]
+    lines.append("")
+    if cot:
+        lines += [
+            "First, carefully observe the actions and visual content in each Context Video "
+            "to understand the progression. Then, reason about which text option best continues the sequence.",
+            "",
+            f"Think step by step inside <think> </think> tags, then provide your final answer "
+            f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
+        ]
+    else:
+        lines.append(
+            f"Provide your answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags."
+        )
     return "\n".join(lines)
 
 
-def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list[str]) -> str:
+def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list[str], cot: bool = False) -> str:
     """
     Domain-generic Fill-in-the-Blank prompt (no cooking references).
 
@@ -166,9 +173,11 @@ def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list
         total_steps: Total number of steps in the sequence (including the missing one).
         missing_pos: Zero-based index of the missing step.
         options: List of candidate text descriptions (including the correct one).
+        cot:     If True, include <think>...</think> CoT instruction.
+                 If False (default), ask for direct <answer> only.
 
     Returns:
-        User-turn prompt string with <video> placeholders and CoT instructions.
+        User-turn prompt string with <video> placeholders.
     """
     labels = _option_labels(len(options))
     lines = [
@@ -190,14 +199,19 @@ def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list
     for label, opt in zip(labels, options):
         lines.append(f"{label}. {opt}")
 
-    lines += [
-        "",
-        "First, carefully observe the Context Sequence to understand the flow "
-        "before and after the [MISSING] step. Then, reason about which text option best fills the gap.",
-        "",
-        f"Think step by step inside <think> </think> tags, then provide your final answer "
-        f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
-    ]
+    lines.append("")
+    if cot:
+        lines += [
+            "First, carefully observe the Context Sequence to understand the flow "
+            "before and after the [MISSING] step. Then, reason about which text option best fills the gap.",
+            "",
+            f"Think step by step inside <think> </think> tags, then provide your final answer "
+            f"(a single letter from {', '.join(labels)}) inside <answer> </answer> tags.",
+        ]
+    else:
+        lines.append(
+            f"Provide your answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags."
+        )
     return "\n".join(lines)
 
 
@@ -245,18 +259,17 @@ def get_sort_prompt(num_clips: int) -> str:
 # Same structure as get_sort_prompt but without cooking-specific language.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_sort_prompt_generic(num_clips: int) -> str:
+def get_sort_prompt_generic(num_clips: int, cot: bool = False) -> str:
     """
     Build a domain-generic Sort task prompt (no cooking references).
 
-    Identical to get_sort_prompt but replaces cooking-specific phrases with
-    general descriptions suitable for any video domain.
-
     Args:
         num_clips: Number of video clips in the shuffled sequence.
+        cot:       If True, include <think>...</think> CoT instruction.
+                   If False (default), ask for direct <answer> only.
 
     Returns:
-        User-turn prompt string with <video> placeholders and CoT instructions.
+        User-turn prompt string with <video> placeholders.
     """
     lines = [
         f"The following {num_clips} video clips show steps from a continuous process, "
@@ -270,13 +283,21 @@ def get_sort_prompt_generic(num_clips: int) -> str:
         "",
         "Determine the correct chronological order of these clips to reconstruct the original sequence.",
         "",
-        "First, carefully observe the actions, object states, and scene changes in each clip. "
-        "Reason about which step comes first, which transformation follows, and which final state is last.",
-        "",
-        "Think step by step inside <think> </think> tags, then provide your final answer "
-        "as a sequence of clip numbers with no spaces or separators "
-        f"(e.g., {''.join(str(i) for i in range(num_clips, 0, -1))}) inside <answer> </answer> tags.",
     ]
+    if cot:
+        lines += [
+            "First, carefully observe the actions, object states, and scene changes in each clip. "
+            "Reason about which step comes first, which transformation follows, and which final state is last.",
+            "",
+            "Think step by step inside <think> </think> tags, then provide your final answer "
+            "as a sequence of clip numbers with no spaces or separators "
+            f"(e.g., {''.join(str(i) for i in range(num_clips, 0, -1))}) inside <answer> </answer> tags.",
+        ]
+    else:
+        lines.append(
+            "Provide your answer as a sequence of clip numbers with no spaces or separators "
+            f"(e.g., {''.join(str(i) for i in range(num_clips, 0, -1))}) inside <answer> </answer> tags."
+        )
     return "\n".join(lines)
 
 
