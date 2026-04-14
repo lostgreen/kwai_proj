@@ -395,22 +395,26 @@ def _concat_clips_with_black(
     black_path: str,
     output_path: str,
 ) -> bool:
-    """Concatenate before clips + black placeholder + after clips into one video.
+    """Concatenate before clips + black placeholder + after clips into one video."""
+    all_paths = before_paths + [black_path] + after_paths
+    return _concat_video_files(all_paths, output_path)
 
-    Uses ffmpeg concat demuxer (stream copy — fast, no re-encoding).
+
+def _concat_video_files(paths: list[str], output_path: str) -> bool:
+    """Concatenate a list of video files into one using ffmpeg concat demuxer.
+
+    Stream-copy first (fast); falls back to re-encode if codecs mismatch.
     Returns True on success.
     """
     if os.path.exists(output_path):
         return True
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    all_paths = before_paths + [black_path] + after_paths
 
-    # Write concat file list
     list_path = output_path + ".concat.txt"
     try:
         with open(list_path, "w", encoding="utf-8") as f:
-            for p in all_paths:
+            for p in paths:
                 f.write(f"file '{p}'\n")
 
         cmd = [
@@ -593,7 +597,18 @@ def _assemble_predict_next(
     option_texts = [text for text, _ in options]
 
     prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
-    videos = [item["clip_path"] for item in context_items]
+
+    # Concatenate context clips into single video
+    context_paths = [item["clip_path"] for item in context_items]
+    ids_tag = "_".join(cid.replace(" ", "") for cid in context_ids)
+    concat_dir = os.path.join(clip_dir, "concat")
+    concat_path = os.path.join(concat_dir, f"{clip_key}_pn_{ids_tag}.mp4")
+
+    ok = _concat_video_files(context_paths, concat_path)
+    if not ok:
+        return []
+
+    videos = [concat_path]
 
     return [{
         "messages": [{"role": "user", "content": prompt}],

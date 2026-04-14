@@ -136,14 +136,14 @@ def get_add_prompt_generic(num_ctx: int, options: list[str], cot: bool = False) 
         User-turn prompt string with <video> placeholders.
     """
     labels = _option_labels(len(options))
-    lines = ["Context Video Sequence:"]
-    for i in range(num_ctx):
-        lines.append(f"{i + 1}. <video>")
-
-    lines += [
+    lines = [
+        f"Watch the following video carefully. It shows {num_ctx} "
+        "consecutive steps of a continuous process.",
         "",
-        "Based on the continuous actions shown in the Context Video Sequence above, "
-        "which of the following textual options shows the most logical next step?",
+        "<video>",
+        "",
+        "Based on the actions shown in the video above, "
+        "which of the following textual options describes the most logical next step?",
         "Options:",
     ]
     for label, opt in zip(labels, options):
@@ -152,7 +152,7 @@ def get_add_prompt_generic(num_ctx: int, options: list[str], cot: bool = False) 
     lines.append("")
     if cot:
         lines += [
-            "First, carefully observe the actions and visual content in each Context Video "
+            "First, carefully observe the actions and visual content in the video "
             "to understand the progression. Then, reason about which text option best continues the sequence.",
             "",
             f"Think step by step inside <think> </think> tags, then provide your final answer "
