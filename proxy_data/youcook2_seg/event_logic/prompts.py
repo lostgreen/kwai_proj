@@ -181,19 +181,20 @@ def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list
     """
     labels = _option_labels(len(options))
     lines = [
-        "Watch the following process carefully. The sequence has a [MISSING] step.",
-        "Context Sequence:",
+        "Watch the following video sequence carefully. One step has been "
+        "replaced by a BLACK SCREEN — that is the [MISSING] step you need to identify.",
+        "Video Sequence:",
     ]
     for i in range(total_steps):
         if i == missing_pos:
-            lines.append(f"Step {i + 1}: [MISSING]")
+            lines.append(f"Step {i + 1}: <video>  ← BLACK SCREEN ([MISSING])")
         else:
             lines.append(f"Step {i + 1}: <video>")
 
     lines += [
         "",
-        "Based on the chronological visual content of the sequence, "
-        "pick the correct textual option to fill in the [MISSING] step.",
+        "Based on the actions shown before and after the black screen, "
+        "pick the correct textual option that describes the missing step.",
         "Options:",
     ]
     for label, opt in zip(labels, options):

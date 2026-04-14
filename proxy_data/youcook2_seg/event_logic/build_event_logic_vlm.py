@@ -39,6 +39,7 @@ import logging
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -356,6 +357,39 @@ def _check_contiguity(id_list: list[str]) -> bool:
 
 
 # =====================================================================
+# Black-frame placeholder for fill-in-the-blank [MISSING] position
+# =====================================================================
+
+_BLACK_PLACEHOLDER_LOCK = threading.Lock()
+
+
+def _ensure_black_placeholder(clip_dir: str, duration: float = 2.0, fps: int = 2) -> str:
+    """Create a short black-frame video if it doesn't exist yet.
+
+    Returns the absolute path to ``{clip_dir}/black_placeholder.mp4``.
+    Thread-safe — only one thread generates the file.
+    """
+    dst = os.path.join(clip_dir, "black_placeholder.mp4")
+    if os.path.exists(dst):
+        return dst
+
+    with _BLACK_PLACEHOLDER_LOCK:
+        if os.path.exists(dst):  # double-check after acquiring lock
+            return dst
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", f"color=c=black:s=320x240:d={duration}:r={fps}",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-t", str(duration),
+            dst,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+        log.info("Created black placeholder: %s", dst)
+    return dst
+
+
+# =====================================================================
 # LLM call
 # =====================================================================
 
@@ -582,9 +616,11 @@ def _assemble_fill_blank(
 
     prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
 
-    # Videos: before clips in order, then after clips in order (no video for [MISSING])
+    # Videos: before clips → black placeholder at missing position → after clips
+    black_path = _ensure_black_placeholder(clip_dir)
     videos = (
         [item["clip_path"] for item in before_items]  # type: ignore[union-attr]
+        + [black_path]
         + [item["clip_path"] for item in after_items]  # type: ignore[union-attr]
     )
 
