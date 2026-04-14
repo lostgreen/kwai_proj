@@ -592,13 +592,17 @@ def _assemble_predict_next(
     correct_text = parsed.get("correct_next_text", "")
     distractors = parsed.get("distractors", [])
     granularity = parsed.get("granularity", "")
+    clip_key = ann.get("clip_key", "?")
 
     if len(context_ids) < 2 or not correct_next_id or not correct_text or len(distractors) != 3:
+        log.warning("[predict_next] %s: REJECT basic validation failed (ctx=%d, next=%r, dist=%d)",
+                  clip_key, len(context_ids), bool(correct_next_id), len(distractors))
         return []
 
     # Granularity consistency
     all_ids = list(context_ids) + [correct_next_id]
     if not _check_granularity(all_ids):
+        log.warning("[predict_next] %s: granularity mismatch in %s", clip_key, all_ids)
         return []
 
     # Contiguity check removed: non-action shots between clips can create
@@ -607,14 +611,17 @@ def _assemble_predict_next(
     for cid in context_ids:
         item = resolve_item(cid, ann, clip_dir)
         if item is None:
+            log.warning("[predict_next] %s: resolve_item returned None for %s", clip_key, cid)
             return []
         if complete_only and not os.path.exists(item["clip_path"]):
+            log.warning("[predict_next] %s: clip missing: %s", clip_key, item["clip_path"])
             return []
         context_items.append(item)
 
     # Verify correct_next_id exists
     correct_item = resolve_item(correct_next_id, ann, clip_dir)
     if correct_item is None:
+        log.warning("[predict_next] %s: resolve_item returned None for correct_next %s", clip_key, correct_next_id)
         return []
 
     # Build MCQ: correct + 3 distractors, shuffled
@@ -680,12 +687,17 @@ def _assemble_fill_blank(
     distractors = parsed.get("distractors", [])
     granularity = parsed.get("granularity", "")
 
+    clip_key = ann.get("clip_key", "?")
+
     if not before_ids or not missing_id or not after_ids or not correct_text or len(distractors) != 3:
+        log.warning("[fill_blank] %s: REJECT basic validation failed (before=%d, miss=%r, after=%d, dist=%d)",
+                    clip_key, len(before_ids), bool(missing_id), len(after_ids), len(distractors))
         return []
 
     # Granularity consistency
     all_ids = list(before_ids) + [missing_id] + list(after_ids)
     if not _check_granularity(all_ids):
+        log.warning("[fill_blank] %s: granularity mismatch in %s", clip_key, all_ids)
         return []
 
     # Contiguity check removed: non-action shots between clips can create
@@ -695,13 +707,18 @@ def _assemble_fill_blank(
     missing_item = resolve_item(missing_id, ann, clip_dir)
 
     if any(b is None for b in before_items) or any(a is None for a in after_items):
+        log.warning("[fill_blank] %s: resolve_item returned None for before/after IDs", clip_key)
         return []
     if missing_item is None:
+        log.warning("[fill_blank] %s: resolve_item returned None for missing_id %s", clip_key, missing_id)
         return []
 
     if complete_only:
         all_items = before_items + after_items
-        if any(not os.path.exists(item["clip_path"]) for item in all_items):  # type: ignore[union-attr]
+        missing_paths = [item["clip_path"] for item in all_items if not os.path.exists(item["clip_path"])]  # type: ignore[union-attr]
+        if missing_paths:
+            log.warning("[fill_blank] %s: %d clips missing on disk, first: %s",
+                        clip_key, len(missing_paths), missing_paths[0])
             return []
 
     # Build MCQ
