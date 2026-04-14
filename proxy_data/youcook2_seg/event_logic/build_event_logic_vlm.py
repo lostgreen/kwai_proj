@@ -326,9 +326,14 @@ def _check_granularity(id_list: list[str]) -> bool:
 def _check_contiguity(id_list: list[str]) -> bool:
     """Return True if IDs form a contiguous sequence with no gaps.
 
-    For Event IDs: Event 1, Event 2, Event 3 → contiguous (1,2,3).
-    For Action IDs: Action 3.1, Action 3.2, Action 3.3 → contiguous
-    (same parent 3, sub-ids 1,2,3). Mixed parents → not contiguous.
+    For Event IDs: event numbers must be strictly consecutive (1,2,3 — not 1,3).
+
+    For Action IDs two cases are handled:
+    - Same parent event: sub-IDs must be consecutive (3.1,3.2,3.3 — not 3.1,3.3).
+    - Cross-event (e.g. Action 8.2 → Action 9.1): the parent event numbers must
+      be monotonically increasing (no skipped events), and within each event the
+      sub-IDs that appear must themselves be consecutive. Cross-event transitions
+      are natural temporal progressions and are allowed.
     """
     if len(id_list) < 2:
         return True
@@ -344,15 +349,35 @@ def _check_contiguity(id_list: list[str]) -> bool:
     if first_level == "Event":
         ids = [p[1] for p in parsed]
         return ids == list(range(ids[0], ids[0] + len(ids)))
+
     elif first_level == "Action":
-        # All must share the same parent event
-        parents = {p[1] for p in parsed}
-        if len(parents) != 1:
+        parents = [p[1] for p in parsed]
+        sub_ids = [p[2] for p in parsed]
+
+        # All sub IDs must be present (no Actions without sub-index)
+        if any(s is None for s in sub_ids):
             return False
-        sub_ids = [p[2] for p in parsed if p[2] is not None]
-        if len(sub_ids) != len(parsed):
-            return False
-        return sub_ids == list(range(sub_ids[0], sub_ids[0] + len(sub_ids)))
+
+        # Group by parent event, preserving order
+        groups: list[tuple[int, list[int]]] = []
+        for parent, sub in zip(parents, sub_ids):
+            if groups and groups[-1][0] == parent:
+                groups[-1][1].append(sub)
+            else:
+                groups.append((parent, [sub]))
+
+        # Parent event IDs must be monotonically increasing (no skips)
+        event_ids = [g[0] for g in groups]
+        if event_ids != sorted(set(event_ids)):
+            return False  # repeated or out-of-order event IDs
+
+        # Within each event, the sub-IDs that appear must be consecutive
+        for _, subs in groups:
+            if subs != list(range(subs[0], subs[0] + len(subs))):
+                return False
+
+        return True
+
     return False
 
 
@@ -572,9 +597,8 @@ def _assemble_predict_next(
     if not _check_granularity(all_ids):
         return []
 
-    # Contiguity: context + correct_next must be a gapless sequence
-    if not _check_contiguity(all_ids):
-        return []
+    # Contiguity check removed: non-action shots between clips can create
+    # legitimate gaps in ID sequence (e.g. Action 8.2 -> Action 9.1)
     context_items = []
     for cid in context_ids:
         item = resolve_item(cid, ann, clip_dir)
@@ -596,7 +620,8 @@ def _assemble_predict_next(
     correct_letter = chr(ord("A") + correct_idx)
     option_texts = [text for text, _ in options]
 
-    prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
+    caption = ann.get("video_caption", "").strip()
+    prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot, video_caption=caption)
 
     # Concatenate context clips into single video
     context_paths = [item["clip_path"] for item in context_items]
@@ -655,9 +680,8 @@ def _assemble_fill_blank(
     if not _check_granularity(all_ids):
         return []
 
-    # Contiguity: before + missing + after must be a gapless sequence
-    if not _check_contiguity(all_ids):
-        return []
+    # Contiguity check removed: non-action shots between clips can create
+    # legitimate gaps in ID sequence (e.g. Action 8.2 -> Action 9.1)
     before_items = [resolve_item(bid, ann, clip_dir) for bid in before_ids]
     after_items = [resolve_item(aid, ann, clip_dir) for aid in after_ids]
     missing_item = resolve_item(missing_id, ann, clip_dir)
@@ -682,7 +706,8 @@ def _assemble_fill_blank(
     total_steps = len(before_ids) + 1 + len(after_ids)
     missing_pos = len(before_ids)  # 0-indexed
 
-    prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
+    caption = ann.get("video_caption", "").strip()
+    prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot, video_caption=caption)
 
     # Concatenate: before clips → black placeholder → after clips → single video
     black_path = _ensure_black_placeholder(clip_dir)
@@ -768,7 +793,8 @@ def _assemble_sort(
     answer = "".join(str(x) for x in inverse)
 
     shuffled_items = [items[i] for i in shuf_idx]
-    prompt = get_sort_prompt_generic(n, cot=cot)
+    caption = ann.get("video_caption", "").strip()
+    prompt = get_sort_prompt_generic(n, cot=cot, video_caption=caption)
     videos = [item["clip_path"] for item in shuffled_items]
 
     return [{

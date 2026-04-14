@@ -122,21 +122,21 @@ def get_replace_prompt(total_steps: int, missing_pos: int, options: list[str]) -
 # Output: digit sequence like "31245" (correct temporal order of clip indices)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_add_prompt_generic(num_ctx: int, options: list[str], cot: bool = False) -> str:
+def get_add_prompt_generic(num_ctx: int, options: list[str], cot: bool = False, video_caption: str = "") -> str:
     """
     Domain-generic Predict-Next prompt (no cooking references).
 
     Args:
-        num_ctx: Number of context video clips.
+        num_ctx: Number of context video clips (now concatenated into one).
         options: List of candidate text descriptions (including the correct one).
         cot:     If True, include <think>...</think> CoT instruction.
-                 If False (default), ask for direct <answer> only.
-
-    Returns:
-        User-turn prompt string with <video> placeholders.
+        video_caption: Optional overall video summary to prepend as context.
     """
     labels = _option_labels(len(options))
-    lines = [
+    lines = []
+    if video_caption:
+        lines += [f"Video Summary: {video_caption}", ""]
+    lines += [
         f"Watch the following video carefully. It shows {num_ctx} "
         "consecutive steps of a continuous process.",
         "",
@@ -165,7 +165,7 @@ def get_add_prompt_generic(num_ctx: int, options: list[str], cot: bool = False) 
     return "\n".join(lines)
 
 
-def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list[str], cot: bool = False) -> str:
+def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list[str], cot: bool = False, video_caption: str = "") -> str:
     """
     Domain-generic Fill-in-the-Blank prompt (no cooking references).
 
@@ -174,13 +174,13 @@ def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list
         missing_pos: Zero-based index of the missing step.
         options: List of candidate text descriptions (including the correct one).
         cot:     If True, include <think>...</think> CoT instruction.
-                 If False (default), ask for direct <answer> only.
-
-    Returns:
-        User-turn prompt string with <video> placeholders.
+        video_caption: Optional overall video summary to prepend as context.
     """
     labels = _option_labels(len(options))
-    lines = [
+    lines = []
+    if video_caption:
+        lines += [f"Video Summary: {video_caption}", ""]
+    lines += [
         "Watch the following video carefully. A short section in the "
         "middle has been replaced by a BLACK SCREEN — that is the "
         "[MISSING] action you need to identify.",
@@ -257,19 +257,19 @@ def get_sort_prompt(num_clips: int) -> str:
 # Same structure as get_sort_prompt but without cooking-specific language.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_sort_prompt_generic(num_clips: int, cot: bool = False) -> str:
+def get_sort_prompt_generic(num_clips: int, cot: bool = False, video_caption: str = "") -> str:
     """
     Build a domain-generic Sort task prompt (no cooking references).
 
     Args:
         num_clips: Number of video clips in the shuffled sequence.
         cot:       If True, include <think>...</think> CoT instruction.
-                   If False (default), ask for direct <answer> only.
-
-    Returns:
-        User-turn prompt string with <video> placeholders.
+        video_caption: Optional overall video summary to prepend as context.
     """
-    lines = [
+    lines = []
+    if video_caption:
+        lines += [f"Video Summary: {video_caption}", ""]
+    lines += [
         f"The following {num_clips} video clips show steps from a continuous process, "
         "but they are presented in a shuffled order.",
         "Video Clips (shuffled order):",
