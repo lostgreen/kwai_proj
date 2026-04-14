@@ -127,11 +127,26 @@ same domain but with a wrong causal position:
      (a) Premature — skips a required intermediate event.
      (b) Wrong direction — reverses a physical state change.
      (c) Already completed — repeats an event from the context.
-5. **Uniqueness check**: Re-read the context. Is the correct answer the \
+5. **Causal Predictability Rule (CRITICAL)**: The test model can ONLY \
+see the context clips — it CANNOT see the future. Therefore the correct \
+next step MUST be logically or physically predictable from the momentum, \
+setup, or procedural intent visible in the LAST context clip. \
+DO NOT ask the model to predict random or highly contingent outcomes \
+(e.g., exact scores, precise distances, foul vs. valid, success vs. \
+failure of an attempt) UNLESS the very end of the context provides \
+unambiguous visual foreshadowing (e.g., an athlete is already slipping). \
+The correct answer should describe the immediate next MECHANICAL ACTION \
+(e.g., "the athlete begins to spin and release the shot put"), NOT the \
+ultimate unpredictable outcome (e.g., "throws 55 feet 3 inches"). \
+If the next item in the script is an unpredictable result rather than \
+a deterministic action, move the context window forward so the result \
+becomes part of the context and the next action is the correct answer, \
+or set "suitable" to false.
+6. **Uniqueness check**: Re-read the context. Is the correct answer the \
 ONLY step that is both (i) physically possible given the current state \
 and (ii) not yet done? If another distractor could also be valid, \
 redesign or set "suitable" to false.
-6. Provide the correct answer as a text description (copy or closely \
+7. Provide the correct answer as a text description (copy or closely \
 paraphrase the script entry).
 
 If the script lacks a clear sequential chain (too few items, purely \
@@ -201,11 +216,21 @@ same domain but with wrong causal bridging:
      (a) Connects to before but cannot produce the after state.
      (b) Could produce the after state but contradicts the before state.
      (c) Same-domain but physically impossible as a bridge.
-5. **Uniqueness check**: Given ONLY the before and after clips, verify \
+5. **Causal Predictability Rule**: The missing step MUST be a \
+deterministic physical action that is the ONLY way to bridge the \
+"before" state to the "after" state — NOT a random or contingent \
+outcome (e.g., exact measurements, scores, success/failure). \
+The test model sees the before and after clips; the correct answer \
+should describe a concrete mechanical action whose necessity is \
+visually obvious from the state change between before and after. \
+If the removed step is an unpredictable outcome rather than a \
+deterministic action, choose a different item to remove, or set \
+"suitable" to false.
+6. **Uniqueness check**: Given ONLY the before and after clips, verify \
 that the correct answer is the SOLE physically necessary bridge step. \
 If a distractor could also validly connect before→after, redesign or \
 set "suitable" to false.
-6. Provide the correct answer as a text description.
+7. Provide the correct answer as a text description.
 
 If no clear before→change→after chain exists, or you cannot produce 3 \
 distractors that satisfy both Anti-Shortcut and Temporal Lock, set \
