@@ -50,11 +50,12 @@ MAX_PIXELS=49152
 MIN_PIXELS=3136
 
 # ---- 学习率 & 算法 ----
-LR="${LR:-8e-7}"
+LR="${LR:-5e-7}"
 ADV_ESTIMATOR=ema_grpo
 ONLINE_FILTERING=false
 DISABLE_KL=false
-ENTROPY_COEFF=0.005
+KL_PENALTY=kl              # 标准 KL (和 Time-R1 一致)，取代 low_var_kl
+ENTROPY_COEFF=0             # 去掉 entropy bonus
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.2    # symmetric clip — 避免与 KL loss 互搏导致震荡
 
@@ -90,6 +91,7 @@ TRAIN_CMD=(
     algorithm.adv_estimator="${ADV_ESTIMATOR}"
     algorithm.disable_kl="${DISABLE_KL}"
     algorithm.use_kl_loss=true
+    algorithm.kl_penalty="${KL_PENALTY}"
     algorithm.online_filtering="${ONLINE_FILTERING}"
     worker.actor.global_batch_size="${GLOBAL_BS}"
     worker.actor.micro_batch_size_per_device_for_update="${MB_PER_UPDATE}"
