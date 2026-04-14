@@ -451,11 +451,15 @@ def _concat_video_files(paths: list[str], output_path: str) -> bool:
         ]
         result = subprocess.run(cmd, capture_output=True, timeout=60)
         if result.returncode != 0:
-            # Fallback: re-encode if stream copy fails (mismatched codecs)
+            # Fallback: re-encode with explicit normalization (handles mismatched resolution/fps/codec)
+            log.debug("concat stream-copy failed for %s, trying re-encode. stderr: %s",
+                      output_path, result.stderr.decode(errors="replace")[:300])
             cmd_reencode = [
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
                 "-i", list_path,
+                "-vf", "scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2",
+                "-r", "2",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-an",
                 output_path,
             ]
@@ -621,19 +625,23 @@ def _assemble_predict_next(
     option_texts = [text for text, _ in options]
 
     caption = ann.get("video_caption", "").strip()
-    prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot, video_caption=caption)
 
-    # Concatenate context clips into single video
+    # Concatenate context clips into single video; fall back to multi-video on failure
     context_paths = [item["clip_path"] for item in context_items]
-    ids_tag = "_".join(cid.replace(" ", "") for cid in context_ids)
+    ids_tag = "_".join(cid.replace(" ", "").replace(".", "_") for cid in context_ids)
     concat_dir = os.path.join(clip_dir, "concat")
     concat_path = os.path.join(concat_dir, f"{clip_key}_pn_{ids_tag}.mp4")
 
     ok = _concat_video_files(context_paths, concat_path)
-    if not ok:
-        return []
-
-    videos = [concat_path]
+    if ok:
+        videos = [concat_path]
+        # Single video: prompt shows num_ctx steps in one video
+        prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot, video_caption=caption)
+    else:
+        # Fallback: multi-video (original behavior)
+        log.warning("predict_next concat failed for %s, using multi-video fallback", clip_key)
+        videos = context_paths
+        prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot, video_caption=caption)
 
     return [{
         "messages": [{"role": "user", "content": prompt}],
@@ -720,10 +728,37 @@ def _assemble_fill_blank(
     concat_path = os.path.join(concat_dir, f"{clip_key}_{missing_id_safe}.mp4")
 
     ok = _concat_clips_with_black(before_paths, after_paths, black_path, concat_path)
-    if not ok:
-        return []
-
-    videos = [concat_path]
+    if ok:
+        videos = [concat_path]
+    else:
+        # Fallback: multi-video without black frame
+        log.warning("fill_blank concat failed for %s, using multi-video fallback", clip_key)
+        videos = before_paths + after_paths
+        # Rebuild prompt with explicit step-list format for multi-video
+        labels = [chr(ord("A") + i) for i in range(len(option_texts))]
+        step_lines = []
+        if caption:
+            step_lines += [f"Video Summary: {caption}", ""]
+        step_lines.append("Watch the following process carefully. The sequence has a [MISSING] step.")
+        step_lines.append("Context Sequence:")
+        video_idx = 0
+        for i in range(total_steps):
+            if i == missing_pos:
+                step_lines.append(f"Step {i + 1}: [MISSING]")
+            else:
+                step_lines.append(f"Step {i + 1}: <video>")
+                video_idx += 1
+        step_lines += ["", "Based on the chronological visual content, "
+                       "pick the correct textual option to fill in the [MISSING] step.", "Options:"]
+        for label, opt in zip(labels, option_texts):
+            step_lines.append(f"{label}. {opt}")
+        step_lines.append("")
+        if cot:
+            step_lines.append(f"Think step by step inside <think> </think> tags, then provide your "
+                              f"final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.")
+        else:
+            step_lines.append(f"Provide your answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.")
+        prompt = "\n".join(step_lines)
 
     return [{
         "messages": [{"role": "user", "content": prompt}],
