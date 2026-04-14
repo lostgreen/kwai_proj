@@ -594,10 +594,13 @@ def _assemble_predict_next(
     granularity = parsed.get("granularity", "")
     clip_key = ann.get("clip_key", "?")
 
-    if len(context_ids) < 2 or not correct_next_id or not correct_text or len(distractors) != 3:
+    if len(context_ids) < 1 or not correct_next_id or not correct_text or len(distractors) < 3:
         log.warning("[predict_next] %s: REJECT basic validation failed (ctx=%d, next=%r, dist=%d)",
                   clip_key, len(context_ids), bool(correct_next_id), len(distractors))
         return []
+
+    # Trim to first 3 distractors if LLM returned more
+    distractors = distractors[:3]
 
     # Granularity consistency
     all_ids = list(context_ids) + [correct_next_id]
@@ -689,10 +692,13 @@ def _assemble_fill_blank(
 
     clip_key = ann.get("clip_key", "?")
 
-    if not before_ids or not missing_id or not after_ids or not correct_text or len(distractors) != 3:
+    if not before_ids or not missing_id or not after_ids or not correct_text or len(distractors) < 3:
         log.warning("[fill_blank] %s: REJECT basic validation failed (before=%d, miss=%r, after=%d, dist=%d)",
                     clip_key, len(before_ids), bool(missing_id), len(after_ids), len(distractors))
         return []
+
+    # Trim to first 3 distractors if LLM returned more
+    distractors = distractors[:3]
 
     # Granularity consistency
     all_ids = list(before_ids) + [missing_id] + list(after_ids)
