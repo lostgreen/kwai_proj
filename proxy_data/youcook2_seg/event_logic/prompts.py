@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 """
 Prompt templates for Event Logic proxy tasks (add / replace / sort / t2v variants).
 
