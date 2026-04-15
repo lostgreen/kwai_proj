@@ -48,13 +48,24 @@ L1_MIN_PHASES="${L1_MIN_PHASES:-2}"
 L1_MAX_PHASES="${L1_MAX_PHASES:-6}"
 L2_MIN_EVENTS="${L2_MIN_EVENTS:-3}"
 L2_MAX_EVENTS="${L2_MAX_EVENTS:-8}"
-L3_MIN_ACTIONS="${L3_MIN_ACTIONS:-3}"
+L3_MIN_ACTIONS="${L3_MIN_ACTIONS:-2}"
 L3_MAX_ACTIONS="${L3_MAX_ACTIONS:-10}"
 
-# ---- 采样 (目标: 20K train, 3层 × 6700 ≈ 20K) ----
-TRAIN_PER_LEVEL="${TRAIN_PER_LEVEL:-6700}"
-TOTAL_VAL="${TOTAL_VAL:-900}"
-BALANCE_PER_LEVEL="${BALANCE_PER_LEVEL:-7000}"
+# ---- 采样 (目标: 20K train, 比例 L1:L2:L3 = 1:2:2) ----
+#   L1: 4000 train + 180 val
+#   L2: 8000 train + 360 val
+#   L3: 8000 train + 360 val
+#   Total: 20000 train + 900 val
+L1_TRAIN="${L1_TRAIN:-4000}"
+L2_TRAIN="${L2_TRAIN:-8000}"
+L3_TRAIN="${L3_TRAIN:-8000}"
+L1_VAL="${L1_VAL:-180}"
+L2_VAL="${L2_VAL:-360}"
+L3_VAL="${L3_VAL:-360}"
+# 均衡采样 buffer (比 train 目标多 ~20%)
+L1_BALANCE="${L1_BALANCE:-4800}"
+L2_BALANCE="${L2_BALANCE:-9600}"
+L3_BALANCE="${L3_BALANCE:-9600}"
 
 # ---- L2 模式: full=全视频输入(与L1共用clip), phase=每phase一条 ----
 L2_MODE="${L2_MODE:-full}"
@@ -82,8 +93,9 @@ echo "  ANNOTATION_DIR:  ${ANNOTATION_DIR}"
 echo "  OUTPUT_DIR:      ${OUTPUT_DIR}"
 echo "  L2_MODE:         ${L2_MODE}"
 echo "  FILTER:          L1=[${L1_MIN_PHASES},${L1_MAX_PHASES}] L2=[${L2_MIN_EVENTS},${L2_MAX_EVENTS}] L3=[${L3_MIN_ACTIONS},${L3_MAX_ACTIONS}]"
-echo "  BALANCE:         ${BALANCE_PER_LEVEL}/level"
-echo "  TRAIN_PER_LEVEL: ${TRAIN_PER_LEVEL}"
+echo "  TRAIN:           L1=${L1_TRAIN} L2=${L2_TRAIN} L3=${L3_TRAIN} (ratio 1:2:2)"
+echo "  VAL:             L1=${L1_VAL} L2=${L2_VAL} L3=${L3_VAL}"
+echo "  BALANCE:         L1=${L1_BALANCE} L2=${L2_BALANCE} L3=${L3_BALANCE}"
 echo "  HINT:            ${USE_HINT} (suffix='${SUFFIX}')"
 echo "========================================"
 
@@ -101,7 +113,14 @@ for LEVEL in L1 L2 L3_seg; do
         BUILD_OUT_DIR="${OUTPUT_DIR}/${LEVEL}"
     fi
 
-    echo "  → Building ${LEVEL}${SUFFIX} ..."
+    # 按层级选择 budget
+    case "${LEVEL}" in
+        L1)     _TRAIN="${L1_TRAIN}"; _VAL="${L1_VAL}"; _BAL="${L1_BALANCE}" ;;
+        L2)     _TRAIN="${L2_TRAIN}"; _VAL="${L2_VAL}"; _BAL="${L2_BALANCE}" ;;
+        L3_seg) _TRAIN="${L3_TRAIN}"; _VAL="${L3_VAL}"; _BAL="${L3_BALANCE}" ;;
+    esac
+
+    echo "  → Building ${LEVEL}${SUFFIX} (train=${_TRAIN} val=${_VAL}) ..."
     python "${HIER_SEG_DIR}/build_hier_data.py" \
         --annotation-dir "${ANNOTATION_DIR}" \
         --output-dir "${BUILD_OUT_DIR}" \
@@ -114,9 +133,9 @@ for LEVEL in L1 L2 L3_seg; do
         --l3-min-actions "${L3_MIN_ACTIONS}" \
         --l3-max-actions "${L3_MAX_ACTIONS}" \
         --complete-only \
-        --balance-per-level "${BALANCE_PER_LEVEL}" \
-        --train-per-level "${TRAIN_PER_LEVEL}" \
-        --total-val "${TOTAL_VAL}" \
+        --balance-per-level "${_BAL}" \
+        --train-per-level "${_TRAIN}" \
+        --total-val "${_VAL}" \
         ${USE_HINT_FLAG}
 
     # hint 模式: 将 train.jsonl/val.jsonl 重命名为 train_hint.jsonl/val_hint.jsonl
