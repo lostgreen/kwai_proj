@@ -38,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 # V4 shot-first prompt for rebuilding prompts after clipping
-_ablation_dir = str(Path(__file__).resolve().parent.parent.parent / "local_scripts" / "hier_seg_ablations" / "prompt_ablation")
+_ablation_dir = str(Path(__file__).resolve().parent.parent.parent.parent / "local_scripts" / "hier_seg_ablations" / "prompt_ablation")
 if _ablation_dir not in sys.path:
     sys.path.insert(0, _ablation_dir)
 from prompt_variants_v4 import PROMPT_VARIANTS_V4
