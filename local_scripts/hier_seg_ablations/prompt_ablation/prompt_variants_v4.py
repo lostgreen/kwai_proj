@@ -14,7 +14,7 @@ prompt_variants_v4.py — Shot-First 两步式训练 prompt
       L3: shot 内按 state change → sub-actions (最细粒度)
 
   设计选择:
-    - V1 = no CoT, V2 = CoT (供消融实验)
+    - 仅保留 no-CoT 版本
     - 所有 prompt 领域无关 (无 cooking/sports 等词汇)
     - 不含硬性时长/数量规则
     - 模板参数: {duration} (秒), 与 prepare_prompt_data.py 兼容
@@ -67,50 +67,12 @@ Keep shots SEPARATE (new phase) when:
 
 {sparse}
 
-Skip intros, outros, narration-only spans, or idle content.
+Include ALL shots — every shot must belong to a phase. Do not skip intros, outros, or narration spans if they contain visual shot content.
 
 Output the start and end time (integer seconds, 0-based) for each phase in chronological order:
 <events>[[start_time, end_time], ...]</events>
 
 Example: <events>[[0, 85], [90, 170], [180, 240]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
-
-
-L1_V2 = """\
-You are given a {{duration}}s video clip (timestamps 0 to {{duration}}), sampled at 1-2 fps.
-
-Segment the video into high-level phases using a SHOT-FIRST approach:
-
-STEP 1 — IDENTIFY SHOTS:
-Scan the video for visual shot transitions — moments where the scene, \
-camera angle, setting, or subject clearly changes. \
-These transitions are your temporal anchors.
-
-STEP 2 — GROUP INTO PHASES:
-Group consecutive shots that share the same overall intent or process into phases. \
-Place a phase boundary when the grouped intent clearly shifts \
-(e.g., from preparation to execution, from one major task to another).
-
-MERGE consecutive shots into one phase when:
-- They share the same overall goal or process stage.
-- Only the camera angle or framing changes, not the underlying intent.
-
-Keep shots SEPARATE (new phase) when:
-- The person's primary purpose or overall process clearly changes.
-- A major sub-goal is completed and a distinctly different one begins.
-- There is a location/time jump or a completely different activity starts.
-
-{sparse}
-
-Skip intros, outros, narration-only spans, or idle content.
-
-First, reason step by step in a <think> block, then output the phases.
-
-<think>
-Shot transitions: [list the timestamps where visual shots change]
-Intent analysis: [for each group of shots, describe the overall intent]
-Phase boundaries: [where does the intent clearly shift?]
-</think>
-<events>[[start_time, end_time], ...]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
 
 
 # =====================================================================
@@ -150,53 +112,10 @@ one self-contained task to a different one.
 
 {sparse}
 
-Gaps between events are expected — not every second needs to be covered.
-
 Output the start and end time (integer seconds, 0-based) for each event in chronological order:
 <events>[[start_time, end_time], ...]</events>
 
 Example: <events>[[5, 42], [55, 90]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
-
-
-L2_V2 = """\
-You are given a {{duration}}s video clip (timestamps 0 to {{duration}}), sampled at 1-2 fps.
-
-Detect all events in this clip using a SHOT-FIRST approach:
-
-STEP 1 — IDENTIFY SHOTS:
-Scan the clip for visual shot transitions — moments where the scene, \
-camera angle, setting, or subject clearly changes. \
-These transitions are your temporal anchors.
-
-STEP 2 — RESTRUCTURE INTO EVENTS using three operations:
-- KEEP: A single shot that contains one coherent task becomes one event.
-- MERGE: Consecutive shots that belong to the same local task \
-(e.g., different angles of the same activity, shot/reverse-shot within one action) \
-become one event.
-- SPLIT: A long single-shot segment that contains multiple distinct tasks \
-should be split into separate events at the task transition points.
-
-When to MERGE: Combine consecutive shots into ONE event when they show \
-the same ongoing activity from different angles, or continuous action across camera cuts.
-
-When to keep SEPARATE: A new self-contained local task begins; \
-a different location, subject, or sub-goal appears.
-
-When to SPLIT: Within an uncut shot, the person clearly transitions from \
-one self-contained task to a different one.
-
-{sparse}
-
-Gaps between events are expected — not every second needs to be covered.
-
-First, reason step by step in a <think> block, then output the events.
-
-<think>
-Shot transitions: [list the timestamps where visual shots change]
-Per-shot analysis: [for each shot, describe the task being performed]
-Operations: [for each shot, decide KEEP / MERGE with neighbor / SPLIT, and why]
-</think>
-<events>[[start_time, end_time], ...]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
 
 
 # =====================================================================
@@ -234,51 +153,10 @@ Do NOT place a boundary when:
 
 {sparse}
 
-Gaps between segments are expected — not every second is active.
-
 Output the start and end time (integer seconds, 0-based) for each segment in chronological order:
 <events>[[start_time, end_time], ...]</events>
 
 Example: <events>[[2, 6], [9, 13], [15, 20]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
-
-
-L3_V2 = """\
-You are given a {{duration}}s video clip, sampled at 1-2 fps.
-
-Detect all fine-grained sub-actions in this clip using a SHOT-FIRST approach:
-
-STEP 1 — IDENTIFY DISCONTINUITIES:
-Scan for any visual discontinuities — shot transitions, camera cuts, \
-or abrupt scene changes. At this granularity, most clips are single-shot, \
-so discontinuities may be absent.
-
-STEP 2 — SEGMENT BY STATE CHANGES:
-Within each continuous shot (or the entire clip if no discontinuities exist), \
-identify sub-actions based on visible state changes — moments where an object \
-or material undergoes a clear, sustained transformation \
-(deforms, separates, merges, changes position, or changes state).
-
-Place a boundary when:
-- A new visible object/material change begins.
-- An ongoing state change completes and a different one starts.
-
-Do NOT place a boundary when:
-- Hands or body parts reposition without changing any object's state.
-- Camera angle changes or brief occlusions occur.
-- A single-frame flicker is not sustained across 2 or more sampled frames.
-
-{sparse}
-
-Gaps between segments are expected — not every second is active.
-
-First, reason step by step in a <think> block, then output the segments.
-
-<think>
-Discontinuities: [any shot transitions found? if none, note "single continuous shot"]
-State changes: [describe each visible object/material transformation in order]
-Boundaries: [where does each state change start and end?]
-</think>
-<events>[[start_time, end_time], ...]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
 
 
 # =====================================================================
@@ -286,14 +164,13 @@ Boundaries: [where does each state change start and end?]
 # =====================================================================
 
 PROMPT_VARIANTS_V4 = {
-    "L1": {"V1": L1_V1, "V2": L1_V2},
-    "L2": {"V1": L2_V1, "V2": L2_V2},
-    "L3": {"V1": L3_V1, "V2": L3_V2},
+    "L1": {"V1": L1_V1},
+    "L2": {"V1": L2_V1},
+    "L3": {"V1": L3_V1},
 }
 
 VARIANT_DESCRIPTIONS_V4 = {
     "V1": "Shot-first two-step: identify shots → merge/split by level (no CoT)",
-    "V2": "Shot-first two-step + structured CoT reasoning",
 }
 
 # 模板参数: 只需 duration
@@ -302,5 +179,4 @@ PROMPT_PARAMS = {"duration"}
 # MAX_RESPONSE_LEN 建议
 RESPONSE_LEN_HINTS_V4 = {
     "V1": 512,
-    "V2": 1024,  # CoT 需要更多空间
 }
