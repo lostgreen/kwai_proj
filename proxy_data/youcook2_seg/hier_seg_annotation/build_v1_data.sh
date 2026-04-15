@@ -43,13 +43,13 @@ DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_a
 ANNOTATION_DIR="${ANNOTATION_DIR:-${DATA_ROOT}/annotations_reclassified}"
 OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/train}"
 
-# ---- 筛选参数 (与 visualize_annotations.py 对齐) ----
+# ---- 筛选参数 ----
 L1_MIN_PHASES="${L1_MIN_PHASES:-2}"
-L1_MAX_PHASES="${L1_MAX_PHASES:-6}"
-L2_MIN_EVENTS="${L2_MIN_EVENTS:-3}"
-L2_MAX_EVENTS="${L2_MAX_EVENTS:-8}"
+L1_MAX_PHASES="${L1_MAX_PHASES:-999}"   # 不设上限
+L2_MIN_EVENTS="${L2_MIN_EVENTS:-2}"
+L2_MAX_EVENTS="${L2_MAX_EVENTS:-999}"   # 不设上限
 L3_MIN_ACTIONS="${L3_MIN_ACTIONS:-2}"
-L3_MAX_ACTIONS="${L3_MAX_ACTIONS:-10}"
+L3_MAX_ACTIONS="${L3_MAX_ACTIONS:-999}" # 不设上限
 
 # ---- 采样 (目标: 20K train, 比例 L1:L2:L3 = 1:2:2) ----
 #   L1: 4000 train + 180 val
@@ -220,3 +220,12 @@ echo "  ├── L2/   (train${SUFFIX}.jsonl + val${SUFFIX}.jsonl + videos/)"
 echo "  ├── L3_seg/ (train${SUFFIX}.jsonl + val${SUFFIX}.jsonl + videos/)"
 echo "  ├── train${SUFFIX}_all.jsonl"
 echo "  └── val${SUFFIX}_all.jsonl"
+
+# ---- Step 4: 时长分布统计图 ----
+echo ""
+echo "[Step 4/4] Plotting duration distribution ..."
+python "${HIER_SEG_DIR}/plot_duration_stats.py" \
+    --output-dir "${OUTPUT_DIR}" \
+    --suffix "${SUFFIX}" \
+    --save-path "${OUTPUT_DIR}/duration_distribution${SUFFIX}.png" || \
+    echo "  WARN: plot_duration_stats.py failed (matplotlib not installed?)"
