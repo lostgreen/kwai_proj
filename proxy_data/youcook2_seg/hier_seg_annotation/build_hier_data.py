@@ -367,12 +367,19 @@ def build_l2_fullvideo_records(
 def build_l3_seg_records(
     ann: dict,
     clip_dir_l3: str = "",
-    min_actions: int = 3,
+    min_actions: int = 2,
 ) -> list[dict]:
-    """从标注 JSON 构建 L3 segmentation (无 query) 训练记录。"""
-    l2 = ann.get("level2")
+    """从标注 JSON 构建 L3 segmentation (无 query) 训练记录。
+
+    标注格式 (nested):
+      level3.grounding_results[] = {
+          event_id, parent_phase_id, event_start, event_end,
+          sub_actions: [{action_id, start_time, end_time, sub_action}, ...]
+      }
+    每个 grounding_result 对应一个 L2 event, sub_actions 是该 event 内的细粒度切分。
+    """
     l3 = ann.get("level3")
-    if not l2 or not l3 or l3.get("_parse_error"):
+    if not l3 or l3.get("_parse_error"):
         return []
 
     clip_duration = float(ann.get("clip_duration_sec") or 0)
@@ -381,40 +388,49 @@ def build_l3_seg_records(
 
     video_path = ann.get("source_video_path") or ann.get("video_path", "")
     clip_key = ann.get("clip_key", "")
-    events = l2.get("events", [])
-    all_results = l3.get("grounding_results", [])
+    grounding_results = l3.get("grounding_results", [])
     archetype = _resolve_archetype(ann)
 
     records = []
-    for event in events:
-        if not isinstance(event, dict):
+    for gr in grounding_results:
+        if not isinstance(gr, dict):
             continue
-        event_id = event.get("event_id")
-        ev_start = event.get("start_time")
-        ev_end = event.get("end_time")
 
-        if not isinstance(ev_start, (int, float)) or not isinstance(ev_end, (int, float)):
+        event_id = gr.get("event_id")
+        ev_start = gr.get("event_start")
+        ev_end = gr.get("event_end")
+        sub_actions = gr.get("sub_actions", [])
+
+        if event_id is None or ev_start is None or ev_end is None:
             continue
         ev_start, ev_end = int(ev_start), int(ev_end)
+        if ev_start >= ev_end:
+            continue
 
-        raw_results = sorted(
-            [r for r in all_results
-             if isinstance(r, dict) and r.get("parent_event_id") == event_id],
-            key=lambda r: r.get("start_time", 0),
+        # 过滤无效 sub_actions 并排序
+        valid_subs = sorted(
+            [sa for sa in sub_actions if isinstance(sa, dict)
+             and sa.get("start_time") is not None
+             and sa.get("end_time") is not None],
+            key=lambda sa: sa.get("start_time", 0),
         )
-        if len(raw_results) < min_actions:
+        if len(valid_subs) < min_actions:
             continue
 
         clip_start, clip_end, duration = _compute_l3_clip(
             ev_start, ev_end, int(clip_duration),
         )
 
-        # 构建时间段 (0-based, chronological)
+        # 构建时间段 (0-based relative to clip_start, chronological)
         spans = []
-        for r in raw_results:
-            st = max(0, int(r.get("start_time", 0)) - clip_start)
-            et = min(duration, int(r.get("end_time", duration)) - clip_start)
-            spans.append([st, et])
+        for sa in valid_subs:
+            st = max(0, int(sa["start_time"]) - clip_start)
+            et = min(duration, int(sa["end_time"]) - clip_start)
+            if st < et:
+                spans.append([st, et])
+
+        if len(spans) < min_actions:
+            continue
 
         if clip_dir_l3:
             vp = get_l3_clip_path(clip_key, event_id, clip_start, clip_end, clip_dir_l3)
