@@ -78,7 +78,27 @@ different stage of the process? If yes, rewrite it.
 
 6. **ID Format** — Reference items by their EXACT IDs from the script \
 (e.g., "Event 2", "Action 3.1"). Do not invent IDs that are not present.
-7. **Output** — Respond ONLY in valid JSON. No markdown fences, no \
+
+7. **Causal Dependency (CRITICAL)** — Every consecutive pair of items \
+in any selected sequence MUST have a genuine cause-effect or \
+state-transformation relationship: the earlier step PRODUCES a physical \
+state that the later step CONSUMES or DEPENDS ON (e.g., "crack egg into \
+bowl" → "whisk egg" — the egg must be in the bowl before it can be \
+whisked). \
+The following do NOT qualify as causal chains and MUST be rejected:
+   - **Multi-angle / replay shots**: the same action filmed from a \
+different camera angle, slow-motion replay, or close-up insert. These \
+show the SAME state, not a state change.
+   - **Parallel / interchangeable actions**: actions that could happen \
+in any order with identical outcome (e.g., "sprinkle salt" and \
+"sprinkle pepper" — swapping them changes nothing).
+   - **Decorative / cosmetic variations**: steps that differ only in \
+position or appearance but share no physical prerequisite (e.g., \
+"place cherry on left" vs. "place cherry on right").
+If the script contains no sequence of 3+ items with strict causal \
+ordering, set "suitable" to false rather than force-fitting.
+
+8. **Output** — Respond ONLY in valid JSON. No markdown fences, no \
 explanation outside the JSON object.\
 """
 
@@ -104,9 +124,20 @@ a more logically challenging question. Stick to ONE level throughout.
 — e.g., Action 2.1 → 2.2 → 2.3, not 2.1 → 2.3). All context items \
 must be physical actions — if a non-action (talking shot) sits between \
 two good items, choose a different window that has no gaps.
+   **Causal Chain Requirement**: Every consecutive pair in the context \
+MUST have a genuine cause-effect link — the earlier step produces a \
+physical state that the later step consumes or depends on. \
+REJECT sequences where consecutive items are merely different camera \
+angles of the same action, slow-motion replays, or parallel / \
+interchangeable actions (e.g., "sprinkle salt" → "sprinkle pepper" — \
+swapping changes nothing). If no causal chain of 2+ items exists, set \
+"suitable" to false.
 3. The item that IMMEDIATELY follows the context must be the unique, \
 logically necessary next step (the correct answer). It must also be a \
-purposeful physical action, NOT a talking or gesturing shot.
+purposeful physical action, NOT a talking or gesturing shot. The \
+correct answer must DEPEND on the state produced by the last context \
+step — it should be impossible (or physically nonsensical) to perform \
+the correct answer without the context having happened first.
 4. Write exactly 3 DISTRACTORS following BOTH the Anti-Shortcut rule \
 AND the Temporal Lock rule:
    - All 3 distractors MUST involve the SAME core object(s) as the \
@@ -196,6 +227,15 @@ actions — skip any talking / explaining / pausing shots. If a \
 non-action item (talking shot) sits between two good action items, you \
 MUST NOT skip over it — instead, choose a different chain that has no \
 gaps.
+   **Causal Chain Requirement**: Every consecutive pair in the full \
+chain (before → missing → after) MUST have a genuine cause-effect \
+link. The "before" step(s) must PRODUCE a state that the missing step \
+CONSUMES, and the missing step must PRODUCE a state that the "after" \
+step(s) CONSUME. \
+REJECT chains where items are merely different camera angles of the \
+same action, slow-motion replays, or parallel / interchangeable \
+actions that could be reordered without consequence. If no such causal \
+chain exists, set "suitable" to false.
 3. The BEFORE item(s) and AFTER item(s) will be shown as video context; \
 the middle item is REMOVED — the model must identify it.
 4. Write exactly 3 DISTRACTORS following BOTH the Anti-Shortcut rule \
@@ -279,10 +319,16 @@ wash → cut → stir-fry) or a micro Action sequence (e.g., pick up knife \
 ordering. Stick to ONE level.
 2. Select 3 to 5 items whose chronological order is dictated by strict \
 causal or physical prerequisites (e.g., "you must open the lid before \
-pouring the contents").
-3. **Exclusion criteria**: If any pair of selected items could be \
-swapped without logical contradiction (e.g., interchangeable repetitive \
-motions, decorating left vs. right), do NOT include them.
+pouring the contents"). Every consecutive pair MUST have a cause-effect \
+link — the earlier step produces a physical state that the later step \
+depends on.
+3. **Exclusion criteria**: Do NOT include items where any pair could be \
+swapped without logical contradiction. Specifically reject:
+   - Interchangeable repetitive motions (e.g., stir stroke #1 vs. #2)
+   - Different camera angles / replays of the same action
+   - Parallel actions with no dependency (e.g., "sprinkle salt" and \
+"sprinkle pepper")
+   - Decorative variations (e.g., place item left vs. right)
 4. Return the selected item IDs in their TRUE chronological order.
 
 If the script contains no sequence of 3+ items with absolute, \

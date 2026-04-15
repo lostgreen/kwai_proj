@@ -382,14 +382,12 @@ def _check_contiguity(id_list: list[str]) -> bool:
 
 
 # =====================================================================
-# Black-frame placeholder for fill-in-the-blank [MISSING] position
+# Video resolution probing & concatenation with inline black frame
 # =====================================================================
-
-_BLACK_PLACEHOLDER_LOCK = threading.Lock()
 
 
 def _get_video_resolution(path: str) -> tuple[int, int]:
-    """Return (width, height) of video at path via ffprobe. Falls back to (320, 240)."""
+    """Return (width, height) of video at *path* via ffprobe. Falls back to (320, 240)."""
     try:
         result = subprocess.run(
             [
@@ -412,47 +410,84 @@ def _get_video_resolution(path: str) -> tuple[int, int]:
     return 320, 240
 
 
-def _ensure_black_placeholder(
-    clip_dir: str,
-    width: int = 320,
-    height: int = 240,
-    duration: float = 2.0,
-    fps: int = 2,
-) -> str:
-    """Create a short black-frame video at the given resolution if it doesn't exist.
-
-    Returns the absolute path to ``{clip_dir}/black_placeholder_{W}x{H}.mp4``.
-    Thread-safe — only one thread generates the file per resolution.
-    """
-    dst = os.path.join(clip_dir, f"black_placeholder_{width}x{height}.mp4")
-    if os.path.exists(dst):
-        return dst
-
-    with _BLACK_PLACEHOLDER_LOCK:
-        if os.path.exists(dst):  # double-check after acquiring lock
-            return dst
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:d={duration}:r={fps}",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-t", str(duration),
-            dst,
-        ]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=30)
-        log.info("Created black placeholder: %s", dst)
-    return dst
-
-
 def _concat_clips_with_black(
     before_paths: list[str],
     after_paths: list[str],
-    black_path: str,
     output_path: str,
+    black_duration: float = 2.0,
 ) -> bool:
-    """Concatenate before clips + black placeholder + after clips into one video."""
-    all_paths = before_paths + [black_path] + after_paths
-    return _concat_video_files(all_paths, output_path)
+    """Concatenate *before* clips + an inline black frame + *after* clips.
+
+    The black frame is generated on-the-fly via ffmpeg's ``lavfi`` source at
+    the same resolution as the first available clip — no pre-generated
+    placeholder file required.  All streams are normalised to the reference
+    resolution so codec / size mismatches are handled in a single pass.
+    """
+    if os.path.exists(output_path):
+        return True
+
+    all_clip_paths = before_paths + after_paths
+    if not all_clip_paths:
+        return False
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Probe reference resolution from first existing clip
+    ref_path = next((p for p in all_clip_paths if os.path.exists(p)), None)
+    ref_w, ref_h = _get_video_resolution(ref_path) if ref_path else (320, 240)
+
+    scale_pad = (
+        f"scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
+        f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=2"
+    )
+
+    # Build ffmpeg inputs and filter_complex parts
+    inputs: list[str] = []
+    filter_parts: list[str] = []
+    idx = 0
+
+    # Before clips
+    for p in before_paths:
+        inputs.extend(["-i", p])
+        filter_parts.append(f"[{idx}:v]{scale_pad}[v{idx}]")
+        idx += 1
+
+    # Inline black frame (lavfi — no file needed)
+    black_idx = idx
+    inputs.extend([
+        "-f", "lavfi",
+        "-i", f"color=c=black:s={ref_w}x{ref_h}:d={black_duration}:r=2",
+    ])
+    filter_parts.append(f"[{black_idx}:v]setsar=1[v{black_idx}]")
+    idx += 1
+
+    # After clips
+    for p in after_paths:
+        inputs.extend(["-i", p])
+        filter_parts.append(f"[{idx}:v]{scale_pad}[v{idx}]")
+        idx += 1
+
+    # Concat all streams
+    concat_in = "".join(f"[v{i}]" for i in range(idx))
+    filter_parts.append(f"{concat_in}concat=n={idx}:v=1:a=0[out]")
+
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "[out]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-an",
+        output_path,
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        log.error("concat_with_black failed for %s: %s", output_path, exc)
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+        return False
 
 
 def _concat_video_files(paths: list[str], output_path: str) -> bool:
@@ -772,20 +807,16 @@ def _assemble_fill_blank(
 
     prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
 
-    # Concatenate: before clips → black placeholder → after clips → single video
-    # Probe resolution from first available clip so the black frame matches exactly.
+    # Concatenate: before clips → inline black frame → after clips → single video
     before_paths = [item["clip_path"] for item in before_items]  # type: ignore[union-attr]
     after_paths = [item["clip_path"] for item in after_items]  # type: ignore[union-attr]
-    ref_clip = next((p for p in before_paths + after_paths if os.path.exists(p)), None)
-    vid_w, vid_h = _get_video_resolution(ref_clip) if ref_clip else (320, 240)
-    black_path = _ensure_black_placeholder(clip_dir, width=vid_w, height=vid_h)
 
     # Output path: {clip_dir}/concat/{clip_key}_fill_{missing_id_safe}.mp4
     missing_id_safe = missing_id.replace(" ", "_").replace(".", "_")
     concat_dir = os.path.join(clip_dir, "concat")
     concat_path = os.path.join(concat_dir, f"{clip_key}_{missing_id_safe}.mp4")
 
-    ok = _concat_clips_with_black(before_paths, after_paths, black_path, concat_path)
+    ok = _concat_clips_with_black(before_paths, after_paths, concat_path)
     if ok:
         videos = [concat_path]
     else:
