@@ -634,8 +634,6 @@ def _assemble_predict_next(
     correct_letter = chr(ord("A") + correct_idx)
     option_texts = [text for text, _ in options]
 
-    caption = ann.get("video_caption", "").strip()
-
     # Concatenate context clips into single video; fall back to multi-video on failure
     context_paths = [item["clip_path"] for item in context_items]
     ids_tag = "_".join(cid.replace(" ", "").replace(".", "_") for cid in context_ids)
@@ -646,12 +644,12 @@ def _assemble_predict_next(
     if ok:
         videos = [concat_path]
         # Single video: prompt shows num_ctx steps in one video
-        prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot, video_caption=caption)
+        prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
     else:
         # Fallback: multi-video (original behavior)
         log.warning("predict_next concat failed for %s, using multi-video fallback", clip_key)
         videos = context_paths
-        prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot, video_caption=caption)
+        prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
 
     return [{
         "messages": [{"role": "user", "content": prompt}],
@@ -737,8 +735,7 @@ def _assemble_fill_blank(
     total_steps = len(before_ids) + 1 + len(after_ids)
     missing_pos = len(before_ids)  # 0-indexed
 
-    caption = ann.get("video_caption", "").strip()
-    prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot, video_caption=caption)
+    prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
 
     # Concatenate: before clips → black placeholder → after clips → single video
     black_path = _ensure_black_placeholder(clip_dir)
@@ -760,8 +757,6 @@ def _assemble_fill_blank(
         # Rebuild prompt with explicit step-list format for multi-video
         labels = [chr(ord("A") + i) for i in range(len(option_texts))]
         step_lines = []
-        if caption:
-            step_lines += [f"Video Summary: {caption}", ""]
         step_lines.append("Watch the following process carefully. The sequence has a [MISSING] step.")
         step_lines.append("Context Sequence:")
         video_idx = 0
@@ -851,8 +846,7 @@ def _assemble_sort(
     answer = "".join(str(x) for x in inverse)
 
     shuffled_items = [items[i] for i in shuf_idx]
-    caption = ann.get("video_caption", "").strip()
-    prompt = get_sort_prompt_generic(n, cot=cot, video_caption=caption)
+    prompt = get_sort_prompt_generic(n, cot=cot)
     videos = [item["clip_path"] for item in shuffled_items]
 
     return [{
