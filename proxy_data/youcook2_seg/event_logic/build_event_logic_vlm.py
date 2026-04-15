@@ -388,13 +388,43 @@ def _check_contiguity(id_list: list[str]) -> bool:
 _BLACK_PLACEHOLDER_LOCK = threading.Lock()
 
 
-def _ensure_black_placeholder(clip_dir: str, duration: float = 2.0, fps: int = 2) -> str:
-    """Create a short black-frame video if it doesn't exist yet.
+def _get_video_resolution(path: str) -> tuple[int, int]:
+    """Return (width, height) of video at path via ffprobe. Falls back to (320, 240)."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=p=0",
+                path,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            parts = result.stdout.strip().split(",")
+            if len(parts) == 2:
+                w, h = int(parts[0]), int(parts[1])
+                if w > 0 and h > 0:
+                    return w, h
+    except Exception:
+        pass
+    return 320, 240
 
-    Returns the absolute path to ``{clip_dir}/black_placeholder.mp4``.
-    Thread-safe — only one thread generates the file.
+
+def _ensure_black_placeholder(
+    clip_dir: str,
+    width: int = 320,
+    height: int = 240,
+    duration: float = 2.0,
+    fps: int = 2,
+) -> str:
+    """Create a short black-frame video at the given resolution if it doesn't exist.
+
+    Returns the absolute path to ``{clip_dir}/black_placeholder_{W}x{H}.mp4``.
+    Thread-safe — only one thread generates the file per resolution.
     """
-    dst = os.path.join(clip_dir, "black_placeholder.mp4")
+    dst = os.path.join(clip_dir, f"black_placeholder_{width}x{height}.mp4")
     if os.path.exists(dst):
         return dst
 
@@ -404,7 +434,7 @@ def _ensure_black_placeholder(clip_dir: str, duration: float = 2.0, fps: int = 2
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         cmd = [
             "ffmpeg", "-y",
-            "-f", "lavfi", "-i", f"color=c=black:s=320x240:d={duration}:r={fps}",
+            "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:d={duration}:r={fps}",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-t", str(duration),
             dst,
@@ -451,14 +481,19 @@ def _concat_video_files(paths: list[str], output_path: str) -> bool:
         ]
         result = subprocess.run(cmd, capture_output=True, timeout=60)
         if result.returncode != 0:
-            # Fallback: re-encode with explicit normalization (handles mismatched resolution/fps/codec)
+            # Fallback: re-encode with normalization (handles mismatched resolution/fps/codec).
+            # Probe first file for reference resolution so we don't downscale to 320x240.
             log.debug("concat stream-copy failed for %s, trying re-encode. stderr: %s",
                       output_path, result.stderr.decode(errors="replace")[:300])
+            ref_w, ref_h = _get_video_resolution(paths[0]) if paths else (320, 240)
             cmd_reencode = [
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
                 "-i", list_path,
-                "-vf", "scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2",
+                "-vf", (
+                    f"scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
+                    f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2"
+                ),
                 "-r", "2",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-an",
                 output_path,
@@ -738,9 +773,12 @@ def _assemble_fill_blank(
     prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
 
     # Concatenate: before clips → black placeholder → after clips → single video
-    black_path = _ensure_black_placeholder(clip_dir)
+    # Probe resolution from first available clip so the black frame matches exactly.
     before_paths = [item["clip_path"] for item in before_items]  # type: ignore[union-attr]
     after_paths = [item["clip_path"] for item in after_items]  # type: ignore[union-attr]
+    ref_clip = next((p for p in before_paths + after_paths if os.path.exists(p)), None)
+    vid_w, vid_h = _get_video_resolution(ref_clip) if ref_clip else (320, 240)
+    black_path = _ensure_black_placeholder(clip_dir, width=vid_w, height=vid_h)
 
     # Output path: {clip_dir}/concat/{clip_key}_fill_{missing_id_safe}.mp4
     missing_id_safe = missing_id.replace(" ", "_").replace(".", "_")
