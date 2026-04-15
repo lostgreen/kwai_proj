@@ -135,6 +135,30 @@ def _ffmpeg_extract_with_fps(src: str, start: int, end: int, dst: Path, fps: int
         )
 
 
+def _process_l2_full(record: dict, clip_dir: Path, fps: int = 1) -> dict:
+    """Re-encode full video at *fps* for L2 full-video mode.
+
+    Mirrors _process_l1: same source, same fps-resample pipeline.
+    Answer timestamps are already absolute (0-based from video start = 0),
+    so no offset correction is needed.
+    Output name: ``{clip_key}_L2_full_{fps}fps.mp4``
+    """
+    meta = record["metadata"]
+    clip_key = meta["clip_key"]
+    fps = meta.get("l2_fps", fps)
+    src_video = meta.get("source_video_path") or record["videos"][0]
+
+    out_name = f"{clip_key}_L2_full_{fps}fps.mp4"
+    out_path = clip_dir / out_name
+
+    if not out_path.exists():
+        _ffmpeg_fps_resample(src_video, out_path, fps)
+
+    rec = dict(record)
+    rec["videos"] = [str(out_path)]
+    return rec
+
+
 def _process_l2(record: dict, clip_dir: Path) -> dict:
     meta = record["metadata"]
     clip_key    = meta["clip_key"]
@@ -276,10 +300,14 @@ def main() -> None:
     l1_fps = args.l1_fps
     l2l3_fps = args.l2l3_fps
 
-    # Detect L2 mode: phase (has phase_id) vs window (has window_start_sec)
-    is_l2_phase = (level == 2 and "phase_id" in records[0].get("metadata", {}))
+    # Detect L2 mode: full (l2_mode=="full") / phase (has phase_id) / window
+    first_meta = records[0].get("metadata", {})
+    is_l2_full  = (level == 2 and first_meta.get("l2_mode") == "full")
+    is_l2_phase = (level == 2 and not is_l2_full and "phase_id" in first_meta)
 
     def _select_l2_fn(rec, d):
+        if is_l2_full:
+            return _process_l2_full(rec, d, fps=l1_fps)
         if is_l2_phase:
             return _process_l2_phase(rec, d, fps=l2l3_fps if l2l3_fps > 0 else 2)
         return _process_l2(rec, d)
@@ -303,7 +331,10 @@ def main() -> None:
                     fps = meta.get("l1_fps", args.l1_fps)
                     name = f"{meta['clip_key']}_L1_{fps}fps.mp4"
                 elif level == 2:
-                    if "phase_id" in meta:
+                    if meta.get("l2_mode") == "full":
+                        fps = meta.get("l2_fps", args.l1_fps)
+                        name = f"{meta['clip_key']}_L2_full_{fps}fps.mp4"
+                    elif "phase_id" in meta:
                         name = f"{meta['clip_key']}_L2_ph{meta['phase_id']}_{meta['phase_start_sec']}_{meta['phase_end_sec']}.mp4"
                     else:
                         name = f"{meta['clip_key']}_L2_w{meta['window_start_sec']}_{meta['window_end_sec']}.mp4"

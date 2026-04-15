@@ -39,8 +39,8 @@ HIER_SEG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${HIER_SEG_DIR}/../../.." && pwd)"
 
 # ---- 数据根目录 (annotations 所在目录) ----
-DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation}"
-ANNOTATION_DIR="${ANNOTATION_DIR:-${DATA_ROOT}/annotations_checked_gmn25}"
+DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1}"
+ANNOTATION_DIR="${ANNOTATION_DIR:-${DATA_ROOT}/annotations_reclassified}"
 OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/train}"
 
 # ---- 筛选参数 (与 visualize_annotations.py 对齐) ----
@@ -51,13 +51,13 @@ L2_MAX_EVENTS="${L2_MAX_EVENTS:-8}"
 L3_MIN_ACTIONS="${L3_MIN_ACTIONS:-3}"
 L3_MAX_ACTIONS="${L3_MAX_ACTIONS:-10}"
 
-# ---- 采样 ----
-TRAIN_PER_LEVEL="${TRAIN_PER_LEVEL:-800}"
-TOTAL_VAL="${TOTAL_VAL:-300}"
-BALANCE_PER_LEVEL="${BALANCE_PER_LEVEL:-800}"
+# ---- 采样 (目标: 20K train, 3层 × 6700 ≈ 20K) ----
+TRAIN_PER_LEVEL="${TRAIN_PER_LEVEL:-6700}"
+TOTAL_VAL="${TOTAL_VAL:-900}"
+BALANCE_PER_LEVEL="${BALANCE_PER_LEVEL:-7000}"
 
-# ---- L2 模式 ----
-L2_MODE="${L2_MODE:-phase}"
+# ---- L2 模式: full=全视频输入(与L1共用clip), phase=每phase一条 ----
+L2_MODE="${L2_MODE:-full}"
 
 # ---- hint 参数 ----
 USE_HINT=false
@@ -143,6 +143,9 @@ for LEVEL in L1 L2 L3_seg; do
     LEVEL_VIDEO_DIR="${OUTPUT_DIR}/${LEVEL}/videos"
 
     if [[ "${LEVEL}" == "L1" ]]; then
+        FPS_ARG="--l1-fps 1"
+    elif [[ "${LEVEL}" == "L2" && "${L2_MODE}" == "full" ]]; then
+        # full-video 模式: prepare_clips.py 走 _process_l2_full (fps-resample 同 L1)
         FPS_ARG="--l1-fps 1"
     else
         FPS_ARG="--l2l3-fps 2"

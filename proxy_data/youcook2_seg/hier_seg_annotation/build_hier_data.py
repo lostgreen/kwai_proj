@@ -279,6 +279,86 @@ def build_l2_phase_records(
 
 
 # =====================================================================
+# L2 Full-Video: Event Detection (全视频模式, 每 annotation 一条记录)
+# =====================================================================
+def build_l2_fullvideo_records(
+    ann: dict,
+    clip_dir_l1: str = "",
+    l1_fps: int = 1,
+    min_events: int = 3,
+) -> list[dict]:
+    """从标注 JSON 构建 L2 训练记录 (全视频模式).
+
+    全视频作为输入, 输出全部 events 的绝对时间戳 (0-based from video start).
+    与 L1 使用相同的视频文件 (1fps 重采样 clip).
+    每个 annotation 产生一条记录, 而非 per-phase N 条.
+    """
+    l2 = ann.get("level2")
+    if not l2 or l2.get("_parse_error"):
+        return []
+
+    clip_duration = float(ann.get("clip_duration_sec") or 0)
+    if clip_duration <= 0:
+        return []
+
+    events = l2.get("events", [])
+    clip_key = ann.get("clip_key", "")
+    source_video = ann.get("source_video_path") or ann.get("video_path", "")
+    duration = int(clip_duration)
+    archetype = _resolve_archetype(ann)
+
+    # 收集所有 events 的绝对时间戳, 过滤无效项
+    spans = []
+    for ev in sorted(events, key=lambda e: e.get("start_time", 0)):
+        if not isinstance(ev, dict):
+            continue
+        st = ev.get("start_time")
+        et = ev.get("end_time")
+        if not isinstance(st, (int, float)) or not isinstance(et, (int, float)):
+            continue
+        st, et = int(st), int(et)
+        st = max(0, st)
+        et = min(duration, et)
+        if st < et:
+            spans.append([st, et])
+
+    if len(spans) < min_events:
+        return []
+
+    # 视频路径: 复用 L1 clip (1fps full-video resample)
+    if clip_dir_l1:
+        vp = get_l1_clip_path(clip_key, clip_dir_l1, fps=l1_fps)
+    else:
+        vp = source_video
+
+    prompt = _make_prompt("L2", duration)
+    answer = f"<events>{json.dumps(spans)}</events>"
+
+    return [{
+        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
+        "answer": answer,
+        "videos": [vp] if vp else [],
+        "data_type": "video",
+        "problem_type": PROBLEM_TYPES["L2"],
+        "metadata": {
+            "clip_key": clip_key,
+            "clip_duration_sec": clip_duration,
+            "level": 2,
+            "l2_mode": "full",
+            "l2_fps": l1_fps,
+            "source_video_path": source_video,
+            "n_events": len(spans),
+            "archetype": archetype,
+            "domain_l2": ann.get("domain_l2", "other"),
+            "topology": ann.get("topology_type", ""),
+            "output_count": len(spans),
+            "source": "annotation_json",
+        },
+    }]
+
+
+# =====================================================================
 # L3 Seg: Free Segmentation (无 query, shot-first state-change)
 # =====================================================================
 def build_l3_seg_records(
@@ -489,6 +569,10 @@ def main():
                         help="仅处理 L1+L2+L3 均完整的 clip")
     parser.add_argument("--balance-per-level", type=int, default=-1,
                         help="每层级领域均衡采样目标数 (-1 = 不做均衡采样)")
+    parser.add_argument("--l2-mode", choices=["phase", "full"], default="phase",
+                        help="L2 输入模式: phase=每 phase 一条记录(子clip), full=全视频一条记录")
+    parser.add_argument("--use-hint", action="store_true",
+                        help="(保留参数, 暂未实现) 在 prompt 中加入上一层标注作为 hint")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -512,9 +596,14 @@ def main():
             if lv == "L1":
                 recs = build_l1_records(ann, args.clip_dir_l1, args.l1_fps)
             elif lv == "L2":
-                recs = build_l2_phase_records(
-                    ann, args.clip_dir_l2, args.l2_min_events,
-                )
+                if args.l2_mode == "full":
+                    recs = build_l2_fullvideo_records(
+                        ann, args.clip_dir_l1, args.l1_fps, args.l2_min_events,
+                    )
+                else:
+                    recs = build_l2_phase_records(
+                        ann, args.clip_dir_l2, args.l2_min_events,
+                    )
             elif lv == "L3_seg":
                 recs = build_l3_seg_records(ann, args.clip_dir_l3, args.l3_min_actions)
             else:
