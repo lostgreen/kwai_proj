@@ -163,6 +163,7 @@ def build_l1_records(
             "source_video_path": source_video,
             "n_phases": len(spans),
             "archetype": archetype,
+            "domain_l1": ann.get("domain_l1", "other"),
             "domain_l2": ann.get("domain_l2", "other"),
             "topology": ann.get("topology_type", ""),
             "output_count": len(spans),
@@ -268,6 +269,7 @@ def build_l2_phase_records(
                 "phase_end_sec": ph_end,
                 "n_events_in_phase": len(matched),
                 "archetype": archetype,
+                "domain_l1": ann.get("domain_l1", "other"),
                 "domain_l2": ann.get("domain_l2", "other"),
                 "topology": ann.get("topology_type", ""),
                 "output_count": len(matched),
@@ -350,6 +352,7 @@ def build_l2_fullvideo_records(
             "source_video_path": source_video,
             "n_events": len(spans),
             "archetype": archetype,
+            "domain_l1": ann.get("domain_l1", "other"),
             "domain_l2": ann.get("domain_l2", "other"),
             "topology": ann.get("topology_type", ""),
             "output_count": len(spans),
@@ -439,6 +442,7 @@ def build_l3_seg_records(
                 "clip_end_sec": clip_end,
                 "n_actions": len(spans),
                 "archetype": archetype,
+                "domain_l1": ann.get("domain_l1", "other"),
                 "domain_l2": ann.get("domain_l2", "other"),
                 "topology": ann.get("topology_type", ""),
                 "output_count": len(spans),
@@ -452,17 +456,58 @@ def build_l3_seg_records(
 # =====================================================================
 # 领域均衡采样
 # =====================================================================
+def _quota_sample(records: list[dict], target: int, key: str) -> list[dict]:
+    """按 metadata[key] 等额分组，超额的组内按 output_count 降序保留。
+
+    两轮分配:
+      Round 1 — 不足 quota 的域全量保留，剩余名额累计给大域
+      Round 2 — 大域按名额截取 (output_count 降序, 优先保留标注多的记录)
+    """
+    from collections import defaultdict
+
+    if len(records) <= target:
+        return records
+
+    by_key: dict[str, list[dict]] = defaultdict(list)
+    for rec in records:
+        k = rec.get("metadata", {}).get(key, "other")
+        by_key[k].append(rec)
+
+    n_groups = len(by_key)
+    base_quota = target // n_groups
+    remaining = target
+
+    small, large = {}, {}
+    for k, recs in by_key.items():
+        if len(recs) <= base_quota:
+            small[k] = recs
+            remaining -= len(recs)
+        else:
+            large[k] = recs
+
+    sampled: list[dict] = list(r for recs in small.values() for r in recs)
+
+    if large:
+        q_large = remaining // len(large)
+        extra = remaining - q_large * len(large)
+        for idx, (k, recs) in enumerate(sorted(large.items(), key=lambda x: -len(x[1]))):
+            q = q_large + (1 if idx < extra else 0)
+            recs_sorted = sorted(recs, key=lambda r: -r.get("metadata", {}).get("output_count", 0))
+            sampled.extend(recs_sorted[:q])
+
+    return sampled
+
+
 def balanced_sample(
     level_records: dict[str, list[dict]],
     target_per_level: int,
 ) -> dict[str, list[dict]]:
-    """按 domain_l2 均衡采样, 超出的域优先砍 output_count 小的记录。
+    """两级领域均衡采样 (domain_l1 → domain_l2)。
 
     策略 (每层级独立):
-      1. 按 domain_l2 分组
-      2. 计算每个域的 quota = target / n_domains (均匀分配)
-      3. 不足 quota 的域全部保留, 多余名额重分配给其他域
-      4. 需要裁剪的域内按 output_count 降序排列, 优先保留事件多的
+      Step 1 — 按 domain_l1 等额分组, 各 L1 域获得相同 budget
+      Step 2 — 在每个 L1 域内, 按 domain_l2 等额细分 (同 _quota_sample 逻辑)
+      优先保留 output_count 大 (标注数多) 的记录
     """
     from collections import defaultdict
 
@@ -475,52 +520,47 @@ def balanced_sample(
 
         if len(records) <= target_per_level:
             result[lv] = records
+            print(f"  {lv}: {len(records)} records (< target, keep all)")
             continue
 
-        # 按 domain_l2 分组
-        by_domain: dict[str, list[dict]] = defaultdict(list)
+        # Step 1: 按 domain_l1 分组并等额分配
+        by_l1: dict[str, list[dict]] = defaultdict(list)
         for rec in records:
-            d = rec.get("metadata", {}).get("domain_l2", "other")
-            by_domain[d].append(rec)
+            l1 = rec.get("metadata", {}).get("domain_l1", "other")
+            by_l1[l1].append(rec)
 
-        n_domains = len(by_domain)
-        base_quota = target_per_level // n_domains
-        remaining = target_per_level
+        n_l1 = len(by_l1)
+        base_l1 = target_per_level // n_l1
+        remaining_l1 = target_per_level
 
-        # 第一轮: 不足 quota 的域全部保留
-        small_domains: dict[str, list[dict]] = {}
-        large_domains: dict[str, list[dict]] = {}
-        for d, recs in by_domain.items():
-            if len(recs) <= base_quota:
-                small_domains[d] = recs
-                remaining -= len(recs)
+        small_l1, large_l1 = {}, {}
+        for l1, recs in by_l1.items():
+            if len(recs) <= base_l1:
+                small_l1[l1] = recs
+                remaining_l1 -= len(recs)
             else:
-                large_domains[d] = recs
+                large_l1[l1] = recs
 
-        sampled: list[dict] = []
+        sampled: list[dict] = list(r for recs in small_l1.values() for r in recs)
 
-        # 小域全部保留
-        for d, recs in small_domains.items():
-            sampled.extend(recs)
+        if large_l1:
+            q_l1 = remaining_l1 // len(large_l1)
+            extra_l1 = remaining_l1 - q_l1 * len(large_l1)
 
-        # 第二轮: 大域的名额重分配
-        if large_domains:
-            quota_for_large = remaining // len(large_domains)
-            extra = remaining - quota_for_large * len(large_domains)
+            for idx, (l1, recs) in enumerate(sorted(large_l1.items(), key=lambda x: -len(x[1]))):
+                budget = q_l1 + (1 if idx < extra_l1 else 0)
+                # Step 2: 在该 L1 域内按 domain_l2 二级均衡
+                l2_sampled = _quota_sample(recs, budget, "domain_l2")
+                sampled.extend(l2_sampled)
 
-            sorted_large = sorted(large_domains.items(), key=lambda x: -len(x[1]))
-
-            for idx, (d, recs) in enumerate(sorted_large):
-                q = quota_for_large + (1 if idx < extra else 0)
-                # 按 output_count 降序排列, 保留事件多的
-                recs_sorted = sorted(
-                    recs,
-                    key=lambda r: -r.get("metadata", {}).get("output_count", 0),
-                )
-                sampled.extend(recs_sorted[:q])
+        # 统计并打印分布
+        l1_dist = defaultdict(int)
+        for rec in sampled:
+            l1_dist[rec.get("metadata", {}).get("domain_l1", "other")] += 1
+        dist_str = " | ".join(f"{k}:{v}" for k, v in sorted(l1_dist.items()))
+        print(f"  {lv}: balanced {len(records)} → {len(sampled)}  [{dist_str}]")
 
         result[lv] = sampled
-        print(f"  {lv}: balanced {len(records)} → {len(sampled)}")
 
     return result
 
