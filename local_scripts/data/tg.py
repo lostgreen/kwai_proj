@@ -1,19 +1,18 @@
 """Temporal Grounding data handler.
 
-Train: Pre-built by proxy_data/temporal_grounding/run_pipeline.sh, copied into base/
-Val: TVGBench → build_dataset.py --n_val 0 → random sample N
+Train: 直接复制 run_pipeline.sh 预构建的 TimeRFT validated JSONL
+Val: 从 run_pipeline.sh 预构建的 TVGBench validated JSONL 中随机采样
 
 前置条件:
-  TG 训练数据已由 run_pipeline.sh 生成。
-  TVGBench val 会在 setup_base 时自动从 annotation 构建。
+  bash proxy_data/temporal_grounding/run_pipeline.sh
+  → tg_timerft_max256s_validated.jsonl  (train)
+  → tg_tvgbench_max256s_validated.jsonl (val)
 """
 
 from __future__ import annotations
 
 import os
 import shutil
-import subprocess
-import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
@@ -22,24 +21,19 @@ from .common import load_jsonl, random_sample, write_jsonl
 NAME = "tg"
 PROBLEM_TYPES = ["temporal_grounding"]
 
-# ---- 文件命名约定 ----
-_TRAIN_FILE = "tg_train_no_tvgbench.jsonl"
-_VAL_PREFIX = "tvgbench_val"
+_TRAIN_FILE = "tg_train.jsonl"
+_VAL_PREFIX = "tg_val"
 
 
 def add_cli_args(parser: ArgumentParser) -> None:
     g = parser.add_argument_group("Temporal Grounding")
     g.add_argument(
         "--tg-train-source",
-        help="Pre-built TG train JSONL (e.g. tg_train_max256s_validated.jsonl)",
+        help="Pre-built TimeRFT JSONL (e.g. tg_timerft_max256s_validated.jsonl)",
     )
     g.add_argument(
-        "--tg-tvgbench-json",
-        help="TVGBench annotation JSON (tvgbench.json, 用于自动构建 val)",
-    )
-    g.add_argument(
-        "--tg-video-base",
-        help="Video root dir for TG (用于 TVGBench 构建)",
+        "--tg-tvgbench-source",
+        help="Pre-built TVGBench JSONL (e.g. tg_tvgbench_max256s_validated.jsonl)",
     )
     g.add_argument("--val-tg-n", type=int, default=150, help="TVGBench val sample size")
 
@@ -50,63 +44,40 @@ def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:
     os.makedirs(base_dir, exist_ok=True)
     os.makedirs(val_dir, exist_ok=True)
 
-    # ── TG train (copy pre-built) ──
+    # ── Train: copy pre-built TimeRFT ──
     tg_train = os.path.join(base_dir, _TRAIN_FILE)
     if force or not os.path.exists(tg_train):
         source = getattr(args, "tg_train_source", None)
         if not source or not os.path.exists(source):
-            print(f"  [tg] WARN: TG train source not found: {source}")
+            print(f"  [tg] WARN: train source not found: {source}")
             print("  请先运行: bash proxy_data/temporal_grounding/run_pipeline.sh")
             return
-        print(f"\n>>> TG train (copy from {source})...")
+        print(f"\n>>> TG train: copy from {source}")
         shutil.copy2(source, tg_train)
-        print(f"  TG train: {sum(1 for _ in open(tg_train))} samples")
+        print(f"  {sum(1 for _ in open(tg_train))} samples")
     else:
         print(f"\n>>> TG train exists: {tg_train} — skip")
 
-    # ── TVGBench val (build from annotation → sample) ──
+    # ── Val: sample from pre-built TVGBench ──
     val_n = args.val_tg_n
-    tvg_val = os.path.join(val_dir, f"{_VAL_PREFIX}_{val_n}.jsonl")
-    if force or not os.path.exists(tvg_val):
-        tvgbench_json = getattr(args, "tg_tvgbench_json", None)
-        video_base = getattr(args, "tg_video_base", None)
-        if not tvgbench_json or not os.path.exists(tvgbench_json):
-            print(f"  [tg] WARN: TVGBench JSON not found: {tvgbench_json}")
+    tg_val = os.path.join(val_dir, f"{_VAL_PREFIX}_{val_n}.jsonl")
+    if force or not os.path.exists(tg_val):
+        tvg_source = getattr(args, "tg_tvgbench_source", None)
+        if not tvg_source or not os.path.exists(tvg_source):
+            print(f"  [tg] WARN: TVGBench source not found: {tvg_source}")
+            print("  请先运行: TVGBENCH_JSON=... bash proxy_data/temporal_grounding/run_pipeline.sh")
             return
-
-        print(f"\n>>> TVGBench val (build + sample {val_n})...")
-        repo_root = str(Path(__file__).resolve().parent.parent.parent)
-        build_script = os.path.join(repo_root, "proxy_data", "temporal_grounding", "build_dataset.py")
-
-        _tmp_dir = os.path.join(base_dir, "_tmp_tvg")
-        os.makedirs(_tmp_dir, exist_ok=True)
-        subprocess.run([
-            sys.executable, build_script,
-            "--tvgbench_json", tvgbench_json,
-            "--video_base", video_base,
-            "--output_dir", _tmp_dir,
-            "--max_duration", "256",
-            "--mode", "no_cot",
-            "--n_val", "0",
-        ], check=True)
-
-        # build_dataset.py 输出 tg_train_max256s.jsonl (全量 TVGBench, n_val=0)
-        tvg_all = load_jsonl(os.path.join(_tmp_dir, "tg_train_max256s.jsonl"))
-        sampled = random_sample(tvg_all, val_n, seed)
-        write_jsonl(sampled, tvg_val)
-        print(f"  TVGBench: {len(tvg_all)} -> {len(sampled)}")
-
-        # cleanup
-        for f in Path(_tmp_dir).glob("*.jsonl"):
-            f.unlink()
-        Path(_tmp_dir).rmdir()
+        print(f"\n>>> TG val: sample {val_n} from {tvg_source}")
+        all_records = load_jsonl(tvg_source)
+        sampled = random_sample(all_records, val_n, seed)
+        write_jsonl(sampled, tg_val)
+        print(f"  TVGBench: {len(all_records)} -> {len(sampled)}")
     else:
-        print(f"\n>>> TVGBench val exists: {tvg_val} — skip")
+        print(f"\n>>> TG val exists: {tg_val} — skip")
 
 
 def load_train(data_root: str, args: Namespace) -> list[dict]:
-    path = os.path.join(data_root, "base", _TRAIN_FILE)
-    return load_jsonl(path)
+    return load_jsonl(os.path.join(data_root, "base", _TRAIN_FILE))
 
 
 def sample_train(records: list[dict], target: int, seed: int) -> list[dict]:

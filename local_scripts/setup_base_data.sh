@@ -3,15 +3,14 @@
 # setup_base_data.sh — 一键将预构建数据采样到 base/ + val/
 #
 # 前置条件 (在服务器上先运行):
-#   1. TG 训练数据:
-#      bash proxy_data/temporal_grounding/run_pipeline.sh
-#      → 输出: proxy_data/temporal_grounding/data/tg_train_max256s_validated.jsonl
+#   1. TG 数据 (TimeRFT + TVGBench 分别处理):
+#      TVGBENCH_JSON=/path/to/tvgbench.json bash proxy_data/temporal_grounding/run_pipeline.sh
+#      → tg_timerft_max256s_validated.jsonl  (train)
+#      → tg_tvgbench_max256s_validated.jsonl (val 采样源)
 #
 #   2. MCQ: proxy_data/llava_video_178k/ pipeline → results/train_final.jsonl
 #   3. Hier Seg: annotation pipeline → train_all.jsonl / val_all.jsonl
 #   4. Event Logic (可选): event_logic pipeline → train.jsonl / val.jsonl
-#
-# TVGBench val 会由本脚本自动从 annotation 构建并采样。
 #
 # 本脚本只做 copy + sample，不做数据生成。
 # 只需运行一次，后续实验复用 base/ 和 val/。
@@ -28,9 +27,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/multi_task_common.sh"
 
 # ---- 数据源路径 ----
-TG_TRAIN_SOURCE="${TG_TRAIN_SOURCE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_train_max256s_validated.jsonl}"
-TVGBENCH_JSON="${TVGBENCH_JSON:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset/annotations/tvgbench.json}"
-VIDEO_BASE="${VIDEO_BASE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset}"
+TG_TRAIN_SOURCE="${TG_TRAIN_SOURCE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_timerft_max256s_validated.jsonl}"
+TG_TVGBENCH_SOURCE="${TG_TVGBENCH_SOURCE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_tvgbench_max256s_validated.jsonl}"
 MCQ_SOURCE="${MCQ_SOURCE:-${REPO_ROOT}/proxy_data/llava_video_178k/results/train_final.jsonl}"
 
 # ---- 构建参数 ----
@@ -57,8 +55,7 @@ from local_scripts.data.mixer import main; main()
     ${_FORCE_FLAG} \
     setup \
     --tg-train-source "${TG_TRAIN_SOURCE}" \
-    --tg-tvgbench-json "${TVGBENCH_JSON}" \
-    --tg-video-base "${VIDEO_BASE}" \
+    --tg-tvgbench-source "${TG_TVGBENCH_SOURCE}" \
     --mcq-source "${MCQ_SOURCE}" \
     --hier-val-source "${HIER_VAL_SOURCE}" \
     --val-tg-n "${VAL_TG_N:-150}" \
