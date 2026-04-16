@@ -24,7 +24,7 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
 fi
 
 # ---- 实验配置 ----
-EXP_NAME="${EXP_NAME:-three_task_demo_2gpu}"
+EXP_NAME="${EXP_NAME:-multi_task_demo_2gpu}"
 EXP_DATA_DIR="${EXPERIMENTS_DIR}/${EXP_NAME}"
 TRAIN_FILE="${EXP_DATA_DIR}/train.jsonl"
 TEST_FILE="${EXP_DATA_DIR}/val.jsonl"
@@ -37,24 +37,24 @@ python3 -c "
 import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
 " \
-    --data-root "${THREE_TASK_DATA_ROOT}" \
+    --data-root "${MULTI_TASK_DATA_ROOT}" \
     check \
     --tasks ${TASKS} \
     ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
-|| { echo "[3task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
+|| { echo "[multi-task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
 
 # ============================================================
 # Step 0: 混合实验数据（仅首次）
 # ============================================================
 if [[ ! -f "${TRAIN_FILE}" ]] || [[ ! -f "${TEST_FILE}" ]]; then
-    echo "[3task] Building experiment data for: ${EXP_NAME}"
+    echo "[multi-task] Building experiment data for: ${EXP_NAME}"
     # shellcheck disable=SC2086
     python3 -c "
 import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
 " \
-        --data-root "${THREE_TASK_DATA_ROOT}" \
+        --data-root "${MULTI_TASK_DATA_ROOT}" \
         mix \
         --tasks ${TASKS} \
         --exp-name "${EXP_NAME}" \
@@ -62,7 +62,7 @@ from local_scripts.data.mixer import main; main()
         --hier-target "${HIER_TARGET}" \
         ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
         ${EL_TARGET:+--el-target "${EL_TARGET}"}
-    echo "[3task] Data ready: train=$(wc -l < "${TRAIN_FILE}"), val=$(wc -l < "${TEST_FILE}")"
+    echo "[multi-task] Data ready: train=$(wc -l < "${TRAIN_FILE}"), val=$(wc -l < "${TEST_FILE}")"
 fi
 
 # ============================================================
@@ -112,17 +112,17 @@ fi
 _filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
 if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]]; then
   if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
-    echo "[3task] Killing old filler instances..."
+    echo "[multi-task] Killing old filler instances..."
     pkill -f "gpu_filler.py" 2>/dev/null || true
     sleep 2
   fi
-  echo "[3task] Starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%, idle=${FILLER_MATRIX:-8192})"
+  echo "[multi-task] Starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%, idle=${FILLER_MATRIX:-8192})"
   nohup python3 "${_filler_script}" \
     --target-util "${FILLER_TARGET_UTIL:-85}" \
     --batch "${FILLER_BATCH:-50}" \
     --matrix-size "${FILLER_MATRIX:-8192}" \
     > /tmp/filler.log 2>&1 &
-  echo "[3task] GPU filler started (PID $!), log: /tmp/filler.log"
+  echo "[multi-task] GPU filler started (PID $!), log: /tmp/filler.log"
 fi
 
 # 训练结束只清理信号文件，不杀 filler

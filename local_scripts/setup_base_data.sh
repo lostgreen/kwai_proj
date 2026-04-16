@@ -40,7 +40,7 @@ fi
 echo "============================================"
 echo "  Setup Multi-Task Base Data"
 echo "============================================"
-echo "  Data root:    ${THREE_TASK_DATA_ROOT}"
+echo "  Data root:    ${MULTI_TASK_DATA_ROOT}"
 echo "  Tasks:        ${TASKS}"
 echo "  Force:        ${FORCE:-false}"
 echo "============================================"
@@ -50,7 +50,7 @@ python3 -c "
 import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
 " \
-    --data-root "${THREE_TASK_DATA_ROOT}" \
+    --data-root "${MULTI_TASK_DATA_ROOT}" \
     ${_FORCE_FLAG} \
     setup \
     --tasks ${TASKS} \

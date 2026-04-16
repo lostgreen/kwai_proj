@@ -3,7 +3,7 @@
 # multi_task_common.sh — 多任务混合训练共用配置
 #
 # 数据架构:
-#   $THREE_TASK_DATA_ROOT/
+#   $MULTI_TASK_DATA_ROOT/
 #   ├── base/          基座数据 (TG train + MCQ train)
 #   ├── val/           固定 val (按任务分层采样)
 #   └── experiments/   每个实验的混合训练数据
@@ -22,7 +22,7 @@ export DECORD_EOF_RETRY_MAX=2048001
 export BAD_SAMPLES_LOG="${REPO_ROOT}/bad_samples.txt"
 
 # ---- 实验标签 ----
-PROJECT_NAME="${PROJECT_NAME:-EasyR1-three-task}"
+PROJECT_NAME="${PROJECT_NAME:-EasyR1-multi-task}"
 
 # ---- 模型 ----
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
@@ -30,7 +30,9 @@ MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
 # ============================================================
 # 数据路径 (统一管理)
 # ============================================================
-THREE_TASK_DATA_ROOT="${THREE_TASK_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/three_task}"
+# 保持向后兼容: THREE_TASK_DATA_ROOT 仍可用
+MULTI_TASK_DATA_ROOT="${MULTI_TASK_DATA_ROOT:-${THREE_TASK_DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task}}"
+THREE_TASK_DATA_ROOT="${MULTI_TASK_DATA_ROOT}"  # backward compat
 
 # -- Hier Seg 训练数据源 (20k, 每次按比例采样) --
 HIER_TRAIN="${HIER_TRAIN:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/train/train_all.jsonl}"
@@ -46,7 +48,7 @@ EL_TARGET="${EL_TARGET:-2000}"
 TASKS="${TASKS:-tg mcq hier_seg}"
 
 # -- 实验数据目录 (按 EXP_NAME 隔离) --
-EXPERIMENTS_DIR="${THREE_TASK_DATA_ROOT}/experiments"
+EXPERIMENTS_DIR="${MULTI_TASK_DATA_ROOT}/experiments"
 
 # ============================================================
 # 视频 & 序列配置
@@ -61,8 +63,8 @@ MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-1024}"
 # ============================================================
 # 硬件 (2卡默认, 可覆盖)
 # ============================================================
-ROLLOUT_BS="${ROLLOUT_BS:-8}"
-GLOBAL_BS="${GLOBAL_BS:-8}"
+ROLLOUT_BS="${ROLLOUT_BS:-16}"
+GLOBAL_BS="${GLOBAL_BS:-16}"
 MB_PER_UPDATE="${MB_PER_UPDATE:-1}"
 MB_PER_EXP="${MB_PER_EXP:-1}"
 ROLLOUT_N="${ROLLOUT_N:-8}"
@@ -88,7 +90,7 @@ FILTER_LOW="${FILTER_LOW:-0.2}"
 FILTER_HIGH="${FILTER_HIGH:-0.8}"
 ENTROPY_COEFF=0.005
 CLIP_RATIO_LOW=0.2
-CLIP_RATIO_HIGH=0.3
+CLIP_RATIO_HIGH=0.2
 
 # KL: 独立 loss, coef=0.04
 KL_COEF="${KL_COEF:-0.04}"
@@ -104,6 +106,6 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 # ============================================================
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:-}"
-SAVE_FREQ="${SAVE_FREQ:-20}"
-VAL_FREQ="${VAL_FREQ:-20}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/three_task}"
+SAVE_FREQ="${SAVE_FREQ:-100}"
+VAL_FREQ="${VAL_FREQ:-100}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task}"
