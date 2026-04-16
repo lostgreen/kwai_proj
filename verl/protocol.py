@@ -879,8 +879,12 @@ def collate_fn(data_items: list["DataProtoItem"]):
 
     batch = torch.stack(batch).contiguous()
     non_tensor_batch = batch_collate(non_tensor_batch)
-    non_tensor_batch = {key: np.array(value, dtype=object) for key, value in non_tensor_batch.items()}
-    return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
+    safe_non_tensor = {}
+    for key, value in non_tensor_batch.items():
+        arr = np.empty(len(value), dtype=object)
+        arr[:] = value
+        safe_non_tensor[key] = arr
+    return DataProto(batch=batch, non_tensor_batch=safe_non_tensor)
 
 
 @dataclass
@@ -1048,7 +1052,9 @@ class DataProto:
 
         for key, value in non_tensors.items():
             if not isinstance(value, np.ndarray) or value.dtype != np.dtype(object):
-                non_tensors[key] = np.array(value, dtype=object)
+                arr = np.empty(len(value), dtype=object)
+                arr[:] = value
+                non_tensors[key] = arr
 
         tensor_dict = TensorDict(source=tensors, batch_size=batch_size) if tensors else None
         return cls(batch=tensor_dict, non_tensor_batch=non_tensors, meta_info=meta_info)

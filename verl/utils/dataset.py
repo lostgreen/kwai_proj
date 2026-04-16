@@ -161,7 +161,11 @@ def collate_fn(features: list[dict[str, Any]]) -> dict[str, Any]:
         tensors[key] = torch.stack(value, dim=0)
 
     for key, value in non_tensors.items():
-        non_tensors[key] = np.array(value, dtype=object)
+        # Force 1D object array to avoid numpy auto-broadcasting lists of
+        # equal length into 2D, which breaks DataProto.concat across batches.
+        arr = np.empty(len(value), dtype=object)
+        arr[:] = value
+        non_tensors[key] = arr
 
     return {**tensors, **non_tensors}
 
