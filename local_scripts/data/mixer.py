@@ -184,9 +184,10 @@ def main() -> None:
     p_check = sub.add_parser("check", help="Verify base/val data exists")
     p_check.add_argument("--tasks", **_tasks_kwargs)
 
-    # 注册各任务的 CLI 参数到主 parser (所有子命令共享)
-    for mod in _ALL_MODULES.values():
-        mod.add_cli_args(parser)
+    # 注册各任务的 CLI 参数到每个子命令
+    for p in [p_setup, p_mix, p_check]:
+        for mod in _ALL_MODULES.values():
+            mod.add_cli_args(p)
 
     args = parser.parse_args()
 
