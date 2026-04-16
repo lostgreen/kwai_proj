@@ -98,7 +98,34 @@ position or appearance but share no physical prerequisite (e.g., \
 If the script contains no sequence of 3+ items with strict causal \
 ordering, set "suitable" to false rather than force-fitting.
 
-8. **Output** — Respond ONLY in valid JSON. No markdown fences, no \
+8. **Anti-Flashback / Intro Rule** — REJECT sequences that represent \
+a video "intro", "teaser", or "flashback" where a finished product or \
+end-state is shown BEFORE the steps to produce it. The selected sequence \
+MUST represent forward-moving chronological physical time. If the script \
+starts with a preview of the final result (e.g., a completed dish, a \
+finished craft) followed by the actual process, do NOT include the \
+preview item in any context or answer — begin the sequence only from \
+the first real construction step.
+
+9. **Anti-Slideshow Rule** — REJECT sequences that merely cut between \
+static images, logos, title cards, text overlays, or separate independent \
+demonstrations (e.g., a slideshow of different optical illusions, a \
+montage of unrelated product shots). There MUST be a continuous physical \
+entity undergoing progressive change across the selected items. If the \
+script describes a compilation of disconnected static scenes with no \
+shared evolving object, set "suitable" to false.
+
+10. **Strict Visual Object Lock for Distractors** — When writing \
+distractors, do NOT invent distinct colors, materials, or objects that \
+are absent from the correct answer and context (e.g., do NOT write \
+"blue liquid" if the context only mentions "red liquid", do NOT write \
+"white powder" if no powder appears). Distractors must be visually \
+confusable with the correct answer — they should describe plausible \
+alternative actions on the EXACT SAME visible objects with the SAME \
+visual attributes. If you cannot create 3 visually confusable \
+distractors, set "suitable" to false.
+
+11. **Output** — Respond ONLY in valid JSON. No markdown fences, no \
 explanation outside the JSON object.\
 """
 
