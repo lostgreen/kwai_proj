@@ -1051,7 +1051,7 @@ class DataProto:
                 )
 
         for key, value in non_tensors.items():
-            if not isinstance(value, np.ndarray) or value.dtype != np.dtype(object):
+            if not (isinstance(value, np.ndarray) and value.dtype == np.dtype(object) and value.ndim == 1):
                 arr = np.empty(len(value), dtype=object)
                 arr[:] = value
                 non_tensors[key] = arr
@@ -1336,7 +1336,16 @@ class DataProto:
         new_batch = torch.cat(batch_lst, dim=0) if batch_lst[0] is not None else None
         non_tensor_batch = batch_collate([d.non_tensor_batch for d in data])
         for key, value in non_tensor_batch.items():
-            non_tensor_batch[key] = np.concatenate(value, axis=0)
+            # Flatten any 2D object arrays to 1D before concatenating
+            flat = []
+            for v in value:
+                if v.ndim > 1:
+                    a = np.empty(v.shape[0], dtype=object)
+                    a[:] = list(v)
+                    flat.append(a)
+                else:
+                    flat.append(v)
+            non_tensor_batch[key] = np.concatenate(flat, axis=0)
 
         return DataProto(batch=new_batch, non_tensor_batch=non_tensor_batch, meta_info=data[0].meta_info)
 
@@ -1479,4 +1488,4 @@ def all_gather_data_proto(data: DataProto, size: int, group: ProcessGroup) -> No
     # all gather non_tensor_batch
     all_non_tensor_batch = [None for _ in range(size)]
     torch.distributed.all_gather_object(all_non_tensor_batch, data.non_tensor_batch, group=group)
-    data.non_tensor_batch = {k: np.concatenate([d[k] for d in all_non_tensor_batch]) for k in data.non_tensor_batch}
+    data.non_tensor_batch = {k: np.concatenate([d[k] for d in all_non_tensor_batch], axis=0) for k in data.non_tensor_batch}

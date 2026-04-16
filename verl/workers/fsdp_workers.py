@@ -519,7 +519,9 @@ class FSDPWorker(Worker):
                 batch_multi_modal_inputs.append(multi_modal_inputs_cache[index])
 
             self._cache["uid"] = data.non_tensor_batch["uid"]
-            self._cache["multi_modal_inputs"] = np.array(batch_multi_modal_inputs, dtype=object)
+            _mm_arr = np.empty(len(batch_multi_modal_inputs), dtype=object)
+            _mm_arr[:] = batch_multi_modal_inputs
+            self._cache["multi_modal_inputs"] = _mm_arr
 
         data.non_tensor_batch["multi_modal_inputs"] = self._cache["multi_modal_inputs"]
 
