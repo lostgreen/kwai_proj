@@ -51,9 +51,9 @@ import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
 " \
     --data-root "${THREE_TASK_DATA_ROOT}" \
-    --tasks ${TASKS} \
     ${_FORCE_FLAG} \
     setup \
+    --tasks ${TASKS} \
     --tg-train-source "${TG_TRAIN_SOURCE}" \
     --tg-tvgbench-source "${TG_TVGBENCH_SOURCE}" \
     --mcq-source "${MCQ_SOURCE}" \

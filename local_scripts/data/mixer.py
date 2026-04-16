@@ -164,20 +164,25 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--force", action="store_true", help="Force rebuild")
     parser.add_argument("--data-root", required=True, help="Data root directory")
-    parser.add_argument(
-        "--tasks", nargs="+", default=list(_ALL_MODULES.keys()),
-        help=f"Task modules to use (default: all). Available: {list(_ALL_MODULES.keys())}",
-    )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # 共享的 --tasks 参数 (注册到每个子命令，避免 nargs="+" 吞掉 subcommand)
+    _tasks_kwargs = dict(
+        nargs="+", default=list(_ALL_MODULES.keys()),
+        help=f"Task modules to use (default: all). Available: {list(_ALL_MODULES.keys())}",
+    )
+
     # ── setup ──
     p_setup = sub.add_parser("setup", help="Generate base data + val (one-time)")
+    p_setup.add_argument("--tasks", **_tasks_kwargs)
     # ── mix ──
     p_mix = sub.add_parser("mix", help="Mix experiment training data")
+    p_mix.add_argument("--tasks", **_tasks_kwargs)
     p_mix.add_argument("--exp-name", required=True, help="Experiment name (subdir)")
     # ── check ──
-    sub.add_parser("check", help="Verify base/val data exists")
+    p_check = sub.add_parser("check", help="Verify base/val data exists")
+    p_check.add_argument("--tasks", **_tasks_kwargs)
 
     # 注册各任务的 CLI 参数到主 parser (所有子命令共享)
     for mod in _ALL_MODULES.values():

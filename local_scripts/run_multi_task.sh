@@ -36,10 +36,10 @@ TEST_FILE="${EXP_DATA_DIR}/val.jsonl"
 python3 -c "
 import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
-" -- \
+" \
     --data-root "${THREE_TASK_DATA_ROOT}" \
-    --tasks ${TASKS} \
     check \
+    --tasks ${TASKS} \
     ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
 || { echo "[3task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
@@ -53,10 +53,10 @@ if [[ ! -f "${TRAIN_FILE}" ]] || [[ ! -f "${TEST_FILE}" ]]; then
     python3 -c "
 import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
-" -- \
+" \
         --data-root "${THREE_TASK_DATA_ROOT}" \
-        --tasks ${TASKS} \
         mix \
+        --tasks ${TASKS} \
         --exp-name "${EXP_NAME}" \
         --hier-train "${HIER_TRAIN}" \
         --hier-target "${HIER_TARGET}" \
