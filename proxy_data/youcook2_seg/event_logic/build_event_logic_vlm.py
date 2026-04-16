@@ -991,6 +991,11 @@ def process_one_annotation(
     # 1. Build script text
     script_text = build_script_text(ann)
     if script_text is None:
+        l1 = ann.get("level1")
+        l2 = ann.get("level2")
+        log.warning("[skip] %s: build_script_text=None (l1=%s, l2=%s, l2_parse_error=%s)",
+                    clip_key, bool(l1), bool(l2),
+                    l2.get("_parse_error") if isinstance(l2, dict) else "N/A")
         result["status"] = "skip"
         return result
 
@@ -1023,6 +1028,9 @@ def process_one_annotation(
             _save_cache(cache_dir, clip_key, task_name, parsed)
 
         if not parsed.get("suitable", False):
+            log.info("[%s] %s/%s: suitable=false (from %s), skipping",
+                     "cache" if cached is not None else "llm", clip_key, task_name,
+                     parsed.get("reasoning", "no reasoning")[:120])
             continue
 
         if collect_only:
@@ -1234,6 +1242,9 @@ def main():
                 try:
                     result = fut.result()
                     all_clip_paths.update(result.get("needed_clips", []))
+                    if result.get("errors"):
+                        clip_key = futures[fut]
+                        log.warning("Errors for %s: %s", clip_key, result["errors"])
                 except Exception as e:
                     clip_key = futures[fut]
                     log.error("Error processing %s: %s", clip_key, e)
@@ -1241,6 +1252,17 @@ def main():
                 if done_count % 100 == 0 or done_count == len(futures):
                     log.info("Progress: %d / %d  (collected %d clip paths so far)",
                              done_count, len(futures), len(all_clip_paths))
+
+        # Diagnostic summary for collect-clips-only mode
+        _status_counts: dict[str, int] = defaultdict(int)
+        for fut in futures:
+            try:
+                r = fut.result()
+                _status_counts[r.get("status", "unknown")] += 1
+            except Exception:
+                _status_counts["exception"] += 1
+        log.info("Collect-clips summary: %s  |  total unique clips: %d",
+                 dict(_status_counts), len(all_clip_paths))
 
         os.makedirs(args.output_dir, exist_ok=True)
         clips_list_path = os.path.join(args.output_dir, "needed_clips.txt")
