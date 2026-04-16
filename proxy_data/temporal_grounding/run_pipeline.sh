@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── 默认参数 ────────────────────────────────────────────────────
 TIMERFT_JSON="${TIMERFT_JSON:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset/annotations/train_2k5.json}"
-TVGBENCH_JSON="${TVGBENCH_JSON:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset/annotations/tvgbench.json}"
+TVGBENCH_JSON="${TVGBENCH_JSON:-}"  # 默认不混入 TVGBench；如需加入: TVGBENCH_JSON=/path/to/tvgbench.json
 VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset}"
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/data}"
 MAX_DURATION="${MAX_DURATION:-256}"
@@ -40,7 +40,7 @@ echo "============================================"
 echo "  TG Data Pipeline"
 echo "============================================"
 echo "  TIMERFT_JSON:  $TIMERFT_JSON"
-echo "  TVGBENCH_JSON: $TVGBENCH_JSON"
+echo "  TVGBENCH_JSON: ${TVGBENCH_JSON:-<disabled>}"
 echo "  VIDEO_ROOT:    $VIDEO_ROOT"
 echo "  OUTPUT_DIR:    $OUTPUT_DIR"
 echo "  MAX_DURATION:  ${MAX_DURATION}s"

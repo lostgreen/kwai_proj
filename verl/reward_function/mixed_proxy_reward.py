@@ -6,8 +6,10 @@
 支持任务类型（由 problem_type 字段区分）:
 
 1. seg_aot_*  — 选择题：时序箭头 MCQ (binary/3-way)
-2. sort       — 排序题：片段排序，jigsaw displacement reward
-3. temporal_grounding — 时间定位：tIoU reward
+2. llava_mcq  — 选择题：LLaVA Video MCQ
+3. sort       — 排序题：片段排序，jigsaw displacement reward
+4. temporal_grounding — 时间定位：tIoU reward
+5. temporal_seg_hier_L1/L2/L3_seg — 分层时序分割：F1-IoU reward
 
 格式要求（严格模式）:
 - MCQ: 必须包含 <answer>字母</answer>
@@ -259,6 +261,12 @@ _TASK_REWARD_DISPATCH = {
     "event_logic_predict_next":   _choice_reward,
     "event_logic_fill_blank":     _choice_reward,
     "event_logic_sort":           _sort_reward,
+    # LLaVA Video MCQ
+    "llava_mcq":                  _choice_reward,
+    # Hierarchical Segmentation (F1-IoU)
+    "temporal_seg_hier_L1":       _seg_f1_iou_fallback,
+    "temporal_seg_hier_L2":       _seg_f1_iou_fallback,
+    "temporal_seg_hier_L3_seg":   _seg_f1_iou_fallback,
     # Temporal grounding (special: needs metadata)
     "temporal_grounding":         None,
 }

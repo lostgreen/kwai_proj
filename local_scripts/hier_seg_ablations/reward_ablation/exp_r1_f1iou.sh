@@ -1,70 +1,29 @@
 #!/usr/bin/env bash
 # =============================================================
-# exp_r1_f1iou.sh — Reward Ablation 实验 1: F1-IoU (Baseline)
+# exp_r1_f1iou.sh — Reward Ablation: F1-IoU (Baseline)
 #
-# 使用现有 hier_seg_reward.py (匈牙利匹配 + F1-IoU)
-# 数据：L1 + L2 + L3 三层均衡混合
+# 多任务混合: LLaVA MCQ + TG + Hier Seg
+# Reward: mixed_proxy_reward (HierSeg → F1-IoU, MCQ → choice, TG → tIoU)
 #
 # 用法:
-#   bash exp_r1_f1iou.sh
-#   MAX_STEPS=30 bash exp_r1_f1iou.sh   # 快速调试
+#   bash exp_r1_f1iou.sh                    # 2卡默认
+#   N_GPUS_PER_NODE=8 ROLLOUT_BS=16 GLOBAL_BS=16 \
+#     bash exp_r1_f1iou.sh                  # 8卡
+#   MAX_STEPS=30 bash exp_r1_f1iou.sh       # 快速调试
 # =============================================================
 set -euo pipefail
-set -x
 
+# ---- 实验特有配置 ----
+export EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou}"
+
+# ---- 启用的任务 + 数据量 ----
+export TASKS="${TASKS:-tg mcq hier_seg}"
+export HIER_TARGET="${HIER_TARGET:-5000}"
+# export EL_TARGET="${EL_TARGET:-2000}"   # 如需 event_logic, 取消注释并加入 TASKS
+
+# ---- Reward: F1-IoU (mixed_proxy_reward 默认已注册) ----
+# 无需覆盖 REWARD_FUNCTION
+
+# ---- 启动 (source common + 数据构建 + 训练) ----
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-_EXP_DIR="${SCRIPT_DIR}"
-source "${_EXP_DIR}/../common.sh"
-
-# ---- Reward: 使用 baseline F1-IoU ----
-REWARD_FUNCTION="${REPO_ROOT}/verl/reward_function/hier_seg_reward.py:compute_score"
-
-# ---- 实验命名 ----
-EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou}"
-
-# ---- 数据 (L2+L3, 跳过 L1 因标注有 warped 映射问题) ----
-LEVELS="L2 L3"
-TRAIN_PER_LEVEL="${TRAIN_PER_LEVEL:-400}"
-VAL_PER_LEVEL="${VAL_PER_LEVEL:-100}"
-
-DATA_DIR="${ABLATION_DATA_ROOT}/${EXP_NAME}"
-TRAIN_FILE="${DATA_DIR}/train.jsonl"
-TEST_FILE="${DATA_DIR}/val.jsonl"
-
-# ---- 数据构建（首次自动触发）----
-_LEVELS_TAG="$(echo "${LEVELS}" | tr ' ' '_')"
-BASE_DATA_DIR="${ABLATION_DATA_ROOT}/hier_seg_base_${_LEVELS_TAG}"
-
-if [[ ! -f "${TRAIN_FILE}" ]]; then
-  # Step 1: 基础数据
-  if [[ ! -f "${BASE_DATA_DIR}/train.jsonl" ]]; then
-    echo "[reward_ablation] Step 1: Building base data for levels: ${LEVELS} ..."
-    BUILD_LEVELS="${LEVELS//L3/L3_seg}"
-    # shellcheck disable=SC2086
-    python3 "${_EXP_DIR}/../build_hier_data.py" \
-      --annotation-dir "${ANNOTATION_DIR}" \
-      --clip-dir-l2 "${CLIP_DIR_L2}" \
-      --clip-dir-l3 "${CLIP_DIR_L3}" \
-      --output-dir "${BASE_DATA_DIR}" \
-      --levels ${BUILD_LEVELS} \
-      --total-val "$(( VAL_PER_LEVEL * 2 ))" \
-      --train-per-level "${TRAIN_PER_LEVEL}" \
-      --complete-only
-  fi
-
-  # Step 2: 使用 V4-prompt (L2=CoT, L3=direct)
-  echo "[reward_ablation] Step 2: Applying V4-prompt (L2=V2/CoT, L3=V1/direct) ..."
-  # shellcheck disable=SC2086
-  python3 "${_EXP_DIR}/../prompt_ablation/prepare_prompt_data.py" \
-    --prompt-version v4 \
-    --levels ${LEVELS} \
-    --variant V1 \
-    --variant-map "L2=V2,L3=V1" \
-    --val-per-level "${VAL_PER_LEVEL}" \
-    --train-per-level "${TRAIN_PER_LEVEL}" \
-    --data-root "${BASE_DATA_DIR}" \
-    --output-dir "${DATA_DIR}"
-fi
-
-# ---- 启动训练 ----
-source "${_EXP_DIR}/../launch_train.sh"
+source "${SCRIPT_DIR}/../../run_multi_task.sh"

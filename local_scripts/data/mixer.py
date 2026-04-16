@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""
+多任务数据混合工具。
+
+子命令:
+    setup   — 生成基座数据 (各任务的 train + val)
+    mix     — 混合实验训练数据 + 合并 val
+    check   — 验证 base/val 文件是否存在
+
+用法:
+    # Step 1: 一键生成 base + val (只需运行一次)
+    python3 local_scripts/data/mixer.py setup \\
+        --data-root /path/to/data \\
+        --tasks tg mcq hier_seg \\
+        --tg-timerft-json ... --tg-tvgbench-json ... --tg-video-base ... \\
+        --mcq-source ... \\
+        --hier-val-source ...
+
+    # Step 2: 为实验混合数据
+    python3 local_scripts/data/mixer.py mix \\
+        --data-root /path/to/data \\
+        --tasks tg mcq hier_seg \\
+        --hier-train ... --hier-target 5000 \\
+        --exp-name R1_f1iou
+
+    # 检查数据完整性
+    python3 local_scripts/data/mixer.py check \\
+        --data-root /path/to/data \\
+        --tasks tg mcq hier_seg
+"""
+
+from __future__ import annotations
+
+import argparse
+import random
+import sys
+from pathlib import Path
+from types import ModuleType
+
+from . import event_logic, hier_seg, mcq, tg
+from .common import print_summary, write_jsonl
+
+# ---- 所有可用任务模块 ----
+_ALL_MODULES: dict[str, ModuleType] = {
+    tg.NAME: tg,
+    mcq.NAME: mcq,
+    hier_seg.NAME: hier_seg,
+    event_logic.NAME: event_logic,
+}
+
+# ---- 需要 target 参数的任务 ----
+_TARGET_ARGS: dict[str, str] = {
+    "hier_seg": "hier_target",
+    "event_logic": "el_target",
+}
+
+
+def _get_modules(task_names: list[str]) -> list[ModuleType]:
+    modules = []
+    for name in task_names:
+        if name not in _ALL_MODULES:
+            print(f"[mixer] ERROR: Unknown task '{name}'. Available: {list(_ALL_MODULES.keys())}")
+            sys.exit(1)
+        modules.append(_ALL_MODULES[name])
+    return modules
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    modules = _get_modules(args.tasks)
+    for mod in modules:
+        mod.setup_base(args.data_root, args, args.force, args.seed)
+
+    # Summary
+    print(f"\n{'='*50}")
+    print("  Setup Complete!")
+    print(f"{'='*50}")
+    for sub in ["base", "val"]:
+        d = Path(args.data_root) / sub
+        if d.exists():
+            print(f"  {sub}/:")
+            for f in sorted(d.glob("*.jsonl")):
+                count = sum(1 for _ in open(f))
+                print(f"    {f.name}: {count}")
+
+
+def cmd_mix(args: argparse.Namespace) -> None:
+    exp_dir = Path(args.data_root) / "experiments" / args.exp_name
+    train_out = str(exp_dir / "train.jsonl")
+    val_out = str(exp_dir / "val.jsonl")
+
+    modules = _get_modules(args.tasks)
+
+    # ── Train ──
+    if not args.force and Path(train_out).exists():
+        print(f"Train already exists: {train_out} — skip (use --force to rebuild)")
+    else:
+        print("Loading + sampling train data...")
+        all_train: list[dict] = []
+        for mod in modules:
+            records = mod.load_train(args.data_root, args)
+            target_attr = _TARGET_ARGS.get(mod.NAME)
+            target = getattr(args, target_attr, 0) if target_attr else 0
+            if target > 0:
+                print(f"  [{mod.NAME}]: {len(records)} (target: {target})")
+                sampled = mod.sample_train(records, target, args.seed)
+            else:
+                print(f"  [{mod.NAME}]: {len(records)} (全量)")
+                sampled = mod.sample_train(records, 0, args.seed)
+            all_train.extend(sampled)
+
+        random.Random(args.seed).shuffle(all_train)
+        write_jsonl(all_train, train_out)
+        print_summary(all_train, f"Train -> {train_out}")
+
+    # ── Val ──
+    if not args.force and Path(val_out).exists():
+        print(f"\nVal already exists: {val_out} — skip")
+    else:
+        print("\nLoading val data...")
+        all_val: list[dict] = []
+        for mod in modules:
+            records = mod.load_val(args.data_root)
+            print(f"  [{mod.NAME}]: {len(records)}")
+            all_val.extend(records)
+
+        random.Random(args.seed).shuffle(all_val)
+        write_jsonl(all_val, val_out)
+        print_summary(all_val, f"Val -> {val_out}")
+
+
+def cmd_check(args: argparse.Namespace) -> None:
+    modules = _get_modules(args.tasks)
+    missing = False
+
+    for mod in modules:
+        # 检查 val
+        val_records = mod.load_val(args.data_root)
+        if not val_records:
+            print(f"[check] MISSING: {mod.NAME} val data")
+            missing = True
+        else:
+            print(f"[check] OK: {mod.NAME} val ({len(val_records)} samples)")
+
+        # 检查 base train (tg/mcq 在 base/ 下，hier_seg/event_logic 是外部路径)
+        target_attr = _TARGET_ARGS.get(mod.NAME)
+        if not target_attr:
+            # base data (tg, mcq)
+            records = mod.load_train(args.data_root, args)
+            if not records:
+                print(f"[check] MISSING: {mod.NAME} train data")
+                missing = True
+            else:
+                print(f"[check] OK: {mod.NAME} train ({len(records)} samples)")
+
+    if missing:
+        print("\n[check] FAIL: Missing data. Run 'setup' first.")
+        sys.exit(1)
+    else:
+        print("\n[check] All base/val data present.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Multi-task data management")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--force", action="store_true", help="Force rebuild")
+    parser.add_argument("--data-root", required=True, help="Data root directory")
+    parser.add_argument(
+        "--tasks", nargs="+", default=list(_ALL_MODULES.keys()),
+        help=f"Task modules to use (default: all). Available: {list(_ALL_MODULES.keys())}",
+    )
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # ── setup ──
+    p_setup = sub.add_parser("setup", help="Generate base data + val (one-time)")
+    # ── mix ──
+    p_mix = sub.add_parser("mix", help="Mix experiment training data")
+    p_mix.add_argument("--exp-name", required=True, help="Experiment name (subdir)")
+    # ── check ──
+    sub.add_parser("check", help="Verify base/val data exists")
+
+    # 注册各任务的 CLI 参数到主 parser (所有子命令共享)
+    for mod in _ALL_MODULES.values():
+        mod.add_cli_args(parser)
+
+    args = parser.parse_args()
+
+    if args.command == "setup":
+        cmd_setup(args)
+    elif args.command == "mix":
+        cmd_mix(args)
+    elif args.command == "check":
+        cmd_check(args)
+
+
+if __name__ == "__main__":
+    main()
