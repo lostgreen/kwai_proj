@@ -49,7 +49,7 @@ echo "============================================"
 python3 -c "
 import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
-" -- \
+" \
     --data-root "${THREE_TASK_DATA_ROOT}" \
     --tasks ${TASKS} \
     ${_FORCE_FLAG} \
