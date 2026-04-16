@@ -546,6 +546,7 @@ class RayPPOTrainer:
         # Lists to collect samples for the table
         sample_inputs, sample_outputs, sample_labels, sample_scores = [], [], [], []
         reward_metrics_lst = defaultdict(list)
+        type_metrics_lst: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
         length_metrics_lst = defaultdict(list)
         print("Start validation...")
         if self.config.trainer.save_rollout_to_file:
@@ -603,6 +604,15 @@ class RayPPOTrainer:
             for key, value in reward_metrics.items():
                 reward_metrics_lst[key].extend(value)
 
+            # Collect per-problem-type metrics
+            problem_types = test_batch.non_tensor_batch.get("problem_type", None)
+            if problem_types is not None:
+                metric_keys = list(reward_metrics.keys())
+                metric_values = list(reward_metrics.values())
+                for i, pt in enumerate(problem_types):
+                    for mk, mv in zip(metric_keys, metric_values):
+                        type_metrics_lst[str(pt)][mk].append(mv[i])
+
             for key, value in compute_length_metrics(test_batch).items():
                 length_metrics_lst[key].append(value)
 
@@ -610,6 +620,11 @@ class RayPPOTrainer:
         self._maybe_log_val_generations(sample_inputs, sample_outputs, sample_labels, sample_scores)
         self.val_reward_score = torch.cat(reward_tensor_lst, dim=0).sum(-1).mean().item()
         val_reward_metrics = {f"val/{key}_reward": value for key, value in reduce_metrics(reward_metrics_lst).items()}
+        # Per-problem-type metrics
+        for pt, pt_metrics in type_metrics_lst.items():
+            for mk, mv in pt_metrics.items():
+                val_reward_metrics[f"val/{pt}/{mk}_reward"] = np.mean(mv)
+            val_reward_metrics[f"val/{pt}/count"] = len(pt_metrics.get("overall", []))
         val_length_metrics = {f"val_{key}": value for key, value in reduce_metrics(length_metrics_lst).items()}
         print("Finish validation.")
         return {"val/reward_score": self.val_reward_score, **val_reward_metrics, **val_length_metrics}
