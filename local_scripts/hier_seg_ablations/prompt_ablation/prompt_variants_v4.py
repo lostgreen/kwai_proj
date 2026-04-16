@@ -67,12 +67,15 @@ Keep shots SEPARATE (new phase) when:
 
 {sparse}
 
-Include ALL shots — every shot must belong to a phase. Do not skip intros, outros, or narration spans if they contain visual shot content.
+PARTITION RULE: The phases must form a non-overlapping, gap-free partition of the \
+full timeline. Together they must cover the entire video from 0 to {{duration}} — \
+no gaps, no overlaps. Every shot must belong to exactly one phase. \
+Do not skip intros, outros, or narration spans if they contain visual shot content.
 
 Output the start and end time (integer seconds, 0-based) for each phase in chronological order:
 <events>[[start_time, end_time], ...]</events>
 
-Example: <events>[[0, 85], [90, 170], [180, 240]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
+Example: <events>[[0, 85], [85, 170], [170, 240]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
 
 
 # =====================================================================
@@ -112,10 +115,14 @@ one self-contained task to a different one.
 
 {sparse}
 
+PARTITION RULE: The events must form a non-overlapping, gap-free partition of the \
+full clip timeline. Together they must cover the entire clip from 0 to {{duration}} — \
+no gaps, no overlaps. Every moment of the clip must belong to exactly one event.
+
 Output the start and end time (integer seconds, 0-based) for each event in chronological order:
 <events>[[start_time, end_time], ...]</events>
 
-Example: <events>[[5, 42], [55, 90]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
+Example: <events>[[0, 42], [42, 68], [68, 90]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
 
 
 # =====================================================================
@@ -131,27 +138,26 @@ You are given a {{duration}}s video clip, sampled at 1-2 fps.
 
 Detect all fine-grained sub-actions in this clip using a SHOT-FIRST approach:
 
-STEP 1 — IDENTIFY DISCONTINUITIES:
-Scan for any visual discontinuities — shot transitions, camera cuts, \
-or abrupt scene changes. At this granularity, most clips are single-shot, \
-so discontinuities may be absent.
+STEP 1 — IDENTIFY SHOT BOUNDARIES:
+Scan for visual discontinuities — camera cuts, angle changes, or abrupt scene transitions. \
+These are your primary temporal anchors. At this granularity many clips are single-shot, \
+so boundaries may be absent.
 
-STEP 2 — SEGMENT BY STATE CHANGES:
-Within each continuous shot (or the entire clip if no discontinuities exist), \
-identify sub-actions based on visible state changes — moments where an object \
-or material undergoes a clear, sustained transformation \
-(deforms, separates, merges, changes position, or changes state).
-
-Place a boundary when:
-- A new visible object/material change begins.
-- An ongoing state change completes and a different one starts.
+STEP 2 — SEGMENT INTO VISUALLY DISTINCT MICRO-SEGMENTS:
+Each sub-action is one visually distinct window. Place a boundary when ANY of the following occurs:
+- A camera cut or framing change to a different angle or subject.
+- A physical action change: a different motion or task begins.
+- A visible object/material state change: deformation, separation, positional shift, or state transition.
+- An object or subject enters or leaves the frame.
+- An environmental shift: lighting change or background change.
 
 Do NOT place a boundary when:
-- Hands or body parts reposition without changing any object's state.
-- Camera angle changes or brief occlusions occur.
+- Hands or body parts reposition without changing any object's state or the camera framing.
 - A single-frame flicker is not sustained across 2 or more sampled frames.
 
 {sparse}
+
+Gaps between segments are expected — do not force full coverage.
 
 Output the start and end time (integer seconds, 0-based) for each segment in chronological order:
 <events>[[start_time, end_time], ...]</events>
