@@ -405,8 +405,10 @@ def _get_video_resolution(path: str) -> tuple[int, int]:
                 w, h = int(parts[0]), int(parts[1])
                 if w > 0 and h > 0:
                     return w, h
-    except Exception:
-        pass
+        log.warning("ffprobe failed for %s (rc=%d): %s",
+                    path, result.returncode, result.stderr.strip()[:200])
+    except Exception as exc:
+        log.warning("ffprobe exception for %s: %s", path, exc)
     return 320, 240
 
 
@@ -434,7 +436,12 @@ def _concat_clips_with_black(
 
     # Probe reference resolution from first existing clip
     ref_path = next((p for p in all_clip_paths if os.path.exists(p)), None)
-    ref_w, ref_h = _get_video_resolution(ref_path) if ref_path else (320, 240)
+    if ref_path is None:
+        log.error("concat_with_black: no clip files exist on disk for %s — "
+                  "cannot determine resolution. First path: %s",
+                  output_path, all_clip_paths[0] if all_clip_paths else "N/A")
+        return False
+    ref_w, ref_h = _get_video_resolution(ref_path)
 
     scale_pad = (
         f"scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
