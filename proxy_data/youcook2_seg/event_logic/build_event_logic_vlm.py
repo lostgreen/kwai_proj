@@ -1039,20 +1039,31 @@ def process_one_annotation(
             # Save cache
             _save_cache(cache_dir, clip_key, task_name, parsed)
 
-        if not parsed.get("suitable", False):
-            log.info("[%s] %s/%s: suitable=false (from %s), skipping",
-                     "cache" if cached is not None else "llm", clip_key, task_name,
-                     parsed.get("reasoning", "no reasoning")[:120])
-            continue
-
-        if collect_only:
-            # Collect clip paths without existence check
-            collector = _TASK_CLIP_COLLECTORS[task_name]
-            result["needed_clips"].extend(collector(parsed, ann, clip_dir))
+        # Normalize to list of questions (support both old single-object
+        # and new {"questions": [...]} array format)
+        if "questions" in parsed and isinstance(parsed["questions"], list):
+            questions = parsed["questions"]
         else:
-            assembler = _TASK_ASSEMBLERS[task_name]
-            records = assembler(parsed, ann, clip_dir, complete_only, rng, cot=cot)
-            result[task_name].extend(records)
+            # Legacy single-object format (backward compat with old cache)
+            questions = [parsed]
+
+        for qi, q in enumerate(questions):
+            if not isinstance(q, dict):
+                continue
+            if not q.get("suitable", False):
+                log.info("[%s] %s/%s[%d]: suitable=false (%s)",
+                         "cache" if cached is not None else "llm",
+                         clip_key, task_name, qi,
+                         q.get("reasoning", "no reasoning")[:120])
+                continue
+
+            if collect_only:
+                collector = _TASK_CLIP_COLLECTORS[task_name]
+                result["needed_clips"].extend(collector(q, ann, clip_dir))
+            else:
+                assembler = _TASK_ASSEMBLERS[task_name]
+                records = assembler(q, ann, clip_dir, complete_only, rng, cot=cot)
+                result[task_name].extend(records)
 
     if not collect_only:
         has_records = any(result[t] for t in ALL_TASKS if t in tasks)

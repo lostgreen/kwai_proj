@@ -141,12 +141,15 @@ def get_predict_next_user_prompt(script_text: str) -> str:
 
 ─── Task: Predict Next ───
 
-Design a "predict the next step" single-choice question from the action \
-script above.
+Design "predict the next step" single-choice questions from the action \
+script above. Return ALL high-quality questions the script supports — \
+do not artificially limit yourself to one.
 
 Instructions:
-1. **Granularity**: Decide whether Event-level or Action-level produces \
-a more logically challenging question. Stick to ONE level throughout.
+1. **Granularity**: For each question, decide whether Event-level or \
+Action-level produces a more logically challenging question. Different \
+questions may use different granularities. Stick to ONE level within \
+each question.
 2. Select 2-4 STRICTLY CONSECUTIVE items as the known context (NO GAPS \
 — e.g., Action 2.1 → 2.2 → 2.3, not 2.1 → 2.3). All context items \
 must be physical actions — if a non-action (talking shot) sits between \
@@ -158,7 +161,7 @@ REJECT sequences where consecutive items are merely different camera \
 angles of the same action, slow-motion replays, or parallel / \
 interchangeable actions (e.g., "sprinkle salt" → "sprinkle pepper" — \
 swapping changes nothing). If no causal chain of 2+ items exists, set \
-"suitable" to false.
+"suitable" to false for that question.
 3. The item that IMMEDIATELY follows the context must be the unique, \
 logically necessary next step (the correct answer). It must also be a \
 purposeful physical action, NOT a talking or gesturing shot. The \
@@ -208,23 +211,30 @@ and (ii) not yet done? If another distractor could also be valid, \
 redesign or set "suitable" to false.
 7. Provide the correct answer as a text description (copy or closely \
 paraphrase the script entry).
+8. **Multiple questions**: Scan the ENTIRE script for different viable \
+context windows. Each question MUST use a DIFFERENT set of context IDs \
+(no overlap). Only include questions with genuine causal chains and \
+strong distractors — prefer quality over quantity.
 
-If the script lacks a clear sequential chain (too few items, purely \
-repetitive / interchangeable steps, or you cannot produce 3 distractors \
-that satisfy both Anti-Shortcut and Temporal Lock), set "suitable" to false.
+If the script lacks any clear sequential chain, return an empty \
+questions array.
 
 Respond in this exact JSON format:
 {{
-  "suitable": true,
-  "granularity": "Event",
-  "reasoning": "Brief explanation of: (1) the causal chain, (2) why each distractor shares the same object/scene but fails logically, (3) uniqueness verification",
-  "context_ids": ["Event 1", "Event 2"],
-  "correct_next_id": "Event 3",
-  "correct_next_text": "Description of the correct next step",
-  "distractors": [
-    "Distractor 1 (same object/scene, wrong technique or intensity): ...",
-    "Distractor 2 (same object/scene, wrong direction or destination): ...",
-    "Distractor 3 (same object/scene, temporal duplicate or already done): ..."
+  "questions": [
+    {{
+      "suitable": true,
+      "granularity": "Event",
+      "reasoning": "Brief explanation of: (1) the causal chain, (2) why each distractor shares the same object/scene but fails logically, (3) uniqueness verification",
+      "context_ids": ["Event 1", "Event 2"],
+      "correct_next_id": "Event 3",
+      "correct_next_text": "Description of the correct next step",
+      "distractors": [
+        "Distractor 1 (same object/scene, wrong technique or intensity): ...",
+        "Distractor 2 (same object/scene, wrong direction or destination): ...",
+        "Distractor 3 (same object/scene, temporal duplicate or already done): ..."
+      ]
+    }}
   ]
 }}"""
 
@@ -240,13 +250,16 @@ def get_fill_blank_user_prompt(script_text: str) -> str:
 
 ─── Task: Fill in the Blank ───
 
-Design a "fill in the missing step" single-choice question from the \
-action script above.
+Design "fill in the missing step" single-choice questions from the \
+action script above. Return ALL high-quality questions the script \
+supports — do not artificially limit yourself to one.
 
 Instructions:
-1. **Granularity**: Decide whether Event-level or Action-level yields a \
-more meaningful "before → core change → after" pattern. Stick to ONE level.
-2. Find a chain of 3+ STRICTLY CONSECUTIVE items (NO GAPS — e.g., \
+1. **Granularity**: For each question, decide whether Event-level or \
+Action-level yields a more meaningful "before → core change → after" \
+pattern. Different questions may use different granularities. Stick to \
+ONE level within each question.
+2. Find chains of 3+ STRICTLY CONSECUTIVE items (NO GAPS — e.g., \
 Action 3.1 → 3.2 → 3.3, not 3.1 → 3.2 → 3.4) where the MIDDLE item \
 represents a critical state change or transition (the "bridge" between \
 cause and effect). All items in the chain must be purposeful physical \
@@ -262,7 +275,7 @@ step(s) CONSUME. \
 REJECT chains where items are merely different camera angles of the \
 same action, slow-motion replays, or parallel / interchangeable \
 actions that could be reordered without consequence. If no such causal \
-chain exists, set "suitable" to false.
+chain exists, set "suitable" to false for that question.
 3. The BEFORE item(s) and AFTER item(s) will be shown as video context; \
 the middle item is REMOVED — the model must identify it.
 4. Write exactly 3 DISTRACTORS following BOTH the Anti-Shortcut rule \
@@ -304,24 +317,31 @@ that the correct answer is the SOLE physically necessary bridge step. \
 If a distractor could also validly connect before→after, redesign or \
 set "suitable" to false.
 7. Provide the correct answer as a text description.
+8. **Multiple questions**: Scan the ENTIRE script for different viable \
+chains. Each question MUST use a DIFFERENT missing item (no overlap in \
+missing_id). Only include questions with genuine causal bridges and \
+strong distractors — prefer quality over quantity.
 
-If no clear before→change→after chain exists, or you cannot produce 3 \
-distractors that satisfy both Anti-Shortcut and Temporal Lock, set \
-"suitable" to false.
+If no clear before→change→after chain exists anywhere in the script, \
+return an empty questions array.
 
 Respond in this exact JSON format:
 {{
-  "suitable": true,
-  "granularity": "Action",
-  "reasoning": "Brief explanation of: (1) why the removed step is the critical bridge, (2) why each distractor shares the same object/scene but fails as a bridge, (3) uniqueness verification",
-  "before_ids": ["Action 3.1"],
-  "missing_id": "Action 3.2",
-  "after_ids": ["Action 3.3", "Action 3.4"],
-  "correct_text": "Description of the missing step",
-  "distractors": [
-    "Distractor 1 (same object/scene, wrong state for after): ...",
-    "Distractor 2 (same object/scene, contradicts before): ...",
-    "Distractor 3 (same object/scene, wrong intensity/manner): ..."
+  "questions": [
+    {{
+      "suitable": true,
+      "granularity": "Action",
+      "reasoning": "Brief explanation of: (1) why the removed step is the critical bridge, (2) why each distractor shares the same object/scene but fails as a bridge, (3) uniqueness verification",
+      "before_ids": ["Action 3.1"],
+      "missing_id": "Action 3.2",
+      "after_ids": ["Action 3.3", "Action 3.4"],
+      "correct_text": "Description of the missing step",
+      "distractors": [
+        "Distractor 1 (same object/scene, wrong state for after): ...",
+        "Distractor 2 (same object/scene, contradicts before): ...",
+        "Distractor 3 (same object/scene, wrong intensity/manner): ..."
+      ]
+    }}
   ]
 }}"""
 
@@ -337,13 +357,16 @@ def get_sequence_sort_user_prompt(script_text: str) -> str:
 
 ─── Task: Sequence Sorting ───
 
-Design a "reorder shuffled steps" question from the action script above.
+Design "reorder shuffled steps" questions from the action script above. \
+Return ALL high-quality questions the script supports — do not \
+artificially limit yourself to one.
 
 Instructions:
-1. **Granularity**: Decide whether a macro Event sequence (e.g., \
-wash → cut → stir-fry) or a micro Action sequence (e.g., pick up knife \
-→ cut first slice → set knife down) has a more ABSOLUTELY IRREVERSIBLE \
-ordering. Stick to ONE level.
+1. **Granularity**: For each question, decide whether a macro Event \
+sequence (e.g., wash → cut → stir-fry) or a micro Action sequence \
+(e.g., pick up knife → cut first slice → set knife down) has a more \
+ABSOLUTELY IRREVERSIBLE ordering. Different questions may use different \
+granularities. Stick to ONE level within each question.
 2. Select 3 to 5 items whose chronological order is dictated by strict \
 causal or physical prerequisites (e.g., "you must open the lid before \
 pouring the contents"). Every consecutive pair MUST have a cause-effect \
@@ -357,14 +380,22 @@ swapped without logical contradiction. Specifically reject:
 "sprinkle pepper")
    - Decorative variations (e.g., place item left vs. right)
 4. Return the selected item IDs in their TRUE chronological order.
+5. **Multiple questions**: Scan the ENTIRE script for different viable \
+sequences. Each question MUST use a DIFFERENT set of ordered IDs (no \
+overlap). Only include questions with strict irreversible ordering — \
+prefer quality over quantity.
 
 If the script contains no sequence of 3+ items with absolute, \
-irreversible ordering, set "suitable" to false.
+irreversible ordering, return an empty questions array.
 
 Respond in this exact JSON format:
 {{
-  "suitable": true,
-  "granularity": "Event",
-  "reasoning": "Why this ordering is strictly irreversible (physical laws, causal chain)",
-  "ordered_ids": ["Event 1", "Event 2", "Event 3", "Event 4"]
+  "questions": [
+    {{
+      "suitable": true,
+      "granularity": "Event",
+      "reasoning": "Why this ordering is strictly irreversible (physical laws, causal chain)",
+      "ordered_ids": ["Event 1", "Event 2", "Event 3", "Event 4"]
+    }}
+  ]
 }}"""
