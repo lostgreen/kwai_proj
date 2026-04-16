@@ -59,6 +59,16 @@ def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:
                 seed=seed,
             )
             write_jsonl(sampled, mcq_val)
+            print(f"  MCQ val: {len(sampled)} samples")
+
+            # 从 train 中移除 val 条目
+            val_ids = {id(r) for r in sampled}
+            # 用内容匹配 (sampled 是新 list，id 不同)
+            import json
+            val_set = {json.dumps(r, sort_keys=True) for r in sampled}
+            train_filtered = [r for r in records if json.dumps(r, sort_keys=True) not in val_set]
+            write_jsonl(train_filtered, mcq_train)
+            print(f"  MCQ train: {len(records)} -> {len(train_filtered)} (removed {len(records) - len(train_filtered)} val samples)")
         else:
             print("  [mcq] WARN: MCQ train not available")
     else:
