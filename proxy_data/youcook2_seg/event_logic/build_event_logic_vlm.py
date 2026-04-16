@@ -561,7 +561,7 @@ def call_task_architect(
     api_key: str,
     model: str,
     user_prompt: str,
-    max_tokens: int = 1024,
+    max_tokens: int = 2048,
     temperature: float = 0.7,
     retries: int = 3,
     label: str = "",
@@ -608,6 +608,11 @@ def call_task_architect(
                     total_calls,
                     total_tokens,
                 )
+                comp_tokens = getattr(usage, "completion_tokens", 0) or 0
+                if comp_tokens >= max_tokens - 10:
+                    log.warning("[LLM] %s: response likely TRUNCATED "
+                                "(completion_tokens=%d >= max_tokens=%d - 10)",
+                                label or "call", comp_tokens, max_tokens)
             return resp.choices[0].message.content.strip()
         except Exception as e:
             last_error = e
