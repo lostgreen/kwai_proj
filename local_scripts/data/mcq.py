@@ -45,7 +45,7 @@ def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:
     else:
         print(f"\n>>> MCQ train exists: {mcq_train} — skip")
 
-    # ── MCQ val (按 data_source 分层) ──
+    # ── MCQ val (按 data_source 分层, 并从 train 中移除) ──
     val_n = args.val_mcq_n
     mcq_val = os.path.join(val_dir, f"{_VAL_PREFIX}_{val_n}.jsonl")
     if force or not os.path.exists(mcq_val):
@@ -61,12 +61,9 @@ def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:
             write_jsonl(sampled, mcq_val)
             print(f"  MCQ val: {len(sampled)} samples")
 
-            # 从 train 中移除 val 条目
+            # 从 train 中移除 val 条目 (用 object id 匹配)
             val_ids = {id(r) for r in sampled}
-            # 用内容匹配 (sampled 是新 list，id 不同)
-            import json
-            val_set = {json.dumps(r, sort_keys=True) for r in sampled}
-            train_filtered = [r for r in records if json.dumps(r, sort_keys=True) not in val_set]
+            train_filtered = [r for r in records if id(r) not in val_ids]
             write_jsonl(train_filtered, mcq_train)
             print(f"  MCQ train: {len(records)} -> {len(train_filtered)} (removed {len(records) - len(train_filtered)} val samples)")
         else:
