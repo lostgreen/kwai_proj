@@ -24,8 +24,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── 默认参数 ────────────────────────────────────────────────────
-TIMERFT_JSON="${TIMERFT_JSON:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset/annotations/train_2k5.json}"
-TVGBENCH_JSON="${TVGBENCH_JSON:-}"
+TIMERFT_JSON="${TIMERFT_JSON:-/home/xuboshen/zgw/EasyR1/proxy_data/temporal_grounding/data/train_2k5.json}"
+TVGBENCH_JSON="${TVGBENCH_JSON:-/home/xuboshen/zgw/EasyR1/proxy_data/temporal_grounding/data/tvgbench.json}"
 VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset}"
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/data}"
 MAX_DURATION="${MAX_DURATION:-256}"
@@ -111,7 +111,7 @@ process_source() {
         python "${SCRIPT_DIR}/validate_tg_videos.py" \
             --input "$FINAL_JSONL" \
             --output "$VALIDATED" \
-            --tolerance 5.0
+            --tolerance 1.0
 
         local TOTAL
         TOTAL=$(wc -l < "$FINAL_JSONL")
