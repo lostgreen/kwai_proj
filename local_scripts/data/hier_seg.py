@@ -11,7 +11,7 @@ import os
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
-from .common import load_jsonl, stratified_sample, write_jsonl
+from .common import load_jsonl, nested_stratified_sample, stratified_sample, write_jsonl
 
 NAME = "hier_seg"
 PROBLEM_TYPES = [
@@ -62,7 +62,10 @@ def load_train(data_root: str, args: Namespace) -> list[dict]:
 def sample_train(records: list[dict], target: int, seed: int) -> list[dict]:
     if target <= 0:
         return list(records)
-    return stratified_sample(records, target, key="problem_type", seed=seed)
+    # 两级分层: 先按 problem_type 等比分配，再按 metadata.domain_l1 等比采样
+    return nested_stratified_sample(
+        records, target, key="problem_type", nested_key="domain_l1", seed=seed,
+    )
 
 
 def load_val(data_root: str) -> list[dict]:
