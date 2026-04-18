@@ -139,8 +139,10 @@ class TrainerConfig:
     """number of generations to log for validation"""
     save_freq: int = -1
     """save frequency, -1 means no saving"""
+    save_best: bool = True
+    """save checkpoint when a new best validation score is detected (does not count toward save_limit)"""
     save_limit: int = -1
-    """max number of checkpoints to save, -1 means no limit"""
+    """max number of checkpoints to save, -1 means no limit. Best checkpoint is excluded from this count."""
     save_model_only: bool = False
     """save model only, no optimizer state dict"""
     save_checkpoint_path: Optional[str] = None

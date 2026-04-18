@@ -106,6 +106,8 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 # ============================================================
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:-}"
-SAVE_FREQ="${SAVE_FREQ:-100}"
-VAL_FREQ="${VAL_FREQ:-100}"
+SAVE_FREQ="${SAVE_FREQ:-40}"
+VAL_FREQ="${VAL_FREQ:-20}"
+SAVE_LIMIT="${SAVE_LIMIT:-2}"
+SAVE_BEST="${SAVE_BEST:-true}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task}"

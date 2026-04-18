@@ -194,6 +194,8 @@ python3 -m verl.trainer.main \
     trainer.val_freq="${VAL_FREQ}" \
     trainer.val_generations_to_log=4 \
     trainer.save_freq="${SAVE_FREQ}" \
+    trainer.save_limit="${SAVE_LIMIT}" \
+    trainer.save_best="${SAVE_BEST}" \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
     data.val_batch_size=8 \

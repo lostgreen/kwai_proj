@@ -156,9 +156,8 @@ def remove_obsolete_ckpt(
                 ckpt_global_steps.append(step)
 
     ckpt_global_steps.sort(reverse=True)
-    if best_global_step in ckpt_global_steps:  # do not remove the best ckpt
+    if best_global_step in ckpt_global_steps:  # best ckpt is kept separately, does not count toward save_limit
         ckpt_global_steps.remove(best_global_step)
-        num_ckpt_to_keep = max(num_ckpt_to_keep - 1, 0)
 
     for step in ckpt_global_steps[num_ckpt_to_keep:]:
         folder_path = os.path.join(path, directory_format.format(step))

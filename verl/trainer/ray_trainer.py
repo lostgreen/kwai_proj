@@ -954,6 +954,19 @@ class RayPPOTrainer:
 
                     metrics.update(val_metrics)
 
+                    # Save checkpoint if new best validation score is detected
+                    if (
+                        self.config.trainer.save_best
+                        and self.val_reward_score > self.best_val_reward_score
+                        and self.global_step % self.config.trainer.save_freq != 0  # avoid duplicate save
+                    ):
+                        print(
+                            f"New best val score: {self.val_reward_score:.4f} "
+                            f"(prev: {self.best_val_reward_score:.4f}), saving checkpoint."
+                        )
+                        with timer("save_best_checkpoint", timing_raw):
+                            self._save_checkpoint()
+
                 if self.config.trainer.save_freq > 0 and self.global_step % self.config.trainer.save_freq == 0:
                     with timer("save_checkpoint", timing_raw):
                         self._save_checkpoint()
