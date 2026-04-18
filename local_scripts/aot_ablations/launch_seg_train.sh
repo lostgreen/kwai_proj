@@ -45,30 +45,27 @@ _ray_tmpdir="/tmp/ray_${_exp_short}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 
-# ---- GPU filler: 保持利用率 ≥ 80%，训练阶段自动暂停 ----
-# filler 常驻运行，训练结束后不停止（防止机器被回收）
+# ---- GPU filler: 仅在训练结束或崩溃后启动（占满 GPU 防回收） ----
 _filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
-if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]]; then
-  # 先杀掉旧 filler 实例（shell 层面，比 Python auto-kill 更可靠）
-  if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
-    echo "[seg-aot] Killing old filler instances..."
-    pkill -f "gpu_filler.py" 2>/dev/null || true
-    sleep 2  # 等旧 filler 释放 GPU 资源
+
+_start_filler() {
+  if [[ "${ENABLE_GPU_FILLER:-true}" != "true" ]] || [[ ! -f "${_filler_script}" ]]; then
+    return
   fi
-  echo "[seg-aot] Starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%, idle=${FILLER_MATRIX:-8192})"
+  if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
+    pkill -f "gpu_filler.py" 2>/dev/null || true
+    sleep 2
+  fi
+  echo "[seg-aot] Training stopped — starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%)"
   nohup python3 "${_filler_script}" \
     --target-util "${FILLER_TARGET_UTIL:-85}" \
     --batch "${FILLER_BATCH:-50}" \
     --matrix-size "${FILLER_MATRIX:-8192}" \
     > /tmp/filler.log 2>&1 &
   echo "[seg-aot] GPU filler started (PID $!), log: /tmp/filler.log"
-fi
-
-# 训练结束只清理信号文件，不杀 filler
-cleanup_signal() {
-  rm -f /tmp/verl_gpu_phase
 }
-trap cleanup_signal EXIT
+
+trap 'rm -f /tmp/verl_gpu_phase; _start_filler' EXIT
 
 # ---- Step B: 训练 ----
 echo "[seg-aot] Starting training: ${EXP_NAME}"

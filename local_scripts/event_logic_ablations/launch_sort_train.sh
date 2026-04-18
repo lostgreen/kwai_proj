@@ -51,26 +51,28 @@ echo "[el] Train: ${TRAIN_FILE} ($(wc -l < "${TRAIN_FILE}") samples)"
 echo "[el] Val:   ${TEST_FILE} ($(wc -l < "${TEST_FILE}") samples)"
 
 # =========================================================
-# GPU filler: 保持利用率 ≥ 80%，训练阶段自动暂停
+# GPU filler: 仅在训练结束或崩溃后启动（占满 GPU 防回收）
 # =========================================================
 _filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
-if [[ "${ENABLE_GPU_FILLER:-true}" == "true" ]] && [[ -f "${_filler_script}" ]]; then
+
+_start_filler() {
+  if [[ "${ENABLE_GPU_FILLER:-true}" != "true" ]] || [[ ! -f "${_filler_script}" ]]; then
+    return
+  fi
   if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
-    echo "[el] Killing old filler instances..."
     pkill -f "gpu_filler.py" 2>/dev/null || true
     sleep 2
   fi
-  echo "[el] Starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%)"
+  echo "[el] Training stopped — starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%)"
   nohup python3 "${_filler_script}" \
     --target-util "${FILLER_TARGET_UTIL:-85}" \
     --batch "${FILLER_BATCH:-50}" \
     --matrix-size "${FILLER_MATRIX:-8192}" \
     > /tmp/filler.log 2>&1 &
   echo "[el] GPU filler started (PID $!), log: /tmp/filler.log"
-fi
+}
 
-# 训练结束只清理信号文件，不杀 filler
-trap 'rm -f /tmp/verl_gpu_phase' EXIT
+trap 'rm -f /tmp/verl_gpu_phase; _start_filler' EXIT
 
 # =========================================================
 # 训练
