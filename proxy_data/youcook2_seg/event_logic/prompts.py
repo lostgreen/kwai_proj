@@ -161,6 +161,8 @@ def get_add_prompt_generic(num_ctx: int, options: list[str], cot: bool = False, 
         ]
     else:
         lines.append(
+            "Carefully observe the action progression and the physical state reached at the end of the video. "
+            "Consider what object or material change has just occurred and what the only logically necessary next step would be. "
             f"Provide your answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags."
         )
     return "\n".join(lines)
@@ -182,9 +184,8 @@ def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list
     if video_caption:
         lines += [f"Video Summary: {video_caption}", ""]
     lines += [
-        "Watch the following video carefully. A short section in the "
-        "middle has been replaced by a BLACK SCREEN — that is the "
-        "[MISSING] action you need to identify.",
+        "Watch the following video carefully. One section has been replaced by a BLACK SCREEN — "
+        "that is the [MISSING] action you need to identify.",
         "",
         "<video>",
         "",
@@ -209,6 +210,9 @@ def get_replace_prompt_generic(total_steps: int, missing_pos: int, options: list
         ]
     else:
         lines.append(
+            "Carefully observe the physical state established before the black screen and the state "
+            "that follows after it. Consider which action is the only one that could transform the "
+            "before-state into the after-state. "
             f"Provide your answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags."
         )
     return "\n".join(lines)
@@ -294,6 +298,9 @@ def get_sort_prompt_generic(num_clips: int, cot: bool = False, video_caption: st
         ]
     else:
         lines.append(
+            "For each clip, observe the object states, physical transformations, and scene context. "
+            "Identify causal dependencies — which state must exist before another can occur — "
+            "to determine the unique chronological order. "
             "Provide your answer as a sequence of clip numbers with no spaces or separators "
             f"(e.g., {''.join(str(i) for i in range(num_clips, 0, -1))}) inside <answer> </answer> tags."
         )
