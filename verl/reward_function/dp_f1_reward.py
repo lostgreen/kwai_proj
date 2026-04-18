@@ -9,7 +9,7 @@ Two complementary components:
            Unlike Hungarian (unordered), DP preserves temporal ordering:
            earlier predictions match earlier ground truths.
 
-  R_loc = R_num + R_match   (range [0, 2])
+  R_loc = (R_num + R_match) / 2   (range [0, 1])
 
 Reference: Algorithm 1 — DP matching of predicted intervals to ground truths.
 """
@@ -171,7 +171,7 @@ def _dp_f1_reward(
     ground_truth: str,
     sigma: float = SIGMA,
 ) -> Dict[str, float]:
-    """DP-F1 + Instance Count reward.  overall = R_num + R_match ∈ [0, 2]."""
+    """DP-F1 + Instance Count reward.  overall = (R_num + R_match) / 2 ∈ [0, 1]."""
     gt_segs = parse_segments(ground_truth)
     if not gt_segs:
         return dict(_ZERO)
@@ -188,7 +188,7 @@ def _dp_f1_reward(
 
     r_num = compute_instance_count_reward(len(pred_segs), len(gt_segs), sigma)
     r_match = compute_dp_f1_iou(pred_segs, gt_segs)
-    r_loc = r_num + r_match
+    r_loc = (r_num + r_match) / 2.0
 
     return {
         "overall": float(r_loc),
@@ -216,7 +216,7 @@ def compute_score(
 ) -> List[Dict[str, float]]:
     """Batch reward interface (EasyR1 compatible).
 
-    R_loc = R_num + R_match ∈ [0, 2].
+    R_loc = (R_num + R_match) / 2 ∈ [0, 1].
     """
     if not isinstance(reward_inputs, list):
         raise ValueError("Please use `reward_type=batch` for this reward function.")

@@ -3,7 +3,7 @@
 # exp_r3_dp_f1.sh — Reward Ablation: DP-F1 + Instance Count
 #
 # 多任务混合: LLaVA MCQ + TG + Hier Seg
-# Reward: dp_f1_reward for HierSeg (range [0, 2])
+# Reward: dp_f1_reward for HierSeg (range [0, 1])
 #         mixed_proxy_reward handles MCQ → choice, TG → tIoU
 #
 # TODO: 需要在 mixed_proxy_reward.py 注册 dp_f1 dispatch,
@@ -23,9 +23,9 @@ export HIER_TARGET="${HIER_TARGET:-5000}"
 #       需要添加 dp_f1 dispatch 后取消注释
 # export REWARD_FUNCTION="${REPO_ROOT}/verl/reward_function/mixed_proxy_reward.py:compute_score"
 
-# ---- Online filtering 阈值适配 [0, 2] 范围 ----
-export FILTER_LOW="${FILTER_LOW:-0.3}"
-export FILTER_HIGH="${FILTER_HIGH:-1.6}"
+# ---- Online filtering 阈值适配 [0, 1] 范围 ----
+export FILTER_LOW="${FILTER_LOW:-0.15}"
+export FILTER_HIGH="${FILTER_HIGH:-0.8}"
 
 # ---- 启动 ----
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
