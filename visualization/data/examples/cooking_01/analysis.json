@@ -1,0 +1,41 @@
+{
+  "video_id": "cooking_01",
+  "video_url": "/videos/cooking_01/video.mp4",
+  "duration": 125.0,
+  "caption": "A cooking tutorial showing the complete process of making pasta. The chef prepares ingredients, boils water, cooks the pasta, and plates the dish.",
+  "domain": "cooking",
+  "hierarchy": {
+    "L1_phases": [
+      {"id": "p1", "label": "Prepare ingredients", "start": 0.0, "end": 42.0, "description": "Chef prepares and processes all ingredients", "child_event_ids": ["e1", "e2"]},
+      {"id": "p2", "label": "Cook pasta", "start": 42.0, "end": 95.0, "description": "Boil water and cook the pasta", "child_event_ids": ["e3", "e4"]},
+      {"id": "p3", "label": "Plate and serve", "start": 95.0, "end": 125.0, "description": "Season, plate, and present the dish", "child_event_ids": ["e5"]}
+    ],
+    "L2_events": [
+      {"id": "e1", "label": "Chop vegetables", "start": 0.0, "end": 25.0, "description": "Dice onions and mince garlic", "parent_phase_id": "p1", "child_action_ids": ["a1", "a2", "a3"]},
+      {"id": "e2", "label": "Prepare seasoning", "start": 25.0, "end": 42.0, "description": "Measure and mix seasonings", "parent_phase_id": "p1", "child_action_ids": ["a4", "a5"]},
+      {"id": "e3", "label": "Boil water", "start": 42.0, "end": 58.0, "description": "Fill pot and bring water to boil", "parent_phase_id": "p2", "child_action_ids": ["a6", "a7"]},
+      {"id": "e4", "label": "Stir-fry", "start": 58.0, "end": 95.0, "description": "Cook pasta with sauce in pan", "parent_phase_id": "p2", "child_action_ids": ["a8", "a9"]},
+      {"id": "e5", "label": "Plate dish", "start": 95.0, "end": 125.0, "description": "Transfer to plate and garnish", "parent_phase_id": "p3", "child_action_ids": ["a10", "a11"]}
+    ],
+    "L3_actions": [
+      {"id": "a1", "label": "Pick up knife", "start": 0.0, "end": 3.0, "parent_event_id": "e1"},
+      {"id": "a2", "label": "Dice onion", "start": 3.0, "end": 15.0, "parent_event_id": "e1"},
+      {"id": "a3", "label": "Mince garlic", "start": 15.0, "end": 25.0, "parent_event_id": "e1"},
+      {"id": "a4", "label": "Measure salt", "start": 25.0, "end": 32.0, "parent_event_id": "e2"},
+      {"id": "a5", "label": "Mix herbs", "start": 32.0, "end": 42.0, "parent_event_id": "e2"},
+      {"id": "a6", "label": "Fill pot with water", "start": 42.0, "end": 48.0, "parent_event_id": "e3"},
+      {"id": "a7", "label": "Turn on stove", "start": 48.0, "end": 58.0, "parent_event_id": "e3"},
+      {"id": "a8", "label": "Add pasta to pan", "start": 58.0, "end": 65.0, "parent_event_id": "e4"},
+      {"id": "a9", "label": "Stir and toss", "start": 65.0, "end": 95.0, "parent_event_id": "e4"},
+      {"id": "a10", "label": "Transfer to plate", "start": 95.0, "end": 110.0, "parent_event_id": "e5"},
+      {"id": "a11", "label": "Add garnish", "start": 110.0, "end": 125.0, "parent_event_id": "e5"}
+    ]
+  },
+  "causal_chain": [
+    {"from_id": "e1", "to_id": "e2", "relation": "Vegetables must be chopped before seasoning is mixed"},
+    {"from_id": "e2", "to_id": "e3", "relation": "Seasoning prepared while water heats"},
+    {"from_id": "e3", "to_id": "e4", "relation": "Water must boil before cooking pasta"},
+    {"from_id": "e4", "to_id": "e5", "relation": "Pasta must be cooked before plating"}
+  ],
+  "key_frames": {}
+}
