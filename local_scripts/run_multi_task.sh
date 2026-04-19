@@ -42,6 +42,8 @@ from local_scripts.data.mixer import main; main()
     --tasks ${TASKS} \
     ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
+    ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
+    --val-el-n "${VAL_EL_N}" \
 || { echo "[multi-task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
 
 # ============================================================
@@ -181,7 +183,7 @@ python3 -m verl.trainer.main \
     worker.actor.loss_avg_mode=token \
     worker.actor.entropy_coeff="${ENTROPY_COEFF}" \
     worker.rollout.n="${ROLLOUT_N}" \
-    worker.rollout.temperature=0.7 \
+    worker.rollout.temperature="${ROLLOUT_TEMPERATURE}" \
     worker.rollout.top_p=0.9 \
     worker.rollout.tensor_parallel_size="${TP_SIZE}" \
     worker.rollout.gpu_memory_utilization=0.5 \

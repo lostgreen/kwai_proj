@@ -85,6 +85,7 @@ WARMUP_STYLE="${WARMUP_STYLE:-cosine}"
 # 核心算法
 # ============================================================
 ADV_ESTIMATOR=ema_grpo
+ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-0.7}"
 DISABLE_KL=false
 ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
 FILTER_LOW="${FILTER_LOW:-0.2}"

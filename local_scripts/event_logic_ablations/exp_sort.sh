@@ -27,6 +27,9 @@ export VAL_EL_N="${VAL_EL_N:-150}"
 # ---- Checkpoint 单独目录 ----
 export CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/event_logic/ablations}"
 
+# ---- sort 输出空间较大，1.0 也合适 ----
+export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
+
 # ---- 启动 (multi_task_common + 数据构建 + 训练) ----
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../run_multi_task.sh"

@@ -66,40 +66,41 @@ def _has_required_tags(response: str) -> bool:
 
 def _extract_choice(response: str) -> Optional[str]:
     """
-    严格模式：仅从 <answer> 标签内提取选项字母，不做全文 fallback。
-    调用前应已通过 _has_required_tags() 检查。
+    提取选项字母：优先从 <answer> 标签提取，fallback 到全文最后一个独立字母。
     """
+    # 优先: <answer> 标签内
     tag_content = _extract_from_answer_tag(response)
-    if tag_content is None:
-        return None
-    letters = _SINGLE_LETTER_PATTERN.findall(tag_content)
-    if not letters:
-        return None
-    return letters[-1].upper()
+    if tag_content is not None:
+        letters = _SINGLE_LETTER_PATTERN.findall(tag_content)
+        if letters:
+            return letters[-1].upper()
+
+    # Fallback: 全文最后一个独立字母 (A-D)
+    letters = re.findall(r"\b([A-Da-d])\b", response)
+    if letters:
+        return letters[-1].upper()
+    return None
 
 
 def _choice_reward(response: str, ground_truth: str) -> Dict[str, float]:
     """
-    选择题精确匹配 reward（严格格式模式）。
+    选择题精确匹配 reward（宽松格式模式）。
 
-    必须包含 <answer> 标签，缺失直接返回 0.0。
-
-    - 格式正确 + 答案正确: overall=1.0, format=1.0, accuracy=1.0
-    - 格式正确 + 答案错误: overall=0.0, format=1.0, accuracy=0.0
-    - 格式错误（缺 <answer>）: overall=0.0, format=0.0, accuracy=0.0
+    - 有 <answer> 标签 + 答案正确: overall=1.0, format=1.0, accuracy=1.0
+    - 无 <answer> 标签但能解析出字母 + 答案正确: overall=1.0, format=0.0, accuracy=1.0
+    - 答案错误: overall=0.0
+    - 无法解析: overall=0.0, format=0.0, accuracy=0.0
     """
-    # 严格格式门控：缺少 <answer> 直接返回 0
-    if not _has_required_tags(response):
-        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-
     gt = ground_truth.strip().upper()
+    has_tag = _has_required_tags(response)
     pred = _extract_choice(response)
 
     if pred is None:
-        return {"overall": 0.0, "format": 1.0, "accuracy": 0.0}
+        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
     accuracy = 1.0 if pred == gt else 0.0
-    return {"overall": float(accuracy), "format": 1.0, "accuracy": float(accuracy)}
+    fmt = 1.0 if has_tag else 0.0
+    return {"overall": float(accuracy), "format": fmt, "accuracy": float(accuracy)}
 
 
 # ===================================================================
