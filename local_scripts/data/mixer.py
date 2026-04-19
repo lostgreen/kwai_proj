@@ -119,7 +119,7 @@ def cmd_mix(args: argparse.Namespace) -> None:
         print("\nLoading val data...")
         all_val: list[dict] = []
         for mod in modules:
-            records = mod.load_val(args.data_root)
+            records = mod.load_val(args.data_root, args)
             print(f"  [{mod.NAME}]: {len(records)}")
             all_val.extend(records)
 
@@ -134,7 +134,7 @@ def cmd_check(args: argparse.Namespace) -> None:
 
     for mod in modules:
         # 检查 val
-        val_records = mod.load_val(args.data_root)
+        val_records = mod.load_val(args.data_root, args)
         if not val_records:
             print(f"[check] MISSING: {mod.NAME} val data")
             missing = True

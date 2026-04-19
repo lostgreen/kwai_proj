@@ -43,6 +43,7 @@ HIER_TARGET="${HIER_TARGET:-5000}"
 EL_TRAIN="${EL_TRAIN:-}"
 EL_VAL_SOURCE="${EL_VAL_SOURCE:-}"
 EL_TARGET="${EL_TARGET:-2000}"
+VAL_EL_N="${VAL_EL_N:-100}"
 
 # -- 启用的任务列表 (空格分隔) --
 TASKS="${TASKS:-tg mcq hier_seg}"

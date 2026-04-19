@@ -58,10 +58,12 @@ from local_scripts.data.mixer import main; main()
         mix \
         --tasks ${TASKS} \
         --exp-name "${EXP_NAME}" \
-        --hier-train "${HIER_TRAIN}" \
-        --hier-target "${HIER_TARGET}" \
+        ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
+        ${HIER_TARGET:+--hier-target "${HIER_TARGET}"} \
         ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
-        ${EL_TARGET:+--el-target "${EL_TARGET}"}
+        ${EL_TARGET:+--el-target "${EL_TARGET}"} \
+        ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
+        --val-el-n "${VAL_EL_N}"
     echo "[multi-task] Data ready: train=$(wc -l < "${TRAIN_FILE}"), val=$(wc -l < "${TEST_FILE}")"
 fi
 

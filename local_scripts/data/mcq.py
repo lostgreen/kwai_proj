@@ -82,7 +82,7 @@ def sample_train(records: list[dict], target: int, seed: int) -> list[dict]:
     return list(records)
 
 
-def load_val(data_root: str) -> list[dict]:
+def load_val(data_root: str, args: object | None = None) -> list[dict]:
     val_dir = os.path.join(data_root, "val")
     for f in sorted(Path(val_dir).glob(f"{_VAL_PREFIX}_*.jsonl")):
         return load_jsonl(str(f))
