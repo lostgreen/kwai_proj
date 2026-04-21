@@ -15,6 +15,7 @@ set -x
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 
 # ---- 环境变量 ----
 export DECORD_EOF_RETRY_MAX=2048001
@@ -136,4 +137,9 @@ if [[ -n "${MAX_STEPS}" ]]; then
     TRAIN_CMD+=(trainer.max_steps="${MAX_STEPS}")
 fi
 
+trap 'gpu_filler_clear_signal' EXIT
+gpu_filler_start "[tg]"
+
 "${TRAIN_CMD[@]}"
+
+gpu_filler_clear_signal

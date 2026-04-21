@@ -13,6 +13,7 @@ set -x
 
 if [[ -z "${EXP_NAME:-}" ]]; then echo "[seg-aot] EXP_NAME not set" >&2; exit 1; fi
 if [[ -z "${SEG_TASKS:-}" ]]; then echo "[seg-aot] SEG_TASKS not set" >&2; exit 1; fi
+source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 
 DATA_DIR="${DATA_DIR:-${SEG_AOT_DATA_ROOT}/${DATA_NAME:-${EXP_NAME}}}"
 TRAIN_FILE="${TRAIN_FILE:-${DATA_DIR}/train.jsonl}"
@@ -45,27 +46,9 @@ _ray_tmpdir="/tmp/ray_${_exp_short}"
 mkdir -p "${_ray_tmpdir}"
 export RAY_TMPDIR="${_ray_tmpdir}"
 
-# ---- GPU filler: 仅在训练结束或崩溃后启动（占满 GPU 防回收） ----
-_filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
-
-_start_filler() {
-  if [[ "${ENABLE_GPU_FILLER:-true}" != "true" ]] || [[ ! -f "${_filler_script}" ]]; then
-    return
-  fi
-  if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
-    pkill -f "gpu_filler.py" 2>/dev/null || true
-    sleep 2
-  fi
-  echo "[seg-aot] Training stopped — starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%)"
-  nohup python3 "${_filler_script}" \
-    --target-util "${FILLER_TARGET_UTIL:-85}" \
-    --batch "${FILLER_BATCH:-50}" \
-    --matrix-size "${FILLER_MATRIX:-8192}" \
-    > /tmp/filler.log 2>&1 &
-  echo "[seg-aot] GPU filler started (PID $!), log: /tmp/filler.log"
-}
-
-trap 'rm -f /tmp/verl_gpu_phase; _start_filler' EXIT
+# ---- GPU filler: 训练期间常驻，训练退出后仅清理 signal ----
+trap 'gpu_filler_clear_signal' EXIT
+gpu_filler_start "[seg-aot]"
 
 # ---- Step B: 训练 ----
 echo "[seg-aot] Starting training: ${EXP_NAME}"
@@ -128,5 +111,7 @@ python3 -m verl.trainer.main \
   trainer.logger="[file,tensorboard]" \
   trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
   data.val_batch_size=8
+
+gpu_filler_clear_signal
 
 echo "[seg-aot] Done. Log: ${_run_log}"

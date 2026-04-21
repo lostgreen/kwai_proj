@@ -513,7 +513,9 @@ class RLHFDataset(Dataset):
 
             processed_videos = [] if len(videos) != 0 else None  # text-only data
             _meta = example.get("metadata") or {}
-            _eff_fps = _meta.get("l1_fps", self.video_fps) if _meta.get("level") == 1 else self.video_fps
+            _eff_fps = _meta.get("video_fps_override")
+            if _eff_fps is None:
+                _eff_fps = _meta.get("l1_fps", self.video_fps) if _meta.get("level") == 1 else self.video_fps
             for video in videos:
                 processed_videos.append(process_video(video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=self.max_frames, min_frames=self.min_frames, video_fps=_eff_fps))
 
@@ -594,9 +596,11 @@ class RLHFDataset(Dataset):
             # 多视频时，将 max_frames 均匀分配给每个视频以防止 OOM
             n_videos = len(videos)
             max_frames_per_video = max(1, self.max_frames // n_videos) if n_videos > 1 else self.max_frames
-            # Per-record fps: L1 clips are resampled at l1_fps (e.g. 1fps)
+            # Per-record fps override: prefer explicit override, then legacy l1_fps.
             _meta = example.get("metadata") or {}
-            _eff_fps = _meta.get("l1_fps", self.video_fps) if _meta.get("level") == 1 else self.video_fps
+            _eff_fps = _meta.get("video_fps_override")
+            if _eff_fps is None:
+                _eff_fps = _meta.get("l1_fps", self.video_fps) if _meta.get("level") == 1 else self.video_fps
 
             for video in videos:
                 processed_video, video_fps = process_video(

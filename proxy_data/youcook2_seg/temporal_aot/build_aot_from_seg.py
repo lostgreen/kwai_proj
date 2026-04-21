@@ -14,10 +14,12 @@ build_aot_from_seg.py — 从三层分割标注 JSON 构建 AOT (Action Ordering
   - seg_aot_event_t2v_3way:   给 fwd/shuf/rev 视频选匹配文本                     (A/B/C)
 
   Action — 原子 clips: 各 action clip (按 parent_event_id 分组)
-  - seg_aot_action_v2t_binary: 给 forward-concat 视频，判断哪个动作列表正确       (A/B)
-  - seg_aot_action_t2v_binary: 给 fwd/rev 视频选匹配文本                          (A/B)
-  - seg_aot_action_v2t_3way:  给 forward-concat 视频，判断哪个动作列表正确       (A/B/C)
-  - seg_aot_action_t2v_3way:  给 fwd/shuf/rev 视频选匹配文本                     (A/B/C)
+  - seg_aot_action_v2t_binary: 给 forward-concat 视频，判断哪个动作段落正确       (A/B)
+  - seg_aot_action_t2v_binary: 给 forward/reversed/shuffled 三种文本之一，
+                               在两个视频里选匹配变体                         (A/B)
+  - seg_aot_action_v2t_3way:  给 forward/reversed/shuffled 三种视频之一，
+                               在三段文字里选匹配段落                         (A/B/C)
+  - seg_aot_action_t2v_3way:  给 fwd/shuf/rev 三视频选匹配文本                  (A/B/C)
 
 流程:
     1. 加载标注 → 收集 concat jobs + group metadata
@@ -29,7 +31,7 @@ build_aot_from_seg.py — 从三层分割标注 JSON 构建 AOT (Action Ordering
         --annotation-dir /path/to/annotations \\
         --clip-dir /path/to/clips \\
         --output-dir /path/to/output \\
-        --tasks event_v2t_binary action_v2t_binary \\
+        --tasks action_t2v_binary action_v2t_3way \\
         --complete-only
 """
 
@@ -40,6 +42,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -138,6 +141,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 ANSWER_LETTERS = ["A", "B", "C"]
+ACTION_VARIANTS = ["forward", "reversed", "shuffled"]
+DEFAULT_VIDEO_FPS = 2.0
+DEFAULT_MAX_FRAMES = 256
+MIN_VIDEO_FPS = 0.25
 
 
 # =====================================================================
@@ -264,16 +271,13 @@ Think step by step inside <think></think> tags, then provide your final answer \
 _ACTION_V2T_3WAY_PROMPT = """\
 Watch the video clip carefully.
 
-Which numbered list correctly describes the temporal order of atomic actions in this video?
+Which paragraph best matches the temporal order observed in this video?
 
-A.
-{option_a}
+A. {option_a}
 
-B.
-{option_b}
+B. {option_b}
 
-C.
-{option_c}
+C. {option_c}
 
 Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
@@ -281,10 +285,10 @@ Think step by step inside <think></think> tags, then provide your final answer \
 _ACTION_T2V_3WAY_PROMPT = """\
 Here are three video clips (Clip A, Clip B, and Clip C).
 
-The atomic actions below were performed in this exact order:
-{forward_list}
+The paragraph below describes the observed temporal order of atomic actions in one clip:
+{action_paragraph}
 
-Which clip (A, B, or C) shows these actions in the listed order?
+Which clip (A, B, or C) best matches this paragraph?
 
 Think step by step inside <think></think> tags, then provide your final answer \
 (A, B, or C) inside <answer></answer> tags."""
@@ -293,13 +297,11 @@ Think step by step inside <think></think> tags, then provide your final answer \
 _ACTION_V2T_BINARY_PROMPT = """\
 Watch the video clip carefully.
 
-Which numbered list correctly describes the temporal order of atomic actions in this video?
+Which paragraph best matches the temporal order observed in this video?
 
-A.
-{option_a}
+A. {option_a}
 
-B.
-{option_b}
+B. {option_b}
 
 Think step by step inside <think></think> tags, then provide your final answer \
 (A or B) inside <answer></answer> tags."""
@@ -307,10 +309,10 @@ Think step by step inside <think></think> tags, then provide your final answer \
 _ACTION_T2V_BINARY_PROMPT = """\
 Here are two video clips (Clip A and Clip B).
 
-The atomic actions below were performed in this exact order:
-{forward_list}
+The paragraph below describes the observed temporal order of atomic actions in one clip:
+{action_paragraph}
 
-Which clip (A or B) shows these actions in the listed order?
+Which clip (A or B) best matches this paragraph?
 
 Think step by step inside <think></think> tags, then provide your final answer \
 (A or B) inside <answer></answer> tags."""
@@ -318,6 +320,83 @@ Think step by step inside <think></think> tags, then provide your final answer \
 
 def _format_list(items: list[str]) -> str:
     return "\n".join(f"   {i + 1}. {item}" for i, item in enumerate(items))
+
+
+def _clean_step_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    return text.rstrip(" .;,:")
+
+
+def _format_paragraph(items: list[str]) -> str:
+    cleaned = [_clean_step_text(item) for item in items if _clean_step_text(item)]
+    if not cleaned:
+        return ""
+
+    sentences: list[str] = []
+    last_idx = len(cleaned) - 1
+    for idx, item in enumerate(cleaned):
+        if len(cleaned) == 1:
+            cue = "In this clip"
+        elif idx == 0:
+            cue = "First"
+        elif idx == last_idx:
+            cue = "Finally"
+        elif idx == 1:
+            cue = "Then"
+        elif idx == 2:
+            cue = "Next"
+        else:
+            cue = "After that"
+        sentences.append(f"{cue}, {item}.")
+    return " ".join(sentences)
+
+
+def _build_video_fps_override(
+    total_duration_sec: int | float,
+    num_videos: int,
+    default_fps: float = DEFAULT_VIDEO_FPS,
+    max_frames: int = DEFAULT_MAX_FRAMES,
+) -> float | None:
+    duration = float(total_duration_sec or 0.0)
+    if duration <= 0:
+        return None
+    max_frames_per_video = max(1, max_frames // max(num_videos, 1))
+    fps = min(default_fps, max_frames_per_video / duration)
+    fps = max(fps, MIN_VIDEO_FPS)
+    fps = round(fps, 3)
+    if fps >= default_fps:
+        return None
+    return fps
+
+
+def _action_variant_maps(
+    info: dict,
+    require_shuffled: bool = True,
+) -> tuple[dict[str, list[str]], dict[str, str], dict[str, str]] | None:
+    acts = info["sub_actions"]
+    reversed_acts = list(reversed(acts))
+    shuffled_acts = info.get("shuf_sub_actions")
+    if acts == reversed_acts:
+        return None
+    if not info.get("rev_video"):
+        return None
+    if require_shuffled and (not info.get("shuf_video") or not shuffled_acts):
+        return None
+
+    text_lists = {
+        "forward": acts,
+        "reversed": reversed_acts,
+    }
+    if require_shuffled and shuffled_acts:
+        text_lists["shuffled"] = shuffled_acts
+    text_map = {variant: _format_paragraph(seq) for variant, seq in text_lists.items()}
+    video_map = {
+        "forward": info["fwd_video"],
+        "reversed": info["rev_video"],
+    }
+    if require_shuffled and info.get("shuf_video"):
+        video_map["shuffled"] = info["shuf_video"]
+    return text_lists, text_map, video_map
 
 
 # =====================================================================
@@ -675,35 +754,36 @@ def _build_event_t2v(info: dict, rng: random.Random,
 
 
 def _build_action_v2t(info: dict, rng: random.Random, mcq_mode: str = "binary") -> dict | None:
-    acts = info["sub_actions"]
-    reversed_acts = list(reversed(acts))
-    if acts == reversed_acts:
-        return None  # palindromic
+    variant_maps = _action_variant_maps(info, require_shuffled=(mcq_mode != "binary"))
+    if variant_maps is None:
+        return None
+    text_lists, text_map, video_map = variant_maps
 
     if mcq_mode == "binary":
-        options = [("forward", acts), ("reversed", reversed_acts)]
+        options = [("forward", text_map["forward"]), ("reversed", text_map["reversed"])]
         rng.shuffle(options)
         correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
         body = _ACTION_V2T_BINARY_PROMPT.format(
-            option_a=_format_list(options[0][1]),
-            option_b=_format_list(options[1][1]),
+            option_a=options[0][1],
+            option_b=options[1][1],
         )
         ptype = "seg_aot_action_v2t_binary"
+        query_variant = "forward"
     else:
-        shuffled = acts[:]
-        for _ in range(20):
-            rng.shuffle(shuffled)
-            if shuffled != acts:
-                break
-        if shuffled == acts:
-            return None
-        options = [("forward", acts), ("shuffled", shuffled), ("reversed", reversed_acts)]
+        query_variant = info.get("query_variant", "forward")
+        if query_variant not in ACTION_VARIANTS:
+            query_variant = "forward"
+        options = [
+            ("forward", text_map["forward"]),
+            ("shuffled", text_map["shuffled"]),
+            ("reversed", text_map["reversed"]),
+        ]
         rng.shuffle(options)
-        correct = ANSWER_LETTERS[[o[0] for o in options].index("forward")]
+        correct = ANSWER_LETTERS[[o[0] for o in options].index(query_variant)]
         body = _ACTION_V2T_3WAY_PROMPT.format(
-            option_a=_format_list(options[0][1]),
-            option_b=_format_list(options[1][1]),
-            option_c=_format_list(options[2][1]),
+            option_a=options[0][1],
+            option_b=options[1][1],
+            option_c=options[2][1],
         )
         ptype = "seg_aot_action_v2t_3way"
 
@@ -713,12 +793,20 @@ def _build_action_v2t(info: dict, rng: random.Random, mcq_mode: str = "binary") 
         "event_id": info["event_id"],
         "total_duration_sec": info["total_duration"],
         "n_actions": info["n_actions"],
-        "forward_descriptions": acts,
+        "forward_descriptions": text_lists["forward"],
+        "forward_paragraph": text_map["forward"],
+        "reversed_paragraph": text_map["reversed"],
+        "query_variant": query_variant,
         "mcq_mode": mcq_mode,
         "domain_l1": info["domain_l1"],
         "domain_l2": info["domain_l2"],
         "source": "seg_annotation",
     }
+    if "shuffled" in text_map:
+        meta["shuffled_paragraph"] = text_map["shuffled"]
+    video_fps_override = _build_video_fps_override(info["total_duration"], num_videos=1)
+    if video_fps_override is not None:
+        meta["video_fps_override"] = video_fps_override
     for i, o in enumerate(options):
         meta[f"option_{chr(97+i)}_type"] = o[0]
 
@@ -726,7 +814,7 @@ def _build_action_v2t(info: dict, rng: random.Random, mcq_mode: str = "binary") 
         "messages": [{"role": "user", "content": prompt}],
         "prompt": prompt,
         "answer": correct,
-        "videos": [info["fwd_video"]],
+        "videos": [video_map[query_variant]],
         "data_type": "video",
         "problem_type": ptype,
         "metadata": meta,
@@ -734,34 +822,31 @@ def _build_action_v2t(info: dict, rng: random.Random, mcq_mode: str = "binary") 
 
 
 def _build_action_t2v(info: dict, rng: random.Random,
-                      mcq_mode: str = "binary", text_order: str = "forward") -> dict | None:
-    if not info.get("rev_video"):
+                      mcq_mode: str = "binary", text_order: str = "forward",
+                      negative_variant: str | None = None) -> dict | None:
+    variant_maps = _action_variant_maps(info, require_shuffled=True)
+    if variant_maps is None:
+        return None
+    text_lists, text_map, video_map = variant_maps
+    if text_order not in ACTION_VARIANTS:
         return None
 
-    acts = info["sub_actions"]
-    text_map = {
-        "forward": acts,
-        "reversed": list(reversed(acts)),
-    }
-    video_map = {
-        "forward": info["fwd_video"],
-        "reversed": info["rev_video"],
-    }
-
     if mcq_mode == "binary":
-        text_list = text_map.get(text_order, acts)
-        video_opts = [("forward", video_map["forward"]), ("reversed", video_map["reversed"])]
+        if negative_variant not in ACTION_VARIANTS or negative_variant == text_order:
+            remaining = [variant for variant in ACTION_VARIANTS if variant != text_order]
+            negative_variant = remaining[0]
+        action_paragraph = text_map[text_order]
+        video_opts = [
+            (text_order, video_map[text_order]),
+            (negative_variant, video_map[negative_variant]),
+        ]
         rng.shuffle(video_opts)
         correct = ANSWER_LETTERS[[o[0] for o in video_opts].index(text_order)]
         videos = [v for _, v in video_opts]
-        body = _ACTION_T2V_BINARY_PROMPT.format(forward_list=_format_list(text_list))
+        body = _ACTION_T2V_BINARY_PROMPT.format(action_paragraph=action_paragraph)
         ptype = "seg_aot_action_t2v_binary"
     else:
-        if not info.get("shuf_video"):
-            return None
-        text_map["shuffled"] = info.get("shuf_sub_actions") or acts
-        video_map["shuffled"] = info["shuf_video"]
-        text_list = text_map.get(text_order, acts)
+        action_paragraph = text_map[text_order]
         video_opts = [
             ("forward", video_map["forward"]),
             ("shuffled", video_map["shuffled"]),
@@ -770,7 +855,7 @@ def _build_action_t2v(info: dict, rng: random.Random,
         rng.shuffle(video_opts)
         correct = ANSWER_LETTERS[[o[0] for o in video_opts].index(text_order)]
         videos = [v for _, v in video_opts]
-        body = _ACTION_T2V_3WAY_PROMPT.format(forward_list=_format_list(text_list))
+        body = _ACTION_T2V_3WAY_PROMPT.format(action_paragraph=action_paragraph)
         ptype = "seg_aot_action_t2v_3way"
 
     tags = "".join("<video>" for _ in videos)
@@ -781,7 +866,10 @@ def _build_action_t2v(info: dict, rng: random.Random,
         "event_id": info["event_id"],
         "total_duration_sec": info["total_duration"],
         "n_actions": info["n_actions"],
-        "forward_descriptions": acts,
+        "forward_descriptions": text_lists["forward"],
+        "forward_paragraph": text_map["forward"],
+        "reversed_paragraph": text_map["reversed"],
+        "shuffled_paragraph": text_map["shuffled"],
         "text_order": text_order,
         "mcq_mode": mcq_mode,
         "correct_position": correct,
@@ -789,6 +877,11 @@ def _build_action_t2v(info: dict, rng: random.Random,
         "domain_l2": info["domain_l2"],
         "source": "seg_annotation",
     }
+    if mcq_mode == "binary":
+        meta["negative_variant"] = negative_variant
+    video_fps_override = _build_video_fps_override(info["total_duration"], num_videos=len(videos))
+    if video_fps_override is not None:
+        meta["video_fps_override"] = video_fps_override
     for i, o in enumerate(video_opts):
         meta[f"video_{chr(97+i)}_type"] = o[0]
 
@@ -835,6 +928,8 @@ def main():
     parser.add_argument("--max-actions", type=int, default=999)
     parser.add_argument("--max-t2v-duration", type=int, default=85,
                         help="T2V 最大单视频时长(s)，超过则跳过 (3视频×85帧=255≤MAX_FRAMES)")
+    parser.add_argument("--max-action-t2v-duration", type=int, default=120,
+                        help="Action T2V 单视频最长时长(s)，二选一时会自动写入 video_fps_override")
     parser.add_argument("--total-val", type=int, default=200)
     parser.add_argument("--train-total", type=int, default=-1,
                         help="总训练样本数上限 (-1=不限制)")
@@ -851,6 +946,7 @@ def main():
     concat_dir = args.concat_dir or os.path.join(args.output_dir, "concat_videos")
     tasks = set(args.tasks)
     max_t2v_dur = args.max_t2v_duration
+    max_action_t2v_dur = args.max_action_t2v_duration
 
     # Derive need flags
     need_event_v2t_bin = "event_v2t_binary" in tasks
@@ -869,7 +965,7 @@ def main():
     need_action_v2t = need_action_v2t_bin or need_action_v2t_3way
     need_action_t2v = need_action_t2v_bin or need_action_t2v_3way
     need_action_any = need_action_v2t or need_action_t2v
-    need_action_shuf = need_action_v2t_3way or need_action_t2v_3way
+    need_action_shuf = need_action_v2t_3way or need_action_t2v_bin or need_action_t2v_3way
 
     # ---- 1. Load annotations ----
     ann_list = load_annotations(args.annotation_dir, complete_only=False)
@@ -950,6 +1046,7 @@ def main():
     ev_t2v_3way_idx = 0
     act_t2v_bin_idx = 0
     act_t2v_3way_idx = 0
+    act_v2t_3way_idx = 0
 
     for info in event_groups:
         if info["fwd_video"] in failed_paths:
@@ -994,15 +1091,24 @@ def main():
                 task_records["action_v2t_binary"].append(rec)
 
         if need_action_v2t_3way:
-            rec = _build_action_v2t(info, random.Random(rng.random()), mcq_mode="3way")
-            if rec:
-                task_records["action_v2t_3way"].append(rec)
+            if (info.get("shuf_video") not in failed_paths
+                    and info.get("rev_video") not in failed_paths):
+                info_with_query = dict(info)
+                info_with_query["query_variant"] = ACTION_VARIANTS[act_v2t_3way_idx % len(ACTION_VARIANTS)]
+                rec = _build_action_v2t(info_with_query, random.Random(rng.random()), mcq_mode="3way")
+                if rec:
+                    task_records["action_v2t_3way"].append(rec)
+                    act_v2t_3way_idx += 1
 
-        if need_action_t2v_bin and info["total_duration"] <= max_t2v_dur:
-            if info.get("rev_video") not in failed_paths:
-                text_order = _BINARY_T2V_ORDERS[act_t2v_bin_idx % 2]
+        if need_action_t2v_bin and info["total_duration"] <= max_action_t2v_dur:
+            if (info.get("shuf_video") not in failed_paths
+                    and info.get("rev_video") not in failed_paths):
+                text_order = ACTION_VARIANTS[act_t2v_bin_idx % len(ACTION_VARIANTS)]
+                remaining = [variant for variant in ACTION_VARIANTS if variant != text_order]
+                negative_variant = remaining[(act_t2v_bin_idx // len(ACTION_VARIANTS)) % len(remaining)]
                 rec = _build_action_t2v(info, random.Random(rng.random()),
-                                        mcq_mode="binary", text_order=text_order)
+                                        mcq_mode="binary", text_order=text_order,
+                                        negative_variant=negative_variant)
                 if rec:
                     task_records["action_t2v_binary"].append(rec)
                     act_t2v_bin_idx += 1

@@ -22,6 +22,7 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
     _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     source "${_SCRIPT_DIR}/multi_task_common.sh"
 fi
+source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 
 # ---- 实验配置 ----
 EXP_NAME="${EXP_NAME:-multi_task_demo_2gpu}"
@@ -110,31 +111,11 @@ PY
 fi
 
 # ============================================================
-# GPU filler: 仅在训练结束或崩溃后启动（占满 GPU 防回收）
-# 训练期间集群利用率已足够高，不需要 filler
+# GPU filler: 训练期间常驻，维持平均 util 在目标附近
+# 训练结束后仅清理 signal，filler 继续占卡防回收
 # ============================================================
-_filler_script="${REPO_ROOT}/local_scripts/gpu_filler.py"
-
-_start_filler() {
-  if [[ "${ENABLE_GPU_FILLER:-true}" != "true" ]] || [[ ! -f "${_filler_script}" ]]; then
-    return
-  fi
-  # Kill any old instances first
-  if pgrep -f "gpu_filler.py" > /dev/null 2>&1; then
-    pkill -f "gpu_filler.py" 2>/dev/null || true
-    sleep 2
-  fi
-  echo "[multi-task] Training stopped — starting GPU filler (target=${FILLER_TARGET_UTIL:-85}%)"
-  nohup python3 "${_filler_script}" \
-    --target-util "${FILLER_TARGET_UTIL:-85}" \
-    --batch "${FILLER_BATCH:-50}" \
-    --matrix-size "${FILLER_MATRIX:-8192}" \
-    > /tmp/filler.log 2>&1 &
-  echo "[multi-task] GPU filler started (PID $!), log: /tmp/filler.log"
-}
-
-# 训练结束（正常/崩溃）→ 清理信号文件 + 启动 filler
-trap 'rm -f /tmp/verl_gpu_phase; _start_filler' EXIT
+trap 'gpu_filler_clear_signal' EXIT
+gpu_filler_start "[multi-task]"
 
 # ============================================================
 # 启动训练
@@ -204,3 +185,5 @@ python3 -m verl.trainer.main \
     trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
     data.val_batch_size=8 \
     data.dataloader_num_workers="${DATALOADER_NUM_WORKERS:-2}"
+
+gpu_filler_clear_signal

@@ -256,6 +256,7 @@ _TASK_REWARD_DISPATCH = {
     "seg_aot_action_t2v_binary":  _choice_reward,
     "seg_aot_action_v2t_3way":    _choice_reward,
     "seg_aot_action_t2v_3way":    _choice_reward,
+    "seg_aot_sort_event_dir_binary": _choice_reward,
     # Sort
     "sort":                       _sort_reward,
     # Event Logic (VLM-curated)

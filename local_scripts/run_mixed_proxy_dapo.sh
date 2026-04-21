@@ -16,6 +16,7 @@ set -x
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 
 # ---- 环境变量 ----
 export DECORD_EOF_RETRY_MAX=2048001
@@ -168,6 +169,9 @@ PY
 fi
 
 # ---- 启动训练 ----
+trap 'gpu_filler_clear_signal' EXIT
+gpu_filler_start "[mixed-proxy]"
+
 python3 -m verl.trainer.main \
     config=examples/config_ema_grpo_64.yaml \
     data.train_files="${TRAIN_FILE}" \
@@ -221,3 +225,5 @@ python3 -m verl.trainer.main \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="/m2v_intern/xuboshen/zgw/RL-Models/${exp_name}" \
     data.val_batch_size=8
+
+gpu_filler_clear_signal

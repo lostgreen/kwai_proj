@@ -138,10 +138,11 @@ def build_multi_modal_data(example: dict[str, Any], args: argparse.Namespace) ->
     if videos:
         n_videos = len(videos)
         max_frames_per_video = max(1, args.max_frames // n_videos) if n_videos > 1 else args.max_frames
-        # Per-record fps override: L1 clips are resampled at l1_fps (e.g. 1fps),
-        # so we must not request frames at the global video_fps (e.g. 2fps).
+        # Per-record fps override: prefer explicit override, then legacy l1_fps.
         meta = example.get("metadata") or {}
-        effective_fps = meta.get("l1_fps", args.video_fps) if meta.get("level") == 1 else args.video_fps
+        effective_fps = meta.get("video_fps_override")
+        if effective_fps is None:
+            effective_fps = meta.get("l1_fps", args.video_fps) if meta.get("level") == 1 else args.video_fps
         data = {
             "videos": videos,
             "min_pixels": args.min_pixels,
@@ -171,7 +172,9 @@ def prepare_inputs(example: dict[str, Any], processor, args: argparse.Namespace)
         video_metadatas = []
         max_frames_per_video = max(1, args.max_frames // len(videos)) if len(videos) > 1 else args.max_frames
         meta = example.get("metadata") or {}
-        effective_fps = meta.get("l1_fps", args.video_fps) if meta.get("level") == 1 else args.video_fps
+        effective_fps = meta.get("video_fps_override")
+        if effective_fps is None:
+            effective_fps = meta.get("l1_fps", args.video_fps) if meta.get("level") == 1 else args.video_fps
         for video in videos:
             processed_video, _video_sample_fps = process_video(
                 video,
