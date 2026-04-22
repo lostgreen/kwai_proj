@@ -198,3 +198,4 @@ proxy_data/youcook2_seg/hier_seg_annotation/annotations/
 proxy_data/youcook2_seg/hier_seg_annotation/clips/
 
 docs/
+.worktrees/
