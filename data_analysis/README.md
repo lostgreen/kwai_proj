@@ -1,18 +1,16 @@
-# Event Logic Ablation Analysis
+# Actual Training Problem Type Ratio
 
-This folder contains an offline analysis tool for the three event logic ablation
-experiments:
+This folder now focuses on one thing only:
+
+- read saved train rollouts
+- count how many actual training samples belong to each `problem_type`
+- draw one pie chart per experiment
+
+Supported experiments:
 
 - `PN` -> `el_ablation_predict_next`
 - `FB` -> `el_ablation_fill_blank`
 - `SORT` -> `el_ablation_sort`
-
-The analysis compares:
-
-1. Planned dataset mix from each experiment's `train.jsonl`
-2. Planned sampler mix from `task_weights` and the task-homogeneous sampler
-3. Actual training mix from saved `rollouts/step_*.jsonl`
-4. Validation score by `problem_type` from `experiment_log.jsonl`
 
 ## Run
 
@@ -22,22 +20,17 @@ Run from the repo root:
 bash data_analysis/run_event_logic_ablation_analysis.sh
 ```
 
-This uses the default paths hard-coded by the event ablation scripts:
+The default root is:
 
 ```text
-data root:
-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/experiments
-
-checkpoint root:
-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/event_logic/ablations
+/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task
 ```
 
-Override roots if your experiment artifacts live somewhere else:
+If your experiment directories live somewhere else:
 
 ```bash
 bash data_analysis/run_event_logic_ablation_analysis.sh \
-  --data-root /path/to/multi_task/experiments \
-  --checkpoint-root /path/to/event_logic/ablations \
+  --experiment-root /path/to/multi_task \
   --output-root data_analysis/outputs/my_run
 ```
 
@@ -47,12 +40,12 @@ Analyze only one experiment:
 bash data_analysis/run_event_logic_ablation_analysis.sh --experiments PN
 ```
 
-Analyze all three and write to a custom output directory:
+Analyze all three:
 
 ```bash
 bash data_analysis/run_event_logic_ablation_analysis.sh \
   --experiments PN FB SORT \
-  --output-root data_analysis/outputs/event_logic_ablations
+  --output-root data_analysis/outputs/actual_training_problem_type_ratio
 ```
 
 Fail fast if any expected input is missing:
@@ -63,35 +56,20 @@ bash data_analysis/run_event_logic_ablation_analysis.sh --strict
 
 ## Outputs
 
-For each experiment the script writes:
+For each experiment the script writes only:
 
-- `summary.md`
-- `train_problem_type_counts.csv`
-- `val_problem_type_counts.csv`
-- `sampler_plan.csv`
-- `actual_train_step_counts.csv`
-- `actual_train_sample_counts.csv`
-- `actual_train_step_sequence.csv`
-- `val_scores.csv`
-- `train_mix_pie.png`
-- `val_mix_pie.png`
-- `planned_vs_actual_train_mix.png`
-- `actual_train_mix_over_steps.png`
-- `val_score_by_problem_type.png`
+- `actual_training_problem_type_ratio.csv`
+- `actual_training_problem_type_ratio.png`
+- `README.md`
 
-The script also writes a top-level overview:
+At the top level it also writes:
 
 - `overview.csv`
-- `event_share_overview.csv`
 - `overview.md`
-- `event_share_overview.png`
 
 ## Notes
 
-- The script compares three different notions of ratio:
-  - dataset ratio from `train.jsonl`
-  - sampler-planned ratio from `task_weights` plus the task-homogeneous sampler
-  - actual training ratio from saved train rollouts
-- Validation score is read from `experiment_log.jsonl` when available, otherwise it
-  falls back to aggregating `rollouts/val_step_*.jsonl`.
+- It only reads `rollouts/step_*.jsonl`.
+- It ignores `val_step_*.jsonl`.
+- It does not try to compare planned ratio, sampler ratio, or validation metrics anymore.
 - Generated outputs are ignored by git via `data_analysis/.gitignore`.
