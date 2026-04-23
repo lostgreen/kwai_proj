@@ -843,14 +843,15 @@ def write_markdown_summary(
             + "".join("---:|" for _ in thresholds)
         )
         for row in [r for r in budget_rows if r["level"] == bundle.key and r["budget_frames"] in focus_budgets]:
-            threshold_cells = " ".join(
-                f"| {_fmt_stat(row.get(f'pct_gt_units_lt_{str(threshold).replace('.', '_')}_frames'))}"
-                for threshold in thresholds
-            )
+            threshold_cells = []
+            for threshold in thresholds:
+                threshold_key = f"pct_gt_units_lt_{str(threshold).replace('.', '_')}_frames"
+                threshold_cells.append(f"| {_fmt_stat(row.get(threshold_key))}")
+            threshold_cells_text = " ".join(threshold_cells)
             lines.append(
                 f"| {row['budget_frames']} | {_fmt_stat(row['pct_inputs_downsampled'])} | "
                 f"{_fmt_stat(row['median_gt_unit_frames'])} | {_fmt_stat(row['p10_gt_unit_frames'])} "
-                f"{threshold_cells} |"
+                f"{threshold_cells_text} |"
             )
 
     path.parent.mkdir(parents=True, exist_ok=True)
