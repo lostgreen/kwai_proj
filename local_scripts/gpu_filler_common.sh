@@ -38,6 +38,7 @@ gpu_filler_stop_on_exit_enabled() {
 gpu_filler_start() {
   local prefix="${1:-[gpu-filler]}"
   local filler_args=()
+  local filler_env=()
   local start_delay="${FILLER_START_DELAY:-0}"
   local filler_mode="${FILLER_MODE:-nvml}"
   local signal_prefix="${FILLER_SIGNAL_PREFIX:-/tmp/verl_gpu_phase_gpu}"
@@ -82,6 +83,9 @@ gpu_filler_start() {
   if [[ -n "${FILLER_BUSY_HOLD_MS:-}" ]]; then
     filler_args+=(--busy-hold-ms "${FILLER_BUSY_HOLD_MS}")
   fi
+  if [[ -n "${FILLER_STALE_SIGNAL_TIMEOUT:-}" ]]; then
+    filler_env+=("FILLER_STALE_SIGNAL_TIMEOUT=${FILLER_STALE_SIGNAL_TIMEOUT}")
+  fi
   if [[ -n "${FILLER_GPUS:-}" ]] && ! gpu_filler_per_gpu_enabled; then
     filler_args+=(--gpus "${FILLER_GPUS}")
   fi
@@ -108,7 +112,7 @@ gpu_filler_start() {
       fi
       (
         sleep "${start_delay}"
-        exec env CUDA_VISIBLE_DEVICES="${gpu_trimmed}" VERL_GPU_SIGNAL_PATH="${signal_path}" \
+        exec env "${filler_env[@]}" CUDA_VISIBLE_DEVICES="${gpu_trimmed}" VERL_GPU_SIGNAL_PATH="${signal_path}" \
           python3 "${GPU_FILLER_SCRIPT}" "${filler_args[@]}" --gpus 0
       ) > "${log_path}" 2>&1 &
       echo "${prefix} GPU filler started for GPU ${gpu_trimmed} (PID $!), log: ${log_path}, signal: ${signal_path}"
@@ -116,7 +120,7 @@ gpu_filler_start() {
   else
     (
       sleep "${start_delay}"
-      exec python3 "${GPU_FILLER_SCRIPT}" "${filler_args[@]}"
+      exec env "${filler_env[@]}" python3 "${GPU_FILLER_SCRIPT}" "${filler_args[@]}"
     ) > "${GPU_FILLER_LOG_PATH}" 2>&1 &
     echo "${prefix} GPU filler started (PID $!), log: ${GPU_FILLER_LOG_PATH}"
   fi

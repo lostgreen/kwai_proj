@@ -32,7 +32,7 @@ Usage (from train/ directory):
             --output_jsonl screen_shard${i}.jsonl \
             --keep_jsonl keep_shard${i}.jsonl \
             --reject_jsonl reject_shard${i}.jsonl \
-            --model_path /home/xuboshen/models/Qwen3-VL-4B-Instruct \
+            --model_path /m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct \
             --shard_id $i --num_shards 2 --unified &
     done
     wait

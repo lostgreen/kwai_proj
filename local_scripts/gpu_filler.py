@@ -70,8 +70,8 @@ def gpu_utilization(nvml_idx: int) -> int:
 # ---------------------------------------------------------------------------
 
 SIGNAL_PATH = os.environ.get("VERL_GPU_SIGNAL_PATH", "/tmp/verl_gpu_phase")
-BUSY_PHASES = {"gen", "update"}
-STALE_SIGNAL_TIMEOUT = 30  # seconds
+BUSY_PHASES = {"gen", "update", "decode"}
+STALE_SIGNAL_TIMEOUT = float(os.environ.get("FILLER_STALE_SIGNAL_TIMEOUT", "30"))
 
 
 def signal_says_busy() -> bool:

@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
 INPUT_JSONL="${INPUT_JSONL:-}"
-MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
+MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-}"
 NUM_GPUS="${NUM_GPUS:-1}"
 TP_SIZE="${TP_SIZE:-1}"

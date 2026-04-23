@@ -27,10 +27,11 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 
 # ── Config ──────────────────────────────────────────────────────────
-SCRIPT_DIR="proxy_data/youcook2_seg/hier_seg_annotation"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1"
 
-JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_instruct_164k/screen_keep.jsonl}"
+JSONL="${JSONL:-${REPO_ROOT}/proxy_data/data_curation/results/et_instruct_164k/screen_keep.jsonl}"
 MODEL="${MODEL:-pa/gmn-2.5-pr}"
 WORKERS="${WORKERS:-8}"
 LIMIT="${LIMIT:-10000}"

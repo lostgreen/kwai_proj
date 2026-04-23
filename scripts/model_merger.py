@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-python /home/xuboshen/zgw/EasyR1/scripts/model_merger.py \
+python /m2v_intern/xuboshen/zgw/EasyR1/scripts/model_merger.py \
     --local_dir /m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task/el_ablation_sort/global_step_350/actor
 """
 

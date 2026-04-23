@@ -42,7 +42,7 @@ from ..utils.checkpoint import CHECKPOINT_TRACKER, find_latest_ckpt, remove_obso
 from ..utils.logger import Tracker
 from ..utils.py_functional import convert_dict_to_str, timer, unflatten_dict
 from ..utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
-from ..utils.gpu_phase_signal import clear_gpu_phase, register_cleanup
+from ..utils.gpu_phase_signal import clear_gpu_phase, register_cleanup, set_gpu_phase
 from ..utils.timing_logger import init_timing_log, log_timing, tlog
 from ..workers.fsdp_workers import FSDPWorker
 from ..workers.reward import FunctionRewardManager
@@ -555,7 +555,16 @@ class RayPPOTrainer:
             if os.path.exists(filepath):
                 os.remove(filepath)
         self.actor_rollout_ref_wg.prepare_rollout_engine()
-        for batch_dict in self.val_dataloader:
+        val_iterator = iter(self.val_dataloader)
+        while True:
+            set_gpu_phase("val_decode")
+            try:
+                batch_dict = next(val_iterator)
+            except StopIteration:
+                break
+            finally:
+                set_gpu_phase("val_idle")
+
             test_batch = DataProto.from_single_dict(batch_dict)
             test_batch.non_tensor_batch["uid"] = np.array(
                 [f"val-{uuid.uuid4()}" for _ in range(len(test_batch.batch))], dtype=object
@@ -574,6 +583,7 @@ class RayPPOTrainer:
             test_gen_batch, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_ref_wg.world_size)
             test_output_gen_batch = self.actor_rollout_ref_wg.generate_sequences(test_gen_batch)
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch, pad_size=pad_size * repeat_times)
+            set_gpu_phase("val_idle")
 
             # repeat to align with repeated responses in rollout
             test_batch = test_batch.repeat(repeat_times=repeat_times, interleave=True)
@@ -581,6 +591,7 @@ class RayPPOTrainer:
 
             # evaluate using reward_function
             reward_tensor, reward_metrics = ray.get(self.val_reward_fn.compute_reward.remote(test_batch))
+            set_gpu_phase("val_idle")
 
             repeated_multimodal_sources = np.repeat(multimodal_sources, repeat_times, axis=0)
             self._save_val_rollouts(
@@ -595,6 +606,7 @@ class RayPPOTrainer:
             output_ids = test_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             scores = reward_tensor.sum(-1).cpu().tolist()
+            set_gpu_phase("val_idle")
             sample_inputs.extend(input_texts)
             sample_outputs.extend(output_texts)
             sample_labels.extend(test_batch.non_tensor_batch["ground_truth"].tolist())
@@ -681,11 +693,14 @@ class RayPPOTrainer:
         print("Start generating batch...")
         while True:
             num_try_make_batch += 1
+            set_gpu_phase("decode")
             try:
                 batch_dict = next(self.data_iterator)
             except StopIteration:
                 self.data_iterator = iter(self.train_dataloader)
                 batch_dict = next(self.data_iterator)
+            finally:
+                set_gpu_phase("idle")
 
             # Track consumed samples for epoch monitoring
             batch_len = len(batch_dict[next(iter(batch_dict))])

@@ -25,10 +25,11 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 
 # ── Config ──────────────────────────────────────────────────────────
-SCRIPT_DIR="proxy_data/youcook2_seg/hier_seg_annotation"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1"
 
-JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_instruct_164k/screen_keep.jsonl}"
+JSONL="${JSONL:-${REPO_ROOT}/proxy_data/data_curation/results/et_instruct_164k/screen_keep.jsonl}"
 MODEL="${MODEL:-gemini-2.5-flash}"
 FPS="${FPS:-2}"
 LIMIT="${LIMIT:-5}"
@@ -38,7 +39,7 @@ SKIP_FRAMES="${SKIP_FRAMES:-0}"
 
 # Auth: "vertex" (default, uses credential JSON) or "apikey" (uses GEMINI_API_KEY)
 AUTH_MODE="${AUTH_MODE:-vertex}"
-CREDENTIAL_JSON="${CREDENTIAL_JSON:-/home/xuboshen/zgw/A/keling-ylab-gemini-1038ec8509a2.json}"
+CREDENTIAL_JSON="${CREDENTIAL_JSON:-/m2v_intern/xuboshen/zgw/A/keling-ylab-gemini-1038ec8509a2.json}"
 
 # Output directories
 FRAMES_DIR="${DATA_ROOT}/frames"

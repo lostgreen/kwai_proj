@@ -27,7 +27,7 @@ project_name="${PROJECT_NAME:-EasyR1-temporal-grounding}"
 exp_name="${EXP_NAME:-qwen3_vl_tg_dapo_2gpu}"
 
 # ---- 模型 & 数据 ----
-MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
+MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
 TRAIN_FILE="${TRAIN_FILE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_train_max256s.jsonl}"
 TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_val_max256s.jsonl}"
 IMAGE_DIR="${IMAGE_DIR:-}"

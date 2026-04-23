@@ -22,10 +22,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 # ── 默认参数 ────────────────────────────────────────────────────
-TIMERFT_JSON="${TIMERFT_JSON:-/home/xuboshen/zgw/EasyR1/proxy_data/temporal_grounding/data/train_2k5.json}"
-TVGBENCH_JSON="${TVGBENCH_JSON:-/home/xuboshen/zgw/EasyR1/proxy_data/temporal_grounding/data/tvgbench.json}"
+TIMERFT_JSON="${TIMERFT_JSON:-${REPO_ROOT}/proxy_data/temporal_grounding/data/train_2k5.json}"
+TVGBENCH_JSON="${TVGBENCH_JSON:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tvgbench.json}"
 VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset}"
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/data}"
 MAX_DURATION="${MAX_DURATION:-256}"

@@ -20,7 +20,7 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-seg-aot-ablation}"
 # EXP_NAME 由各实验脚本赋值
 
 # ---- 模型 ----
-MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
+MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # ---- Seg Annotation 数据路径 ----
 HIER_SEG_ROOT="${HIER_SEG_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation}"

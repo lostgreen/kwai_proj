@@ -28,7 +28,7 @@ project_name="${PROJECT_NAME:-EasyR1-temporal-aot}"
 exp_name="${EXP_NAME:-qwen3_vl_temporal_aot_dapo_2gpu_offline_filtered}"
 
 # ---- 模型 & 数据 ----
-MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"   # 替换为你的模型路径
+MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"   # 替换为你的模型路径
 TRAIN_SOURCE_FILE="${TRAIN_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_train.jsonl}"
 TEST_FILE="${TEST_FILE:-${REPO_ROOT}/proxy_data/temporal_aot/data/mixed_aot_val.jsonl}"
 IMAGE_DIR="${IMAGE_DIR:-}"                                                 # 视频已使用绝对路径则留空
@@ -189,7 +189,7 @@ python3 -m verl.trainer.main \
     data.rollout_batch_size="${ROLLOUT_BS}" \
     data.format_prompt="" \
     data.filter_overlong_prompts=false \
-    data.task_homogeneous_batching=true \
+    data.task_homogeneous_batching=false \
     data.task_weights="${TASK_WEIGHTS}" \
     data.task_key="problem_type" \
     algorithm.adv_estimator="${ADV_ESTIMATOR}" \

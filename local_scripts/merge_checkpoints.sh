@@ -27,7 +27,7 @@ fi
 
 CHECKPOINT_ROOT="$(cd -- "$1" && pwd)"
 OUTPUT_DIR="${2:-${CHECKPOINT_ROOT%/}_merged}"
-MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
+MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
 
 # Base model 名称（取路径最后一段）
 BASE_MODEL_NAME="$(basename "${MODEL_PATH}")"
