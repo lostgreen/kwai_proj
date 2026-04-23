@@ -2,20 +2,22 @@
 # =============================================================
 # run_reward_ablation.sh — Reward 消融实验入口
 #
-# 当前仅保留两组有效实验:
-#   R1: F1-IoU / Hungarian matching
-#   R4: Segment Matching
+# 当前默认三组实验:
+#   R1:     F1-IoU / Hungarian matching / GRPO
+#   R4:     Segment Matching / GRPO
+#   R1_EMA: F1-IoU / Hungarian matching / EMA-GRPO
 #
-# 两组实验默认都:
+# 三组实验默认都:
 #   - 使用 full hier-seg train (HIER_TARGET=0)
-#   - 对齐 VideoSSR-like 关键超参
+#   - LR=1e-6, KL_COEF=0.001, ENTROPY=0
+#   - MAX_FRAMES=256, MAX_PIXELS=65536
 #   - 保留 online filtering=true
 # =============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-EXPS="${EXPS:-R1 R4}"
+EXPS="${EXPS:-R1 R4 R1_EMA}"
 MAX_STEPS="${MAX_STEPS:-30}"
 
 _START=$(date +%s)
@@ -32,6 +34,7 @@ for EXP in ${EXPS}; do
   case "${EXP}" in
     R1) MAX_STEPS="${MAX_STEPS}" bash "${SCRIPT_DIR}/exp_r1_f1iou.sh" ;;
     R4) MAX_STEPS="${MAX_STEPS}" bash "${SCRIPT_DIR}/exp_r4_seg_match.sh" ;;
+    R1_EMA) MAX_STEPS="${MAX_STEPS}" bash "${SCRIPT_DIR}/exp_r1_f1iou_ema.sh" ;;
     *)  echo "[reward_ablation] Unknown experiment: ${EXP}" >&2; exit 1 ;;
   esac
 

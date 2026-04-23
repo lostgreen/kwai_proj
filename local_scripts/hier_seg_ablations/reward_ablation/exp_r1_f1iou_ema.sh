@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================
-# exp_r4_seg_match.sh — Reward Ablation: R4 / Segment Matching / GRPO
+# exp_r1_f1iou_ema.sh — Reward Ablation: R1 / Hungarian F1-IoU / EMA-GRPO
 #
-# 与 R1-GRPO 保持同一套数据规模和关键超参，只切换 hier reward:
-#   - ADV_ESTIMATOR=grpo
-#   - LR=1e-6, KL_COEF=0.001, ENTROPY=0
-#   - MAX_FRAMES=256, MAX_PIXELS=65536
-#   - ONLINE_FILTERING=true
+# 保险对照实验:
+#   - 与 R1-GRPO 保持同一套 reward / 数据 / 超参
+#   - 只把 ADV_ESTIMATOR 切回 ema_grpo
 # =============================================================
 set -euo pipefail
 
@@ -14,9 +12,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_LOCAL="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
 # ---- 实验特有配置 ----
-export EXP_NAME="${EXP_NAME:-reward_ablation_R4_seg_match_grpo_full20k}"
+export EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou_ema_grpo_full20k}"
 
-# ---- 启用的任务 + 数据量 (与 R1 相同，控制变量) ----
+# ---- 启用的任务 + 数据量 ----
 export TASKS="${TASKS:-tg mcq hier_seg}"
 export HIER_TARGET="${HIER_TARGET:-0}"
 
@@ -30,8 +28,8 @@ if [[ -z "${HIER_VAL_SOURCE:-}" && -f "${DEFAULT_HIER_VAL_SHARED}" ]]; then
     export HIER_VAL_SOURCE="${DEFAULT_HIER_VAL_SHARED}"
 fi
 
-# ---- 关键超参（GRPO + online filtering） ----
-export ADV_ESTIMATOR="${ADV_ESTIMATOR:-grpo}"
+# ---- 关键超参（EMA-GRPO + online filtering） ----
+export ADV_ESTIMATOR="${ADV_ESTIMATOR:-ema_grpo}"
 export ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
 export LR="${LR:-1e-6}"
 export KL_COEF="${KL_COEF:-0.001}"
@@ -41,8 +39,8 @@ export MAX_PIXELS="${MAX_PIXELS:-65536}"
 export CLIP_RATIO_LOW="${CLIP_RATIO_LOW:-0.2}"
 export CLIP_RATIO_HIGH="${CLIP_RATIO_HIGH:-0.2}"
 
-# ---- Reward: 显式切到 hier seg_match ----
-export HIER_REWARD_MODE="${HIER_REWARD_MODE:-seg_match}"
+# ---- Reward: 显式切到 hier F1-IoU ----
+export HIER_REWARD_MODE="${HIER_REWARD_MODE:-f1_iou}"
 export REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT_LOCAL}/verl/reward_function/mixed_proxy_reward_ablation.py:compute_score}"
 
 # ---- 启动 ----

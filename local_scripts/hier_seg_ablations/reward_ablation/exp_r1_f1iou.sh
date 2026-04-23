@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================
-# exp_r1_f1iou.sh — Reward Ablation: R1 / Hungarian F1-IoU
+# exp_r1_f1iou.sh — Reward Ablation: R1 / Hungarian F1-IoU / GRPO
 #
-# 对齐 VideoSSR-like 训练配方的关键超参，同时保留 online filtering:
+# Reward 消融主线先用纯 GRPO，保留 online filtering:
+#   - ADV_ESTIMATOR=grpo
 #   - LR=1e-6
 #   - KL_COEF=0.001
 #   - ENTROPY_COEFF=0
-#   - MAX_FRAMES=48
+#   - MAX_FRAMES=256
 #   - MAX_PIXELS=65536
 #   - ONLINE_FILTERING=true
 #
@@ -19,7 +20,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_LOCAL="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
 # ---- 实验特有配置 ----
-export EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou_videossr_like_full20k}"
+export EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou_grpo_full20k}"
 
 # ---- 启用的任务 + 数据量 ----
 export TASKS="${TASKS:-tg mcq hier_seg}"
@@ -35,13 +36,13 @@ if [[ -z "${HIER_VAL_SOURCE:-}" && -f "${DEFAULT_HIER_VAL_SHARED}" ]]; then
     export HIER_VAL_SOURCE="${DEFAULT_HIER_VAL_SHARED}"
 fi
 
-# ---- VideoSSR-like 关键超参（保留 EMA-GRPO + online filtering） ----
-export ADV_ESTIMATOR="${ADV_ESTIMATOR:-ema_grpo}"
+# ---- 关键超参（GRPO + online filtering） ----
+export ADV_ESTIMATOR="${ADV_ESTIMATOR:-grpo}"
 export ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
 export LR="${LR:-1e-6}"
 export KL_COEF="${KL_COEF:-0.001}"
 export ENTROPY_COEFF="${ENTROPY_COEFF:-0.0}"
-export MAX_FRAMES="${MAX_FRAMES:-48}"
+export MAX_FRAMES="${MAX_FRAMES:-256}"
 export MAX_PIXELS="${MAX_PIXELS:-65536}"
 export CLIP_RATIO_LOW="${CLIP_RATIO_LOW:-0.2}"
 export CLIP_RATIO_HIGH="${CLIP_RATIO_HIGH:-0.2}"
