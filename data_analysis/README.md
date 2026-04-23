@@ -1,10 +1,39 @@
-# Actual Training Problem Type Ratio
+# Data Analysis
 
-This folder now focuses on one thing only:
+This folder currently contains two analysis entry points:
 
-- read saved train rollouts
-- count how many actual training samples belong to each `problem_type`
-- draw one pie chart per experiment
+- `analyze_event_ablations.py`: read saved train rollouts, count actual `problem_type` ratios, and draw one pie chart per experiment.
+- `analyze_hier_seg_frame_budget.py`: analyze hier-seg annotation durations and estimate how much GT phase/event/action resolution remains under frame budgets like `48 / 64 / 128 / 256`.
+
+## Hier-Seg Frame Budget Analysis
+
+Run from the repo root:
+
+```bash
+python data_analysis/analyze_hier_seg_frame_budget.py \
+  --annotation-dir /path/to/youcook2_seg/hier_seg_annotation/annotations \
+  --output-dir data_analysis/outputs/hier_seg_frame_budget
+```
+
+Default assumptions:
+
+- `L1` uses `1 fps`
+- `L2` uses `2 fps`
+- `L3` uses `2 fps`
+- compared budgets are `48 64 96 128 256`
+
+Outputs include:
+
+- `duration_overview.png`
+- `count_overview.png`
+- `frame_budget_overview.png`
+- `frame_budget_threshold_heatmaps.png`
+- `duration_summary.csv`
+- `budget_summary.csv`
+- `summary.json`
+- `README.md`
+
+## Event Logic Ratio Analysis
 
 Supported experiments:
 
