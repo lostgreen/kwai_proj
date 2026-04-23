@@ -23,6 +23,13 @@ Usage:
 Environment:
     VERL_GPU_SIGNAL_PATH  — signal file path (default: /tmp/verl_gpu_phase)
     CUDA_VISIBLE_DEVICES  — respected when --gpus is not set
+
+Modes:
+    nvml    — util-driven filler (default)
+    signal  — no NVML polling; phase-aware open-loop filler
+              gen/update => light fill
+              idle       => heavy fill
+              no-signal  => medium fill
 """
 
 import argparse
@@ -73,6 +80,21 @@ def signal_says_busy() -> bool:
             return f.read().strip() in BUSY_PHASES
     except (FileNotFoundError, OSError):
         return False
+
+
+def get_signal_state() -> str:
+    """Return busy / idle / nosignal / stale for the phase signal."""
+    try:
+        with open(SIGNAL_PATH, "r") as f:
+            phase = f.read().strip()
+    except (FileNotFoundError, OSError):
+        return "nosignal"
+
+    if is_signal_stale():
+        return "stale"
+    if phase in BUSY_PHASES:
+        return "busy"
+    return "idle"
 
 
 def is_signal_stale() -> bool:
@@ -212,6 +234,14 @@ def filler_worker(
     target_util: int,
     gap_matrix: int,
     push_matrix: int,
+    mode: str,
+    busy_matrix: int,
+    busy_batch: int,
+    busy_sleep_ms: int,
+    idle_sleep_ms: int,
+    orphan_matrix: int,
+    orphan_batch: int,
+    orphan_sleep_ms: int,
 ):
     """Async GPU filler — reads monitor cache, fills with matmul.
 
@@ -222,7 +252,11 @@ def filler_worker(
 
     Signal file (/tmp/verl_gpu_phase) is respected: when signal says
     "gen" or "update", filler uses gentler fill to avoid competing with
-    the training process.
+    the training process. In signal mode this becomes a phase-aware
+    open-loop filler:
+      busy(gen/update) => light fill
+      idle             => heavy fill
+      nosignal/stale   => medium fill
     """
     import torch
 
@@ -242,16 +276,51 @@ def filler_worker(
     b_push = torch.randn(push_matrix, push_matrix, device=device, dtype=dtype)
     a_gap = torch.randn(gap_matrix, gap_matrix, device=device, dtype=dtype)
     b_gap = torch.randn(gap_matrix, gap_matrix, device=device, dtype=dtype)
+    a_busy = torch.randn(busy_matrix, busy_matrix, device=device, dtype=dtype)
+    b_busy = torch.randn(busy_matrix, busy_matrix, device=device, dtype=dtype)
+    a_orphan = torch.randn(orphan_matrix, orphan_matrix, device=device, dtype=dtype)
+    b_orphan = torch.randn(orphan_matrix, orphan_matrix, device=device, dtype=dtype)
     stream = torch.cuda.Stream(device=device)
 
     print(f"[filler] GPU {gpu_id}: started  "
           f"idle={matrix_size}x{kernel_batch}  "
           f"push={push_matrix}  gap={gap_matrix}  "
+          f"busy={busy_matrix}x{busy_batch}  "
+          f"orphan={orphan_matrix}x{orphan_batch}  "
           f"target={target_util}%  dtype={dtype}")
 
     _low_util_since = None
 
     while not _STOP.is_set():
+        if mode == "signal":
+            signal_state = get_signal_state()
+            if signal_state == "busy":
+                with _status_lock:
+                    _status[gpu_id] = "LFILL(busy)"
+                with torch.cuda.stream(stream):
+                    for _ in range(busy_batch):
+                        torch.matmul(a_busy, b_busy)
+                time.sleep(max(0.0, busy_sleep_ms / 1000.0))
+                continue
+
+            if signal_state == "idle":
+                with _status_lock:
+                    _status[gpu_id] = "FILL(idle)"
+                fill_batch = min(kernel_batch, 30)
+                with torch.cuda.stream(stream):
+                    for _ in range(fill_batch):
+                        torch.matmul(a_big, b_big)
+                time.sleep(max(0.0, idle_sleep_ms / 1000.0))
+                continue
+
+            with _status_lock:
+                _status[gpu_id] = f"MFILL({signal_state})"
+            with torch.cuda.stream(stream):
+                for _ in range(orphan_batch):
+                    torch.matmul(a_orphan, b_orphan)
+            time.sleep(max(0.0, orphan_sleep_ms / 1000.0))
+            continue
+
         state = _gpu_cache.get(gpu_id)
         if state is None:
             time.sleep(0.05)  # cache not populated yet
@@ -336,7 +405,7 @@ def filler_worker(
                         torch.matmul(a_gap, b_gap)
                 time.sleep(0.003)
 
-    del a_big, b_big, a_push, b_push, a_gap, b_gap
+    del a_big, b_big, a_push, b_push, a_gap, b_gap, a_busy, b_busy, a_orphan, b_orphan
     torch.cuda.empty_cache()
     print(f"[filler] GPU {gpu_id}: stopped")
 
@@ -348,6 +417,8 @@ def filler_worker(
 def main():
     parser = argparse.ArgumentParser(
         description="Smart GPU filler — NVML-safe, util+signal based")
+    parser.add_argument("--mode", choices=["nvml", "signal"], default="nvml",
+                        help="Filler control mode: nvml (default) or signal (no NVML polling)")
     parser.add_argument("--gpus", type=str, default=None,
                         help="Comma-separated CUDA GPU IDs (default: all visible)")
     parser.add_argument("--target-util", type=int, default=85,
@@ -360,6 +431,20 @@ def main():
                         help="Matrix size for gap/near-target fill (default: 4096)")
     parser.add_argument("--push-matrix", type=int, default=6144,
                         help="Matrix size for push fill below target (default: 6144)")
+    parser.add_argument("--busy-matrix", type=int, default=3072,
+                        help="Matrix size for light fill in signal busy phase (default: 3072)")
+    parser.add_argument("--busy-batch", type=int, default=4,
+                        help="Kernels per batch for light fill in signal busy phase (default: 4)")
+    parser.add_argument("--busy-sleep-ms", type=int, default=15,
+                        help="Sleep between busy-phase batches in signal mode (default: 15)")
+    parser.add_argument("--idle-sleep-ms", type=int, default=10,
+                        help="Sleep between idle-phase batches in signal mode (default: 10)")
+    parser.add_argument("--orphan-matrix", type=int, default=4096,
+                        help="Matrix size for no-signal/stale medium fill in signal mode (default: 4096)")
+    parser.add_argument("--orphan-batch", type=int, default=8,
+                        help="Kernels per batch for no-signal/stale medium fill in signal mode (default: 8)")
+    parser.add_argument("--orphan-sleep-ms", type=int, default=12,
+                        help="Sleep between no-signal/stale batches in signal mode (default: 12)")
     # Deprecated alias
     parser.add_argument("--pause", type=int, default=None,
                         help="DEPRECATED: use --target-util instead")
@@ -380,13 +465,23 @@ def main():
         sys.exit(1)
 
     nvml_map = resolve_nvml_indices(gpu_ids)
-    _init_nvml()
+    if args.mode == "nvml":
+        _init_nvml()
 
     print(f"[filler] GPUs: {gpu_ids}  nvml: {[nvml_map[g] for g in gpu_ids]}")
+    print(f"[filler] mode: {args.mode}")
     print(f"[filler] target: {args.target_util}%  idle: {args.matrix_size}x{args.batch}")
     print(f"[filler] push: {args.push_matrix}  gap: {args.gap_matrix}")
+    print(
+        f"[filler] signal-open-loop: busy={args.busy_matrix}x{args.busy_batch}/{args.busy_sleep_ms}ms  "
+        f"orphan={args.orphan_matrix}x{args.orphan_batch}/{args.orphan_sleep_ms}ms  "
+        f"idle_sleep={args.idle_sleep_ms}ms"
+    )
     print(f"[filler] signal: {SIGNAL_PATH}")
-    print(f"[filler] architecture: monitor(2Hz) + workers(cache-read)")
+    if args.mode == "nvml":
+        print(f"[filler] architecture: monitor(2Hz) + workers(cache-read)")
+    else:
+        print(f"[filler] architecture: signal-only workers (no NVML polling)")
 
     # Clean stale signal file
     if os.path.exists(SIGNAL_PATH):
@@ -421,14 +516,16 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Start monitor thread (must populate cache before workers start)
-    mon_thread = threading.Thread(
-        target=monitor_loop,
-        args=(gpu_ids, nvml_map, my_pid),
-        daemon=True,
-    )
-    mon_thread.start()
-    time.sleep(0.2)  # let cache populate
+    mon_thread = None
+    if args.mode == "nvml":
+        # Start monitor thread (must populate cache before workers start)
+        mon_thread = threading.Thread(
+            target=monitor_loop,
+            args=(gpu_ids, nvml_map, my_pid),
+            daemon=True,
+        )
+        mon_thread.start()
+        time.sleep(0.2)  # let cache populate
 
     # Start worker threads
     workers = []
@@ -436,7 +533,10 @@ def main():
         t = threading.Thread(
             target=filler_worker,
             args=(gid, args.matrix_size, args.batch,
-                  args.target_util, args.gap_matrix, args.push_matrix),
+                  args.target_util, args.gap_matrix, args.push_matrix, args.mode,
+                  args.busy_matrix, args.busy_batch, args.busy_sleep_ms,
+                  args.idle_sleep_ms, args.orphan_matrix, args.orphan_batch,
+                  args.orphan_sleep_ms),
             daemon=True,
         )
         t.start()
@@ -448,10 +548,14 @@ def main():
             parts = []
             for gid in gpu_ids:
                 state = _gpu_cache.get(gid)
-                u = state.util if state else -1
+                if args.mode == "nvml":
+                    u = state.util if state else -1
+                    u_str = f"{u:3d}%"
+                else:
+                    u_str = "sig"
                 with _status_lock:
                     st = _status.get(gid, "init")
-                parts.append(f"GPU{gid}:{u:3d}% {st}")
+                parts.append(f"GPU{gid}:{u_str} {st}")
             print(f"\r[filler] {' | '.join(parts)}  ", end="", flush=True)
             _STOP.wait(timeout=2.0)
     except KeyboardInterrupt:
@@ -459,7 +563,8 @@ def main():
 
     for t in workers:
         t.join(timeout=5)
-    mon_thread.join(timeout=2)
+    if mon_thread is not None:
+        mon_thread.join(timeout=2)
     print("\n[filler] Done.")
 
 

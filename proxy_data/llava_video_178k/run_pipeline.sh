@@ -59,8 +59,23 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.80}"
 SEED="${SEED:-42}"
 FORCE="${FORCE:-0}"
 FILLER_LOG_PATH="${FILLER_LOG_PATH:-$OUTPUT_ROOT/gpu_filler.log}"
-FILLER_START_DELAY="${FILLER_START_DELAY:-90}"
+FILLER_START_DELAY="${FILLER_START_DELAY:-0}"
+FILLER_MODE="${FILLER_MODE:-signal}"
+FILLER_PER_GPU="${FILLER_PER_GPU:-true}"
+FILLER_SIGNAL_PREFIX="${FILLER_SIGNAL_PREFIX:-/tmp/llava_video_gpu_phase_gpu}"
 FILLER_TARGET_UTIL="${FILLER_TARGET_UTIL:-85}"
+FILLER_BATCH="${FILLER_BATCH:-50}"
+FILLER_MATRIX="${FILLER_MATRIX:-8192}"
+FILLER_GAP_MATRIX="${FILLER_GAP_MATRIX:-4096}"
+FILLER_PUSH_MATRIX="${FILLER_PUSH_MATRIX:-6144}"
+FILLER_BUSY_MATRIX="${FILLER_BUSY_MATRIX:-3072}"
+FILLER_BUSY_BATCH="${FILLER_BUSY_BATCH:-4}"
+FILLER_BUSY_SLEEP_MS="${FILLER_BUSY_SLEEP_MS:-15}"
+FILLER_IDLE_SLEEP_MS="${FILLER_IDLE_SLEEP_MS:-10}"
+FILLER_ORPHAN_MATRIX="${FILLER_ORPHAN_MATRIX:-4096}"
+FILLER_ORPHAN_BATCH="${FILLER_ORPHAN_BATCH:-8}"
+FILLER_ORPHAN_SLEEP_MS="${FILLER_ORPHAN_SLEEP_MS:-12}"
+STOP_GPU_FILLER_ON_EXIT="${STOP_GPU_FILLER_ON_EXIT:-false}"
 
 REWARD_FN="$SCRIPT_DIR/mcq_reward.py:compute_score"
 ROLLOUT_SCRIPT="$REPO_ROOT/local_scripts/offline_rollout_filter.py"
@@ -86,8 +101,18 @@ if (( NUM_GPUS > ${#VISIBLE_GPU_TOKENS[@]} )); then
     exit 1
 fi
 
+if [[ "${TP_SIZE}" -gt 1 && "${FILLER_PER_GPU}" =~ ^(true|TRUE|1|yes|YES)$ ]]; then
+    echo "TP mode detected; disabling per-GPU filler to keep a single shared phase signal."
+    FILLER_PER_GPU=false
+fi
+
 if [[ -z "${FILLER_GPUS:-}" && "${NUM_GPUS}" -gt 0 ]]; then
-    FILLER_GPUS="$(seq -s, 0 $((NUM_GPUS-1)))"
+    if [[ "${FILLER_PER_GPU}" =~ ^(true|TRUE|1|yes|YES)$ ]]; then
+        FILLER_GPUS="$(printf '%s,' "${VISIBLE_GPU_TOKENS[@]:0:${NUM_GPUS}}")"
+        FILLER_GPUS="${FILLER_GPUS%,}"
+    else
+        FILLER_GPUS="$(seq -s, 0 $((NUM_GPUS-1)))"
+    fi
 fi
 
 echo "============================================="
@@ -102,6 +127,7 @@ echo " Per Cell:   $PER_CELL"
 echo " Acc Range:  [$MIN_ACC, $MAX_ACC]"
 echo " Target:     $TARGET_TOTAL"
 echo " Batch:      $BATCH_SIZE  Max Tokens: $MAX_BATCHED_TOKENS"
+echo " Filler:     mode=$FILLER_MODE per_gpu=$FILLER_PER_GPU"
 echo "============================================="
 
 mkdir -p "$OUTPUT_ROOT"
@@ -218,7 +244,7 @@ if [ "$ROLLOUT_DONE" = "0" ]; then
 
     if [ "$TP_SIZE" -gt 1 ]; then
         echo "  TP=$TP_SIZE mode"
-        python "$ROLLOUT_SCRIPT" \
+        VERL_GPU_SIGNAL_PATH="${FILLER_SIGNAL_PREFIX}tp" python "$ROLLOUT_SCRIPT" \
             "${ROLLOUT_COMMON[@]}" \
             --tensor_parallel_size "$TP_SIZE"
     elif [ "$NUM_GPUS" -gt 1 ]; then
@@ -226,8 +252,9 @@ if [ "$ROLLOUT_DONE" = "0" ]; then
         for i in $(seq 0 $((NUM_GPUS-1))); do
             SHARD_GPU="${VISIBLE_GPU_TOKENS[$i]}"
             SHARD_GPU="${SHARD_GPU//[[:space:]]/}"
+            SHARD_SIGNAL_PATH="${FILLER_SIGNAL_PREFIX}${SHARD_GPU}"
             echo "    shard ${i} -> CUDA_VISIBLE_DEVICES=${SHARD_GPU}"
-            CUDA_VISIBLE_DEVICES="${SHARD_GPU}" python "$ROLLOUT_SCRIPT" \
+            VERL_GPU_SIGNAL_PATH="${SHARD_SIGNAL_PATH}" CUDA_VISIBLE_DEVICES="${SHARD_GPU}" python "$ROLLOUT_SCRIPT" \
                 "${ROLLOUT_COMMON[@]}" \
                 --tensor_parallel_size 1 \
                 --shard_id "$i" --num_shards "$NUM_GPUS" \
@@ -240,7 +267,7 @@ if [ "$ROLLOUT_DONE" = "0" ]; then
         rm -f "$OUTPUT_ROOT"/_shard*_kept.jsonl "$OUTPUT_ROOT"/_shard*_report.jsonl
     else
         echo "  Single GPU mode"
-        python "$ROLLOUT_SCRIPT" \
+        VERL_GPU_SIGNAL_PATH="${FILLER_SIGNAL_PREFIX}${VISIBLE_GPU_TOKENS[0]}" python "$ROLLOUT_SCRIPT" \
             "${ROLLOUT_COMMON[@]}" \
             --tensor_parallel_size 1
     fi

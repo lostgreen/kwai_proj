@@ -44,6 +44,9 @@ class DataConfig:
     max_frames: int = 256
     min_frames: int = 0
     dataloader_num_workers: int = 8
+    dataloader_pin_memory: bool = False
+    dataloader_persistent_workers: bool = False
+    dataloader_prefetch_factor: int = 2
     max_prompt_length: int = 512
     max_response_length: int = 512
     rollout_batch_size: int = 512

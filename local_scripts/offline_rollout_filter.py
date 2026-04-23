@@ -26,6 +26,7 @@ from tqdm.auto import tqdm
 from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
 
 from verl.utils.dataset import process_image, process_video
+from verl.utils.gpu_phase_signal import register_cleanup, set_gpu_phase
 
 
 def parse_args() -> argparse.Namespace:
@@ -288,17 +289,21 @@ def generate_with_transformers(example: dict[str, Any], processor, model, args: 
     prompt_len = inputs["input_ids"].shape[1]
 
     with torch.no_grad():
-        generated_ids = model.generate(
-            **inputs,
-            max_new_tokens=args.max_new_tokens,
-            do_sample=True,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            num_return_sequences=args.num_rollouts,
-            pad_token_id=processor.tokenizer.pad_token_id,
-            eos_token_id=processor.tokenizer.eos_token_id,
-            use_cache=True,
-        )
+        set_gpu_phase("gen")
+        try:
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=args.max_new_tokens,
+                do_sample=True,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                num_return_sequences=args.num_rollouts,
+                pad_token_id=processor.tokenizer.pad_token_id,
+                eos_token_id=processor.tokenizer.eos_token_id,
+                use_cache=True,
+            )
+        finally:
+            set_gpu_phase("idle")
 
     trimmed_ids = generated_ids[:, prompt_len:]
     return processor.batch_decode(
@@ -384,7 +389,11 @@ def iter_vllm_batches(
 
         if requests:
             _t0 = _time.time()
-            batch_outputs = llm.generate(requests, sampling_params=sampling_params, use_tqdm=False)
+            set_gpu_phase("gen")
+            try:
+                batch_outputs = llm.generate(requests, sampling_params=sampling_params, use_tqdm=False)
+            finally:
+                set_gpu_phase("idle")
             _elapsed = _time.time() - _t0
             print(
                 f"[offline_filter] batch {batch_idx+1}/{total_batches}: "
@@ -401,6 +410,8 @@ def main() -> None:
     if args.batch_size <= 0:
         raise SystemExit("--batch_size must be > 0")
     torch.manual_seed(args.seed)
+    register_cleanup()
+    set_gpu_phase("idle")
 
     import time as _time
 

@@ -25,7 +25,7 @@ fi
 source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 
 # ---- 实验配置 ----
-EXP_NAME="${EXP_NAME:-multi_task_demo_2gpu}"
+EXP_NAME="${EXP_NAME:-multi_task_demo_8gpu}"
 EXP_DATA_DIR="${EXPERIMENTS_DIR}/${EXP_NAME}"
 TRAIN_FILE="${EXP_DATA_DIR}/train.jsonl"
 TEST_FILE="${EXP_DATA_DIR}/val.jsonl"
@@ -169,7 +169,8 @@ python3 -m verl.trainer.main \
     worker.rollout.temperature="${ROLLOUT_TEMPERATURE}" \
     worker.rollout.top_p=0.9 \
     worker.rollout.tensor_parallel_size="${TP_SIZE}" \
-    worker.rollout.gpu_memory_utilization=0.4 \
+    worker.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEM_UTIL}" \
+    worker.rollout.max_num_batched_tokens="${ROLLOUT_MAX_BATCHED_TOKENS}" \
     worker.reward.reward_function="${REWARD_FUNCTION}" \
     worker.reward.reward_type=batch \
     trainer.project_name="${PROJECT_NAME}" \
@@ -186,6 +187,9 @@ python3 -m verl.trainer.main \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
     data.val_batch_size=8 \
-    data.dataloader_num_workers="${DATALOADER_NUM_WORKERS:-2}"
+    data.dataloader_num_workers="${DATALOADER_NUM_WORKERS}" \
+    data.dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}" \
+    data.dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}" \
+    data.dataloader_pin_memory="${DATALOADER_PIN_MEMORY}"
 
 gpu_filler_clear_signal

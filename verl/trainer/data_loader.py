@@ -51,6 +51,16 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
     else:
         train_batch_size = config.rollout_batch_size
 
+    loader_kwargs = {
+        "num_workers": config.dataloader_num_workers,
+        "collate_fn": collate_fn,
+        "pin_memory": config.dataloader_pin_memory,
+    }
+    if config.dataloader_num_workers > 0:
+        loader_kwargs["persistent_workers"] = config.dataloader_persistent_workers
+        if config.dataloader_prefetch_factor > 0:
+            loader_kwargs["prefetch_factor"] = config.dataloader_prefetch_factor
+
     # ---- Task-homogeneous batching (每个 batch 内只含同一任务) ----
     if config.task_homogeneous_batching:
         task_weights = None
@@ -69,9 +79,7 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
         train_dataloader = StatefulDataLoader(
             dataset=train_dataset,
             batch_sampler=batch_sampler,
-            num_workers=config.dataloader_num_workers,
-            collate_fn=collate_fn,
-            pin_memory=False,
+            **loader_kwargs,
         )
     else:
         # ---- 原始随机采样 ----
@@ -86,10 +94,8 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
             dataset=train_dataset,
             batch_size=train_batch_size,
             sampler=sampler,
-            num_workers=config.dataloader_num_workers,
-            collate_fn=collate_fn,
-            pin_memory=False,
             drop_last=True,
+            **loader_kwargs,
         )
 
     val_dataset = RLHFDataset(
@@ -121,10 +127,8 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
         dataset=val_dataset,
         batch_size=val_batch_size,
         shuffle=False,
-        num_workers=config.dataloader_num_workers,
-        collate_fn=collate_fn,
-        pin_memory=False,
         drop_last=False,
+        **loader_kwargs,
     )
 
     assert len(train_dataloader) >= 1
