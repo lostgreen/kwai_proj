@@ -14,18 +14,18 @@ Reward: Jigsaw Displacement R = 1 - E_jigsaw / E_max（复用 hier_seg_reward �
 
     ANN=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/annotations_fixed_gmn25
     CLIPS=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation/clips
-    OUT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/event_logic/ablations
+    OUT=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/event_logic
 
     # L2 event sort（不筛选 _order_distinguishable）
-    python build_event_shuffle.py --level l2 \\
-        --annotation-dir $ANN --clip-dir $CLIPS \\
-        --output-dir $OUT/sort_l2_exp1 \\
+    python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg/event_logic/build_event_shuffle.py --level l2 \
+        --annotation-dir $ANN --clip-dir $CLIPS \
+        --output-dir $OUT/sort_l2_exp1 \
         --complete-only --seed 42
 
     # L3 action sort（筛选 _order_distinguishable=true 的 event）
-    python build_event_shuffle.py --level l3 --filter-order \\
-        --annotation-dir $ANN --clip-dir $CLIPS \\
-        --output-dir $OUT/sort_l3_exp2 \\
+    python /home/xuboshen/zgw/EasyR1/proxy_data/youcook2_seg/event_logic/build_event_shuffle.py --level l3 --filter-order \
+        --annotation-dir $ANN --clip-dir $CLIPS \
+        --output-dir $OUT/sort_l3_exp2 \
         --complete-only --seed 42
 """
 

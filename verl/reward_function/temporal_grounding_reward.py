@@ -5,7 +5,7 @@ Temporal Grounding Reward — IoU × distance_penalty (Time-R1 style)。
 
 适配 <answer>start to end</answer> 格式（兼容旧版 <events>[[s, e]]</events>）。
 
-Reward 计算:
+Reward 计算:a
   1. 从 <answer> 或 <events> 标签中解析预测的 [start, end]
   2. 计算与 GT 的 temporal IoU
   3. 乘以归一化距离惩罚: (1 - |Δs/dur|) × (1 - |Δe/dur|)

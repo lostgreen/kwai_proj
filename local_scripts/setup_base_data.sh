@@ -29,7 +29,7 @@ source "${SCRIPT_DIR}/multi_task_common.sh"
 # ---- 数据源路径 ----
 TG_TRAIN_SOURCE="${TG_TRAIN_SOURCE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_timerft_max256s_validated.jsonl}"
 TG_TVGBENCH_SOURCE="${TG_TVGBENCH_SOURCE:-${REPO_ROOT}/proxy_data/temporal_grounding/data/tg_tvgbench_max256s_validated.jsonl}"
-MCQ_SOURCE="${MCQ_SOURCE:-${REPO_ROOT}/proxy_data/llava_video_178k/results/train_final.jsonl}"
+MCQ_SOURCE="${MCQ_SOURCE:-${REPO_ROOT}/proxy_data/llava_video_178k/results/train_final_direct.jsonl}"
 
 # ---- 构建参数 ----
 _FORCE_FLAG=""

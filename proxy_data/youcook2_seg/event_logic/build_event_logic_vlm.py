@@ -561,7 +561,7 @@ def call_task_architect(
     api_key: str,
     model: str,
     user_prompt: str,
-    max_tokens: int = 2048,
+    max_tokens: int = 8192,
     temperature: float = 0.7,
     retries: int = 3,
     label: str = "",

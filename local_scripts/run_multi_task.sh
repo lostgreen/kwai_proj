@@ -45,6 +45,8 @@ from local_scripts.data.mixer import main; main()
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
     ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
     --val-el-n "${VAL_EL_N}" \
+    ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
+    --val-el-n "${VAL_EL_N}" \
 || { echo "[multi-task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
 
 # ============================================================
@@ -167,7 +169,7 @@ python3 -m verl.trainer.main \
     worker.rollout.temperature="${ROLLOUT_TEMPERATURE}" \
     worker.rollout.top_p=0.9 \
     worker.rollout.tensor_parallel_size="${TP_SIZE}" \
-    worker.rollout.gpu_memory_utilization=0.5 \
+    worker.rollout.gpu_memory_utilization=0.4 \
     worker.reward.reward_function="${REWARD_FUNCTION}" \
     worker.reward.reward_type=batch \
     trainer.project_name="${PROJECT_NAME}" \

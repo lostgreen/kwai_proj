@@ -16,7 +16,7 @@ export EXP_NAME="${EXP_NAME:-reward_ablation_R4_seg_match}"
 
 # ---- 启用的任务 + 数据量 (与 R1 相同，控制变量) ----
 export TASKS="${TASKS:-tg mcq hier_seg}"
-export HIER_TARGET="${HIER_TARGET:-5000}"
+export HIER_TARGET="${HIER_TARGET:-2000}"
 
 # ---- Reward: Segment Matching ----
 # TODO: 当前 mixed_proxy_reward 对 hier_seg 用 F1-IoU,

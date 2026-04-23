@@ -37,7 +37,7 @@ THREE_TASK_DATA_ROOT="${MULTI_TASK_DATA_ROOT}"  # backward compat
 # -- Hier Seg 训练数据源 (20k, 每次按比例采样) --
 HIER_TRAIN="${HIER_TRAIN:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/train/train_all.jsonl}"
 HIER_VAL_SOURCE="${HIER_VAL_SOURCE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/train/val_all.jsonl}"
-HIER_TARGET="${HIER_TARGET:-5000}"
+HIER_TARGET="${HIER_TARGET:-2000}"
 
 # -- Event Logic 训练数据源 --
 EL_TRAIN="${EL_TRAIN:-}"
@@ -59,15 +59,15 @@ MAX_FRAMES=256
 MAX_PIXELS=49152
 MIN_PIXELS=3136
 MAX_PROMPT_LEN="${MAX_PROMPT_LEN:-14000}"
-MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-1024}"
+MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-256}"
 
 # ============================================================
 # 硬件 (2卡默认, 可覆盖)
 # ============================================================
-ROLLOUT_BS="${ROLLOUT_BS:-16}"
-GLOBAL_BS="${GLOBAL_BS:-16}"
+ROLLOUT_BS="${ROLLOUT_BS:-8}"
+GLOBAL_BS="${GLOBAL_BS:-8}"
 MB_PER_UPDATE="${MB_PER_UPDATE:-1}"
-MB_PER_EXP="${MB_PER_EXP:-1}"
+MB_PER_EXP="${MB_PER_EXP:-2}"
 ROLLOUT_N="${ROLLOUT_N:-8}"
 TP_SIZE="${TP_SIZE:-2}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"
@@ -88,8 +88,8 @@ ADV_ESTIMATOR=ema_grpo
 ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-0.7}"
 DISABLE_KL=false
 ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
-FILTER_LOW="${FILTER_LOW:-0.2}"
-FILTER_HIGH="${FILTER_HIGH:-0.8}"
+FILTER_LOW="${FILTER_LOW:-0.05}"
+FILTER_HIGH="${FILTER_HIGH:-0.95}"
 ENTROPY_COEFF=0.005
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.2
@@ -108,8 +108,8 @@ REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_prox
 # ============================================================
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:-}"
-SAVE_FREQ="${SAVE_FREQ:-40}"
-VAL_FREQ="${VAL_FREQ:-20}"
+SAVE_FREQ="${SAVE_FREQ:-100}"
+VAL_FREQ="${VAL_FREQ:-50}"
 SAVE_LIMIT="${SAVE_LIMIT:-2}"
 SAVE_BEST="${SAVE_BEST:-true}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task}"

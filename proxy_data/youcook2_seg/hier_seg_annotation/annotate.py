@@ -280,7 +280,7 @@ def call_vlm(
     user_text: str,
     frame_b64_list: list[str],
     frame_labels: list[str],
-    max_tokens: int = 8192,
+    max_tokens: int = 16384,
     temperature: float = 0.0,
     retries: int = 3,
     images_first: bool = False,
@@ -1050,7 +1050,7 @@ def _annotate_scene_first_l3(
         # Deterministic L3 eligibility: multi-scene OR (l3_worthy AND duration > 10s)
         if n_scenes >= 2:
             l3_eligible = True
-        elif ev.get("l3_worthy", False) and ev_duration > 10:
+        elif ev.get("l3_worthy", False) and ev_duration > 5:
             l3_eligible = True
         else:
             l3_eligible = False

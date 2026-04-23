@@ -199,3 +199,7 @@ proxy_data/youcook2_seg/hier_seg_annotation/clips/
 
 docs/
 .worktrees/
+proxy_data/llava_video_178k/results
+proxy_data/temporal_grounding/data
+_debug*
+bad_samples.txt

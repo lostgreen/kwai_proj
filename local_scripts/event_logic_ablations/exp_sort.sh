@@ -25,7 +25,6 @@ export EL_TARGET="${EL_TARGET:-5000}"
 export VAL_EL_N="${VAL_EL_N:-150}"
 
 # ---- Checkpoint 单独目录 ----
-export CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/event_logic/ablations}"
 
 # ---- sort 输出空间较大，1.0 也合适 ----
 export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"

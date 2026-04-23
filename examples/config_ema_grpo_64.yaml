@@ -44,7 +44,7 @@ worker:
       model_path: Qwen/Qwen2.5-7B-Instruct
       enable_gradient_checkpointing: true
       trust_remote_code: false
-      freeze_vision_tower: false
+      freeze_vision_tower: true
     optim:
       lr: 5.0e-6
       weight_decay: 1.0e-2

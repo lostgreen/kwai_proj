@@ -38,7 +38,7 @@ source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 #   Qwen3-VL-8B + 8 GPU + full rollout + rollout_n=8 + 保留 mean_acc <= 3/8
 DATASET_ROOT="${DATASET_ROOT:-/ytech_m2v5_hdd/workspace/kling_mm/Datasets/LLaVA-Video-178K}"
 MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-8B-Instruct}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/results_qwen3_vl_8b_roll8_leq3of8}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/results_qwen3_vl_8b_roll8_leq3of8}"
 NUM_GPUS="${NUM_GPUS:-8}"
 TP_SIZE="${TP_SIZE:-1}"
 NUM_ROLLOUTS="${NUM_ROLLOUTS:-8}"

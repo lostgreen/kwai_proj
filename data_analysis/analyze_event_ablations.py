@@ -23,8 +23,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
 
 
-DEFAULT_DATA_ROOT = Path("/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/experiments")
-DEFAULT_CHECKPOINT_ROOT = Path("/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/event_logic/ablations")
+DEFAULT_DATA_ROOT = Path("/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task")
+DEFAULT_CHECKPOINT_ROOT = Path("/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task")
 DEFAULT_OUTPUT_ROOT = Path("data_analysis/outputs/event_logic_ablations")
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_SEED = 1

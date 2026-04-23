@@ -39,14 +39,14 @@ CLIP_SCRIPT="proxy_data/youcook2_seg/prepare_all_clips.py"
 DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1}"
 
 # Derived paths
-ANN_DIR="${ANN_DIR:-${DATA_ROOT}/annotations}"
+ANN_DIR="${ANN_DIR:-${DATA_ROOT}/annotations_reclassified}"
 CLIP_DIR="${CLIP_DIR:-${DATA_ROOT}/clips}"
 SOURCE_VIDEO_DIR="${SOURCE_VIDEO_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/event_logic}"
 
 # LLM config
 API_BASE="${API_BASE:-https://api.novita.ai/v3/openai}"
-MODEL="${MODEL:-pa/gmn-2.5-fls}"
+MODEL="${MODEL:-pa/gemini-3.1-pro-preview}"
 TEMPERATURE="${TEMPERATURE:-0.7}"
 WORKERS="${WORKERS:-8}"
 

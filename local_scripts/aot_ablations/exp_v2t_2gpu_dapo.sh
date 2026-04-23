@@ -25,13 +25,13 @@ export ROLLOUT_N=8
 export ONLINE_FILTERING=true
 
 # ---- Demo 快速验证: 少量步数 ----
-export MAX_STEPS="${MAX_STEPS:-30}"
+export MAX_STEPS="${MAX_STEPS:-60}"
 export VAL_FREQ="${VAL_FREQ:-10}"
 export SAVE_FREQ="${SAVE_FREQ:-15}"
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 SEG_TASKS="${SEG_TASKS:-phase_v2t event_v2t action_v2t}"
-EXP_NAME="${EXP_NAME:-seg_aot_v2t_2gpu_dapo}"
-DATA_NAME="${DATA_NAME:-seg_aot_v2t}"
+EXP_NAME="${EXP_NAME:-seg_aot_v2t_2gpu_dapo_test_filler}"
+DATA_NAME="${DATA_NAME:-v2t_3way}"
 
 source "$(dirname "${BASH_SOURCE[0]}")/launch_seg_train.sh"

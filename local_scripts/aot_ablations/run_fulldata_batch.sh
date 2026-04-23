@@ -7,10 +7,10 @@
 #
 # 用法:
 #   # 机器 A (log 自动保存到 checkpoint 目录)
-#   nohup bash run_fulldata_batch.sh 1 &
+#   nohup bash /home/xuboshen/zgw/EasyR1/local_scripts/aot_ablations/run_fulldata_batch.sh 1 &
 #
 #   # 机器 B
-#   nohup bash run_fulldata_batch.sh 2 &
+#   nohup bash /home/xuboshen/zgw/EasyR1/local_scripts/aot_ablations/run_fulldata_batch.sh 2 &
 set -uo pipefail
 
 GROUP="${1:-}"

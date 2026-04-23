@@ -36,8 +36,8 @@ import matplotlib.pyplot as plt
 matplotlib.rcParams["font.family"] = "serif"
 matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif"]
 
-FONT_SIZE_INNER = 11.0
-FONT_SIZE_OUTER = 9.0
+FONT_SIZE_INNER = 15.0
+FONT_SIZE_OUTER = 15.0
 
 # Pastel colors for sources (cycle if more)
 SOURCE_PALETTE = [

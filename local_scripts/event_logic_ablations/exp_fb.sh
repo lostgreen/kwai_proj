@@ -24,8 +24,6 @@ export EL_VAL_SOURCE="${EL_VAL_SOURCE:-${_EL_VLM_DATA}/val_fill_blank.jsonl}"
 export EL_TARGET="${EL_TARGET:-5000}"
 export VAL_EL_N="${VAL_EL_N:-150}"
 
-# ---- Checkpoint 单独目录 ----
-export CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/event_logic/ablations}"
 
 # ---- MCQ 选项少，需要高温度保证 rollout 多样性 ----
 export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"

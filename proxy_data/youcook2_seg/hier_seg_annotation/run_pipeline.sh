@@ -33,7 +33,7 @@ DATA_ROOT="/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1"
 JSONL="${JSONL:-/home/xuboshen/zgw/EasyR1/proxy_data/data_curation/results/et_instruct_164k/screen_keep.jsonl}"
 MODEL="${MODEL:-pa/gmn-2.5-pr}"
 WORKERS="${WORKERS:-8}"
-LIMIT="${LIMIT:-5}"
+LIMIT="${LIMIT:-10000}"
 EXTRACT_FPS="${EXTRACT_FPS:-1}"
 
 LOG_DIR="${DATA_ROOT}/logs"

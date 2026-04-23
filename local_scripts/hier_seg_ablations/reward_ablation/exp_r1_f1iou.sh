@@ -18,7 +18,7 @@ export EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou}"
 
 # ---- 启用的任务 + 数据量 ----
 export TASKS="${TASKS:-tg mcq hier_seg}"
-export HIER_TARGET="${HIER_TARGET:-5000}"
+export HIER_TARGET="${HIER_TARGET:-2000}"
 # export EL_TARGET="${EL_TARGET:-2000}"   # 如需 event_logic, 取消注释并加入 TASKS
 
 # ---- Reward: F1-IoU (mixed_proxy_reward 默认已注册) ----

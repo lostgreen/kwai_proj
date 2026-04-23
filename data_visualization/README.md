@@ -26,7 +26,7 @@
   --max-samples 200 --prefer-complete
 
 # 远端服务器（env-var 方式，路径较长时更方便）
-DATA_PATH=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_seg/annotations \
+DATA_PATH=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/annotations \
   ./data_visualization/run.sh
 ```
 
