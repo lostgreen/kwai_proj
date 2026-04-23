@@ -242,6 +242,7 @@ def filler_worker(
     orphan_matrix: int,
     orphan_batch: int,
     orphan_sleep_ms: int,
+    busy_hold_ms: int,
 ):
     """Async GPU filler — reads monitor cache, fills with matmul.
 
@@ -290,13 +291,24 @@ def filler_worker(
           f"target={target_util}%  dtype={dtype}")
 
     _low_util_since = None
+    _last_busy_at = 0.0
 
     while not _STOP.is_set():
         if mode == "signal":
             signal_state = get_signal_state()
             if signal_state == "busy":
+                _last_busy_at = time.time()
                 with _status_lock:
                     _status[gpu_id] = "LFILL(busy)"
+                with torch.cuda.stream(stream):
+                    for _ in range(busy_batch):
+                        torch.matmul(a_busy, b_busy)
+                time.sleep(max(0.0, busy_sleep_ms / 1000.0))
+                continue
+
+            if (time.time() - _last_busy_at) * 1000.0 < busy_hold_ms:
+                with _status_lock:
+                    _status[gpu_id] = "LFILL(busy-hold)"
                 with torch.cuda.stream(stream):
                     for _ in range(busy_batch):
                         torch.matmul(a_busy, b_busy)
@@ -445,6 +457,8 @@ def main():
                         help="Kernels per batch for no-signal/stale medium fill in signal mode (default: 8)")
     parser.add_argument("--orphan-sleep-ms", type=int, default=12,
                         help="Sleep between no-signal/stale batches in signal mode (default: 12)")
+    parser.add_argument("--busy-hold-ms", type=int, default=800,
+                        help="Keep light-fill briefly after a busy signal to smooth phase flapping (default: 800)")
     # Deprecated alias
     parser.add_argument("--pause", type=int, default=None,
                         help="DEPRECATED: use --target-util instead")
@@ -475,7 +489,7 @@ def main():
     print(
         f"[filler] signal-open-loop: busy={args.busy_matrix}x{args.busy_batch}/{args.busy_sleep_ms}ms  "
         f"orphan={args.orphan_matrix}x{args.orphan_batch}/{args.orphan_sleep_ms}ms  "
-        f"idle_sleep={args.idle_sleep_ms}ms"
+        f"idle_sleep={args.idle_sleep_ms}ms  hold={args.busy_hold_ms}ms"
     )
     print(f"[filler] signal: {SIGNAL_PATH}")
     if args.mode == "nvml":
@@ -536,7 +550,7 @@ def main():
                   args.target_util, args.gap_matrix, args.push_matrix, args.mode,
                   args.busy_matrix, args.busy_batch, args.busy_sleep_ms,
                   args.idle_sleep_ms, args.orphan_matrix, args.orphan_batch,
-                  args.orphan_sleep_ms),
+                  args.orphan_sleep_ms, args.busy_hold_ms),
             daemon=True,
         )
         t.start()

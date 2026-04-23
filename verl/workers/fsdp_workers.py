@@ -582,11 +582,19 @@ class FSDPWorker(Worker):
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def prepare_rollout_engine(self):
-        self.rollout_sharding_manager.load_vllm_and_sync_weights()
+        self._set_phase("update")
+        try:
+            self.rollout_sharding_manager.load_vllm_and_sync_weights()
+        finally:
+            self._set_phase("idle")
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def release_rollout_engine(self):
-        self.rollout_sharding_manager.offload_vllm()
+        self._set_phase("update")
+        try:
+            self.rollout_sharding_manager.offload_vllm()
+        finally:
+            self._set_phase("idle")
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):

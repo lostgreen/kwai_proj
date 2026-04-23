@@ -79,6 +79,9 @@ gpu_filler_start() {
   if [[ -n "${FILLER_ORPHAN_SLEEP_MS:-}" ]]; then
     filler_args+=(--orphan-sleep-ms "${FILLER_ORPHAN_SLEEP_MS}")
   fi
+  if [[ -n "${FILLER_BUSY_HOLD_MS:-}" ]]; then
+    filler_args+=(--busy-hold-ms "${FILLER_BUSY_HOLD_MS}")
+  fi
   if [[ -n "${FILLER_GPUS:-}" ]] && ! gpu_filler_per_gpu_enabled; then
     filler_args+=(--gpus "${FILLER_GPUS}")
   fi
