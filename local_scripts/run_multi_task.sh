@@ -119,6 +119,11 @@ fi
 trap 'gpu_filler_clear_signal' EXIT
 gpu_filler_start "[multi-task]"
 
+TENSORBOARD_DIR="${CHECKPOINT_ROOT}/${EXP_NAME}/tensorboard"
+mkdir -p "${CHECKPOINT_ROOT}/${EXP_NAME}" "${TENSORBOARD_DIR}"
+export TENSORBOARD_DIR
+export TENSORBOARD_FLAT=1
+
 # ============================================================
 # 启动训练
 # ============================================================
