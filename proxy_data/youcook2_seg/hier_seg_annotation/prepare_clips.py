@@ -91,6 +91,7 @@ def _process_l1(record: dict, clip_dir: Path, fps: int = 1) -> dict:
 
     rec = dict(record)
     rec["videos"] = [str(out_path)]
+    rec["metadata"] = dict(meta, source_video_path=src_video)
     return rec
 
 
@@ -156,6 +157,7 @@ def _process_l2_full(record: dict, clip_dir: Path, fps: int = 1) -> dict:
 
     rec = dict(record)
     rec["videos"] = [str(out_path)]
+    rec["metadata"] = dict(meta, source_video_path=src_video)
     return rec
 
 
@@ -195,7 +197,7 @@ def _process_l2(record: dict, clip_dir: Path) -> dict:
     rec["prompt"]   = new_user_text
     rec["messages"] = [{"role": "user", "content": new_user_text}]
     rec["answer"]   = new_answer
-    rec["metadata"] = dict(meta, clip_offset_sec=offset)
+    rec["metadata"] = dict(meta, clip_offset_sec=offset, source_video_path=src_video)
     return rec
 
 
@@ -221,7 +223,7 @@ def _process_l2_phase(record: dict, clip_dir: Path, fps: int = 2) -> dict:
 
     rec = dict(record)
     rec["videos"]   = [str(out_path)]
-    rec["metadata"] = dict(meta, clip_offset_sec=ph_start)
+    rec["metadata"] = dict(meta, clip_offset_sec=ph_start, source_video_path=src_video)
     return rec
 
 
@@ -249,7 +251,7 @@ def _process_l3(record: dict, clip_dir: Path, fps: int = 0) -> dict:
     # Prompt is already correct (get_level3_query_prompt with 0-based duration).
     rec = dict(record)
     rec["videos"]   = [str(out_path)]
-    rec["metadata"] = dict(meta, clip_offset_sec=clip_start)
+    rec["metadata"] = dict(meta, clip_offset_sec=clip_start, source_video_path=src_video)
     return rec
 
 
