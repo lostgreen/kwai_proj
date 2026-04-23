@@ -3,7 +3,7 @@
 #
 # 流程:
 #   Step 1: prepare_mcq.py — 解析 MCQ JSON → 统一 JSONL
-#   Step 2: sample_pilot.py — 分层采样 pilot set (~500/cell)
+#   Step 2: sample_pilot.py — 分层采样 pilot set (pilot 模式)
 #   Step 3: offline_rollout_filter.py — rollout + reward 计算
 #   Step 4: filter_and_downsample.py — 按准确率过滤 + 均匀下采样
 #   Step 5: visualize.py — 分布对比图 (before vs after)
@@ -13,41 +13,82 @@
 #
 # 环境变量:
 #   DATASET_ROOT  — LLaVA-Video-178K 数据集根目录
-#   MODEL_PATH    — 模型路径 (默认 Qwen3-VL-4B-Instruct)
+#   MODEL_PATH    — 模型路径 (默认 Qwen3-VL-8B-Instruct)
 #   OUTPUT_ROOT   — 输出目录
-#   NUM_GPUS      — GPU 数 (默认 2)
+#   NUM_GPUS      — GPU 数 (默认 8)
 #   TP_SIZE       — tensor parallel size (默认 1; TP>1 时用 TP 模式)
-#   NUM_ROLLOUTS  — rollout 次数 (默认 4)
-#   PER_CELL      — 每个 (时长×来源) 格子采样数 (默认 500)
-#   TARGET_TOTAL  — 最终下采样目标条数 (默认 1000)
-#   MIN_ACC       — 最低准确率阈值 (默认 0.25)
-#   MAX_ACC       — 最高准确率阈值 (默认 0.5)
+#   NUM_ROLLOUTS  — rollout 次数 (默认 8)
+#   ROLLOUT_SCOPE — pilot 或 full (默认 full)
+#   PER_CELL      — 每个 (时长×来源) 格子采样数 (默认 5000; 仅 pilot 模式)
+#   TARGET_TOTAL  — 最终下采样目标条数 (默认 pilot=1000, full=0; 0=不过采样)
+#   MIN_ACC       — 最低准确率阈值 (默认 0.0)
+#   MAX_ACC       — 最高准确率阈值 (默认 0.375 = 3/8)
 #   BATCH_SIZE    — vLLM batch size (默认 16)
+#   ENABLE_GPU_FILLER / FILLER_START_DELAY / FILLER_TARGET_UTIL
+#                 — rollout 阶段的 GPU filler 控制项
 #   FORCE         — 强制重跑 (1 = 强制, 默认 0)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 
 # ── 配置 ──
+# 默认直接对齐当前这次实验:
+#   Qwen3-VL-8B + 8 GPU + full rollout + rollout_n=8 + 保留 mean_acc <= 3/8
 DATASET_ROOT="${DATASET_ROOT:-/ytech_m2v5_hdd/workspace/kling_mm/Datasets/LLaVA-Video-178K}"
-MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-4B-Instruct}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/results}"
-NUM_GPUS="${NUM_GPUS:-2}"
+MODEL_PATH="${MODEL_PATH:-/home/xuboshen/models/Qwen3-VL-8B-Instruct}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/results_qwen3_vl_8b_roll8_leq3of8}"
+NUM_GPUS="${NUM_GPUS:-8}"
 TP_SIZE="${TP_SIZE:-1}"
-NUM_ROLLOUTS="${NUM_ROLLOUTS:-4}"
+NUM_ROLLOUTS="${NUM_ROLLOUTS:-8}"
+ROLLOUT_SCOPE="${ROLLOUT_SCOPE:-full}"
 PER_CELL="${PER_CELL:-5000}"
-TARGET_TOTAL="${TARGET_TOTAL:-1000}"
-MIN_ACC="${MIN_ACC:-0.25}"
-MAX_ACC="${MAX_ACC:-0.5}"
+if [[ -n "${TARGET_TOTAL:-}" ]]; then
+    TARGET_TOTAL="${TARGET_TOTAL}"
+elif [[ "${ROLLOUT_SCOPE}" == "full" ]]; then
+    TARGET_TOTAL="0"
+else
+    TARGET_TOTAL="1000"
+fi
+MIN_ACC="${MIN_ACC:-0.0}"
+MAX_ACC="${MAX_ACC:-0.375}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-16384}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.80}"
 SEED="${SEED:-42}"
 FORCE="${FORCE:-0}"
+FILLER_LOG_PATH="${FILLER_LOG_PATH:-$OUTPUT_ROOT/gpu_filler.log}"
+FILLER_START_DELAY="${FILLER_START_DELAY:-90}"
+FILLER_TARGET_UTIL="${FILLER_TARGET_UTIL:-85}"
 
 REWARD_FN="$SCRIPT_DIR/mcq_reward.py:compute_score"
 ROLLOUT_SCRIPT="$REPO_ROOT/local_scripts/offline_rollout_filter.py"
+
+case "${ROLLOUT_SCOPE}" in
+    pilot|full) ;;
+    *)
+        echo "Unsupported ROLLOUT_SCOPE=${ROLLOUT_SCOPE} (expected pilot or full)" >&2
+        exit 1
+        ;;
+esac
+
+VISIBLE_GPU_TOKENS=()
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    IFS=',' read -r -a VISIBLE_GPU_TOKENS <<< "${CUDA_VISIBLE_DEVICES}"
+else
+    for ((i=0; i<NUM_GPUS; i++)); do
+        VISIBLE_GPU_TOKENS+=("${i}")
+    done
+fi
+if (( NUM_GPUS > ${#VISIBLE_GPU_TOKENS[@]} )); then
+    echo "NUM_GPUS=${NUM_GPUS}, but only ${#VISIBLE_GPU_TOKENS[@]} visible GPUs are available" >&2
+    exit 1
+fi
+
+if [[ -z "${FILLER_GPUS:-}" && "${NUM_GPUS}" -gt 0 ]]; then
+    FILLER_GPUS="$(seq -s, 0 $((NUM_GPUS-1)))"
+fi
 
 echo "============================================="
 echo " LLaVA-Video-178K MCQ Pipeline"
@@ -56,12 +97,15 @@ echo " Model:      $MODEL_PATH"
 echo " Output:     $OUTPUT_ROOT"
 echo " GPUs:       $NUM_GPUS (TP=$TP_SIZE)"
 echo " Rollouts:   $NUM_ROLLOUTS"
+echo " Scope:      $ROLLOUT_SCOPE"
 echo " Per Cell:   $PER_CELL"
 echo " Acc Range:  [$MIN_ACC, $MAX_ACC]"
 echo " Target:     $TARGET_TOTAL"
+echo " Batch:      $BATCH_SIZE  Max Tokens: $MAX_BATCHED_TOKENS"
 echo "============================================="
 
 mkdir -p "$OUTPUT_ROOT"
+trap 'gpu_filler_cleanup' EXIT
 
 # ── Step 1: 解析 MCQ ──
 MCQ_JSONL="$OUTPUT_ROOT/mcq_all.jsonl"
@@ -79,18 +123,26 @@ fi
 
 # ── Step 2: 分层采样 ──
 PILOT_JSONL="$OUTPUT_ROOT/pilot_sample.jsonl"
-if [ "$FORCE" != "1" ] && [ -s "$PILOT_JSONL" ]; then
-    COUNT=$(wc -l < "$PILOT_JSONL" | tr -d ' ')
-    echo ""
-    echo "=== Step 2: sample_pilot [已完成: $COUNT records — 跳过] ==="
+ROLLOUT_SOURCE_JSONL="$MCQ_JSONL"
+if [[ "$ROLLOUT_SCOPE" == "pilot" ]]; then
+    ROLLOUT_SOURCE_JSONL="$PILOT_JSONL"
+    if [ "$FORCE" != "1" ] && [ -s "$PILOT_JSONL" ]; then
+        COUNT=$(wc -l < "$PILOT_JSONL" | tr -d ' ')
+        echo ""
+        echo "=== Step 2: sample_pilot [已完成: $COUNT records — 跳过] ==="
+    else
+        echo ""
+        echo "=== Step 2: sample_pilot ==="
+        python "$SCRIPT_DIR/sample_pilot.py" \
+            --input "$MCQ_JSONL" \
+            --output "$PILOT_JSONL" \
+            --per-cell "$PER_CELL" \
+            --seed "$SEED"
+    fi
 else
+    FULL_COUNT=$(wc -l < "$MCQ_JSONL" | tr -d ' ')
     echo ""
-    echo "=== Step 2: sample_pilot ==="
-    python "$SCRIPT_DIR/sample_pilot.py" \
-        --input "$MCQ_JSONL" \
-        --output "$PILOT_JSONL" \
-        --per-cell "$PER_CELL" \
-        --seed "$SEED"
+    echo "=== Step 2: sample_pilot [full mode — 跳过, 直接 rollout 全量 $FULL_COUNT records] ==="
 fi
 
 # ── Step 3: Rollout (with resume support) ──
@@ -101,19 +153,19 @@ RESUME_INPUT=""
 
 if [ "$FORCE" != "1" ] && [ -s "$ROLLOUT_REPORT" ]; then
     REPORT_COUNT=$(wc -l < "$ROLLOUT_REPORT" | tr -d ' ')
-    PILOT_COUNT=$(wc -l < "$PILOT_JSONL" | tr -d ' ')
-    if [ "$REPORT_COUNT" -ge "$PILOT_COUNT" ]; then
+    SOURCE_COUNT=$(wc -l < "$ROLLOUT_SOURCE_JSONL" | tr -d ' ')
+    if [ "$REPORT_COUNT" -ge "$SOURCE_COUNT" ]; then
         echo ""
-        echo "=== Step 3: rollout [已完成: $REPORT_COUNT/$PILOT_COUNT — 跳过] ==="
+        echo "=== Step 3: rollout [已完成: $REPORT_COUNT/$SOURCE_COUNT — 跳过] ==="
         ROLLOUT_DONE=1
     else
         # Partial progress — resume mode
         echo ""
-        echo "=== Step 3: rollout [断点续传: 已完成 $REPORT_COUNT/$PILOT_COUNT] ==="
+        echo "=== Step 3: rollout [断点续传: 已完成 $REPORT_COUNT/$SOURCE_COUNT] ==="
         RESUME_INPUT="$OUTPUT_ROOT/_remaining.jsonl"
 
         python "$SCRIPT_DIR/resume_helper.py" \
-            --input "$PILOT_JSONL" \
+            --input "$ROLLOUT_SOURCE_JSONL" \
             --report "$ROLLOUT_REPORT" \
             --output "$RESUME_INPUT" || {
                 RESUME_EXIT=$?
@@ -130,10 +182,12 @@ fi
 
 if [ "$ROLLOUT_DONE" = "0" ]; then
     # Determine which input to use
-    EFFECTIVE_INPUT="${RESUME_INPUT:-$PILOT_JSONL}"
+    EFFECTIVE_INPUT="${RESUME_INPUT:-$ROLLOUT_SOURCE_JSONL}"
     REMAINING_COUNT=$(wc -l < "$EFFECTIVE_INPUT" | tr -d ' ')
     echo ""
     echo "=== Step 3: rollout (${REMAINING_COUNT} items × rollout_n=$NUM_ROLLOUTS) ==="
+
+    gpu_filler_start "[llava-video]"
 
     # For resume: write to temp files, merge afterwards
     if [ -n "$RESUME_INPUT" ]; then
@@ -156,6 +210,7 @@ if [ "$ROLLOUT_DONE" = "0" ]; then
         --max_new_tokens 256
         --gpu_memory_utilization "$GPU_MEM_UTIL"
         --max_num_batched_tokens "$MAX_BATCHED_TOKENS"
+        --batch_size "$BATCH_SIZE"
         --min_mean_reward 0.0
         --max_mean_reward 1.0
         --seed "$SEED"
@@ -169,7 +224,10 @@ if [ "$ROLLOUT_DONE" = "0" ]; then
     elif [ "$NUM_GPUS" -gt 1 ]; then
         echo "  Data-parallel mode (${NUM_GPUS} GPUs)"
         for i in $(seq 0 $((NUM_GPUS-1))); do
-            CUDA_VISIBLE_DEVICES=$i python "$ROLLOUT_SCRIPT" \
+            SHARD_GPU="${VISIBLE_GPU_TOKENS[$i]}"
+            SHARD_GPU="${SHARD_GPU//[[:space:]]/}"
+            echo "    shard ${i} -> CUDA_VISIBLE_DEVICES=${SHARD_GPU}"
+            CUDA_VISIBLE_DEVICES="${SHARD_GPU}" python "$ROLLOUT_SCRIPT" \
                 "${ROLLOUT_COMMON[@]}" \
                 --tensor_parallel_size 1 \
                 --shard_id "$i" --num_shards "$NUM_GPUS" \

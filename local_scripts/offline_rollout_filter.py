@@ -52,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.8)
     parser.add_argument("--max_model_len", type=int, default=0)
     parser.add_argument("--max_num_batched_tokens", type=int, default=16384)
+    parser.add_argument("--batch_size", type=int, default=32,
+                        help="Mini-batch size for vLLM generate() calls")
     parser.add_argument("--dtype", default="bfloat16")
     # Mean-reward filtering: drop samples outside [min, max] even if diverse
     parser.add_argument("--min_mean_reward", type=float, default=0.0,
@@ -396,6 +398,8 @@ def iter_vllm_batches(
 
 def main() -> None:
     args = parse_args()
+    if args.batch_size <= 0:
+        raise SystemExit("--batch_size must be > 0")
     torch.manual_seed(args.seed)
 
     import time as _time
@@ -524,7 +528,14 @@ def main() -> None:
         if args.backend == "vllm":
             # ---- Mini-batch vLLM inference: score & write after each batch ----
             processed = 0
-            for idx, item, result in iter_vllm_batches(items, processor, llm, sampling_params, args):
+            for idx, item, result in iter_vllm_batches(
+                items,
+                processor,
+                llm,
+                sampling_params,
+                args,
+                batch_size=args.batch_size,
+            ):
                 if isinstance(result, Exception):
                     _process_error(item, idx, result, freport)
                 else:

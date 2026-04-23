@@ -51,7 +51,8 @@ def main():
     parser.add_argument("--max-acc", type=float, default=0.5,
                         help="Maximum mean accuracy to keep (inclusive, closed interval)")
     parser.add_argument("--target-total", type=int, default=1000,
-                        help="Target total number of records after downsampling")
+                        help="Target total number of records after downsampling "
+                             "(0 = keep all filtered records)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--stats-only", action="store_true",
                         help="Only print accuracy stats without producing output")
@@ -134,6 +135,24 @@ def main():
 
     if total_kept == 0:
         print("  No records passed the filter!")
+        return
+
+    if args.target_total <= 0 or args.target_total >= total_kept:
+        sampled = []
+        for pool in kept_by_cell.values():
+            sampled.extend(pool)
+        rng.shuffle(sampled)
+
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            for rec in sampled:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+        if args.target_total <= 0:
+            print("\nTarget total <= 0, keeping all filtered records without downsampling.")
+        else:
+            print("\nTarget total >= filtered count, keeping all filtered records.")
+        print(f"Final output: {len(sampled)} records → {args.output}")
         return
 
     # --- Balanced downsample ---
