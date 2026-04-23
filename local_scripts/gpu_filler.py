@@ -148,6 +148,65 @@ _NVML_CONSECUTIVE_FAILURES = 0
 _NVML_MAX_FAILURES = 10  # after this many consecutive failures, stop all workers
 
 
+def _read_proc_environ(pid: int) -> dict[str, str]:
+    """Best-effort read of another process environment on Linux."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            data = f.read()
+    except OSError:
+        return {}
+
+    env = {}
+    for entry in data.split(b"\0"):
+        if not entry or b"=" not in entry:
+            continue
+        key, value = entry.split(b"=", 1)
+        env[key.decode(errors="ignore")] = value.decode(errors="ignore")
+    return env
+
+
+def _read_proc_cmdline(pid: int) -> list[str]:
+    """Best-effort read of another process argv on Linux."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            data = f.read()
+    except OSError:
+        return []
+    return [part.decode(errors="ignore") for part in data.split(b"\0") if part]
+
+
+def _extract_flag_value(argv: list[str], flag: str) -> str | None:
+    for idx, arg in enumerate(argv):
+        if arg == flag and idx + 1 < len(argv):
+            return argv[idx + 1]
+        if arg.startswith(f"{flag}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _filler_identity(gpus_arg: str | None) -> tuple[str, str, str]:
+    """Return the runtime identity used to decide which old fillers are safe to reap."""
+    signal_path = SIGNAL_PATH
+    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    gpus_value = gpus_arg or ""
+    return signal_path, cuda_visible_devices, gpus_value
+
+
+def _same_filler_target(pid: int, identity: tuple[str, str, str]) -> bool:
+    """Match only fillers targeting the same signal path and visible device set."""
+    argv = _read_proc_cmdline(pid)
+    if not argv or not any("gpu_filler.py" in arg for arg in argv):
+        return False
+
+    env = _read_proc_environ(pid)
+    other_identity = (
+        env.get("VERL_GPU_SIGNAL_PATH", "/tmp/verl_gpu_phase"),
+        env.get("CUDA_VISIBLE_DEVICES", ""),
+        _extract_flag_value(argv, "--gpus") or "",
+    )
+    return other_identity == identity
+
+
 def _nvml_call_with_timeout(fn, *args, timeout_s=2.0):
     """Run an NVML call; if it hangs > timeout_s, return None.
 
@@ -502,8 +561,10 @@ def main():
         os.remove(SIGNAL_PATH)
         print(f"[filler] Cleaned stale signal file")
 
-    # Kill old filler instances
+    # Only reap stale fillers that target the same signal path/device scope.
+    # Per-GPU launches use distinct signal paths, so sibling fillers can coexist.
     my_pid = os.getpid()
+    my_identity = _filler_identity(args.gpus)
     killed_any = False
     result = subprocess.run(
         ["pgrep", "-f", "gpu_filler.py"],
@@ -511,13 +572,17 @@ def main():
     )
     for line in result.stdout.strip().split("\n"):
         pid_str = line.strip()
-        if pid_str and int(pid_str) != my_pid:
-            try:
-                os.kill(int(pid_str), signal.SIGTERM)
-                print(f"[filler] Killed old filler PID {pid_str}")
-                killed_any = True
-            except ProcessLookupError:
-                pass
+        if not pid_str:
+            continue
+        pid = int(pid_str)
+        if pid == my_pid or not _same_filler_target(pid, my_identity):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"[filler] Killed old filler PID {pid_str} (same target)")
+            killed_any = True
+        except ProcessLookupError:
+            pass
     if killed_any:
         print("[filler] Waiting 3s for old filler to release GPU resources...")
         time.sleep(3)
