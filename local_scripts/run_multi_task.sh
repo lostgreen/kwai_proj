@@ -27,8 +27,8 @@ source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 # ---- 实验配置 ----
 EXP_NAME="${EXP_NAME:-multi_task_demo_8gpu}"
 EXP_DATA_DIR="${EXPERIMENTS_DIR}/${EXP_NAME}"
-TRAIN_FILE="${EXP_DATA_DIR}/train.jsonl"
-TEST_FILE="${EXP_DATA_DIR}/val.jsonl"
+TRAIN_FILE="${TRAIN_FILE:-${EXP_DATA_DIR}/train.jsonl}"
+TEST_FILE="${TEST_FILE:-${EXP_DATA_DIR}/val.jsonl}"
 
 # ============================================================
 # Pre-flight: 检查 base/ val/ 是否存在
