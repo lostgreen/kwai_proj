@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import math
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -43,7 +42,13 @@ def parse_args() -> argparse.Namespace:
         "--target-fps",
         type=float,
         default=2.0,
-        help="Desired training fps before max_frames-based downscaling.",
+        help="High-rate extraction fps for short videos.",
+    )
+    parser.add_argument(
+        "--fallback-fps",
+        type=float,
+        default=1.0,
+        help="Medium-rate extraction fps for videos too long for --target-fps but still within max_frames budget.",
     )
     parser.add_argument(
         "--max-frames",
@@ -185,6 +190,7 @@ def compute_shared_fps(
     duration_sec: float | None,
     n_videos: int,
     target_fps: float,
+    fallback_fps: float,
     max_frames: int,
     min_fps: float,
 ) -> float:
@@ -192,9 +198,18 @@ def compute_shared_fps(
         return round(target_fps, 3)
 
     max_frames_per_video = max(1, max_frames // max(n_videos, 1))
-    fps = min(target_fps, max_frames_per_video / duration_sec)
+    high_fps_budget_sec = max_frames_per_video / max(target_fps, 1e-6)
+    fallback_fps_budget_sec = max_frames_per_video / max(fallback_fps, 1e-6)
+
+    if duration_sec <= high_fps_budget_sec:
+        fps = target_fps
+    elif duration_sec <= fallback_fps_budget_sec:
+        fps = fallback_fps
+    else:
+        fps = max_frames_per_video / duration_sec
+
     fps = max(fps, min_fps)
-    return round(fps, 3)
+    return round(float(fps), 3)
 
 
 def extract_frames(
@@ -254,6 +269,7 @@ def rewrite_record(
     frames_root: Path,
     input_image_dir: Path | None,
     target_fps: float,
+    fallback_fps: float,
     max_frames: int,
     min_fps: float,
     jpeg_quality: int,
@@ -288,6 +304,7 @@ def rewrite_record(
         duration_sec=duration,
         n_videos=n_videos,
         target_fps=target_fps,
+        fallback_fps=fallback_fps,
         max_frames=max_frames,
         min_fps=min_fps,
     )
@@ -325,6 +342,7 @@ def rewrite_record(
     meta["video_fps_override"] = shared_fps
     meta["offline_frame_extraction"] = {
         "target_fps": target_fps,
+        "fallback_fps": fallback_fps,
         "effective_fps": shared_fps,
         "max_frames": max_frames,
         "max_frames_per_video": max_frames_per_video,
@@ -359,6 +377,7 @@ def main() -> None:
                 frames_root,
                 input_image_dir,
                 args.target_fps,
+                args.fallback_fps,
                 args.max_frames,
                 args.min_fps,
                 args.jpeg_quality,
