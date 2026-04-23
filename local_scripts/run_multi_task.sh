@@ -131,7 +131,7 @@ python3 -m verl.trainer.main \
     config=examples/config_ema_grpo_64.yaml \
     data.train_files="${TRAIN_FILE}" \
     data.val_files="${TEST_FILE}" \
-    data.image_dir="" \
+    data.image_dir="${DATA_IMAGE_DIR}" \
     data.prompt_key="prompt" \
     data.answer_key="answer" \
     data.video_key="videos" \
@@ -144,7 +144,7 @@ python3 -m verl.trainer.main \
     data.rollout_batch_size="${ROLLOUT_BS}" \
     data.format_prompt="" \
     data.filter_overlong_prompts=false \
-    data.task_homogeneous_batching=true \
+    data.task_homogeneous_batching=false \
     data.task_weights="${TASK_WEIGHTS}" \
     data.task_key="problem_type" \
     algorithm.adv_estimator="${ADV_ESTIMATOR}" \

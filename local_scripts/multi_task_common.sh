@@ -54,6 +54,7 @@ EXPERIMENTS_DIR="${MULTI_TASK_DATA_ROOT}/experiments"
 # ============================================================
 # 视频 & 序列配置
 # ============================================================
+DATA_IMAGE_DIR="${DATA_IMAGE_DIR:-}"
 VIDEO_FPS="${VIDEO_FPS:-2.0}"
 MAX_FRAMES="${MAX_FRAMES:-256}"
 MAX_PIXELS="${MAX_PIXELS:-49152}"
