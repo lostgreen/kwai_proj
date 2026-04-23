@@ -14,7 +14,7 @@
 格式要求（严格模式）:
 - MCQ: 必须包含 <answer>字母</answer>
 - sort: 必须包含 <answer>数字序列</answer>
-- temporal_grounding: <answer>start to end</answer>
+- temporal_grounding: `The event happens in the X - Y seconds`
 
 Reward 输出格式（兼容 EasyR1 batch reward 接口）:
     {"overall": float, "format": float, "accuracy": float}

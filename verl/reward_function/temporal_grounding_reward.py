@@ -3,10 +3,12 @@
 """
 Temporal Grounding Reward — IoU × distance_penalty (Time-R1 style)。
 
-适配 <answer>start to end</answer> 格式（兼容旧版 <events>[[s, e]]</events>）。
+适配 eval 风格自然语言格式：
+    The event happens in the 24.3 - 30.4 seconds.
+也兼容旧版 <answer>start to end</answer> 与 <events>[[s, e]]</events>。
 
 Reward 计算:a
-  1. 从 <answer> 或 <events> 标签中解析预测的 [start, end]
+  1. 从自然语言 / <answer> / <events> 中解析预测的 [start, end]
   2. 计算与 GT 的 temporal IoU
   3. 乘以归一化距离惩罚: (1 - |Δs/dur|) × (1 - |Δe/dur|)
      惩罚端点偏移，抑制超长片段的"懒惰最优解"
@@ -25,7 +27,22 @@ from typing import Any, Dict, List, Optional, Tuple
 # ===========================
 # 解析模式
 # ===========================
-# <answer>12.54 to 17.83</answer>  (Time-R1 style)
+# 自然语言风格:
+# The event happens in the 24.3 - 30.4 seconds.
+# The event 'person turn a light on' happens in the 24.3 - 30.4 seconds.
+_SENTENCE_RANGE_PATTERN = re.compile(
+    r"The\s+event(?:\s+['\"“].*?['\"”])?\s+happens\s+in\s+(?:the\s+)?"
+    r"([0-9]*\.?[0-9]+)\s*-\s*([0-9]*\.?[0-9]+)\s*seconds?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# 兜底: 任意 "24.3 - 30.4 seconds"
+_GENERIC_SECONDS_RANGE_PATTERN = re.compile(
+    r"([0-9]*\.?[0-9]+)\s*-\s*([0-9]*\.?[0-9]+)\s*seconds?",
+    re.IGNORECASE,
+)
+
+# <answer>12.54 to 17.83</answer>  (legacy Time-R1 style)
 _ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 _TIME_RANGE_PATTERN = re.compile(
     r"(\d+\.?\d*)\s+(?:to|and)\s+(\d+\.?\d*)", re.IGNORECASE
@@ -40,37 +57,52 @@ _SEGMENT_PATTERN = re.compile(
 _ZERO = {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
 
 
+def _pair_from_match(match: Optional[re.Match[str]]) -> Optional[Tuple[float, float]]:
+    if match is None:
+        return None
+    try:
+        start = float(match.group(1))
+        end = float(match.group(2))
+        if start >= 0 and end >= 0 and start < end:
+            return (start, end)
+    except (ValueError, TypeError, IndexError):
+        return None
+    return None
+
+
+def _extract_pair_from_free_text(text: str) -> Optional[Tuple[float, float]]:
+    """从非标签文本中提取时间段。"""
+    for pattern in (_SENTENCE_RANGE_PATTERN, _GENERIC_SECONDS_RANGE_PATTERN, _TIME_RANGE_PATTERN):
+        pair = _pair_from_match(pattern.search(text))
+        if pair is not None:
+            return pair
+    return None
+
+
 def _parse_single_segment(text: str) -> Optional[Tuple[float, float]]:
     """
-    解析单个时间段。优先从 <answer> 标签解析，其次从 <events> 标签。
+    解析单个时间段。优先解析自然语言 / <answer> 内容，其次回退到 <events>。
     """
-    # 尝试 <answer>start to end</answer>
+    # 先尝试整段文本中的自然语言格式
+    pair = _extract_pair_from_free_text(text)
+    if pair is not None:
+        return pair
+
+    # 尝试 <answer>...</answer> 内部内容
     answer_match = _ANSWER_PATTERN.search(text)
     if answer_match is not None:
         content = answer_match.group(1)
-        m = _TIME_RANGE_PATTERN.search(content)
-        if m is not None:
-            try:
-                start = float(m.group(1))
-                end = float(m.group(2))
-                if start >= 0 and end >= 0 and start < end:
-                    return (start, end)
-            except (ValueError, TypeError):
-                pass
+        pair = _extract_pair_from_free_text(content)
+        if pair is not None:
+            return pair
 
     # 回退: <events>[[s, e]]</events>
     events_match = _EVENTS_PATTERN.search(text)
     if events_match is not None:
         events_block = events_match.group(1)
-        m = _SEGMENT_PATTERN.search(events_block)
-        if m is not None:
-            try:
-                start = float(m.group(1))
-                end = float(m.group(2))
-                if start >= 0 and end >= 0 and start < end:
-                    return (start, end)
-            except (ValueError, TypeError):
-                pass
+        pair = _pair_from_match(_SEGMENT_PATTERN.search(events_block))
+        if pair is not None:
+            return pair
 
     return None
 

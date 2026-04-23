@@ -24,32 +24,31 @@ from collections import Counter
 # ── 服务器数据根目录 ──────────────────────────────────────────────
 DEFAULT_VIDEO_BASE = "/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeR1-Dataset"
 
-# ── Prompt 模板（无 CoT）——————————————————————————
-PROMPT_TEMPLATE_NO_COT = (
-    'Watch the following video carefully:\n'
-    '<video>\n\n'
-    'This video is {duration:.1f} seconds long.\n\n'
-    'To accurately pinpoint the event "{sentence}" in the video, '
-    'determine the precise time period of the event.\n\n'
-    'Provide the start and end times in **seconds** (as decimal numbers, e.g. 12.54), '
-    'NOT in mm:ss or hh:mm:ss format.\n'
-    'Use the format "X.XX to Y.YY" within the <answer> </answer> tags.\n'
-    'Example: <answer>12.54 to 17.83</answer>'
+# ── Prompt 模板（与 eval 风格保持一致）——————————————————————
+PRE_PROMPT = (
+    "Please find the visual event described by a sentence in the video, "
+    "determining its starting and ending times. "
+    "The format should be: 'The event happens in the start time - end time seconds'. "
+    "For example: The event 'person turn a light on' happens in the 24.3 - 30.4 seconds. "
+    "Now I will give you the textual sentence: "
 )
 
-# ── Prompt 模板（CoT：鼓励模型在 <think> 中分析时间线）——————
+POST_PROMPT = "Please return its start time and end time in seconds."
+
+PROMPT_TEMPLATE_NO_COT = (
+    "<video>\n"
+    + PRE_PROMPT
+    + '"{sentence}". '
+    + POST_PROMPT
+)
+
+# ── Prompt 模板（CoT：保留推理，但最终答案仍用 eval 句式）——————
 PROMPT_TEMPLATE_COT = (
-    'Watch the following video carefully:\n'
-    '<video>\n\n'
-    'This video is {duration:.1f} seconds long.\n\n'
-    'To accurately pinpoint the event "{sentence}" in the video, '
-    'determine the precise time period of the event.\n\n'
-    'Output your thought process within the <think> </think> tags, '
-    'including analysis with either specific time ranges (xx.xx to xx.xx) '
-    'in <timestep> </timestep> tags.\n\n'
-    'Then, provide the start and end times (in seconds, precise to two decimal places) '
-    'in the format "start time to end time" within the <answer> </answer> tags. '
-    'For example: "12.54 to 17.83".'
+    "<video>\n"
+    + PRE_PROMPT
+    + '"{sentence}". '
+    + POST_PROMPT
+    + " First reason step by step in <think></think>, then give the final sentence only."
 )
 
 
@@ -62,6 +61,16 @@ def parse_source_from_qid(qid: str) -> str:
 def round2(val):
     """保留两位小数。"""
     return round(val, 2)
+
+
+def format_seconds(val: float) -> str:
+    """格式化为最短十进制秒数，和 eval 示例风格一致。"""
+    return f"{round2(val):.2f}".rstrip("0").rstrip(".")
+
+
+def format_answer_text(start: float, end: float) -> str:
+    """构造 eval 风格答案文本。"""
+    return f"The event happens in the {format_seconds(start)} - {format_seconds(end)} seconds."
 
 
 def convert_timerft(items: list, video_base: str, max_duration: float = None, mode: str = "no_cot") -> list:
@@ -102,7 +111,7 @@ def convert_timerft(items: list, video_base: str, max_duration: float = None, mo
         prompt = prompt_tpl.format(duration=duration, sentence=sentence)
 
         # 构建 answer
-        answer = f"<answer>{round2(gt_start):.2f} to {round2(gt_end):.2f}</answer>"
+        answer = format_answer_text(gt_start, gt_end)
 
         # 构建 metadata
         qid = item.get("qid", "")
@@ -173,7 +182,7 @@ def convert_tvgbench(items: list, video_base: str, max_duration: float = None, m
             video_path = f"{base}_clipped{ext}"
 
         prompt = prompt_tpl.format(duration=duration, sentence=sentence)
-        answer = f"<answer>{round2(gt_start):.2f} to {round2(gt_end):.2f}</answer>"
+        answer = format_answer_text(gt_start, gt_end)
 
         metadata = {
             "video_id": video_filename.replace(".mp4", ""),

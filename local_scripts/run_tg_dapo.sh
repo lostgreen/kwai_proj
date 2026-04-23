@@ -2,7 +2,7 @@
 # ============================================================
 # Temporal Grounding 训练脚本 (2-GPU, EMA-GRPO)
 #
-# 使用 Time-R1 风格 <answer> 格式，直接输出（无 CoT）。
+# 使用 eval 风格自然语言时间段格式，直接输出（无 CoT）。
 # Reward: tIoU × distance_penalty ∈ [0, 1]，无 format 奖励。
 #
 # 用法:
