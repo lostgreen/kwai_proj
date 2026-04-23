@@ -65,6 +65,32 @@ _VISUAL_TOKEN_DEBUG_MAX_LOGS = int(
 _visual_token_debug_log_count = 0
 
 
+class _LocalListDataset:
+    """Minimal dataset wrapper for local JSONL with heterogeneous Python objects.
+
+    HuggingFace ``Dataset.from_list`` materializes through Arrow and rejects
+    columns whose value shape varies across rows (for example ``videos`` being
+    ``[mp4]`` for some tasks and ``[[frame1, ...]]`` for others). For local
+    experiment JSONL we only need ``len``, indexing, and optional filtering, so
+    a lightweight Python-list-backed dataset is sufficient and avoids schema
+    coercion entirely.
+    """
+
+    def __init__(self, records: list[dict[str, Any]]):
+        self._records = records
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        return self._records[index]
+
+    def filter(self, fn, desc: Optional[str] = None, num_proc: int = 1):
+        del desc, num_proc
+        kept = [record for record in self._records if fn(record)]
+        return _LocalListDataset(kept)
+
+
 def _load_local_jsonl_dataset(data_path: str) -> HFDataset:
     """Load local JSONL deterministically line-by-line.
 
@@ -85,7 +111,17 @@ def _load_local_jsonl_dataset(data_path: str) -> HFDataset:
                     f"Invalid JSONL line in {data_path} at line {line_no}: {exc}"
                 ) from exc
 
-    return HFDataset.from_list(records)
+    try:
+        return HFDataset.from_list(records)
+    except Exception as exc:
+        message = str(exc)
+        if "cannot mix list and non-list" not in message and "cannot mix struct and non-struct" not in message:
+            raise
+        print(
+            f"[dataset] WARNING: Falling back to Python list dataset for heterogeneous JSONL schema: {data_path}\n"
+            f"[dataset] Arrow error: {message}"
+        )
+        return _LocalListDataset(records)
 
 
 def _load_local_jsonl_dir_dataset(data_dir: str) -> HFDataset:
@@ -100,6 +136,16 @@ def _load_local_jsonl_dir_dataset(data_dir: str) -> HFDataset:
     datasets_list = [_load_local_jsonl_dataset(path) for path in jsonl_files]
     if len(datasets_list) == 1:
         return datasets_list[0]
+
+    if any(isinstance(dataset, _LocalListDataset) for dataset in datasets_list):
+        records: list[dict[str, Any]] = []
+        for dataset in datasets_list:
+            if isinstance(dataset, _LocalListDataset):
+                records.extend(dataset._records)
+            else:
+                records.extend(dataset[i] for i in range(len(dataset)))
+        return _LocalListDataset(records)
+
     return concatenate_datasets(datasets_list)
 
 
