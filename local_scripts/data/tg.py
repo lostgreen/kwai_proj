@@ -25,6 +25,13 @@ _TRAIN_FILE = "tg_train.jsonl"
 _VAL_PREFIX = "tg_val"
 
 
+def _prefer_frame_jsonl(path: str) -> str:
+    frame_path = Path(path).with_name(f"{Path(path).stem}_frames.jsonl")
+    if frame_path.exists():
+        return str(frame_path)
+    return path
+
+
 def add_cli_args(parser: ArgumentParser) -> None:
     g = parser.add_argument_group("Temporal Grounding")
     g.add_argument(
@@ -77,7 +84,8 @@ def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:
 
 
 def load_train(data_root: str, args: Namespace) -> list[dict]:
-    return load_jsonl(os.path.join(data_root, "base", _TRAIN_FILE))
+    path = os.path.join(data_root, "base", _TRAIN_FILE)
+    return load_jsonl(_prefer_frame_jsonl(path))
 
 
 def sample_train(records: list[dict], target: int, seed: int) -> list[dict]:
@@ -87,6 +95,8 @@ def sample_train(records: list[dict], target: int, seed: int) -> list[dict]:
 
 def load_val(data_root: str, args: object | None = None) -> list[dict]:
     val_dir = os.path.join(data_root, "val")
+    for f in sorted(Path(val_dir).glob(f"{_VAL_PREFIX}_*_frames.jsonl")):
+        return load_jsonl(str(f))
     for f in sorted(Path(val_dir).glob(f"{_VAL_PREFIX}_*.jsonl")):
         return load_jsonl(str(f))
     return []
