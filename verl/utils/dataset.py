@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import math
 import os
 import random
@@ -23,7 +24,8 @@ from typing import Any, Optional, Union
 
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import Dataset as HFDataset
+from datasets import concatenate_datasets, load_dataset
 from jinja2 import Template
 from PIL import Image
 from PIL.Image import Image as ImageObject
@@ -61,6 +63,44 @@ _VISUAL_TOKEN_DEBUG_MAX_LOGS = int(
     )
 )
 _visual_token_debug_log_count = 0
+
+
+def _load_local_jsonl_dataset(data_path: str) -> HFDataset:
+    """Load local JSONL deterministically line-by-line.
+
+    This avoids backend ambiguity in the HuggingFace JSON loader, which may try
+    to parse newline-delimited JSON as a single JSON document and fail with
+    ``ValueError: Trailing data``.
+    """
+    records: list[dict[str, Any]] = []
+    with open(data_path, encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid JSONL line in {data_path} at line {line_no}: {exc}"
+                ) from exc
+
+    return HFDataset.from_list(records)
+
+
+def _load_local_jsonl_dir_dataset(data_dir: str) -> HFDataset:
+    jsonl_files = sorted(
+        os.path.join(data_dir, name)
+        for name in os.listdir(data_dir)
+        if name.endswith(".jsonl")
+    )
+    if not jsonl_files:
+        raise FileNotFoundError(f"No .jsonl files found in directory: {data_dir}")
+
+    datasets_list = [_load_local_jsonl_dataset(path) for path in jsonl_files]
+    if len(datasets_list) == 1:
+        return datasets_list[0]
+    return concatenate_datasets(datasets_list)
 
 
 QUESTION_TEMPLATE = (
@@ -380,12 +420,20 @@ class RLHFDataset(Dataset):
             data_split = "train"
 
         if os.path.isdir(data_path):
-            # when we use dataset builder, we should always refer to the train split
-            file_type = os.path.splitext(os.listdir(data_path)[0])[-1][1:].replace("jsonl", "json")
-            self.dataset = load_dataset(file_type, data_dir=data_path, split=data_split)
+            entries = os.listdir(data_path)
+            has_jsonl = any(name.endswith(".jsonl") for name in entries)
+            if has_jsonl:
+                self.dataset = _load_local_jsonl_dir_dataset(data_path)
+            else:
+                # when we use dataset builder, we should always refer to the train split
+                file_type = os.path.splitext(entries[0])[-1][1:]
+                self.dataset = load_dataset(file_type, data_dir=data_path, split=data_split)
         elif os.path.isfile(data_path):
-            file_type = os.path.splitext(data_path)[-1][1:].replace("jsonl", "json")
-            self.dataset = load_dataset(file_type, data_files=data_path, split=data_split)
+            if data_path.endswith(".jsonl"):
+                self.dataset = _load_local_jsonl_dataset(data_path)
+            else:
+                file_type = os.path.splitext(data_path)[-1][1:]
+                self.dataset = load_dataset(file_type, data_files=data_path, split=data_split)
         else:
             # load remote dataset from huggingface hub
             self.dataset = load_dataset(data_path, split=data_split)
