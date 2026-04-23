@@ -65,11 +65,22 @@ NUM_GPUS=8 bash run_pipeline.sh
 # 先抽样试跑
 PER_SOURCE=5 bash run_pipeline.sh
 
-# 开启二阶段筛选
-SECONDARY=1 bash run_pipeline.sh
-
 # 全量重跑
-RESUME=0 bash run_pipeline.sh
+FORCE=1 bash run_pipeline.sh
+
+# 短视频池探索：看 <=60s 是否够 3k，并导出预览
+python explore_short_videos.py \
+    --input /path/to/timelens-100k.jsonl \
+    --config ../configs/timelens_100k.yaml \
+    --video-root /path/to/video_shards \
+    --total 3000 \
+    --balanced-total \
+    --output-dir ../results/timelens_100k_short
+
+# 短视频全流程：先抽 <=60s 的 3k 再跑 VLM screening
+MIN_DURATION=0 MAX_DURATION=60 TARGET_TOTAL=3000 BALANCED_TOTAL=1 \
+OUTPUT_ROOT=../results/timelens_100k_short \
+bash run_pipeline.sh
 ```
 
 ### 环境变量
@@ -80,10 +91,15 @@ RESUME=0 bash run_pipeline.sh
 | `VIDEO_ROOT` | `/m2v_intern/.../TimeLens-100K/video_shards` | 视频根目录 |
 | `LOCAL_MODEL` | `/home/xuboshen/models/Qwen3-VL-4B-Instruct` | 本地 VLM 路径 |
 | `NUM_GPUS` | `2` | 数据并行 GPU 数 |
+| `MIN_DURATION` | `60` | text_filter 最小时长 |
+| `MAX_DURATION` | `240` | text_filter 最大时长 |
+| `MIN_EVENTS` | `5` | text_filter 最少 valid events |
+| `MIN_EVENT_SPAN` | `2.0` | valid event 的最短 span (秒) |
 | `PER_SOURCE` | `0` | 每 source 采样条数 (0 = 全量) |
-| `SECONDARY` | `0` | 二阶段筛选 (1 = 开启) |
-| `RESUME` | `1` | 断点续跑 (1 = 跳过已有结果) |
+| `TARGET_TOTAL` | `0` | Step 2 目标总量 (0 = 全量) |
+| `BALANCED_TOTAL` | `0` | `TARGET_TOTAL>0` 时是否按 source 尽量均衡 |
 | `OUTPUT_ROOT` | `../results/timelens_100k` | 输出目录 |
+| `FORCE` | `0` | 强制重跑 screening，忽略已有结果 |
 
 ### 单步运行
 
@@ -101,6 +117,14 @@ python sample_per_source.py \
     --video-root /path/to/video_shards \
     --per-source 5
 
+# Step 2b: 直接按 source 尽量均衡抽 3k
+python sample_per_source.py \
+    --input results/passed_timelens.jsonl \
+    --output results/sample_3k.jsonl \
+    --video-root /path/to/video_shards \
+    --total 3000 \
+    --balanced-total
+
 # Step 3: 本地 VLM 筛选 (单 GPU, 自动续跑)
 python ../shared/local_screen.py \
     --input_jsonl results/sample_dev.jsonl \
@@ -110,6 +134,18 @@ python ../shared/local_screen.py \
     --model_path /path/to/Qwen3-VL-4B-Instruct \
     --resume
 ```
+
+## 短视频探索输出
+
+`explore_short_videos.py` 会在 `--output-dir` 下写出：
+
+| 文件 | 说明 |
+|------|------|
+| `summary.json` | `<=60s` 的总量、去重后数量、source 分布、事件数分布、能否满足 `--total` |
+| `preview_samples.json` | 每个 source 若干条样例，便于看“是什么形式” |
+| `short_pool_raw.jsonl` | 满足短视频条件且去重后的完整候选池 |
+| `short_selected_raw.jsonl` | 当设置 `--total` 时导出的目标子集 |
+| `short_selected_unified.jsonl` | 当同时提供 `--video-root` 且设置 `--total` 时导出的统一 schema |
 
 ## 产出文件
 

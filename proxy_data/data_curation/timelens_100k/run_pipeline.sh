@@ -21,7 +21,13 @@
 #   GPU_MEM_UTIL   — gpu_memory_utilization (默认 0.85)
 #   BATCH_SIZE     — inference batch size (默认 8)
 #   MAX_BATCHED_TOKENS — vLLM max_num_batched_tokens (默认 16384)
+#   MIN_DURATION   — text_filter 最小时长 (默认 60)
+#   MAX_DURATION   — text_filter 最大时长 (默认 240)
+#   MIN_EVENTS     — text_filter 最少 valid events (默认 5)
+#   MIN_EVENT_SPAN — text_filter 的最短 event span (默认 2.0)
 #   PER_SOURCE     — 每个 source 采样条数 (0 = 全量)
+#   TARGET_TOTAL   — Step 2 总采样条数 (0 = 不限)
+#   BALANCED_TOTAL — TARGET_TOTAL>0 时按 source 尽量均衡 (1 = 开启)
 #   OUTPUT_ROOT    — 输出目录
 #   FORCE          — 强制重跑 (1 = 强制, 默认 0)
 set -euo pipefail
@@ -41,7 +47,13 @@ NUM_GPUS="${NUM_GPUS:-2}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-16384}"
+MIN_DURATION="${MIN_DURATION:-60}"
+MAX_DURATION="${MAX_DURATION:-240}"
+MIN_EVENTS="${MIN_EVENTS:-5}"
+MIN_EVENT_SPAN="${MIN_EVENT_SPAN:-2.0}"
 PER_SOURCE="${PER_SOURCE:-0}"
+TARGET_TOTAL="${TARGET_TOTAL:-0}"
+BALANCED_TOTAL="${BALANCED_TOTAL:-0}"
 SEED="${SEED:-42}"
 FORCE="${FORCE:-0}"
 
@@ -56,7 +68,10 @@ else
     echo " Model:      $LOCAL_MODEL (DP=${NUM_GPUS} GPUs)"
 fi
 echo " Batch:      $BATCH_SIZE  Max Tokens: $MAX_BATCHED_TOKENS"
+echo " Duration:   ${MIN_DURATION}s - ${MAX_DURATION}s"
+echo " Events:     >=${MIN_EVENTS} valid spans (min span ${MIN_EVENT_SPAN}s)"
 echo " Per Source: $PER_SOURCE (0 = all)"
+echo " Target:     $TARGET_TOTAL (0 = all, balanced=$BALANCED_TOTAL)"
 echo " Force:     $FORCE"
 echo "============================================="
 
@@ -66,7 +81,11 @@ echo "=== Step 1: text_filter ==="
 python text_filter.py \
     --input "$TL_INPUT" \
     --output "$OUTPUT_ROOT/passed_timelens.jsonl" \
-    --config "$CONFIG"
+    --config "$CONFIG" \
+    --min-duration "$MIN_DURATION" \
+    --max-duration "$MAX_DURATION" \
+    --min-events "$MIN_EVENTS" \
+    --min-event-span "$MIN_EVENT_SPAN"
 
 echo "  → $OUTPUT_ROOT/passed_timelens.jsonl"
 
@@ -83,8 +102,16 @@ if [ "$PER_SOURCE" -gt 0 ]; then
     SAMPLE_ARGS+=(--per-source "$PER_SOURCE")
     echo "  Sampling $PER_SOURCE per source..."
 else
-    SAMPLE_ARGS+=(--per-source 999999)
     echo "  Using all records (no sampling cap)..."
+fi
+if [ "$TARGET_TOTAL" -gt 0 ]; then
+    SAMPLE_ARGS+=(--total "$TARGET_TOTAL")
+    if [ "$BALANCED_TOTAL" = "1" ]; then
+        SAMPLE_ARGS+=(--balanced-total)
+        echo "  Rebalancing to target total $TARGET_TOTAL across sources..."
+    else
+        echo "  Taking top $TARGET_TOTAL records without source rebalance..."
+    fi
 fi
 
 python sample_per_source.py "${SAMPLE_ARGS[@]}"
