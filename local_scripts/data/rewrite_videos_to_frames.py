@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -154,6 +155,28 @@ def infer_clip_key(record: dict[str, Any], index: int) -> str:
         return Path(videos[0]).stem
 
     return f"sample_{index:08d}"
+
+
+def build_cache_key(
+    resolved_paths: list[Path],
+    shared_fps: float,
+    max_frames_per_video: int,
+) -> str:
+    """Build a stable cache key so identical clip files reuse extracted frames.
+
+    We key by the resolved clip paths plus extraction policy. This deduplicates:
+    - repeated use of the same clip across train / val
+    - repeated use of the same clip across tasks / datasets
+
+    It does NOT merge different overlapping clips from the same original video.
+    That would require a separate full-video extraction pipeline.
+    """
+    joined = "||".join(str(path.resolve()) for path in resolved_paths)
+    payload = f"{joined}__fps={shared_fps:.6f}__maxf={max_frames_per_video}"
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    stem = resolved_paths[0].stem if len(resolved_paths) == 1 else "multi_video"
+    safe_stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in stem)[:80]
+    return f"{safe_stem}__{digest}"
 
 
 def infer_record_duration(record: dict[str, Any]) -> float | None:
@@ -312,11 +335,16 @@ def rewrite_record(
     rewritten = copy.deepcopy(record)
     rewritten_videos: list[list[str]] = []
     extraction_meta: list[dict[str, Any]] = []
+    cache_key = build_cache_key(
+        resolved_paths=resolved_paths,
+        shared_fps=shared_fps,
+        max_frames_per_video=max_frames_per_video,
+    )
     for vid_idx, video_path in enumerate(resolved_paths):
         if n_videos == 1:
-            out_dir = frames_root / clip_key
+            out_dir = frames_root / cache_key
         else:
-            out_dir = frames_root / clip_key / f"video_{vid_idx}"
+            out_dir = frames_root / cache_key / f"video_{vid_idx}"
         frames = extract_frames(
             video_path=video_path,
             output_dir=out_dir,
@@ -341,6 +369,8 @@ def rewrite_record(
     meta = dict(rewritten.get("metadata") or {})
     meta["video_fps_override"] = shared_fps
     meta["offline_frame_extraction"] = {
+        "clip_key": clip_key,
+        "cache_key": cache_key,
         "target_fps": target_fps,
         "fallback_fps": fallback_fps,
         "effective_fps": shared_fps,
