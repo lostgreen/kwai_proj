@@ -70,11 +70,11 @@ def test_frame_policy_uniform_caps_after_fps_downsampling(tmp_path: Path):
     assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["after_fps_frames"] == 400
 
 
-def test_frame_policy_skips_non_uncapped_or_non_2fps_records(tmp_path: Path):
+def test_frame_policy_falls_back_to_existing_frame_lists(tmp_path: Path):
     frame_dir = _frame_dir(tmp_path, "old_cache", 240)
     record = _record(frame_dir, 120.0)
     record["metadata"]["offline_frame_extraction"]["uncapped_extraction"] = False
-    record["videos"] = [["existing.jpg"]]
+    record["videos"] = [[f"existing_{idx:06d}.jpg" for idx in range(240)]]
 
     sampled = apply_frame_policy(
         [record],
@@ -82,8 +82,41 @@ def test_frame_policy_skips_non_uncapped_or_non_2fps_records(tmp_path: Path):
         max_frames=256,
     )[0]
 
-    assert sampled["videos"] == [["existing.jpg"]]
-    assert "experiment_frame_sampling" not in sampled["metadata"]
+    assert len(sampled["videos"][0]) == 120
+    assert sampled["videos"][0][0] == "existing_000000.jpg"
+    assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["source"] == "existing_frame_list"
+
+
+def test_frame_policy_reads_hier_shared_source_cache(tmp_path: Path):
+    cache_dir = _frame_dir(tmp_path, "hier_cache", 300)
+    record = {
+        "prompt": "p",
+        "answer": "a",
+        "problem_type": "temporal_seg_hier_L1",
+        "data_type": "video",
+        "videos": [[str(cache_dir / "stale_1fps_view.jpg")]],
+        "metadata": {
+            "video_fps_override": 1.0,
+            "shared_source_frames": {
+                "cache_dir": str(cache_dir),
+                "cache_fps": 2.0,
+                "segment_start_sec": 0.0,
+                "segment_end_sec": 120.0,
+                "target_view_fps": 1.0,
+                "n_frames": 120,
+            },
+        },
+    }
+
+    sampled = apply_frame_policy(
+        [record],
+        policy="0:60:2.0,60:inf:1.0",
+        max_frames=256,
+    )[0]
+
+    assert len(sampled["videos"][0]) == 120
+    assert sampled["videos"][0][0] == str(cache_dir / "frame_000000.jpg")
+    assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["source"] == "shared_source_cache"
 
 
 def test_parse_frame_policy_supports_uniform_rule():

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import math
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,14 @@ class FramePolicyRule:
     min_sec: float
     max_sec: float
     fps: float | None
+
+
+@dataclass(frozen=True)
+class FrameVideoSource:
+    frames: list[str]
+    base_fps: float
+    duration_sec: float
+    source: str
 
 
 def _parse_bound(value: str) -> float:
@@ -57,9 +66,32 @@ def parse_frame_policy(policy: str) -> list[FramePolicyRule]:
     return rules
 
 
-def _duration_from_record(record: dict[str, Any], frames: list[str], base_fps: float) -> float:
+def _float_or_none(value: Any, *, allow_zero: bool = False) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed > 0 or (allow_zero and parsed >= 0):
+        return parsed
+    return None
+
+
+def _duration_from_record(
+    record: dict[str, Any],
+    frames: list[str],
+    base_fps: float,
+    explicit_duration: float | None = None,
+) -> float:
+    if explicit_duration is not None and explicit_duration > 0:
+        return explicit_duration
     meta = record.get("metadata") or {}
     extraction = meta.get("offline_frame_extraction") or {}
+    shared = meta.get("shared_source_frames") or {}
+    if isinstance(shared, dict):
+        start = _float_or_none(shared.get("segment_start_sec"), allow_zero=True)
+        end = _float_or_none(shared.get("segment_end_sec"))
+        if start is not None and end is not None and end > start:
+            return end - start
     for value in (
         extraction.get("duration_sec"),
         meta.get("duration"),
@@ -78,15 +110,14 @@ def _duration_from_record(record: dict[str, Any], frames: list[str], base_fps: f
 def _base_fps_from_record(record: dict[str, Any]) -> float:
     meta = record.get("metadata") or {}
     extraction = meta.get("offline_frame_extraction") or {}
+    shared = meta.get("shared_source_frames") or {}
     for value in (
         extraction.get("effective_fps"),
+        shared.get("cache_fps") if isinstance(shared, dict) else None,
         meta.get("video_fps_override"),
     ):
-        try:
-            fps = float(value)
-        except (TypeError, ValueError):
-            continue
-        if fps > 0:
+        fps = _float_or_none(value)
+        if fps is not None:
             return fps
     return 2.0
 
@@ -97,7 +128,19 @@ def _is_truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _cache_frames_from_record(record: dict[str, Any]) -> tuple[list[list[str]] | None, str]:
+def _jpg_frames_from_dir(frame_dir: str | Path) -> tuple[list[str] | None, str]:
+    frame_dir_path = Path(str(frame_dir))
+    if not frame_dir_path.is_absolute():
+        return None, f"frame_dir is not absolute: {frame_dir_path}"
+    if not frame_dir_path.is_dir():
+        return None, f"frame_dir not found: {frame_dir_path}"
+    frames = sorted(str(path) for path in frame_dir_path.glob("*.jpg"))
+    if not frames:
+        return None, f"frame_dir has no jpg frames: {frame_dir_path}"
+    return frames, ""
+
+
+def _offline_cache_sources(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
     meta = record.get("metadata") or {}
     extraction = meta.get("offline_frame_extraction") or {}
     base_fps = _base_fps_from_record(record)
@@ -111,23 +154,107 @@ def _cache_frames_from_record(record: dict[str, Any]) -> tuple[list[list[str]] |
     if not isinstance(videos_meta, list) or not videos_meta:
         return None, "offline_frame_extraction.videos missing"
 
-    cache_videos: list[list[str]] = []
+    cache_videos: list[FrameVideoSource] = []
     for idx, video_meta in enumerate(videos_meta):
         if not isinstance(video_meta, dict):
             return None, f"offline_frame_extraction.videos[{idx}] is not an object"
         frame_dir = video_meta.get("frame_dir")
         if not frame_dir:
             return None, f"offline_frame_extraction.videos[{idx}].frame_dir missing"
-        frame_dir_path = Path(str(frame_dir))
-        if not frame_dir_path.is_absolute():
-            return None, f"offline_frame_extraction.videos[{idx}].frame_dir is not absolute"
-        if not frame_dir_path.is_dir():
-            return None, f"frame_dir not found: {frame_dir_path}"
-        frames = sorted(str(path) for path in frame_dir_path.glob("*.jpg"))
-        if not frames:
-            return None, f"frame_dir has no jpg frames: {frame_dir_path}"
-        cache_videos.append(frames)
+        frames, reason = _jpg_frames_from_dir(frame_dir)
+        if frames is None:
+            return None, reason
+        cache_videos.append(
+            FrameVideoSource(
+                frames=frames,
+                base_fps=base_fps,
+                duration_sec=_duration_from_record(record, frames, base_fps),
+                source="offline_frame_cache",
+            )
+        )
     return cache_videos, ""
+
+
+def _frame_indices_for_span(n_frames: int, source_fps: float, start_sec: float, end_sec: float) -> list[int]:
+    if n_frames <= 0:
+        return []
+    if end_sec <= start_sec:
+        return [max(0, min(n_frames - 1, int(math.floor(start_sec * max(source_fps, 1e-6)))))]
+
+    eps = 1e-6
+    start_idx = max(0, int(math.ceil(start_sec * source_fps - eps)))
+    end_exclusive = min(n_frames, int(math.ceil(end_sec * source_fps - eps)))
+    if end_exclusive <= start_idx:
+        end_exclusive = min(n_frames, start_idx + 1)
+    return list(range(start_idx, end_exclusive))
+
+
+def _shared_source_cache_sources(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
+    meta = record.get("metadata") or {}
+    shared = meta.get("shared_source_frames")
+    if not isinstance(shared, dict):
+        return None, "shared_source_frames missing"
+
+    cache_dir = shared.get("cache_dir")
+    if not cache_dir:
+        return None, "shared_source_frames.cache_dir missing"
+    cache_fps = _float_or_none(shared.get("cache_fps"))
+    if cache_fps is None:
+        return None, "shared_source_frames.cache_fps missing"
+    start_sec = _float_or_none(shared.get("segment_start_sec"), allow_zero=True)
+    end_sec = _float_or_none(shared.get("segment_end_sec"))
+    if start_sec is None or end_sec is None or end_sec <= start_sec:
+        return None, "shared_source_frames segment bounds invalid"
+
+    all_frames, reason = _jpg_frames_from_dir(cache_dir)
+    if all_frames is None:
+        return None, reason
+    indices = _frame_indices_for_span(len(all_frames), cache_fps, start_sec, end_sec)
+    frames = [all_frames[idx] for idx in indices]
+    if not frames:
+        return None, "shared_source_frames selected no frames"
+    return [
+        FrameVideoSource(
+            frames=frames,
+            base_fps=cache_fps,
+            duration_sec=end_sec - start_sec,
+            source="shared_source_cache",
+        )
+    ], ""
+
+
+def _existing_frame_list_sources(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
+    videos = record.get("videos") or []
+    if not isinstance(videos, list) or not videos:
+        return None, "videos missing"
+
+    frame_videos: list[FrameVideoSource] = []
+    base_fps = _base_fps_from_record(record)
+    for idx, frames in enumerate(videos):
+        if not isinstance(frames, list) or not frames:
+            return None, f"videos[{idx}] is not a frame list"
+        if not all(isinstance(frame, str) and frame for frame in frames):
+            return None, f"videos[{idx}] contains non-string frame paths"
+        frame_list = list(frames)
+        frame_videos.append(
+            FrameVideoSource(
+                frames=frame_list,
+                base_fps=base_fps,
+                duration_sec=_duration_from_record(record, frame_list, base_fps),
+                source="existing_frame_list",
+            )
+        )
+    return frame_videos, ""
+
+
+def _frame_sources_from_record(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
+    reasons: list[str] = []
+    for loader in (_offline_cache_sources, _shared_source_cache_sources, _existing_frame_list_sources):
+        sources, reason = loader(record)
+        if sources is not None:
+            return sources, ""
+        reasons.append(reason)
+    return None, "; ".join(reasons)
 
 
 def _rule_for_duration(rules: list[FramePolicyRule], duration_sec: float) -> FramePolicyRule | None:
@@ -164,19 +291,20 @@ def apply_frame_policy_to_record(
     max_frames: int,
     policy: str = "",
 ) -> dict[str, Any]:
-    cache_videos, _skip_reason = _cache_frames_from_record(record)
-    if cache_videos is None:
+    frame_sources, _skip_reason = _frame_sources_from_record(record)
+    if frame_sources is None:
         return record
 
-    base_fps = _base_fps_from_record(record)
-    n_videos = len(cache_videos)
+    n_videos = len(frame_sources)
     max_frames_per_video = max(1, max_frames // n_videos) if max_frames > 0 and n_videos > 1 else max_frames
     rewritten = copy.deepcopy(record)
     rewritten_videos: list[list[str]] = []
     policy_meta: list[dict[str, Any]] = []
 
-    for frames in cache_videos:
-        duration_sec = _duration_from_record(record, frames, base_fps)
+    for source in frame_sources:
+        frames = source.frames
+        base_fps = source.base_fps
+        duration_sec = source.duration_sec
         rule = _rule_for_duration(rules, duration_sec)
         target_fps = rule.fps if rule is not None else None
         after_fps = _downsample_by_fps(list(frames), base_fps, target_fps)
@@ -191,6 +319,7 @@ def apply_frame_policy_to_record(
                 "input_frames": len(frames),
                 "after_fps_frames": len(after_fps),
                 "output_frames": len(final_frames),
+                "source": source.source,
             }
         )
 
@@ -224,15 +353,17 @@ def apply_frame_policy(
     return [apply_frame_policy_to_record(record, rules, max_frames, policy) for record in records]
 
 
-def summarize_frame_policy_application(records: list[dict[str, Any]]) -> dict[str, int]:
+def summarize_frame_policy_application(records: list[dict[str, Any]]) -> dict[str, Any]:
     applied = 0
     skipped = 0
+    sources: Counter[str] = Counter()
     for record in records:
         meta = record.get("metadata") or {}
         if "experiment_frame_sampling" in meta:
             applied += 1
+            for video_meta in (meta.get("experiment_frame_sampling") or {}).get("videos", []):
+                if isinstance(video_meta, dict):
+                    sources[str(video_meta.get("source") or "unknown")] += 1
         else:
-            cache_videos, _reason = _cache_frames_from_record(record)
-            if cache_videos is None:
-                skipped += 1
-    return {"applied": applied, "skipped": skipped}
+            skipped += 1
+    return {"applied": applied, "skipped": skipped, "sources": dict(sources)}

@@ -117,9 +117,13 @@ def cmd_mix(args: argparse.Namespace) -> None:
         )
         if args.frame_sample_policy or args.frame_sample_max_frames > 0:
             frame_summary = summarize_frame_policy_application(all_train)
+            source_counts = ",".join(
+                f"{key}={value}" for key, value in sorted(frame_summary.get("sources", {}).items())
+            )
             print(
                 "  [frame_policy train]: "
                 f"applied={frame_summary['applied']} skipped={frame_summary['skipped']}"
+                f"{' sources=' + source_counts if source_counts else ''}"
             )
         write_jsonl(all_train, train_out)
         print_summary(all_train, f"Train -> {train_out}")
@@ -143,9 +147,13 @@ def cmd_mix(args: argparse.Namespace) -> None:
         )
         if args.frame_sample_policy or args.frame_sample_max_frames > 0:
             frame_summary = summarize_frame_policy_application(all_val)
+            source_counts = ",".join(
+                f"{key}={value}" for key, value in sorted(frame_summary.get("sources", {}).items())
+            )
             print(
                 "  [frame_policy val]: "
                 f"applied={frame_summary['applied']} skipped={frame_summary['skipped']}"
+                f"{' sources=' + source_counts if source_counts else ''}"
             )
         write_jsonl(all_val, val_out)
         print_summary(all_val, f"Val -> {val_out}")
