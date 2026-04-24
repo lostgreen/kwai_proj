@@ -15,7 +15,7 @@
 import ray
 
 
-@ray.remote
+@ray.remote(num_cpus=0)
 class WorkerGroupRegisterCenter:
     def __init__(self, rank_zero_info):
         self.rank_zero_info = rank_zero_info
