@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -55,6 +57,23 @@ def test_frame_policy_reads_cache_dir_and_downsamples_by_duration(tmp_path: Path
     assert long["metadata"]["experiment_frame_sampling"]["max_frames"] == 256
     assert long["metadata"]["experiment_frame_sampling"]["rules"][1]["max_sec"] is None
     assert long["metadata"]["experiment_frame_sampling"]["videos"][0]["target_fps"] == 1.0
+
+
+def test_frame_policy_metadata_is_pyarrow_safe(tmp_path: Path):
+    pa = pytest.importorskip("pyarrow")
+    frame_dir = _frame_dir(tmp_path, "arrow_safe", 120)
+
+    sampled = apply_frame_policy(
+        [_record(frame_dir, 60.0)],
+        policy="0:60:2.0,60:inf:1.0",
+        max_frames=256,
+        cache_roots=[tmp_path],
+    )[0]
+
+    table = pa.Table.from_pylist([sampled])
+
+    assert table.num_rows == 1
+    assert sampled["metadata"]["experiment_frame_sampling"]["rules"][1]["max_sec"] is None
 
 
 def test_frame_policy_uniform_caps_after_fps_downsampling(tmp_path: Path):

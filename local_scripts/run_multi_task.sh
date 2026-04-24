@@ -37,6 +37,8 @@ FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE="${FRAME_SAMPLE_MAX_FRAMES:-${MAX_FRAMES}}"
 FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE="${FRAME_SAMPLE_CACHE_ROOTS:-}"
 FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE="${FRAME_SAMPLE_POLICY_VERSION:-trusted_2fps_cache_v2}"
 FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE="${FRAME_SAMPLE_PROGRESS_INTERVAL:-1000}"
+CHECK_EXPERIMENT_JSONL_EFFECTIVE="${CHECK_EXPERIMENT_JSONL:-true}"
+CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE="${CHECK_EXPERIMENT_FRAME_FILES:-false}"
 
 echo "[multi-task] EXP_NAME=${EXP_NAME}"
 echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
@@ -45,6 +47,7 @@ echo "[multi-task] VAL_TG_N=${VAL_TG_N_EFFECTIVE} VAL_MCQ_N=${VAL_MCQ_N_EFFECTIV
 echo "[multi-task] FRAME_SAMPLE_POLICY=${FRAME_SAMPLE_POLICY_EFFECTIVE} FRAME_SAMPLE_MAX_FRAMES=${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}"
 echo "[multi-task] FRAME_SAMPLE_POLICY_VERSION=${FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE} FRAME_SAMPLE_CACHE_ROOTS=${FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE:-<default>}"
 echo "[multi-task] FRAME_SAMPLE_PROGRESS_INTERVAL=${FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE}"
+echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CHECK_EXPERIMENT_FRAME_FILES=${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE}"
 echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
 # ============================================================
@@ -181,6 +184,23 @@ from local_scripts.data.mixer import main; main()
         ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
         --val-el-n "${VAL_EL_N}"
     echo "[multi-task] Data ready: train=$(wc -l < "${TRAIN_FILE}"), val=$(wc -l < "${TEST_FILE}")"
+fi
+
+if [[ "${CHECK_EXPERIMENT_JSONL_EFFECTIVE,,}" =~ ^(true|1|yes)$ ]] && \
+   [[ -n "${FRAME_SAMPLE_POLICY_EFFECTIVE}" || "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" -gt 0 ]]; then
+    _CHECK_FRAME_FILES_FLAG=""
+    if [[ "${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE,,}" =~ ^(true|1|yes)$ ]]; then
+        _CHECK_FRAME_FILES_FLAG="--check-frame-files"
+    fi
+    # shellcheck disable=SC2086
+    python3 "${REPO_ROOT}/local_scripts/data/check_experiment_jsonl.py" \
+        --jsonl "${TRAIN_FILE}" \
+        --jsonl "${TEST_FILE}" \
+        --max-frames "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" \
+        --require-frame-policy \
+        --expect-no-skipped \
+        --arrow-check \
+        ${_CHECK_FRAME_FILES_FLAG}
 fi
 
 # ============================================================
