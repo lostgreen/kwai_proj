@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+FRAME_POLICY_IMPLEMENTATION_VERSION = "trusted_2fps_cache_v2"
+
 
 @dataclass(frozen=True)
 class FramePolicyRule:
@@ -128,10 +130,64 @@ def _is_truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _jpg_frames_from_dir(frame_dir: str | Path) -> tuple[list[str] | None, str]:
+def _resolve_path(path: str | Path) -> Path:
+    return Path(str(path)).expanduser().resolve(strict=False)
+
+
+def _normalize_cache_roots(cache_roots: list[str | Path] | tuple[str | Path, ...] | None) -> tuple[Path, ...]:
+    if not cache_roots:
+        return ()
+    return tuple(_resolve_path(root) for root in cache_roots if str(root).strip())
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _cache_dir_allowed(frame_dir: Path, cache_roots: tuple[Path, ...]) -> bool:
+    if not cache_roots:
+        return True
+    resolved = _resolve_path(frame_dir)
+    return any(_is_relative_to(resolved, root) for root in cache_roots)
+
+
+def default_frame_policy_cache_roots(data_root: str | Path) -> list[str]:
+    """Trusted 2fps cache roots used by multi-task experiments.
+
+    These are deliberately explicit so an old 1fps frame list cannot silently
+    become the base source for a new experiment.
+    """
+    root = _resolve_path(data_root)
+    return [
+        str(root / "offline_frames" / "base_cache_2fps"),
+        str(root.parent / "hier_seg_annotation_v1" / "frame_cache" / "source_2fps"),
+    ]
+
+
+def parse_cache_roots(cache_roots: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if cache_roots is None:
+        return []
+    if isinstance(cache_roots, str):
+        raw_parts = cache_roots.replace(",", ":").split(":")
+    else:
+        raw_parts = list(cache_roots)
+    return [part.strip() for part in raw_parts if str(part).strip()]
+
+
+def _jpg_frames_from_dir(
+    frame_dir: str | Path,
+    cache_roots: tuple[Path, ...],
+) -> tuple[list[str] | None, str]:
     frame_dir_path = Path(str(frame_dir))
     if not frame_dir_path.is_absolute():
         return None, f"frame_dir is not absolute: {frame_dir_path}"
+    if not _cache_dir_allowed(frame_dir_path, cache_roots):
+        roots = ", ".join(str(root) for root in cache_roots)
+        return None, f"frame_dir outside trusted 2fps cache roots: {frame_dir_path} not in [{roots}]"
     if not frame_dir_path.is_dir():
         return None, f"frame_dir not found: {frame_dir_path}"
     frames = sorted(str(path) for path in frame_dir_path.glob("*.jpg"))
@@ -140,7 +196,10 @@ def _jpg_frames_from_dir(frame_dir: str | Path) -> tuple[list[str] | None, str]:
     return frames, ""
 
 
-def _offline_cache_sources(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
+def _offline_cache_sources(
+    record: dict[str, Any],
+    cache_roots: tuple[Path, ...],
+) -> tuple[list[FrameVideoSource] | None, str]:
     meta = record.get("metadata") or {}
     extraction = meta.get("offline_frame_extraction") or {}
     base_fps = _base_fps_from_record(record)
@@ -161,7 +220,7 @@ def _offline_cache_sources(record: dict[str, Any]) -> tuple[list[FrameVideoSourc
         frame_dir = video_meta.get("frame_dir")
         if not frame_dir:
             return None, f"offline_frame_extraction.videos[{idx}].frame_dir missing"
-        frames, reason = _jpg_frames_from_dir(frame_dir)
+        frames, reason = _jpg_frames_from_dir(frame_dir, cache_roots)
         if frames is None:
             return None, reason
         cache_videos.append(
@@ -189,7 +248,10 @@ def _frame_indices_for_span(n_frames: int, source_fps: float, start_sec: float, 
     return list(range(start_idx, end_exclusive))
 
 
-def _shared_source_cache_sources(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
+def _shared_source_cache_sources(
+    record: dict[str, Any],
+    cache_roots: tuple[Path, ...],
+) -> tuple[list[FrameVideoSource] | None, str]:
     meta = record.get("metadata") or {}
     shared = meta.get("shared_source_frames")
     if not isinstance(shared, dict):
@@ -201,12 +263,14 @@ def _shared_source_cache_sources(record: dict[str, Any]) -> tuple[list[FrameVide
     cache_fps = _float_or_none(shared.get("cache_fps"))
     if cache_fps is None:
         return None, "shared_source_frames.cache_fps missing"
+    if abs(cache_fps - 2.0) > 1e-6:
+        return None, f"shared_source_frames.cache_fps is {cache_fps}, expected 2.0"
     start_sec = _float_or_none(shared.get("segment_start_sec"), allow_zero=True)
     end_sec = _float_or_none(shared.get("segment_end_sec"))
     if start_sec is None or end_sec is None or end_sec <= start_sec:
         return None, "shared_source_frames segment bounds invalid"
 
-    all_frames, reason = _jpg_frames_from_dir(cache_dir)
+    all_frames, reason = _jpg_frames_from_dir(cache_dir, cache_roots)
     if all_frames is None:
         return None, reason
     indices = _frame_indices_for_span(len(all_frames), cache_fps, start_sec, end_sec)
@@ -223,34 +287,58 @@ def _shared_source_cache_sources(record: dict[str, Any]) -> tuple[list[FrameVide
     ], ""
 
 
-def _existing_frame_list_sources(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
+def _cache_dir_from_frame_list(frames: list[str], cache_roots: tuple[Path, ...]) -> tuple[Path | None, str]:
+    for frame in frames:
+        path = Path(frame)
+        if not path.is_absolute():
+            continue
+        parent = path.parent
+        if _cache_dir_allowed(parent, cache_roots):
+            return parent, ""
+    if cache_roots:
+        return None, "frame list has no absolute frame under trusted 2fps cache roots"
+    return None, "frame list has no absolute frame path"
+
+
+def _inferred_cache_sources_from_frame_list(
+    record: dict[str, Any],
+    cache_roots: tuple[Path, ...],
+) -> tuple[list[FrameVideoSource] | None, str]:
     videos = record.get("videos") or []
     if not isinstance(videos, list) or not videos:
         return None, "videos missing"
 
     frame_videos: list[FrameVideoSource] = []
-    base_fps = _base_fps_from_record(record)
     for idx, frames in enumerate(videos):
         if not isinstance(frames, list) or not frames:
             return None, f"videos[{idx}] is not a frame list"
         if not all(isinstance(frame, str) and frame for frame in frames):
             return None, f"videos[{idx}] contains non-string frame paths"
-        frame_list = list(frames)
+        cache_dir, reason = _cache_dir_from_frame_list(list(frames), cache_roots)
+        if cache_dir is None:
+            return None, reason
+        cache_frames, reason = _jpg_frames_from_dir(cache_dir, cache_roots)
+        if cache_frames is None:
+            return None, reason
+        base_fps = 2.0
         frame_videos.append(
             FrameVideoSource(
-                frames=frame_list,
+                frames=cache_frames,
                 base_fps=base_fps,
-                duration_sec=_duration_from_record(record, frame_list, base_fps),
-                source="existing_frame_list",
+                duration_sec=_duration_from_record(record, cache_frames, base_fps),
+                source="inferred_2fps_cache",
             )
         )
     return frame_videos, ""
 
 
-def _frame_sources_from_record(record: dict[str, Any]) -> tuple[list[FrameVideoSource] | None, str]:
+def _frame_sources_from_record(
+    record: dict[str, Any],
+    cache_roots: tuple[Path, ...],
+) -> tuple[list[FrameVideoSource] | None, str]:
     reasons: list[str] = []
-    for loader in (_offline_cache_sources, _shared_source_cache_sources, _existing_frame_list_sources):
-        sources, reason = loader(record)
+    for loader in (_offline_cache_sources, _shared_source_cache_sources, _inferred_cache_sources_from_frame_list):
+        sources, reason = loader(record, cache_roots)
         if sources is not None:
             return sources, ""
         reasons.append(reason)
@@ -290,8 +378,10 @@ def apply_frame_policy_to_record(
     rules: list[FramePolicyRule],
     max_frames: int,
     policy: str = "",
+    cache_roots: list[str | Path] | tuple[str | Path, ...] | None = None,
 ) -> dict[str, Any]:
-    frame_sources, _skip_reason = _frame_sources_from_record(record)
+    trusted_roots = _normalize_cache_roots(cache_roots)
+    frame_sources, _skip_reason = _frame_sources_from_record(record, trusted_roots)
     if frame_sources is None:
         return record
 
@@ -327,6 +417,8 @@ def apply_frame_policy_to_record(
     meta["experiment_frame_sampling"] = {
         "policy": policy,
         "max_frames": max_frames,
+        "implementation_version": FRAME_POLICY_IMPLEMENTATION_VERSION,
+        "trusted_cache_roots": [str(root) for root in trusted_roots],
         "rules": [
             {
                 "min_sec": rule.min_sec,
@@ -346,11 +438,15 @@ def apply_frame_policy(
     records: list[dict[str, Any]],
     policy: str,
     max_frames: int,
+    cache_roots: list[str | Path] | tuple[str | Path, ...] | None = None,
 ) -> list[dict[str, Any]]:
     rules = parse_frame_policy(policy)
     if not rules and max_frames <= 0:
         return records
-    return [apply_frame_policy_to_record(record, rules, max_frames, policy) for record in records]
+    return [
+        apply_frame_policy_to_record(record, rules, max_frames, policy, cache_roots=cache_roots)
+        for record in records
+    ]
 
 
 def summarize_frame_policy_application(records: list[dict[str, Any]]) -> dict[str, Any]:

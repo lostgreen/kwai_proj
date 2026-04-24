@@ -45,6 +45,7 @@ def test_frame_policy_reads_cache_dir_and_downsamples_by_duration(tmp_path: Path
         [_record(short_dir, 60.0), _record(long_dir, 120.0)],
         policy="0:60:2.0,60:inf:1.0",
         max_frames=256,
+        cache_roots=[tmp_path],
     )
 
     assert len(short["videos"][0]) == 120
@@ -62,6 +63,7 @@ def test_frame_policy_uniform_caps_after_fps_downsampling(tmp_path: Path):
         [_record(frame_dir, 400.0)],
         policy="0:60:2.0,60:inf:1.0",
         max_frames=256,
+        cache_roots=[tmp_path],
     )[0]
 
     assert len(sampled["videos"][0]) == 256
@@ -70,21 +72,46 @@ def test_frame_policy_uniform_caps_after_fps_downsampling(tmp_path: Path):
     assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["after_fps_frames"] == 400
 
 
-def test_frame_policy_falls_back_to_existing_frame_lists(tmp_path: Path):
-    frame_dir = _frame_dir(tmp_path, "old_cache", 240)
+def test_frame_policy_infers_cache_dir_from_existing_frame_lists(tmp_path: Path):
+    frame_dir = _frame_dir(tmp_path, "base_cache_2fps", 240)
     record = _record(frame_dir, 120.0)
     record["metadata"]["offline_frame_extraction"]["uncapped_extraction"] = False
-    record["videos"] = [[f"existing_{idx:06d}.jpg" for idx in range(240)]]
+    record["videos"] = [[str(frame_dir / f"frame_{idx:06d}.jpg") for idx in range(0, 240, 2)]]
 
     sampled = apply_frame_policy(
         [record],
         policy="0:60:2.0,60:inf:1.0",
         max_frames=256,
+        cache_roots=[tmp_path],
     )[0]
 
     assert len(sampled["videos"][0]) == 120
-    assert sampled["videos"][0][0] == "existing_000000.jpg"
-    assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["source"] == "existing_frame_list"
+    assert sampled["videos"][0][0] == str(frame_dir / "frame_000000.jpg")
+    assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["source"] == "inferred_2fps_cache"
+
+
+def test_frame_policy_rejects_existing_frame_lists_outside_trusted_cache_roots(tmp_path: Path):
+    old_dir = _frame_dir(tmp_path, "old_1fps_cache", 120)
+    trusted_dir = tmp_path / "base_cache_2fps"
+    trusted_dir.mkdir()
+    record = {
+        "prompt": "p",
+        "answer": "A",
+        "problem_type": "temporal_grounding",
+        "data_type": "video",
+        "videos": [[str(old_dir / "frame_000000.jpg"), str(old_dir / "frame_000001.jpg")]],
+        "metadata": {"video_fps_override": 1.0, "duration": 120.0},
+    }
+
+    sampled = apply_frame_policy(
+        [record],
+        policy="0:60:2.0,60:inf:1.0",
+        max_frames=256,
+        cache_roots=[trusted_dir],
+    )[0]
+
+    assert sampled["videos"] == record["videos"]
+    assert "experiment_frame_sampling" not in sampled["metadata"]
 
 
 def test_frame_policy_reads_hier_shared_source_cache(tmp_path: Path):
@@ -112,11 +139,13 @@ def test_frame_policy_reads_hier_shared_source_cache(tmp_path: Path):
         [record],
         policy="0:60:2.0,60:inf:1.0",
         max_frames=256,
+        cache_roots=[tmp_path],
     )[0]
 
     assert len(sampled["videos"][0]) == 120
     assert sampled["videos"][0][0] == str(cache_dir / "frame_000000.jpg")
     assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["source"] == "shared_source_cache"
+    assert sampled["metadata"]["experiment_frame_sampling"]["implementation_version"] == "trusted_2fps_cache_v2"
 
 
 def test_parse_frame_policy_supports_uniform_rule():

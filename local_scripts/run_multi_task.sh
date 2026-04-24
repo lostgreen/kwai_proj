@@ -34,12 +34,15 @@ VAL_MCQ_N_EFFECTIVE="${VAL_MCQ_N:-600}"
 MIX_FORCE="${MIX_FORCE:-false}"
 FRAME_SAMPLE_POLICY_EFFECTIVE="${FRAME_SAMPLE_POLICY:-0:60:2.0,60:inf:1.0}"
 FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE="${FRAME_SAMPLE_MAX_FRAMES:-${MAX_FRAMES}}"
+FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE="${FRAME_SAMPLE_CACHE_ROOTS:-}"
+FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE="${FRAME_SAMPLE_POLICY_VERSION:-trusted_2fps_cache_v2}"
 
 echo "[multi-task] EXP_NAME=${EXP_NAME}"
 echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
 echo "[multi-task] TEST_FILE=${TEST_FILE}"
 echo "[multi-task] VAL_TG_N=${VAL_TG_N_EFFECTIVE} VAL_MCQ_N=${VAL_MCQ_N_EFFECTIVE}"
 echo "[multi-task] FRAME_SAMPLE_POLICY=${FRAME_SAMPLE_POLICY_EFFECTIVE} FRAME_SAMPLE_MAX_FRAMES=${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}"
+echo "[multi-task] FRAME_SAMPLE_POLICY_VERSION=${FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE} FRAME_SAMPLE_CACHE_ROOTS=${FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE:-<default>}"
 echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
 # ============================================================
@@ -107,11 +110,11 @@ fi
 
 if [[ "${NEEDS_MIX}" != "true" ]]; then
     FRAME_POLICY_CHECK="$(
-python3 - "${TRAIN_FILE}" "${TEST_FILE}" "${FRAME_SAMPLE_POLICY_EFFECTIVE}" "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" <<'PY'
+python3 - "${TRAIN_FILE}" "${TEST_FILE}" "${FRAME_SAMPLE_POLICY_EFFECTIVE}" "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" "${FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE}" <<'PY'
 import json
 import sys
 
-train_path, val_path, policy, max_frames = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+train_path, val_path, policy, max_frames, version = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
 
 def first_frame_policy(path):
     with open(path, encoding="utf-8") as f:
@@ -128,10 +131,14 @@ def first_frame_policy(path):
 problems = []
 for label, path in [("train", train_path), ("val", val_path)]:
     meta = first_frame_policy(path)
-    if meta.get("policy", "") != policy or int(meta.get("max_frames", -1)) != max_frames:
+    if (
+        meta.get("policy", "") != policy
+        or int(meta.get("max_frames", -1)) != max_frames
+        or meta.get("implementation_version") != version
+    ):
         problems.append(
             f"{label} frame_policy={meta.get('policy', '')!r}/{meta.get('max_frames')} "
-            f"expected={policy!r}/{max_frames}"
+            f"version={meta.get('implementation_version')!r} expected={policy!r}/{max_frames}/{version}"
         )
 
 print("OK" if not problems else "; ".join(problems))
@@ -161,6 +168,7 @@ from local_scripts.data.mixer import main; main()
         --exp-name "${EXP_NAME}" \
         --frame-sample-policy "${FRAME_SAMPLE_POLICY_EFFECTIVE}" \
         --frame-sample-max-frames "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" \
+        --frame-sample-cache-roots "${FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE}" \
         --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
         --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
         ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \

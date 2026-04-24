@@ -39,7 +39,12 @@ from types import ModuleType
 
 from . import event_logic, hier_seg, mcq, tg
 from .common import print_summary, write_jsonl
-from .frame_policy import apply_frame_policy, summarize_frame_policy_application
+from .frame_policy import (
+    apply_frame_policy,
+    default_frame_policy_cache_roots,
+    parse_cache_roots,
+    summarize_frame_policy_application,
+)
 
 # ---- 所有可用任务模块 ----
 _ALL_MODULES: dict[str, ModuleType] = {
@@ -88,6 +93,8 @@ def cmd_mix(args: argparse.Namespace) -> None:
     exp_dir = Path(args.data_root) / "experiments" / args.exp_name
     train_out = str(exp_dir / "train.jsonl")
     val_out = str(exp_dir / "val.jsonl")
+    cache_roots = default_frame_policy_cache_roots(args.data_root)
+    cache_roots.extend(parse_cache_roots(getattr(args, "frame_sample_cache_roots", "")))
 
     modules = _get_modules(args.tasks)
 
@@ -114,6 +121,7 @@ def cmd_mix(args: argparse.Namespace) -> None:
             all_train,
             policy=args.frame_sample_policy,
             max_frames=args.frame_sample_max_frames,
+            cache_roots=cache_roots,
         )
         if args.frame_sample_policy or args.frame_sample_max_frames > 0:
             frame_summary = summarize_frame_policy_application(all_train)
@@ -125,6 +133,7 @@ def cmd_mix(args: argparse.Namespace) -> None:
                 f"applied={frame_summary['applied']} skipped={frame_summary['skipped']}"
                 f"{' sources=' + source_counts if source_counts else ''}"
             )
+            print("  [frame_policy cache_roots]: " + "; ".join(cache_roots))
         write_jsonl(all_train, train_out)
         print_summary(all_train, f"Train -> {train_out}")
 
@@ -144,6 +153,7 @@ def cmd_mix(args: argparse.Namespace) -> None:
             all_val,
             policy=args.frame_sample_policy,
             max_frames=args.frame_sample_max_frames,
+            cache_roots=cache_roots,
         )
         if args.frame_sample_policy or args.frame_sample_max_frames > 0:
             frame_summary = summarize_frame_policy_application(all_val)
@@ -155,6 +165,7 @@ def cmd_mix(args: argparse.Namespace) -> None:
                 f"applied={frame_summary['applied']} skipped={frame_summary['skipped']}"
                 f"{' sources=' + source_counts if source_counts else ''}"
             )
+            print("  [frame_policy cache_roots]: " + "; ".join(cache_roots))
         write_jsonl(all_val, val_out)
         print_summary(all_val, f"Val -> {val_out}")
 
@@ -221,6 +232,15 @@ def main() -> None:
         type=int,
         default=0,
         help="Uniform cap applied after fps downsampling. 0 disables the cap.",
+    )
+    p_mix.add_argument(
+        "--frame-sample-cache-roots",
+        default="",
+        help=(
+            "Extra trusted 2fps cache roots, separated by ':' or ','. Defaults are "
+            "$data_root/offline_frames/base_cache_2fps and sibling "
+            "hier_seg_annotation_v1/frame_cache/source_2fps."
+        ),
     )
     # ── check ──
     p_check = sub.add_parser("check", help="Verify base/val data exists")
