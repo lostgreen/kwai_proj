@@ -25,6 +25,7 @@ from transformers import PreTrainedTokenizer
 
 from ...protocol import DataProto
 from .config import RewardConfig
+from .metrics import build_dense_reward_metrics, coerce_reward_metric
 
 
 class RewardInput(TypedDict):
@@ -140,11 +141,10 @@ class BatchFunctionRewardManager(FunctionRewardManager):
 
         scores = self.reward_fn(reward_inputs)
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
-        reward_metrics = defaultdict(list)
-        for i, score in enumerate(scores):
+        reward_metrics = build_dense_reward_metrics(scores, len(data))
+        for i in range(len(data)):
+            score = scores[i] if i < len(scores) and isinstance(scores[i], dict) else {}
             cur_response_length = int(response_length[i].item())  # avoid tensor indexing error
-            reward_tensor[i, cur_response_length - 1] = score["overall"]
-            for key, value in score.items():
-                reward_metrics[key].append(value)
+            reward_tensor[i, cur_response_length - 1] = coerce_reward_metric(score.get("overall", 0.0))
 
         return reward_tensor, reward_metrics
