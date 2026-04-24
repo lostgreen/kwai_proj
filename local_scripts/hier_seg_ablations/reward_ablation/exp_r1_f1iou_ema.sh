@@ -5,6 +5,7 @@
 # 保险对照实验:
 #   - 与 R1-GRPO 保持同一套 reward / 数据 / 超参
 #   - 只把 ADV_ESTIMATOR 切回 ema_grpo
+#   - ROLLOUT_TEMPERATURE=1.0
 # =============================================================
 set -euo pipefail
 
@@ -34,6 +35,7 @@ export ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
 export LR="${LR:-1e-6}"
 export KL_COEF="${KL_COEF:-0.001}"
 export ENTROPY_COEFF="${ENTROPY_COEFF:-0.0}"
+export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
 export MAX_FRAMES="${MAX_FRAMES:-256}"
 export MAX_PIXELS="${MAX_PIXELS:-65536}"
 export CLIP_RATIO_LOW="${CLIP_RATIO_LOW:-0.2}"

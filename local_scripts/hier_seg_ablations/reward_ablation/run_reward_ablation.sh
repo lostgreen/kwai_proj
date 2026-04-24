@@ -9,7 +9,7 @@
 #
 # 三组实验默认都:
 #   - 使用 full hier-seg train (HIER_TARGET=0)
-#   - LR=1e-6, KL_COEF=0.001, ENTROPY=0
+#   - LR=1e-6, KL_COEF=0.001, ENTROPY=0, ROLLOUT_TEMPERATURE=1.0
 #   - MAX_FRAMES=256, MAX_PIXELS=65536
 #   - 保留 online filtering=true
 # =============================================================

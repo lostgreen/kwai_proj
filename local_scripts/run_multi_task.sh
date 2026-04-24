@@ -40,6 +40,7 @@ echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
 echo "[multi-task] TEST_FILE=${TEST_FILE}"
 echo "[multi-task] VAL_TG_N=${VAL_TG_N_EFFECTIVE} VAL_MCQ_N=${VAL_MCQ_N_EFFECTIVE}"
 echo "[multi-task] FRAME_SAMPLE_POLICY=${FRAME_SAMPLE_POLICY_EFFECTIVE} FRAME_SAMPLE_MAX_FRAMES=${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}"
+echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
 # ============================================================
 # Pre-flight: 检查 base/ val/ 是否存在
