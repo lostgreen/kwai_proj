@@ -42,6 +42,7 @@ from local_scripts.data.mixer import main; main()
     check \
     --tasks ${TASKS} \
     --val-tg-n "${VAL_TG_N:-150}" \
+    --val-mcq-n "${VAL_MCQ_N:-150}" \
     ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
     ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
@@ -65,6 +66,7 @@ from local_scripts.data.mixer import main; main()
         --tasks ${TASKS} \
         --exp-name "${EXP_NAME}" \
         --val-tg-n "${VAL_TG_N:-150}" \
+        --val-mcq-n "${VAL_MCQ_N:-150}" \
         ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
         ${HIER_TARGET:+--hier-target "${HIER_TARGET}"} \
         ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
