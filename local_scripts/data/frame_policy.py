@@ -559,8 +559,8 @@ def apply_frame_policy_to_record(
         "rules": [
             {
                 "min_sec": rule.min_sec,
-                "max_sec": "inf" if math.isinf(rule.max_sec) else rule.max_sec,
-                "fps": "uniform" if rule.fps is None else rule.fps,
+                "max_sec": None if math.isinf(rule.max_sec) else rule.max_sec,
+                "fps": rule.fps,
             }
             for rule in rules
         ],

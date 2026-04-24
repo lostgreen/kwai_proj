@@ -53,6 +53,7 @@ def test_frame_policy_reads_cache_dir_and_downsamples_by_duration(tmp_path: Path
     assert str(long_dir / "000001.jpg") == long["videos"][0][0]
     assert long["metadata"]["experiment_frame_sampling"]["policy"] == "0:60:2.0,60:inf:1.0"
     assert long["metadata"]["experiment_frame_sampling"]["max_frames"] == 256
+    assert long["metadata"]["experiment_frame_sampling"]["rules"][1]["max_sec"] is None
     assert long["metadata"]["experiment_frame_sampling"]["videos"][0]["target_fps"] == 1.0
 
 
