@@ -29,6 +29,14 @@ EXP_NAME="${EXP_NAME:-multi_task_demo_8gpu}"
 EXP_DATA_DIR="${EXPERIMENTS_DIR}/${EXP_NAME}"
 TRAIN_FILE="${TRAIN_FILE:-${EXP_DATA_DIR}/train.jsonl}"
 TEST_FILE="${TEST_FILE:-${EXP_DATA_DIR}/val.jsonl}"
+VAL_TG_N_EFFECTIVE="${VAL_TG_N:-600}"
+VAL_MCQ_N_EFFECTIVE="${VAL_MCQ_N:-600}"
+MIX_FORCE="${MIX_FORCE:-false}"
+
+echo "[multi-task] EXP_NAME=${EXP_NAME}"
+echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
+echo "[multi-task] TEST_FILE=${TEST_FILE}"
+echo "[multi-task] VAL_TG_N=${VAL_TG_N_EFFECTIVE} VAL_MCQ_N=${VAL_MCQ_N_EFFECTIVE}"
 
 # ============================================================
 # Pre-flight: 检查 base/ val/ 是否存在
@@ -41,12 +49,10 @@ from local_scripts.data.mixer import main; main()
     --data-root "${MULTI_TASK_DATA_ROOT}" \
     check \
     --tasks ${TASKS} \
-    --val-tg-n "${VAL_TG_N:-150}" \
-    --val-mcq-n "${VAL_MCQ_N:-150}" \
+    --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
+    --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
     ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
-    ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
-    --val-el-n "${VAL_EL_N}" \
     ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
     --val-el-n "${VAL_EL_N}" \
 || { echo "[multi-task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
@@ -54,19 +60,65 @@ from local_scripts.data.mixer import main; main()
 # ============================================================
 # Step 0: 混合实验数据（仅首次）
 # ============================================================
+NEEDS_MIX=false
+MIX_REASON=""
+
 if [[ ! -f "${TRAIN_FILE}" ]] || [[ ! -f "${TEST_FILE}" ]]; then
-    echo "[multi-task] Building experiment data for: ${EXP_NAME}"
+    NEEDS_MIX=true
+    MIX_REASON="missing train/val experiment JSONL"
+elif [[ "${MIX_FORCE,,}" =~ ^(true|1|yes)$ ]]; then
+    NEEDS_MIX=true
+    MIX_REASON="MIX_FORCE=${MIX_FORCE}"
+else
+    VAL_COUNT_CHECK="$(
+python3 - "${TEST_FILE}" "${TASKS}" "${VAL_TG_N_EFFECTIVE}" "${VAL_MCQ_N_EFFECTIVE}" <<'PY'
+import json
+import sys
+from collections import Counter
+
+path, tasks_raw, val_tg_n, val_mcq_n = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+tasks = set(tasks_raw.split())
+counter = Counter()
+with open(path, encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        counter[json.loads(line).get("problem_type", "unknown")] += 1
+
+problems = []
+if "tg" in tasks and counter.get("temporal_grounding", 0) != val_tg_n:
+    problems.append(f"temporal_grounding={counter.get('temporal_grounding', 0)} expected={val_tg_n}")
+if "mcq" in tasks and counter.get("llava_mcq", 0) != val_mcq_n:
+    problems.append(f"llava_mcq={counter.get('llava_mcq', 0)} expected={val_mcq_n}")
+
+print("OK" if not problems else "; ".join(problems))
+PY
+)"
+    if [[ "${VAL_COUNT_CHECK}" != "OK" ]]; then
+        NEEDS_MIX=true
+        MIX_REASON="val count mismatch: ${VAL_COUNT_CHECK}"
+    fi
+fi
+
+if [[ "${NEEDS_MIX}" == "true" ]]; then
+    echo "[multi-task] Building experiment data for: ${EXP_NAME} (${MIX_REASON})"
+    _MIX_FORCE_FLAG=""
+    if [[ -f "${TRAIN_FILE}" || -f "${TEST_FILE}" ]]; then
+        _MIX_FORCE_FLAG="--force"
+    fi
     # shellcheck disable=SC2086
     python3 -c "
 import sys; sys.path.insert(0, '${REPO_ROOT}')
 from local_scripts.data.mixer import main; main()
 " \
         --data-root "${MULTI_TASK_DATA_ROOT}" \
+        ${_MIX_FORCE_FLAG} \
         mix \
         --tasks ${TASKS} \
         --exp-name "${EXP_NAME}" \
-        --val-tg-n "${VAL_TG_N:-150}" \
-        --val-mcq-n "${VAL_MCQ_N:-150}" \
+        --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
+        --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
         ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
         ${HIER_TARGET:+--hier-target "${HIER_TARGET}"} \
         ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \

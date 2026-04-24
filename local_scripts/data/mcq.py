@@ -31,7 +31,7 @@ def _prefer_frame_jsonl(path: str) -> str:
 def add_cli_args(parser: ArgumentParser) -> None:
     g = parser.add_argument_group("LLaVA MCQ")
     g.add_argument("--mcq-source", help="MCQ train_final.jsonl path")
-    g.add_argument("--val-mcq-n", type=int, default=150, help="MCQ val sample size")
+    g.add_argument("--val-mcq-n", type=int, default=600, help="MCQ val sample size")
 
 
 def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:

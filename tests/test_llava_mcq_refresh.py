@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from argparse import ArgumentParser
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from local_scripts.data import mcq
+from local_scripts.data import mcq, tg
 from proxy_data.llava_video_178k.convert_mcq_to_direct import DIRECT_INSTRUCTION
 from proxy_data.llava_video_178k.select_mcq_from_rollout_shards import (
     select_records_from_reports,
@@ -154,3 +155,14 @@ def test_mcq_load_val_prefers_requested_val_size_over_stale_files(tmp_path: Path
     records = mcq.load_val(str(tmp_path), SimpleNamespace(val_mcq_n=600))
 
     assert [row["prompt"] for row in records] == ["new-0", "new-1"]
+
+
+def test_tg_and_mcq_default_val_sizes_are_600():
+    parser = ArgumentParser()
+    tg.add_cli_args(parser)
+    mcq.add_cli_args(parser)
+
+    args = parser.parse_args([])
+
+    assert args.val_tg_n == 600
+    assert args.val_mcq_n == 600

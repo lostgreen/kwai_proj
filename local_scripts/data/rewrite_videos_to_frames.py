@@ -14,7 +14,8 @@ and writes:
     metadata.video_fps_override = <extraction_fps>
 
 This matches the current EasyR1 dataset loader, which already supports
-``videos`` as a list of frame-path lists.
+``videos`` as a list of frame-path lists. Use ``--uncapped-extraction`` for
+base caches that should be independent of the training ``max_frames`` setting.
 """
 
 from __future__ import annotations
@@ -55,7 +56,15 @@ def parse_args() -> argparse.Namespace:
         "--max-frames",
         type=int,
         default=256,
-        help="Training max_frames. Extraction fps is capped to respect this budget.",
+        help="Frame cap used by the legacy capped extraction mode.",
+    )
+    parser.add_argument(
+        "--uncapped-extraction",
+        action="store_true",
+        help=(
+            "Extract at --target-fps without lowering fps or limiting frame count by "
+            "--max-frames. Training still controls the model input frame budget."
+        ),
     )
     parser.add_argument(
         "--min-fps",
@@ -216,7 +225,11 @@ def compute_shared_fps(
     fallback_fps: float,
     max_frames: int,
     min_fps: float,
+    respect_max_frames: bool = True,
 ) -> float:
+    if not respect_max_frames:
+        return round(max(float(target_fps), float(min_fps)), 3)
+
     if duration_sec is None or duration_sec <= 0:
         return round(target_fps, 3)
 
@@ -298,6 +311,7 @@ def rewrite_record(
     jpeg_quality: int,
     overwrite: bool,
     absolute_paths: bool,
+    uncapped_extraction: bool,
 ) -> dict[str, Any]:
     videos = record.get("videos") or []
     if not videos:
@@ -307,7 +321,10 @@ def rewrite_record(
 
     clip_key = infer_clip_key(record, index)
     n_videos = len(videos)
-    max_frames_per_video = max(1, max_frames // max(n_videos, 1))
+    if uncapped_extraction:
+        max_frames_per_video = 0
+    else:
+        max_frames_per_video = max(1, max_frames // max(n_videos, 1))
 
     resolved_paths = [resolve_video_path(str(video), input_image_dir) for video in videos]
     for path in resolved_paths:
@@ -330,6 +347,7 @@ def rewrite_record(
         fallback_fps=fallback_fps,
         max_frames=max_frames,
         min_fps=min_fps,
+        respect_max_frames=not uncapped_extraction,
     )
 
     rewritten = copy.deepcopy(record)
@@ -375,6 +393,7 @@ def rewrite_record(
         "fallback_fps": fallback_fps,
         "effective_fps": shared_fps,
         "max_frames": max_frames,
+        "uncapped_extraction": uncapped_extraction,
         "max_frames_per_video": max_frames_per_video,
         "n_videos": n_videos,
         "duration_sec": duration,
@@ -413,6 +432,7 @@ def main() -> None:
                 args.jpeg_quality,
                 args.overwrite,
                 args.absolute_paths,
+                args.uncapped_extraction,
             ): idx
             for idx, record in enumerate(records)
         }

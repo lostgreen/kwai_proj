@@ -43,6 +43,8 @@ echo "============================================"
 echo "  Data root:    ${MULTI_TASK_DATA_ROOT}"
 echo "  Tasks:        ${TASKS}"
 echo "  Force:        ${FORCE:-false}"
+echo "  Val TG N:     ${VAL_TG_N:-600}"
+echo "  Val MCQ N:    ${VAL_MCQ_N:-600}"
 echo "============================================"
 
 # shellcheck disable=SC2086
@@ -58,8 +60,8 @@ from local_scripts.data.mixer import main; main()
     --tg-tvgbench-source "${TG_TVGBENCH_SOURCE}" \
     --mcq-source "${MCQ_SOURCE}" \
     --hier-val-source "${HIER_VAL_SOURCE}" \
-    --val-tg-n "${VAL_TG_N:-150}" \
-    --val-mcq-n "${VAL_MCQ_N:-150}" \
+    --val-tg-n "${VAL_TG_N:-600}" \
+    --val-mcq-n "${VAL_MCQ_N:-600}" \
     --val-hier-n "${VAL_HIER_N:-150}" \
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
     ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \

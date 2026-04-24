@@ -42,7 +42,7 @@ def add_cli_args(parser: ArgumentParser) -> None:
         "--tg-tvgbench-source",
         help="Pre-built TVGBench JSONL (e.g. tg_tvgbench_max256s_validated.jsonl)",
     )
-    g.add_argument("--val-tg-n", type=int, default=150, help="TVGBench val sample size")
+    g.add_argument("--val-tg-n", type=int, default=600, help="TVGBench val sample size")
 
 
 def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:

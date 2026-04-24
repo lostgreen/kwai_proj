@@ -55,8 +55,8 @@ $DATA_ROOT/
 │   ├── tg_train_no_tvgbench.jsonl
 │   └── mcq_train_filtered.jsonl
 └── val/
-    ├── tvgbench_val_150.jsonl
-    ├── mcq_val_150.jsonl
+    ├── tg_val_600.jsonl
+    ├── mcq_val_600.jsonl
     └── hier_seg_val_150.jsonl
 ```
 
