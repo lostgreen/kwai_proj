@@ -23,6 +23,7 @@
 #   NUM_ROLLOUTS    — sampled generations per query (default 8)
 #   BATCH_SIZE      — vLLM mini-batch size
 #   ENABLE_GPU_FILLER / FILLER_* — keep GPU avg util high during rollout
+#   RUN_ANALYSIS    — generate score/duration analysis after rollout (default true)
 #   FORCE           — force rebuild/re-rollout (1 = rerun)
 set -euo pipefail
 
@@ -33,6 +34,7 @@ cd "$REPO_ROOT"
 source "${REPO_ROOT}/local_scripts/gpu_filler_common.sh"
 
 BUILD_SCRIPT="${SCRIPT_DIR}/build_tg_rollout_dataset.py"
+ANALYSIS_SCRIPT="${SCRIPT_DIR}/analyze_tg_rollout.py"
 ROLLOUT_SCRIPT="${REPO_ROOT}/local_scripts/offline_rollout_filter.py"
 RESUME_HELPER="${REPO_ROOT}/proxy_data/llava_video_178k/resume_helper.py"
 REWARD_FN="${REPO_ROOT}/verl/reward_function/temporal_grounding_reward.py:compute_score"
@@ -41,6 +43,7 @@ INPUT_RAW="${INPUT_RAW:-${REPO_ROOT}/proxy_data/data_curation/results/timelens_1
 VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards}"
 MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8}"
+ANALYSIS_DIR="${ANALYSIS_DIR:-$OUTPUT_ROOT/analysis}"
 
 NUM_GPUS="${NUM_GPUS:-8}"
 TP_SIZE="${TP_SIZE:-1}"
@@ -56,6 +59,7 @@ MAX_SAMPLES="${MAX_SAMPLES:-0}"
 MAX_VIDEOS="${MAX_VIDEOS:-0}"
 MAX_QUERIES="${MAX_QUERIES:-0}"
 FORCE="${FORCE:-0}"
+RUN_ANALYSIS="${RUN_ANALYSIS:-true}"
 
 ENABLE_GPU_FILLER="${ENABLE_GPU_FILLER:-true}"
 FILLER_LOG_PATH="${FILLER_LOG_PATH:-$OUTPUT_ROOT/gpu_filler.log}"
@@ -264,6 +268,26 @@ if [ "$ROLLOUT_DONE" = "0" ]; then
     fi
 fi
 
+case "${RUN_ANALYSIS}" in
+    true|TRUE|1|yes|YES)
+        if [ -s "$ROLLOUT_REPORT" ] && [ -s "$QUERY_JSONL" ]; then
+            echo ""
+            echo "=== Step 3: analyze rollout score/duration distribution ==="
+            python "$ANALYSIS_SCRIPT" \
+                --report "$ROLLOUT_REPORT" \
+                --input-jsonl "$QUERY_JSONL" \
+                --output-dir "$ANALYSIS_DIR"
+        else
+            echo ""
+            echo "=== Step 3: analyze rollout [skip: missing report or query input] ==="
+        fi
+        ;;
+    *)
+        echo ""
+        echo "=== Step 3: analyze rollout [disabled] ==="
+        ;;
+esac
+
 echo ""
 echo "=========================================="
 echo " Rollout done!"
@@ -278,5 +302,8 @@ fi
 if [ -s "$ROLLOUT_OUTPUT" ]; then
     KEEP_COUNT=$(wc -l < "$ROLLOUT_OUTPUT" | tr -d ' ')
     echo " Diverse:     $ROLLOUT_OUTPUT ($KEEP_COUNT items)"
+fi
+if [ -d "$ANALYSIS_DIR" ]; then
+    echo " Analysis:    $ANALYSIS_DIR"
 fi
 echo "=========================================="
