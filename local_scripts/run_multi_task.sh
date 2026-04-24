@@ -39,6 +39,7 @@ FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE="${FRAME_SAMPLE_POLICY_VERSION:-trusted_2f
 FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE="${FRAME_SAMPLE_PROGRESS_INTERVAL:-1000}"
 CHECK_EXPERIMENT_JSONL_EFFECTIVE="${CHECK_EXPERIMENT_JSONL:-true}"
 CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE="${CHECK_EXPERIMENT_FRAME_FILES:-false}"
+MIX_ONLY_EFFECTIVE="${MIX_ONLY:-false}"
 
 echo "[multi-task] EXP_NAME=${EXP_NAME}"
 echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
@@ -48,6 +49,7 @@ echo "[multi-task] FRAME_SAMPLE_POLICY=${FRAME_SAMPLE_POLICY_EFFECTIVE} FRAME_SA
 echo "[multi-task] FRAME_SAMPLE_POLICY_VERSION=${FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE} FRAME_SAMPLE_CACHE_ROOTS=${FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE:-<default>}"
 echo "[multi-task] FRAME_SAMPLE_PROGRESS_INTERVAL=${FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE}"
 echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CHECK_EXPERIMENT_FRAME_FILES=${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE}"
+echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
 echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
 # ============================================================
@@ -241,6 +243,11 @@ sys.stderr.write(f"Weights ({mode}): {json.dumps(w)}\n")
 print(json.dumps(w, separators=(",", ":")))
 PY
 )"
+fi
+
+if [[ "${MIX_ONLY_EFFECTIVE,,}" =~ ^(true|1|yes)$ ]]; then
+    echo "[multi-task] MIX_ONLY=true; data generated and validated. Skip filler/training."
+    exit 0
 fi
 
 # ============================================================
