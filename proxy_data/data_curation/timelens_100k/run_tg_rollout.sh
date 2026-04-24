@@ -270,11 +270,24 @@ fi
 
 case "${RUN_ANALYSIS}" in
     true|TRUE|1|yes|YES)
-        if [ -s "$ROLLOUT_REPORT" ] && [ -s "$QUERY_JSONL" ]; then
+        ANALYSIS_REPORT_ARGS=()
+        if [ -s "$ROLLOUT_REPORT" ]; then
+            ANALYSIS_REPORT_ARGS=(--report "$ROLLOUT_REPORT")
+        else
+            shopt -s nullglob
+            SHARD_REPORTS=("$OUTPUT_ROOT"/_shard*_report.jsonl)
+            shopt -u nullglob
+            if [ "${#SHARD_REPORTS[@]}" -gt 0 ]; then
+                ANALYSIS_REPORT_ARGS=(--report "${SHARD_REPORTS[@]}")
+                echo "  Final rollout_report.jsonl not found; using ${#SHARD_REPORTS[@]} shard reports for analysis."
+            fi
+        fi
+
+        if [ "${#ANALYSIS_REPORT_ARGS[@]}" -gt 0 ] && [ -s "$QUERY_JSONL" ]; then
             echo ""
             echo "=== Step 3: analyze rollout score/duration distribution ==="
             python "$ANALYSIS_SCRIPT" \
-                --report "$ROLLOUT_REPORT" \
+                "${ANALYSIS_REPORT_ARGS[@]}" \
                 --input-jsonl "$QUERY_JSONL" \
                 --output-dir "$ANALYSIS_DIR"
         else

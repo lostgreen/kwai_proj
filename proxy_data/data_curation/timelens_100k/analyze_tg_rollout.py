@@ -12,15 +12,23 @@ Usage from train/:
         --report proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/rollout_report.jsonl \
         --input-jsonl proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
         --output-dir proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis
+
+    # If final merge failed, analyze shard reports directly:
+    python proxy_data/data_curation/timelens_100k/analyze_tg_rollout.py \
+        --report-glob 'proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/_shard*_report.jsonl' \
+        --input-jsonl proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
+        --output-dir proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import json
 import math
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -133,66 +141,97 @@ def build_query_index(input_jsonl: Path) -> dict[str, dict[str, Any]]:
     return index
 
 
+def resolve_report_paths(report_args: list[str], report_globs: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    patterns = list(report_args or []) + list(report_globs or [])
+    for pattern in patterns:
+        if any(ch in pattern for ch in "*?["):
+            paths.extend(Path(p) for p in sorted(glob.glob(pattern)))
+        else:
+            paths.append(Path(pattern))
+
+    unique: dict[str, Path] = {}
+    for path in paths:
+        unique[str(path)] = path
+    return list(unique.values())
+
+
+def shard_id_from_path(path: Path) -> str:
+    match = re.search(r"_shard(\d+)_report\.jsonl$", path.name)
+    return match.group(1) if match else ""
+
+
 def build_query_stats(
-    report_path: Path,
+    report_paths: list[Path],
     query_index: dict[str, dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     stats: list[dict[str, Any]] = []
     counters: Counter[str] = Counter()
+    seen_query_ids: set[str] = set()
 
-    for report in load_jsonl(report_path):
-        counters["reports"] += 1
-        query_id = str(report.get("metadata_id") or "")
-        if report.get("error"):
-            counters["errors"] += 1
-            continue
+    counters["report_files"] = len(report_paths)
+    for report_path in report_paths:
+        shard_id = shard_id_from_path(report_path)
+        for report in load_jsonl(report_path):
+            counters["reports"] += 1
+            query_id = str(report.get("metadata_id") or "")
+            if query_id and query_id in seen_query_ids:
+                counters["duplicate_query_id"] += 1
+                continue
+            if query_id:
+                seen_query_ids.add(query_id)
+            if report.get("error"):
+                counters["errors"] += 1
+                continue
 
-        raw_rewards = report.get("rewards") or []
-        rewards = [safe_float(v) for v in raw_rewards]
-        rewards = [v for v in rewards if not math.isnan(v)]
-        mean_iou = safe_float(report.get("mean_reward"), mean(rewards))
-        if math.isnan(mean_iou):
-            counters["missing_score"] += 1
-            continue
+            raw_rewards = report.get("rewards") or []
+            rewards = [safe_float(v) for v in raw_rewards]
+            rewards = [v for v in rewards if not math.isnan(v)]
+            mean_iou = safe_float(report.get("mean_reward"), mean(rewards))
+            if math.isnan(mean_iou):
+                counters["missing_score"] += 1
+                continue
 
-        item = query_index.get(query_id, {})
-        if not item:
-            counters["missing_input_metadata"] += 1
-        meta = item.get("metadata") or {}
+            item = query_index.get(query_id, {})
+            if not item:
+                counters["missing_input_metadata"] += 1
+            meta = item.get("metadata") or {}
 
-        duration = safe_float(meta.get("duration"))
-        bucket = str(meta.get("duration_bucket") or duration_bucket(duration))
-        video_uid = str(
-            meta.get("video_uid")
-            or meta.get("video_id")
-            or meta.get("clip_key")
-            or query_id.split("::", 1)[0]
-            or query_id
-        )
-        source = str(meta.get("source") or "unknown")
-        query_text = str(meta.get("query") or meta.get("sentence") or "")
+            duration = safe_float(meta.get("duration"))
+            bucket = str(meta.get("duration_bucket") or duration_bucket(duration))
+            video_uid = str(
+                meta.get("video_uid")
+                or meta.get("video_id")
+                or meta.get("clip_key")
+                or query_id.split("::", 1)[0]
+                or query_id
+            )
+            source = str(meta.get("source") or "unknown")
+            query_text = str(meta.get("query") or meta.get("sentence") or "")
 
-        stats.append(
-            {
-                "query_id": query_id,
-                "video_uid": video_uid,
-                "source": source,
-                "duration": duration,
-                "duration_bucket": bucket,
-                "query_idx": meta.get("query_idx"),
-                "span_idx": meta.get("span_idx"),
-                "query": query_text,
-                "answer": report.get("answer", item.get("answer", "")),
-                "mean_iou": mean_iou,
-                "std_iou": std(rewards),
-                "min_iou": min(rewards) if rewards else mean_iou,
-                "max_iou": max(rewards) if rewards else mean_iou,
-                "num_rollouts": len(rewards),
-                "rewards": rewards,
-                "keep": bool(report.get("keep", False)),
-                "has_diversity": bool(report.get("has_diversity", False)),
-            }
-        )
+            stats.append(
+                {
+                    "query_id": query_id,
+                    "video_uid": video_uid,
+                    "source": source,
+                    "duration": duration,
+                    "duration_bucket": bucket,
+                    "query_idx": meta.get("query_idx"),
+                    "span_idx": meta.get("span_idx"),
+                    "query": query_text,
+                    "answer": report.get("answer", item.get("answer", "")),
+                    "mean_iou": mean_iou,
+                    "std_iou": std(rewards),
+                    "min_iou": min(rewards) if rewards else mean_iou,
+                    "max_iou": max(rewards) if rewards else mean_iou,
+                    "num_rollouts": len(rewards),
+                    "rewards": rewards,
+                    "keep": bool(report.get("keep", False)),
+                    "has_diversity": bool(report.get("has_diversity", False)),
+                    "report_file": str(report_path),
+                    "shard_id": shard_id,
+                }
+            )
 
     counters["scored_queries"] = len(stats)
     counters["input_queries"] = len(query_index)
@@ -547,10 +586,12 @@ def write_summary_md(
         "",
         "## Overview",
         "",
+        f"- Report files: {counters.get('report_files', 0)}",
         f"- Reports: {counters.get('reports', 0)}",
         f"- Scored queries: {len(query_stats)}",
         f"- Unique videos: {len(video_stats)}",
         f"- Error reports: {counters.get('errors', 0)}",
+        f"- Duplicate query ids skipped: {counters.get('duplicate_query_id', 0)}",
         f"- Missing input metadata: {counters.get('missing_input_metadata', 0)}",
         "",
         "## Mean IoU",
@@ -595,7 +636,18 @@ def write_summary_md(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze TimeLens TG rollout score/duration distribution")
-    parser.add_argument("--report", required=True, help="rollout_report.jsonl from run_tg_rollout.sh")
+    parser.add_argument(
+        "--report",
+        nargs="*",
+        default=[],
+        help="One or more report JSONL files. Shell-expanded _shard*_report.jsonl is supported.",
+    )
+    parser.add_argument(
+        "--report-glob",
+        action="append",
+        default=[],
+        help="Glob pattern for report JSONL files, useful when final rollout_report.jsonl was not merged.",
+    )
     parser.add_argument("--input-jsonl", required=True, help="tg_rollout_input.jsonl used by rollout")
     parser.add_argument("--output-dir", required=True, help="Directory for analysis outputs")
     return parser.parse_args()
@@ -603,18 +655,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    report_path = Path(args.report)
+    report_paths = resolve_report_paths(args.report, args.report_glob)
     input_path = Path(args.input_jsonl)
     outdir = Path(args.output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    if not report_path.is_file():
-        raise SystemExit(f"Report not found: {report_path}")
+    if not report_paths:
+        raise SystemExit("No report files provided. Use --report or --report-glob.")
+    missing_reports = [str(path) for path in report_paths if not path.is_file()]
+    if missing_reports:
+        raise SystemExit("Report file(s) not found:\n" + "\n".join(missing_reports))
     if not input_path.is_file():
         raise SystemExit(f"Input JSONL not found: {input_path}")
 
     query_index = build_query_index(input_path)
-    query_stats, counters = build_query_stats(report_path, query_index)
+    query_stats, counters = build_query_stats(report_paths, query_index)
     video_stats = build_video_stats(query_stats)
 
     source_summary = group_summary(query_stats, "source")
@@ -638,6 +693,8 @@ def main() -> None:
             "min_iou",
             "max_iou",
             "num_rollouts",
+            "shard_id",
+            "report_file",
             "query",
             "answer",
         ],
@@ -668,6 +725,7 @@ def main() -> None:
 
     summary = {
         "counters": counters,
+        "report_files": [str(path) for path in report_paths],
         "query_iou": summarize_scores([r["mean_iou"] for r in query_stats]),
         "video_iou": summarize_scores([r["mean_iou"] for r in video_stats]),
         "duration_sec": summarize_scores([r["duration"] for r in query_stats if not math.isnan(r["duration"])]),
@@ -682,7 +740,10 @@ def main() -> None:
 
     print("==========================================")
     print(" TimeLens TG analysis done")
+    print(f" Report files:   {len(report_paths)}")
     print(f" Reports:        {counters.get('reports', 0)}")
+    if counters.get("duplicate_query_id", 0):
+        print(f" Duplicates:     {counters['duplicate_query_id']} skipped by metadata_id")
     print(f" Scored queries: {len(query_stats)}")
     print(f" Unique videos:  {len(video_stats)}")
     print(f" Output:         {outdir}")
