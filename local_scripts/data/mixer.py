@@ -122,6 +122,8 @@ def cmd_mix(args: argparse.Namespace) -> None:
             policy=args.frame_sample_policy,
             max_frames=args.frame_sample_max_frames,
             cache_roots=cache_roots,
+            progress_label=f"frame_policy train:{args.exp_name}",
+            progress_interval=args.frame_sample_progress_interval,
         )
         if args.frame_sample_policy or args.frame_sample_max_frames > 0:
             frame_summary = summarize_frame_policy_application(all_train)
@@ -154,6 +156,8 @@ def cmd_mix(args: argparse.Namespace) -> None:
             policy=args.frame_sample_policy,
             max_frames=args.frame_sample_max_frames,
             cache_roots=cache_roots,
+            progress_label=f"frame_policy val:{args.exp_name}",
+            progress_interval=args.frame_sample_progress_interval,
         )
         if args.frame_sample_policy or args.frame_sample_max_frames > 0:
             frame_summary = summarize_frame_policy_application(all_val)
@@ -241,6 +245,12 @@ def main() -> None:
             "$data_root/offline_frames/base_cache_2fps and sibling "
             "hier_seg_annotation_v1/frame_cache/source_2fps."
         ),
+    )
+    p_mix.add_argument(
+        "--frame-sample-progress-interval",
+        type=int,
+        default=1000,
+        help="Print frame-policy progress every N records. Set <=0 to print every record.",
     )
     # ── check ──
     p_check = sub.add_parser("check", help="Verify base/val data exists")

@@ -9,6 +9,8 @@ from __future__ import annotations
 import copy
 import json
 import math
+import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +53,40 @@ class FrameDirInfo:
 class FramePolicyContext:
     cache_roots: tuple[Path, ...]
     frame_dir_cache: dict[Path, FrameDirInfo]
+
+
+@dataclass
+class FramePolicyProgress:
+    label: str
+    total: int
+    interval: int = 1000
+    started_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.started_at = time.time()
+
+    def maybe_update(self, done: int, cache_dirs: int) -> None:
+        if not self.label or self.total <= 0:
+            return
+        interval = max(1, self.interval)
+        if done not in {1, self.total} and done % interval != 0:
+            return
+
+        elapsed = max(time.time() - self.started_at, 1e-6)
+        rate = done / elapsed
+        pct = 100.0 * done / self.total
+        bar_width = 24
+        filled = min(bar_width, max(0, int(bar_width * done / self.total)))
+        bar = "#" * filled + "-" * (bar_width - filled)
+        message = (
+            f"\r  [{self.label}] |{bar}| {done}/{self.total} "
+            f"{pct:5.1f}% elapsed={elapsed:6.1f}s rate={rate:6.1f}/s "
+            f"cache_dirs={cache_dirs}"
+        )
+        sys.stderr.write(message)
+        if done == self.total:
+            sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 def _parse_bound(value: str) -> float:
@@ -540,6 +576,8 @@ def apply_frame_policy(
     policy: str,
     max_frames: int,
     cache_roots: list[str | Path] | tuple[str | Path, ...] | None = None,
+    progress_label: str = "",
+    progress_interval: int = 1000,
 ) -> list[dict[str, Any]]:
     rules = parse_frame_policy(policy)
     if not rules and max_frames <= 0:
@@ -548,10 +586,16 @@ def apply_frame_policy(
         cache_roots=_normalize_cache_roots(cache_roots),
         frame_dir_cache={},
     )
-    return [
-        apply_frame_policy_to_record(record, rules, max_frames, policy, context=context)
-        for record in records
-    ]
+    progress = FramePolicyProgress(
+        label=progress_label,
+        total=len(records),
+        interval=progress_interval,
+    )
+    rewritten: list[dict[str, Any]] = []
+    for idx, record in enumerate(records, start=1):
+        rewritten.append(apply_frame_policy_to_record(record, rules, max_frames, policy, context=context))
+        progress.maybe_update(idx, cache_dirs=len(context.frame_dir_cache))
+    return rewritten
 
 
 def summarize_frame_policy_application(records: list[dict[str, Any]]) -> dict[str, Any]:
