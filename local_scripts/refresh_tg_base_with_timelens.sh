@@ -25,6 +25,7 @@ RUN_FRAME_EXTRACTION="${RUN_FRAME_EXTRACTION:-true}"
 RUN_CHECK="${RUN_CHECK:-true}"
 CHECK_FRAME_JSONL="${CHECK_FRAME_JSONL:-${RUN_FRAME_EXTRACTION}}"
 CHECK_FRAME_FILES="${CHECK_FRAME_FILES:-false}"
+VAL_TG_N_EFFECTIVE="${VAL_TG_N:-150}"
 
 TIMELENS_ROLLOUT_DIR="${TIMELENS_ROLLOUT_DIR:-${REPO_ROOT}/proxy_data/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8}"
 TIMELENS_TG_INPUT="${TIMELENS_TG_INPUT:-${TIMELENS_ROLLOUT_DIR}/tg_rollout_input.jsonl}"
@@ -45,6 +46,10 @@ TIMELENS_SELECTED="${TG_REFRESH_DIR}/tg_timelens_${TAG}.jsonl"
 TIMERFT_REPROMPT="${TG_REFRESH_DIR}/tg_timerft_max256s_validated_reprompt.jsonl"
 TVGBENCH_REPROMPT="${TG_REFRESH_DIR}/tg_tvgbench_max256s_validated_reprompt.jsonl"
 TG_MERGED="${TG_REFRESH_DIR}/tg_timerft_plus_timelens_${TAG}.jsonl"
+TG_BASE_JSONL="${MULTI_TASK_DATA_ROOT}/base/tg_train.jsonl"
+TG_BASE_FRAMES_JSONL="${MULTI_TASK_DATA_ROOT}/base/tg_train_frames.jsonl"
+TG_VAL_JSONL="${MULTI_TASK_DATA_ROOT}/val/tg_val_${VAL_TG_N_EFFECTIVE}.jsonl"
+TG_VAL_FRAMES_JSONL="${MULTI_TASK_DATA_ROOT}/val/tg_val_${VAL_TG_N_EFFECTIVE}_frames.jsonl"
 
 echo "============================================"
 echo " Refresh TG Base With TimeLens"
@@ -55,6 +60,7 @@ echo " TimeLens input:   ${TIMELENS_TG_INPUT}"
 echo " Query stats:      ${TIMELENS_QUERY_STATS}"
 echo " TimeRFT source:   ${TIMERFT_SOURCE}"
 echo " TGBench source:   ${TVGBENCH_SOURCE}"
+echo " Val TG N:         ${VAL_TG_N_EFFECTIVE}"
 echo " IoU range:        [${IOU_MIN}, ${IOU_MAX}]"
 echo " Output dir:       ${TG_REFRESH_DIR}"
 echo " Frames:           ${RUN_FRAME_EXTRACTION}"
@@ -121,6 +127,7 @@ echo ""
 echo "=== Step 5: refresh multi-task base TG train/val ==="
 TASKS=tg \
 FORCE=true \
+VAL_TG_N="${VAL_TG_N_EFFECTIVE}" \
 TG_TRAIN_SOURCE="${TG_MERGED}" \
 TG_TVGBENCH_SOURCE="${TVGBENCH_REPROMPT}" \
 bash "${SCRIPT_DIR}/setup_base_data.sh"
@@ -132,6 +139,7 @@ case "${RUN_FRAME_EXTRACTION}" in
         PREPARE_TG_FRAMES=true \
         PREPARE_MCQ_FRAMES=false \
         PREPARE_VAL_FRAMES=true \
+        TG_VAL_INPUT="${TG_VAL_JSONL}" \
         bash "${SCRIPT_DIR}/prepare_base_offline_frames.sh"
         ;;
     *)
@@ -144,20 +152,11 @@ case "${RUN_CHECK}" in
     true|TRUE|1|yes|YES)
         echo ""
         echo "=== Step 7: check TG prompt/answer and frame JSONL ==="
-        CHECK_JSONL_ARGS=(--jsonl "${MULTI_TASK_DATA_ROOT}/base/tg_train.jsonl")
+        CHECK_JSONL_ARGS=(--jsonl "${TG_BASE_JSONL}" --jsonl "${TG_VAL_JSONL}")
         CHECK_FRAME_ARGS=()
-        shopt -s nullglob
-        for input_jsonl in "${MULTI_TASK_DATA_ROOT}"/val/tg_val_*.jsonl; do
-            [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
-            CHECK_JSONL_ARGS+=(--jsonl "${input_jsonl}")
-        done
         if [[ "${CHECK_FRAME_JSONL,,}" == "true" ]]; then
-            for frame_jsonl in "${MULTI_TASK_DATA_ROOT}"/base/tg_train_frames.jsonl "${MULTI_TASK_DATA_ROOT}"/val/tg_val_*_frames.jsonl; do
-                [[ -f "${frame_jsonl}" ]] || continue
-                CHECK_FRAME_ARGS+=(--frames-jsonl "${frame_jsonl}")
-            done
+            CHECK_FRAME_ARGS=(--frames-jsonl "${TG_BASE_FRAMES_JSONL}" --frames-jsonl "${TG_VAL_FRAMES_JSONL}")
         fi
-        shopt -u nullglob
 
         CHECK_EXTRA_ARGS=()
         if [[ "${CHECK_FRAME_FILES,,}" == "true" ]]; then
@@ -182,7 +181,8 @@ echo ""
 echo "============================================"
 echo " TG base refresh done"
 echo " Merged TG source: ${TG_MERGED}"
-echo " Base TG train:    ${MULTI_TASK_DATA_ROOT}/base/tg_train.jsonl"
-echo " Base TG frames:   ${MULTI_TASK_DATA_ROOT}/base/tg_train_frames.jsonl"
-echo " Val dir:          ${MULTI_TASK_DATA_ROOT}/val"
+echo " Base TG train:    ${TG_BASE_JSONL}"
+echo " Base TG frames:   ${TG_BASE_FRAMES_JSONL}"
+echo " TG val:           ${TG_VAL_JSONL}"
+echo " TG val frames:    ${TG_VAL_FRAMES_JSONL}"
 echo "============================================"

@@ -21,6 +21,8 @@ PREPARE_VAL_FRAMES="${PREPARE_VAL_FRAMES:-true}"
 
 TG_TRAIN_INPUT="${TG_TRAIN_INPUT:-${BASE_DIR}/tg_train.jsonl}"
 MCQ_TRAIN_INPUT="${MCQ_TRAIN_INPUT:-${BASE_DIR}/mcq_train_filtered.jsonl}"
+TG_VAL_INPUT="${TG_VAL_INPUT:-}"
+MCQ_VAL_INPUT="${MCQ_VAL_INPUT:-}"
 
 mkdir -p "${BASE_FRAME_CACHE_ROOT}"
 
@@ -73,6 +75,8 @@ echo "  overwrite:      ${BASE_FRAME_OVERWRITE}"
 echo "  prepare_tg:     ${PREPARE_TG_FRAMES}"
 echo "  prepare_mcq:    ${PREPARE_MCQ_FRAMES}"
 echo "  prepare_val:    ${PREPARE_VAL_FRAMES}"
+echo "  tg_val_input:   ${TG_VAL_INPUT:-<all tg_val_*.jsonl>}"
+echo "  mcq_val_input:  ${MCQ_VAL_INPUT:-<all mcq_val_*.jsonl>}"
 echo "============================================"
 
 if [[ "${PREPARE_TG_FRAMES,,}" == "true" ]]; then
@@ -90,17 +94,25 @@ fi
 if [[ "${PREPARE_VAL_FRAMES,,}" == "true" ]]; then
     shopt -s nullglob
     if [[ "${PREPARE_TG_FRAMES,,}" == "true" ]]; then
-        for input_jsonl in "${VAL_DIR}"/tg_val_*.jsonl; do
-            [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
-            rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "TG val"
-        done
+        if [[ -n "${TG_VAL_INPUT}" ]]; then
+            rewrite_one "${TG_VAL_INPUT}" "${TG_VAL_INPUT%.jsonl}_frames.jsonl" "TG val"
+        else
+            for input_jsonl in "${VAL_DIR}"/tg_val_*.jsonl; do
+                [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
+                rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "TG val"
+            done
+        fi
     fi
 
     if [[ "${PREPARE_MCQ_FRAMES,,}" == "true" ]]; then
-        for input_jsonl in "${VAL_DIR}"/mcq_val_*.jsonl; do
-            [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
-            rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "MCQ val"
-        done
+        if [[ -n "${MCQ_VAL_INPUT}" ]]; then
+            rewrite_one "${MCQ_VAL_INPUT}" "${MCQ_VAL_INPUT%.jsonl}_frames.jsonl" "MCQ val"
+        else
+            for input_jsonl in "${VAL_DIR}"/mcq_val_*.jsonl; do
+                [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
+                rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "MCQ val"
+            done
+        fi
     fi
     shopt -u nullglob
 else

@@ -95,6 +95,15 @@ def sample_train(records: list[dict], target: int, seed: int) -> list[dict]:
 
 def load_val(data_root: str, args: object | None = None) -> list[dict]:
     val_dir = os.path.join(data_root, "val")
+    val_n = getattr(args, "val_tg_n", None) if args is not None else None
+    if val_n is not None:
+        exact = os.path.join(val_dir, f"{_VAL_PREFIX}_{val_n}.jsonl")
+        frame_exact = _prefer_frame_jsonl(exact)
+        if os.path.exists(frame_exact):
+            return load_jsonl(frame_exact)
+        if os.path.exists(exact):
+            return load_jsonl(exact)
+
     for f in sorted(Path(val_dir).glob(f"{_VAL_PREFIX}_*_frames.jsonl")):
         return load_jsonl(str(f))
     for f in sorted(Path(val_dir).glob(f"{_VAL_PREFIX}_*.jsonl")):
