@@ -39,6 +39,7 @@ from types import ModuleType
 
 from . import event_logic, hier_seg, mcq, tg
 from .common import print_summary, write_jsonl
+from .frame_policy import apply_frame_policy, summarize_frame_policy_application
 
 # ---- 所有可用任务模块 ----
 _ALL_MODULES: dict[str, ModuleType] = {
@@ -109,6 +110,17 @@ def cmd_mix(args: argparse.Namespace) -> None:
             all_train.extend(sampled)
 
         random.Random(args.seed).shuffle(all_train)
+        all_train = apply_frame_policy(
+            all_train,
+            policy=args.frame_sample_policy,
+            max_frames=args.frame_sample_max_frames,
+        )
+        if args.frame_sample_policy or args.frame_sample_max_frames > 0:
+            frame_summary = summarize_frame_policy_application(all_train)
+            print(
+                "  [frame_policy train]: "
+                f"applied={frame_summary['applied']} skipped={frame_summary['skipped']}"
+            )
         write_jsonl(all_train, train_out)
         print_summary(all_train, f"Train -> {train_out}")
 
@@ -124,6 +136,17 @@ def cmd_mix(args: argparse.Namespace) -> None:
             all_val.extend(records)
 
         random.Random(args.seed).shuffle(all_val)
+        all_val = apply_frame_policy(
+            all_val,
+            policy=args.frame_sample_policy,
+            max_frames=args.frame_sample_max_frames,
+        )
+        if args.frame_sample_policy or args.frame_sample_max_frames > 0:
+            frame_summary = summarize_frame_policy_application(all_val)
+            print(
+                "  [frame_policy val]: "
+                f"applied={frame_summary['applied']} skipped={frame_summary['skipped']}"
+            )
         write_jsonl(all_val, val_out)
         print_summary(all_val, f"Val -> {val_out}")
 
@@ -180,6 +203,17 @@ def main() -> None:
     p_mix = sub.add_parser("mix", help="Mix experiment training data")
     p_mix.add_argument("--tasks", **_tasks_kwargs)
     p_mix.add_argument("--exp-name", required=True, help="Experiment name (subdir)")
+    p_mix.add_argument(
+        "--frame-sample-policy",
+        default="",
+        help="Duration/fps rules for frame-list JSONL derivation, e.g. '0:60:2.0,60:inf:1.0'.",
+    )
+    p_mix.add_argument(
+        "--frame-sample-max-frames",
+        type=int,
+        default=0,
+        help="Uniform cap applied after fps downsampling. 0 disables the cap.",
+    )
     # ── check ──
     p_check = sub.add_parser("check", help="Verify base/val data exists")
     p_check.add_argument("--tasks", **_tasks_kwargs)

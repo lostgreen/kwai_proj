@@ -32,11 +32,14 @@ TEST_FILE="${TEST_FILE:-${EXP_DATA_DIR}/val.jsonl}"
 VAL_TG_N_EFFECTIVE="${VAL_TG_N:-600}"
 VAL_MCQ_N_EFFECTIVE="${VAL_MCQ_N:-600}"
 MIX_FORCE="${MIX_FORCE:-false}"
+FRAME_SAMPLE_POLICY_EFFECTIVE="${FRAME_SAMPLE_POLICY:-0:60:2.0,60:inf:1.0}"
+FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE="${FRAME_SAMPLE_MAX_FRAMES:-${MAX_FRAMES}}"
 
 echo "[multi-task] EXP_NAME=${EXP_NAME}"
 echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
 echo "[multi-task] TEST_FILE=${TEST_FILE}"
 echo "[multi-task] VAL_TG_N=${VAL_TG_N_EFFECTIVE} VAL_MCQ_N=${VAL_MCQ_N_EFFECTIVE}"
+echo "[multi-task] FRAME_SAMPLE_POLICY=${FRAME_SAMPLE_POLICY_EFFECTIVE} FRAME_SAMPLE_MAX_FRAMES=${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}"
 
 # ============================================================
 # Pre-flight: 检查 base/ val/ 是否存在
@@ -101,6 +104,44 @@ PY
     fi
 fi
 
+if [[ "${NEEDS_MIX}" != "true" ]]; then
+    FRAME_POLICY_CHECK="$(
+python3 - "${TRAIN_FILE}" "${TEST_FILE}" "${FRAME_SAMPLE_POLICY_EFFECTIVE}" "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" <<'PY'
+import json
+import sys
+
+train_path, val_path, policy, max_frames = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+
+def first_frame_policy(path):
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            videos = row.get("videos") or []
+            if videos and isinstance(videos[0], list):
+                return (row.get("metadata") or {}).get("experiment_frame_sampling") or {}
+    return {}
+
+problems = []
+for label, path in [("train", train_path), ("val", val_path)]:
+    meta = first_frame_policy(path)
+    if meta.get("policy", "") != policy or int(meta.get("max_frames", -1)) != max_frames:
+        problems.append(
+            f"{label} frame_policy={meta.get('policy', '')!r}/{meta.get('max_frames')} "
+            f"expected={policy!r}/{max_frames}"
+        )
+
+print("OK" if not problems else "; ".join(problems))
+PY
+)"
+    if [[ "${FRAME_POLICY_CHECK}" != "OK" ]]; then
+        NEEDS_MIX=true
+        MIX_REASON="frame policy mismatch: ${FRAME_POLICY_CHECK}"
+    fi
+fi
+
 if [[ "${NEEDS_MIX}" == "true" ]]; then
     echo "[multi-task] Building experiment data for: ${EXP_NAME} (${MIX_REASON})"
     _MIX_FORCE_FLAG=""
@@ -117,6 +158,8 @@ from local_scripts.data.mixer import main; main()
         mix \
         --tasks ${TASKS} \
         --exp-name "${EXP_NAME}" \
+        --frame-sample-policy "${FRAME_SAMPLE_POLICY_EFFECTIVE}" \
+        --frame-sample-max-frames "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" \
         --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
         --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
         ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
