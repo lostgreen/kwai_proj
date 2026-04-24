@@ -114,12 +114,18 @@ class Worker(WorkerHelper):
         assert isinstance(rank, int), f"rank must be int, instead of {type(rank)}"
 
         if rank == 0:
-            master_addr, master_port = self.get_availale_master_addr_port()
+            master_addr = os.getenv("MASTER_ADDR")
+            master_port = os.getenv("MASTER_PORT")
+            if master_addr is None or master_port is None:
+                master_addr, master_port = self.get_availale_master_addr_port()
+                self.register_center = create_worker_group_register_center(
+                    name=register_center_name,
+                    info={"MASTER_ADDR": master_addr, "MASTER_PORT": master_port},
+                )
             rank_zero_info = {
                 "MASTER_ADDR": master_addr,
                 "MASTER_PORT": master_port,
             }
-            self.register_center = create_worker_group_register_center(name=register_center_name, info=rank_zero_info)
             os.environ.update(rank_zero_info)
 
     def __init__(self, cuda_visible_devices=None) -> None:

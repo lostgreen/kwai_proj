@@ -15,15 +15,14 @@
 import os
 import random
 import re
+import socket
 import string
-import time
 from typing import Any, Optional
 from unittest.mock import patch
 
 import ray
 from ray.actor import ActorHandle
 from ray.experimental.state.api import get_actor
-from ray.util import list_named_actors
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy, PlacementGroupSchedulingStrategy
 
@@ -80,6 +79,15 @@ def sort_placement_group_by_node_ip(pgs: list[PlacementGroup]) -> list[Placement
         pg_ip[pg.id] = node_ip[node_id]
 
     return sorted(pgs, key=lambda pg: pg_ip[pg.id])
+
+
+@ray.remote
+def get_master_addr_port() -> tuple[str, str]:
+    addr = ray.util.get_node_ip_address().strip("[]")
+    with socket.socket() as sock:
+        sock.bind(("", 0))
+        port = sock.getsockname()[1]
+    return addr, str(port)
 
 
 class RayResourcePool(ResourcePool):
@@ -256,6 +264,18 @@ class RayWorkerGroup(WorkerGroup):
         self._workers = workers
         self._world_size = len(worker_names)
 
+    def _get_master_addr_port(self, pg: PlacementGroup, bundle_index: int = 0) -> None:
+        if self._master_addr is None and self._master_port is None:
+            self._master_addr, self._master_port = ray.get(
+                get_master_addr_port.options(
+                    scheduling_strategy=PlacementGroupSchedulingStrategy(
+                        placement_group=pg, placement_group_bundle_index=bundle_index
+                    )
+                ).remote()
+            )
+        elif self._master_addr is None or self._master_port is None:
+            raise ValueError("MASTER_ADDR and MASTER_PORT must be set together.")
+
     def _init_with_resource_pool(
         self, resource_pool: RayResourcePool, ray_cls_with_init: RayClassWithInitArgs, bin_pack: bool, detached: bool
     ):
@@ -275,6 +295,8 @@ class RayWorkerGroup(WorkerGroup):
         local_world_size = resource_pool.store[0]
         for pg_idx, pg in enumerate(sort_placement_group_by_node_ip(pgs)):
             assert local_world_size <= pg.bundle_count, f"when generating for {self.name_prefix}, for the "
+            if pg_idx == 0:
+                self._get_master_addr_port(pg, bundle_index=0)
             for local_rank in range(local_world_size):
                 rank += 1
 
@@ -286,10 +308,9 @@ class RayWorkerGroup(WorkerGroup):
                     "WG_BACKEND": "ray",
                     "RAY_LOCAL_WORLD_SIZE": str(local_world_size),
                     "RAY_LOCAL_RANK": str(local_rank),
+                    "MASTER_ADDR": self._master_addr,
+                    "MASTER_PORT": self._master_port,
                 }
-                if rank != 0:
-                    env_vars["MASTER_ADDR"] = self._master_addr
-                    env_vars["MASTER_PORT"] = self._master_port
 
                 cia_name = type(ray_cls_with_init.cls).__name__
                 match = re.search(r"ActorClass\(([^)]+)\)", cia_name)  # ray.remote(Obj) -> "ActorClass(Obj)"
@@ -307,22 +328,6 @@ class RayWorkerGroup(WorkerGroup):
                 )
                 self._workers.append(worker)
                 self._worker_names.append(name)
-
-                if rank == 0:
-                    register_center_actor = None
-                    for _ in range(120):
-                        if f"{self.name_prefix}_register_center" not in list_named_actors():
-                            time.sleep(1)
-                        else:
-                            register_center_actor = ray.get_actor(f"{self.name_prefix}_register_center")
-                            break
-                    assert register_center_actor is not None, (
-                        f"failed to get register_center_actor: {self.name_prefix}_register_center in {list_named_actors(all_namespaces=True)}"
-                    )
-                    rank_zero_info = ray.get(register_center_actor.get_rank_zero_info.remote())
-                    self._master_addr, self._master_port = rank_zero_info["MASTER_ADDR"], rank_zero_info["MASTER_PORT"]
-                    # print(f"rank_zero_info: {rank_zero_info}")
-                    # print(f"master_addr: {self._master_addr}, master_port: {self._master_port}")
 
     @property
     def worker_names(self):
