@@ -15,6 +15,9 @@ BASE_FRAME_MIN_FPS="${BASE_FRAME_MIN_FPS:-0.25}"
 BASE_FRAME_WORKERS="${BASE_FRAME_WORKERS:-16}"
 BASE_FRAME_JPEG_QUALITY="${BASE_FRAME_JPEG_QUALITY:-2}"
 BASE_FRAME_OVERWRITE="${BASE_FRAME_OVERWRITE:-false}"
+PREPARE_TG_FRAMES="${PREPARE_TG_FRAMES:-true}"
+PREPARE_MCQ_FRAMES="${PREPARE_MCQ_FRAMES:-true}"
+PREPARE_VAL_FRAMES="${PREPARE_VAL_FRAMES:-true}"
 
 TG_TRAIN_INPUT="${TG_TRAIN_INPUT:-${BASE_DIR}/tg_train.jsonl}"
 MCQ_TRAIN_INPUT="${MCQ_TRAIN_INPUT:-${BASE_DIR}/mcq_train_filtered.jsonl}"
@@ -67,22 +70,42 @@ echo "  fallback_fps:   ${BASE_FRAME_FALLBACK_FPS}"
 echo "  max_frames:     ${BASE_FRAME_MAX_FRAMES}"
 echo "  workers:        ${BASE_FRAME_WORKERS}"
 echo "  overwrite:      ${BASE_FRAME_OVERWRITE}"
+echo "  prepare_tg:     ${PREPARE_TG_FRAMES}"
+echo "  prepare_mcq:    ${PREPARE_MCQ_FRAMES}"
+echo "  prepare_val:    ${PREPARE_VAL_FRAMES}"
 echo "============================================"
 
-rewrite_one "${TG_TRAIN_INPUT}" "${TG_TRAIN_INPUT%.jsonl}_frames.jsonl" "TG train"
-rewrite_one "${MCQ_TRAIN_INPUT}" "${MCQ_TRAIN_INPUT%.jsonl}_frames.jsonl" "MCQ train"
+if [[ "${PREPARE_TG_FRAMES,,}" == "true" ]]; then
+    rewrite_one "${TG_TRAIN_INPUT}" "${TG_TRAIN_INPUT%.jsonl}_frames.jsonl" "TG train"
+else
+    echo "[base-offline-frames] skip TG train: PREPARE_TG_FRAMES=${PREPARE_TG_FRAMES}"
+fi
 
-shopt -s nullglob
-for input_jsonl in "${VAL_DIR}"/tg_val_*.jsonl; do
-    [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
-    rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "TG val"
-done
+if [[ "${PREPARE_MCQ_FRAMES,,}" == "true" ]]; then
+    rewrite_one "${MCQ_TRAIN_INPUT}" "${MCQ_TRAIN_INPUT%.jsonl}_frames.jsonl" "MCQ train"
+else
+    echo "[base-offline-frames] skip MCQ train: PREPARE_MCQ_FRAMES=${PREPARE_MCQ_FRAMES}"
+fi
 
-for input_jsonl in "${VAL_DIR}"/mcq_val_*.jsonl; do
-    [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
-    rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "MCQ val"
-done
-shopt -u nullglob
+if [[ "${PREPARE_VAL_FRAMES,,}" == "true" ]]; then
+    shopt -s nullglob
+    if [[ "${PREPARE_TG_FRAMES,,}" == "true" ]]; then
+        for input_jsonl in "${VAL_DIR}"/tg_val_*.jsonl; do
+            [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
+            rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "TG val"
+        done
+    fi
+
+    if [[ "${PREPARE_MCQ_FRAMES,,}" == "true" ]]; then
+        for input_jsonl in "${VAL_DIR}"/mcq_val_*.jsonl; do
+            [[ "${input_jsonl}" == *_frames.jsonl ]] && continue
+            rewrite_one "${input_jsonl}" "${input_jsonl%.jsonl}_frames.jsonl" "MCQ val"
+        done
+    fi
+    shopt -u nullglob
+else
+    echo "[base-offline-frames] skip val frames: PREPARE_VAL_FRAMES=${PREPARE_VAL_FRAMES}"
+fi
 
 echo "[base-offline-frames] done"
 echo "[base-offline-frames] tg/mcq loaders will auto-prefer *_frames.jsonl when present"
