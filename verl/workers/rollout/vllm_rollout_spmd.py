@@ -73,9 +73,14 @@ def _process_multi_modal_data(
             images.append(process_image(image, multi_modal_data.get("min_pixels", min_pixels), multi_modal_data.get("max_pixels", max_pixels)))
 
     if "videos" in multi_modal_data:
-        kwargs = {k: v for k, v in multi_modal_data.items() if k not in ["images", "videos", "video_nframes"]}
+        kwargs = {k: v for k, v in multi_modal_data.items() if k not in ["images", "videos", "video_nframes", "video_fps"]}
+        sample_fps = multi_modal_data.get("video_fps", video_fps)
         for idx, video in enumerate(multi_modal_data["videos"]):
             # 兼容带 fps 返回；若项目内函数不支持 return_fps，则回退到原始行为
+            if isinstance(sample_fps, (list, tuple)):
+                kwargs["video_fps"] = sample_fps[min(idx, len(sample_fps) - 1)]
+            else:
+                kwargs["video_fps"] = sample_fps
             processed, video_fps = process_video(video, return_fps=True, **kwargs)
             videos.append(processed)
 

@@ -483,8 +483,13 @@ class FSDPWorker(Worker):
                             images.append(process_image(image, multi_modal_data.get("min_pixels", min_pixels), multi_modal_data.get("max_pixels", max_pixels)))
 
                     if "videos" in multi_modal_data:
-                        kwargs = {k: v for k, v in multi_modal_data.items() if k not in ["images", "videos", "video_nframes"]}
-                        for video in multi_modal_data["videos"]:
+                        kwargs = {k: v for k, v in multi_modal_data.items() if k not in ["images", "videos", "video_nframes", "video_fps"]}
+                        sample_fps = multi_modal_data.get("video_fps", data.meta_info.get("video_fps", 2.0))
+                        for idx, video in enumerate(multi_modal_data["videos"]):
+                            if isinstance(sample_fps, (list, tuple)):
+                                kwargs["video_fps"] = sample_fps[min(idx, len(sample_fps) - 1)]
+                            else:
+                                kwargs["video_fps"] = sample_fps
                             videos.append(process_video(video, **kwargs))
 
                     if len(images) != 0:
