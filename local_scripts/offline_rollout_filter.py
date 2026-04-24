@@ -18,8 +18,16 @@ import importlib.util
 import json
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"The pynvml package is deprecated\..*",
+    category=FutureWarning,
+    module=r"torch\.cuda",
+)
 
 import torch
 from tqdm.auto import tqdm
@@ -411,7 +419,9 @@ def main() -> None:
         raise SystemExit("--batch_size must be > 0")
     torch.manual_seed(args.seed)
     register_cleanup()
-    set_gpu_phase("idle")
+    # Treat startup / engine construction as busy so signal-mode filler
+    # does light fill instead of heavy idle fill during model loading.
+    set_gpu_phase("decode")
 
     import time as _time
 
@@ -447,6 +457,8 @@ def main() -> None:
         print("[offline_filter] Transformers backend ready", flush=True)
         llm = None
         sampling_params = None
+
+    set_gpu_phase("idle")
 
     output_path = Path(args.output_jsonl)
     report_path = Path(args.report_jsonl)
