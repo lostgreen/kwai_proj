@@ -19,8 +19,20 @@ DEFAULT_HIER_VAL_PHASECROP="${PHASECROP_ROOT}/val_all_shared_frames.jsonl"
 export EXP_NAME="${EXP_NAME:-frame_ablation_R1_f1iou_grpo_full20k_mf128}"
 export TASKS="${TASKS:-tg mcq hier_seg}"
 export HIER_TARGET="${HIER_TARGET:-0}"
-export HIER_TRAIN="${HIER_TRAIN:-${DEFAULT_HIER_TRAIN_PHASECROP}}"
-export HIER_VAL_SOURCE="${HIER_VAL_SOURCE:-${DEFAULT_HIER_VAL_PHASECROP}}"
+
+if [[ "${ALLOW_HIER_TRAIN_OVERRIDE:-false}" =~ ^(true|1|yes)$ ]]; then
+    export HIER_TRAIN="${HIER_TRAIN:-${DEFAULT_HIER_TRAIN_PHASECROP}}"
+    export HIER_VAL_SOURCE="${HIER_VAL_SOURCE:-${DEFAULT_HIER_VAL_PHASECROP}}"
+else
+    if [[ -n "${HIER_TRAIN:-}" && "${HIER_TRAIN}" != "${DEFAULT_HIER_TRAIN_PHASECROP}" ]]; then
+        echo "[frame_ablation mf128] Ignore inherited HIER_TRAIN=${HIER_TRAIN}; using phase-crop manifest." >&2
+    fi
+    if [[ -n "${HIER_VAL_SOURCE:-}" && "${HIER_VAL_SOURCE}" != "${DEFAULT_HIER_VAL_PHASECROP}" ]]; then
+        echo "[frame_ablation mf128] Ignore inherited HIER_VAL_SOURCE=${HIER_VAL_SOURCE}; using phase-crop manifest." >&2
+    fi
+    export HIER_TRAIN="${DEFAULT_HIER_TRAIN_PHASECROP}"
+    export HIER_VAL_SOURCE="${DEFAULT_HIER_VAL_PHASECROP}"
+fi
 
 if [[ ! -f "${HIER_TRAIN}" || ! -f "${HIER_VAL_SOURCE}" ]]; then
     echo "[frame_ablation mf128] Missing phase-crop shared manifest." >&2
@@ -28,6 +40,12 @@ if [[ ! -f "${HIER_TRAIN}" || ! -f "${HIER_VAL_SOURCE}" ]]; then
     echo "  HIER_VAL_SOURCE=${HIER_VAL_SOURCE}" >&2
     echo "Run: bash local_scripts/hier_seg_ablations/frame_ablation/build_phasecrop_shared_hier.sh" >&2
     exit 1
+fi
+
+if [[ "${CHECK_PHASECROP_MANIFEST:-true}" =~ ^(true|1|yes)$ ]]; then
+    python3 "${REPO_ROOT_LOCAL}/local_scripts/data/check_hier_phasecrop_manifest.py" \
+        --jsonl "${HIER_TRAIN}" \
+        --jsonl "${HIER_VAL_SOURCE}"
 fi
 
 export ADV_ESTIMATOR="${ADV_ESTIMATOR:-grpo}"

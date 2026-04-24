@@ -52,6 +52,12 @@ echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CH
 echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
 echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
+if [[ "${EXP_NAME}" == frame_ablation_* && "${HIER_TRAIN:-}" != *"/train_phasecrop/"* ]]; then
+    echo "[multi-task] ERROR: frame ablation requires phase-crop HIER_TRAIN, got: ${HIER_TRAIN:-<unset>}" >&2
+    echo "[multi-task] Run build_phasecrop_shared_hier.sh and use train_phasecrop/train_all_shared_frames.jsonl." >&2
+    exit 1
+fi
+
 # ============================================================
 # Pre-flight: 检查 base/ val/ 是否存在
 # ============================================================
