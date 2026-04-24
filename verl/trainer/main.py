@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 
 import ray
 from omegaconf import OmegaConf
@@ -120,9 +121,16 @@ def main():
                 "VERL_TIMING_LOG_DIR": ppo_config.trainer.save_checkpoint_path,
             }
         }
-        # import os
-        # os.environ["TOKENIZERS_PARALLELISM"] = "true"
-        ray.init(runtime_env=runtime_env)
+        ray_init_kwargs = {
+            "runtime_env": runtime_env,
+            "include_dashboard": False,
+        }
+        ray_tmpdir = os.environ.get("RAY_TMPDIR")
+        if ray_tmpdir:
+            os.makedirs(ray_tmpdir, exist_ok=True)
+            ray_init_kwargs["_temp_dir"] = ray_tmpdir
+
+        ray.init(**ray_init_kwargs)
 
     runner = Runner.remote()
     ray.get(runner.run.remote(ppo_config))
