@@ -52,9 +52,9 @@ echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CH
 echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
 echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
-# Keep Ray session/state files off the container overlay by default. Ray will
-# only honor this if the env var is set before ray.init().
-RAY_TMPDIR="${RAY_TMPDIR:-/m2v_intern/xuboshen/zgw/ray_tmp/${EXP_NAME}}"
+# Keep Ray session/state files on the node-local filesystem by default. The
+# checkpoint path may live on a network mount, and Ray mmaps temp/session files.
+RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${EXP_NAME}}"
 mkdir -p "${RAY_TMPDIR}"
 export RAY_TMPDIR
 echo "[multi-task] RAY_TMPDIR=${RAY_TMPDIR}"

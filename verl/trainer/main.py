@@ -109,17 +109,21 @@ def main():
     ppo_config.deep_post_init()
 
     if not ray.is_initialized():
+        runtime_env_vars = {
+            "TOKENIZERS_PARALLELISM": "true",
+            "NCCL_DEBUG": "WARN",
+            "VLLM_LOGGING_LEVEL": "WARN",
+            "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+            "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
+        }
+        if os.environ.get("VERL_WORKER_TIMING_LOG_TO_FILE", "").lower() in {"1", "true", "yes"}:
+            runtime_env_vars["VERL_TIMING_LOG_DIR"] = os.environ.get(
+                "VERL_TIMING_LOG_DIR", ppo_config.trainer.save_checkpoint_path
+            )
         runtime_env = {
-            "env_vars": {
-                "TOKENIZERS_PARALLELISM": "true",
-                "NCCL_DEBUG": "WARN",
-                "VLLM_LOGGING_LEVEL": "WARN",
-                "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
-                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
-                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
-                "VERL_TIMING_LOG_DIR": ppo_config.trainer.save_checkpoint_path,
-            }
+            "env_vars": runtime_env_vars
         }
         ray_init_kwargs = {
             "runtime_env": runtime_env,
