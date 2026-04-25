@@ -54,7 +54,12 @@ echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} EN
 
 # Keep Ray session/state files on the node-local filesystem by default. The
 # checkpoint path may live on a network mount, and Ray mmaps temp/session files.
-RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${EXP_NAME}}"
+# Ray creates AF_UNIX sockets under this directory; keep it short or Linux's
+# 107-byte socket path limit can be exceeded by long experiment names.
+if [[ -z "${RAY_TMPDIR:-}" ]]; then
+    _RAY_EXP_HASH="$(printf '%s' "${EXP_NAME}" | cksum | awk '{print $1}')"
+    RAY_TMPDIR="/tmp/ray_vp_${EXP_NAME:0:12}_${_RAY_EXP_HASH}"
+fi
 mkdir -p "${RAY_TMPDIR}"
 export RAY_TMPDIR
 echo "[multi-task] RAY_TMPDIR=${RAY_TMPDIR}"
