@@ -1,7 +1,7 @@
-"""Lightweight timing logger that writes to a file under the checkpoint directory.
+"""Lightweight timing logger.
 
 Usage:
-    # Driver (ray_trainer.py): init once, then log per step
+    # Driver (ray_trainer.py): init once, then log per step when enabled
     from verl.utils.timing_logger import init_timing_log, log_timing
 
     init_timing_log("/path/to/checkpoint_dir")
@@ -21,9 +21,16 @@ _timing_logger: logging.Logger | None = None
 _log_path: str | None = None
 
 
+def _file_logging_enabled() -> bool:
+    return os.environ.get("VERL_TIMING_LOG_TO_FILE", "").lower() in {"1", "true", "yes"}
+
+
 def init_timing_log(checkpoint_dir: str, filename: str = "timing.log") -> None:
-    """Initialise the file-backed timing logger (call once from the driver)."""
+    """Initialise the optional file-backed timing logger."""
     global _timing_logger, _log_path
+    if not _file_logging_enabled():
+        return
+
     os.makedirs(checkpoint_dir, exist_ok=True)
     _log_path = os.path.join(checkpoint_dir, filename)
 
@@ -46,6 +53,9 @@ def init_timing_log(checkpoint_dir: str, filename: str = "timing.log") -> None:
 def _ensure_logger() -> logging.Logger | None:
     """Lazily create a worker-side logger from the env-var path."""
     global _timing_logger, _log_path
+    if not _file_logging_enabled():
+        return None
+
     if _timing_logger is not None:
         return _timing_logger
 

@@ -118,7 +118,8 @@ def main():
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
         }
-        if os.environ.get("VERL_WORKER_TIMING_LOG_TO_FILE", "").lower() in {"1", "true", "yes"}:
+        if os.environ.get("VERL_TIMING_LOG_TO_FILE", "").lower() in {"1", "true", "yes"}:
+            runtime_env_vars["VERL_TIMING_LOG_TO_FILE"] = "true"
             runtime_env_vars["VERL_TIMING_LOG_DIR"] = os.environ.get(
                 "VERL_TIMING_LOG_DIR", ppo_config.trainer.save_checkpoint_path
             )
