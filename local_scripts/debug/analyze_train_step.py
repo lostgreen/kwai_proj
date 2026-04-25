@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Analyze one training step from an EasyR1 experiment directory.
+"""Analyze training logs and rollouts from an EasyR1 experiment directory.
 
 Reads:
   - experiment_log.jsonl
-  - rollouts/step_XXXXXX.jsonl
+  - rollouts/step_XXXXXX.jsonl over a step range
 
 The script is intentionally read-only. It summarizes KL/reward trends and
 rollout diversity so low-frame ablations can be judged quickly.
@@ -95,10 +95,17 @@ def scalar_at_or_before(rows: list[dict[str, Any]], step: int, key: str) -> tupl
     return best
 
 
-def series(rows: list[dict[str, Any]], key: str, max_step: int | None = None) -> list[tuple[int, float]]:
+def series(
+    rows: list[dict[str, Any]],
+    key: str,
+    min_step: int | None = None,
+    max_step: int | None = None,
+) -> list[tuple[int, float]]:
     values: list[tuple[int, float]] = []
     for row in rows:
         step = int(row.get("step", -1))
+        if min_step is not None and step < min_step:
+            continue
         if max_step is not None and step > max_step:
             continue
         value = as_float(flatten(row).get(key))
@@ -148,6 +155,48 @@ def read_rollouts(exp_dir: Path, step: int) -> list[dict[str, Any]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def parse_rollout_step(path: Path) -> int | None:
+    match = re.match(r"step_(\d+)\.jsonl$", path.name)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def available_rollout_steps(exp_dir: Path, start: int, end: int) -> list[int]:
+    rollout_dir = exp_dir / "rollouts"
+    if not rollout_dir.exists():
+        return []
+    steps = []
+    for path in rollout_dir.glob("step_*.jsonl"):
+        step = parse_rollout_step(path)
+        if step is not None and start <= step <= end:
+            steps.append(step)
+    return sorted(set(steps))
+
+
+def select_rollout_steps(
+    exp_dir: Path,
+    start: int,
+    end: int,
+    stride: int,
+    explicit_steps: str | None,
+) -> list[int]:
+    available = available_rollout_steps(exp_dir, start, end)
+    if explicit_steps:
+        wanted = sorted({int(part) for part in explicit_steps.split(",") if part.strip()})
+        return [step for step in wanted if step in set(available)]
+    if not available:
+        return []
+    if stride <= 1:
+        return available
+    selected = [step for step in available if (step - start) % stride == 0]
+    if end in available and end not in selected:
+        selected.append(end)
+    if not selected:
+        selected = [available[-1]]
+    return sorted(set(selected))
 
 
 def summarize_rollouts(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -218,8 +267,8 @@ def summarize_rollouts(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return task_summaries
 
 
-def print_log_summary(exp_dir: Path, rows: list[dict[str, Any]], step: int) -> dict[str, float]:
-    print(f"\n=== Scalars: {exp_dir} @ step<={step} ===")
+def print_log_summary(exp_dir: Path, rows: list[dict[str, Any]], start: int, step: int) -> dict[str, float]:
+    print(f"\n=== Scalars: {exp_dir} @ steps {start}..{step} ===")
     scalars: dict[str, float] = {}
     if not rows:
         print("experiment_log.jsonl: missing")
@@ -231,20 +280,31 @@ def print_log_summary(exp_dir: Path, rows: list[dict[str, Any]], step: int) -> d
             continue
         row_step, value = point
         scalars[key] = value
-        values = series(rows, key, max_step=step)
-        key_slope = slope(values)
-        suffix = f" slope20={key_slope:+.5f}/step" if key_slope is not None else ""
-        print(f"{key:40s} step={row_step:<5d} value={value:.6f}{suffix}")
+        values_all = series(rows, key, max_step=step)
+        values_range = series(rows, key, min_step=start, max_step=step)
+        key_slope20 = slope(values_all)
+        key_slope_range = slope(values_range, window=len(values_range)) if values_range else None
+        if values_range:
+            first_step, first_value = values_range[0]
+            last_step, last_value = values_range[-1]
+            delta = last_value - first_value
+            min_value = min(v for _, v in values_range)
+            max_value = max(v for _, v in values_range)
+            scalars[f"trend/{key}/slope_range"] = key_slope_range if key_slope_range is not None else 0.0
+            scalars[f"trend/{key}/delta_range"] = delta
+            trend = (
+                f" first={first_value:.6f}@{first_step} last={last_value:.6f}@{last_step} "
+                f"delta={delta:+.6f} min={min_value:.6f} max={max_value:.6f}"
+            )
+        else:
+            trend = ""
+        slope20_txt = f" slope20={key_slope20:+.5f}/step" if key_slope20 is not None else ""
+        slope_range_txt = f" slope_range={key_slope_range:+.5f}/step" if key_slope_range is not None else ""
+        print(f"{key:40s} step={row_step:<5d} value={value:.6f}{trend}{slope_range_txt}{slope20_txt}")
     return scalars
 
 
-def print_rollout_summary(exp_dir: Path, rows: list[dict[str, Any]], step: int) -> dict[str, Any]:
-    path = rollout_path(exp_dir, step)
-    print(f"\n=== Rollouts: {path} ===")
-    if not rows:
-        print("rollout file: missing")
-        return {}
-    summaries = summarize_rollouts(rows)
+def print_task_summaries(summaries: dict[str, Any]) -> None:
     for task, summary in summaries.items():
         print(
             f"{task:28s} groups={summary['groups']:<4d} records={summary['records']:<4d} "
@@ -263,11 +323,51 @@ def print_rollout_summary(exp_dir: Path, rows: list[dict[str, Any]], step: int) 
                 f"{'':28s} same_uid={example['uid']} reward={example['reward']} "
                 f"resp={example['response']!r}"
             )
+
+
+def print_rollout_summary(exp_dir: Path, rows: list[dict[str, Any]], step: int) -> dict[str, Any]:
+    path = rollout_path(exp_dir, step)
+    print(f"\n=== Rollouts: {path} ===")
+    if not rows:
+        print("rollout file: missing")
+        return {}
+    summaries = summarize_rollouts(rows)
+    print_task_summaries(summaries)
     return summaries
+
+
+def print_rollout_trend(exp_dir: Path, steps: list[int]) -> dict[str, Any]:
+    print(f"\n=== Rollout Diversity Trend: {exp_dir} ===")
+    if not steps:
+        print("no rollout files selected")
+        return {}
+
+    aggregate_rows: list[dict[str, Any]] = []
+    for step in steps:
+        rows = read_rollouts(exp_dir, step)
+        aggregate_rows.extend(rows)
+        summary = summarize_rollouts(rows).get("temporal_grounding")
+        if summary is None:
+            print(f"step={step:<5d} temporal_grounding: missing")
+            continue
+        print(
+            f"step={step:<5d} tg_groups={summary['groups']:<4d} "
+            f"all_same_ratio={summary['all_same_ratio']:.3f} "
+            f"uniq_hist={summary['unique_response_hist']} "
+            f"reward_std_avg={summary['reward_std_avg']:.5f} "
+            f"invalid={summary['tg_invalid_ratio']:.3f}"
+        )
+
+    print(f"\n=== Rollout Aggregate: steps={steps[0]}..{steps[-1]} selected={len(steps)} ===")
+    aggregate = summarize_rollouts(aggregate_rows)
+    print_task_summaries(aggregate)
+    return aggregate
 
 
 def decide(scalars: dict[str, float], rollouts: dict[str, Any]) -> str:
     kl = scalars.get("actor/kl_loss")
+    kl_slope = scalars.get("trend/actor/kl_loss/slope_range")
+    reward_delta = scalars.get("trend/reward/overall/delta_range")
     keep_ratio = scalars.get("debug/online_filtering_keep_ratio")
     tg = rollouts.get("temporal_grounding", {})
     tg_same = float(tg.get("all_same_ratio", 0.0) or 0.0)
@@ -284,6 +384,12 @@ def decide(scalars: dict[str, float], rollouts: dict[str, Any]) -> str:
         elif kl >= 0.3:
             caution = True
             reasons.append(f"actor/kl_loss={kl:.3f} is elevated")
+    if kl_slope is not None and kl_slope > 0.0025:
+        caution = True
+        reasons.append(f"actor/kl_loss slope={kl_slope:.5f}/step is still rising")
+    if reward_delta is not None and reward_delta < -0.05:
+        caution = True
+        reasons.append(f"reward/overall delta={reward_delta:.3f} over range")
 
     if tg:
         if tg_same >= 0.4:
@@ -314,16 +420,34 @@ def decide(scalars: dict[str, float], rollouts: dict[str, Any]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("exp_dir", nargs="+", type=Path, help="Experiment checkpoint directory")
-    parser.add_argument("--step", type=int, default=200)
+    parser.add_argument("--start", type=int, default=1, help="First training step for trend analysis")
+    parser.add_argument("--step", type=int, default=200, help="Last training step for trend analysis")
+    parser.add_argument(
+        "--rollout-stride",
+        type=int,
+        default=25,
+        help="Analyze one rollout file every N steps; use 1 for every rollout file",
+    )
+    parser.add_argument(
+        "--rollout-steps",
+        default=None,
+        help="Comma-separated explicit rollout steps, e.g. 50,100,150,200",
+    )
     args = parser.parse_args()
 
     for exp_dir in args.exp_dir:
         print("\n" + "=" * 96)
         print(f"Experiment: {exp_dir}")
         log_rows = read_log(exp_dir)
-        rollout_rows = read_rollouts(exp_dir, args.step)
-        scalars = print_log_summary(exp_dir, log_rows, args.step)
-        rollouts = print_rollout_summary(exp_dir, rollout_rows, args.step)
+        selected_steps = select_rollout_steps(
+            exp_dir,
+            start=args.start,
+            end=args.step,
+            stride=args.rollout_stride,
+            explicit_steps=args.rollout_steps,
+        )
+        scalars = print_log_summary(exp_dir, log_rows, args.start, args.step)
+        rollouts = print_rollout_trend(exp_dir, selected_steps)
         print(f"\nAUTO_DECISION: {decide(scalars, rollouts)}")
 
 
