@@ -25,11 +25,13 @@ prompt_variants_v4.py — Shot-First 两步式训练 prompt
 # =====================================================================
 
 _SPARSE_SAMPLING_NOTICE = """\
-IMPORTANT — SPARSE SAMPLING:
-This clip is sampled at 1-2 fps (not continuous video). \
+IMPORTANT — SPARSE VISUAL EVIDENCE:
+This clip is represented by sparsely sampled frames and timestamp markers, \
+not continuous video. Use the displayed timestamps as the temporal reference; \
+do not assume every second is visually observed. \
 Do NOT rely on single-frame micro-motions, instantaneous contact changes, \
 or camera cuts to place boundaries. \
-Create a boundary ONLY when the change is sustained across multiple sampled frames \
+Create a boundary ONLY when the change is visible across multiple sampled frames \
 or when the task/state clearly shifts."""
 
 
@@ -42,7 +44,7 @@ or when the task/state clearly shifts."""
 # =====================================================================
 
 L1_V1 = """\
-You are given a {{duration}}s video clip (timestamps 0 to {{duration}}), sampled at 1-2 fps.
+You are given a {{duration}}s video clip (timestamps 0 to {{duration}}) represented by sparsely sampled frames.
 
 Segment the video into high-level phases using a SHOT-FIRST approach:
 
@@ -87,7 +89,7 @@ Example: <events>[[0, 85], [85, 170], [170, 240]]</events>""".format(sparse=_SPA
 # =====================================================================
 
 L2_V1 = """\
-You are given a {{duration}}s video clip (timestamps 0 to {{duration}}), sampled at 1-2 fps.
+You are given a {{duration}}s video clip (timestamps 0 to {{duration}}) represented by sparsely sampled frames.
 
 Detect all events in this clip using a SHOT-FIRST approach:
 
@@ -134,7 +136,7 @@ Example: <events>[[0, 42], [42, 68], [68, 90]]</events>""".format(sparse=_SPARSE
 # =====================================================================
 
 L3_V1 = """\
-You are given a {{duration}}s video clip, sampled at 1-2 fps.
+You are given a {{duration}}s video clip represented by sparsely sampled frames.
 
 Detect all fine-grained sub-actions in this clip using a SHOT-FIRST approach:
 
