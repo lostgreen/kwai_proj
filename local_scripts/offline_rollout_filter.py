@@ -35,6 +35,7 @@ from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
 
 from verl.utils.dataset import process_image, process_video
 from verl.utils.gpu_phase_signal import register_cleanup, set_gpu_phase
+from verl.utils.video_fps import resolve_video_fps_list
 
 
 def parse_args() -> argparse.Namespace:
@@ -149,17 +150,14 @@ def build_multi_modal_data(example: dict[str, Any], args: argparse.Namespace) ->
     if videos:
         n_videos = len(videos)
         max_frames_per_video = max(1, args.max_frames // n_videos) if n_videos > 1 else args.max_frames
-        # Per-record fps override: prefer explicit override, then legacy l1_fps.
         meta = example.get("metadata") or {}
-        effective_fps = meta.get("video_fps_override")
-        if effective_fps is None:
-            effective_fps = meta.get("l1_fps", args.video_fps) if meta.get("level") == 1 else args.video_fps
+        video_fps_overrides = resolve_video_fps_list(meta, args.video_fps, n_videos=n_videos)
         data = {
             "videos": videos,
             "min_pixels": args.min_pixels,
             "max_pixels": args.max_pixels,
             "max_frames": max_frames_per_video,
-            "video_fps": effective_fps,
+            "video_fps": video_fps_overrides[0] if len(video_fps_overrides) == 1 else video_fps_overrides,
         }
         if getattr(args, "min_frames", 0) > 0:
             data["min_frames"] = args.min_frames
@@ -183,10 +181,9 @@ def prepare_inputs(example: dict[str, Any], processor, args: argparse.Namespace)
         video_metadatas = []
         max_frames_per_video = max(1, args.max_frames // len(videos)) if len(videos) > 1 else args.max_frames
         meta = example.get("metadata") or {}
-        effective_fps = meta.get("video_fps_override")
-        if effective_fps is None:
-            effective_fps = meta.get("l1_fps", args.video_fps) if meta.get("level") == 1 else args.video_fps
-        for video in videos:
+        video_fps_overrides = resolve_video_fps_list(meta, args.video_fps, n_videos=len(videos))
+        for idx, video in enumerate(videos):
+            effective_fps = video_fps_overrides[min(idx, len(video_fps_overrides) - 1)]
             processed_video, _video_sample_fps = process_video(
                 video,
                 min_pixels=args.min_pixels,

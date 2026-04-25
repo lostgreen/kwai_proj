@@ -58,3 +58,28 @@ def resolve_video_fps_list(metadata: dict[str, Any] | None, default_fps: float, 
 
 def resolve_video_fps(metadata: dict[str, Any] | None, default_fps: float, n_videos: int = 1) -> float:
     return resolve_video_fps_list(metadata, default_fps, n_videos)[0]
+
+
+def build_video_vision_info(
+    video: Any,
+    *,
+    min_pixels: int,
+    max_pixels: int,
+    max_frames: int,
+    video_fps: float,
+) -> dict[str, Any]:
+    """Build qwen-vl-utils video config with correct fps for frame-list inputs."""
+    fps = float(video_fps)
+    vision_info = {
+        "video": video,
+        "min_pixels": min_pixels,
+        "max_pixels": max_pixels,
+        "max_frames": max_frames,
+        "fps": fps,
+    }
+    if isinstance(video, (list, tuple)):
+        # qwen-vl-utils ignores ``fps`` for pre-extracted frame lists and
+        # defaults fake video metadata to 2fps unless these keys are provided.
+        vision_info["sample_fps"] = fps
+        vision_info["raw_fps"] = fps
+    return vision_info

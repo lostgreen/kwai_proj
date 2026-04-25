@@ -34,7 +34,7 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 from . import torch_functional as VF
-from .video_fps import resolve_video_fps, resolve_video_fps_list
+from .video_fps import build_video_vision_info, resolve_video_fps, resolve_video_fps_list
 
 
 _VIDEO_DEBUG_ENABLED = os.environ.get("EASYR1_DEBUG_VIDEO_FRAMES", "0").strip().lower() in {
@@ -287,9 +287,15 @@ def process_image(
 
 
 def process_video(
-    video: str, min_pixels: int = 4*32*32, max_pixels: int = 48*32*32, max_frames: int = 256, video_fps: float = 2, min_frames: int = 0, return_fps: bool = False
+    video: Any, min_pixels: int = 4*32*32, max_pixels: int = 48*32*32, max_frames: int = 256, video_fps: float = 2, min_frames: int = 0, return_fps: bool = False
 ):
-    vision_info = {"video": video, "min_pixels": min_pixels, "max_pixels": max_pixels, "max_frames": max_frames, "fps": video_fps}
+    vision_info = build_video_vision_info(
+        video,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
+        max_frames=max_frames,
+        video_fps=video_fps,
+    )
     result = fetch_video(vision_info, image_patch_size=16, return_video_sample_fps=return_fps, return_video_metadata=return_fps)
 
     # If min_frames is set and the result has fewer frames, retry with higher fps
@@ -302,7 +308,13 @@ def process_video(
             new_fps = min(min_frames / max(est_duration, 0.1), max_frames / max(est_duration, 0.1))
             new_fps = max(new_fps, video_fps)  # never go below the original fps
             if new_fps > video_fps:
-                vision_info_retry = {"video": video, "min_pixels": min_pixels, "max_pixels": max_pixels, "max_frames": max_frames, "fps": new_fps}
+                vision_info_retry = build_video_vision_info(
+                    video,
+                    min_pixels=min_pixels,
+                    max_pixels=max_pixels,
+                    max_frames=max_frames,
+                    video_fps=new_fps,
+                )
                 result = fetch_video(vision_info_retry, image_patch_size=16, return_video_sample_fps=return_fps, return_video_metadata=return_fps)
 
     _maybe_log_video_debug(
