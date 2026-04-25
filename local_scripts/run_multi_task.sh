@@ -52,6 +52,13 @@ echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CH
 echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
 echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
+# Keep Ray session/state files off the container overlay by default. Ray will
+# only honor this if the env var is set before ray.init().
+RAY_TMPDIR="${RAY_TMPDIR:-/m2v_intern/xuboshen/zgw/ray_tmp/${EXP_NAME}}"
+mkdir -p "${RAY_TMPDIR}"
+export RAY_TMPDIR
+echo "[multi-task] RAY_TMPDIR=${RAY_TMPDIR}"
+
 if [[ "${EXP_NAME}" == frame_ablation_* && "${HIER_TRAIN:-}" != *"/train_phasecrop/"* ]]; then
     echo "[multi-task] ERROR: frame ablation requires phase-crop HIER_TRAIN, got: ${HIER_TRAIN:-<unset>}" >&2
     echo "[multi-task] Run build_phasecrop_shared_hier.sh and use train_phasecrop/train_all_shared_frames.jsonl." >&2
