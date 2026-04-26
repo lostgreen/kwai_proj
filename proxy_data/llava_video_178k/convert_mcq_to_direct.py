@@ -11,6 +11,8 @@
     python convert_mcq_to_direct.py input.jsonl  # 自动生成 input_direct.jsonl
 """
 
+from __future__ import annotations
+
 import json
 import re
 import sys
