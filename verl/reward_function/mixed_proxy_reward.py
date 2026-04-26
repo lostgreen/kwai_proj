@@ -75,8 +75,10 @@ def _extract_choice(response: str) -> Optional[str]:
         if letters:
             return letters[-1].upper()
 
-    # Fallback: 全文最后一个独立字母 (A-D)
-    letters = re.findall(r"\b([A-Da-d])\b", response)
+    # Fallback: 全文最后一个独立字母。Event Logic harder MCQ can use A-F,
+    # and LLaVA/AoT variants may use different option counts, so keep this
+    # option-count agnostic.
+    letters = _SINGLE_LETTER_PATTERN.findall(response)
     if letters:
         return letters[-1].upper()
     return None
