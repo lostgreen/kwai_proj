@@ -8,12 +8,12 @@
 
 三组实验都固定为:
 
-- 模型: `Qwen3-VL-4B-Instruct`
+- 模型: `Qwen3-VL-8B-Instruct`
 - 主线算法: `GRPO`
 - 保险对照: `R1_EMA` 使用 `EMA-GRPO`
 - `LR=5e-7`
 - `KL_COEF=0.04`
-- `CHECKPOINT_ROOT=/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_lr5e-7_kl0p04_ablations`
+- `CHECKPOINT_ROOT=/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_8b_lr5e-7_kl0p04_entropy0p005_ablations`
 - `ENTROPY_COEFF=0.005`
 - `ROLLOUT_TEMPERATURE=1.0`
 - `MAX_FRAMES=256`

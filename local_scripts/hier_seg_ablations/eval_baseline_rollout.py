@@ -13,14 +13,14 @@ Usage:
     # Evaluate val set (segment only)
     python eval_baseline_rollout.py \
         --input-dir /path/to/train/ \
-        --model-path /m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct \
+        --model-path /m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct \
         --sample-per-level 50 \
         --output-dir ./eval_results/
 
     # Evaluate val set (segment + hint comparison)
     python eval_baseline_rollout.py \
         --input-dir /path/to/train/ \
-        --model-path /m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct \
+        --model-path /m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct \
         --sample-per-level 50 \
         --use-hint \
         --output-dir ./eval_results/

@@ -37,7 +37,7 @@ DATA_DIR=/path/to/data bash local_scripts/hier_seg_ablations/train_hier_seg.sh
 ```bash
 python local_scripts/hier_seg_ablations/eval_baseline_rollout.py \
     --input-dir /path/to/train/ \
-    --model-path /home/xuboshen/models/Qwen3-VL-4B-Instruct \
+    --model-path /home/xuboshen/models/Qwen3-VL-8B-Instruct \
     --sample-per-level 50 \
     --use-hint \
     --output-dir ./eval_results/
@@ -63,7 +63,7 @@ NGIoU 核心优势：pred 与 GT 不重叠时仍有非零信号（越近越高�
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
-| Model | Qwen3-VL-4B-Instruct | |
+| Model | Qwen3-VL-8B-Instruct | |
 | Algorithm | `ema_grpo` | |
 | LR | 5e-7 | cosine warmup/decay |
 | Online filtering | 启用 | |

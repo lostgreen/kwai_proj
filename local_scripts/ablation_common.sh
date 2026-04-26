@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Shared conservative defaults for ablation runs.
 
-ABLATION_CHECKPOINT_ROOT="${ABLATION_CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_lr5e-7_kl0p04_ablations}"
+ABLATION_MODEL_PATH="${ABLATION_MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct}"
+ABLATION_CHECKPOINT_ROOT="${ABLATION_CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_8b_lr5e-7_kl0p04_entropy0p005_ablations}"
+
+if [[ "${ALLOW_ABLATION_MODEL_OVERRIDE:-false}" =~ ^(true|1|yes)$ ]]; then
+    export MODEL_PATH="${MODEL_PATH:-${ABLATION_MODEL_PATH}}"
+else
+    export MODEL_PATH="${ABLATION_MODEL_PATH}"
+fi
 
 if [[ "${ALLOW_ABLATION_HPARAM_OVERRIDE:-false}" =~ ^(true|1|yes)$ ]]; then
     export LR="${LR:-5e-7}"

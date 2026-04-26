@@ -20,7 +20,11 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-seg-aot-ablation}"
 # EXP_NAME 由各实验脚本赋值
 
 # ---- 模型 ----
-MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
+if [[ "${ALLOW_ABLATION_MODEL_OVERRIDE:-false}" =~ ^(true|1|yes)$ ]]; then
+    MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct}"
+else
+    MODEL_PATH="/m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct"
+fi
 
 # ---- Seg Annotation 数据路径 ----
 HIER_SEG_ROOT="${HIER_SEG_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation}"
@@ -87,8 +91,8 @@ MAX_STEPS="${MAX_STEPS:-60}"
 SAVE_FREQ="${SAVE_FREQ:-20}"
 VAL_FREQ="${VAL_FREQ:-10}"
 if [[ "${ALLOW_ABLATION_CHECKPOINT_OVERRIDE:-false}" =~ ^(true|1|yes)$ ]]; then
-    CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_lr5e-7_kl0p04}"
+    CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_8b_lr5e-7_kl0p04_entropy0p005}"
 else
-    CHECKPOINT_ROOT="/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_lr5e-7_kl0p04"
+    CHECKPOINT_ROOT="/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_8b_lr5e-7_kl0p04_entropy0p005"
 fi
 FILLER_TARGET_UTIL="${FILLER_TARGET_UTIL:-80}"
