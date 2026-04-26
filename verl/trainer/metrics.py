@@ -24,6 +24,24 @@ def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
     return {key: np.mean(value) for key, value in metrics.items()}
 
 
+def _flatten_numeric_values(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().tolist()
+    elif isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        values: list[float] = []
+        for item in value:
+            values.extend(_flatten_numeric_values(item))
+        return values
+    try:
+        return [float(value)]
+    except (TypeError, ValueError):
+        return []
+
+
 def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
     max_response_length = batch.batch["responses"].size(-1)
     max_prompt_length = batch.batch["attention_mask"].size(-1) - max_response_length
@@ -62,7 +80,10 @@ def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
     # video_nframes / video_fps from multi_modal_data (non-tensor)
     mm_data = batch.non_tensor_batch.get("multi_modal_data", [])
     for field in ("video_nframes", "video_fps"):
-        vals = [d.get(field) for d in mm_data if isinstance(d, dict) and d.get(field) is not None]
+        vals = []
+        for d in mm_data:
+            if isinstance(d, dict):
+                vals.extend(_flatten_numeric_values(d.get(field)))
         if vals:
             arr = np.array(vals, dtype=np.float64)
             metrics[f"{field}/mean"] = float(arr.mean())
