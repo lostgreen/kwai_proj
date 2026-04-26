@@ -21,6 +21,7 @@ source "${SCRIPT_DIR}/multi_task_common.sh"
 IOU_MIN="${IOU_MIN:-0.1}"
 IOU_MAX="${IOU_MAX:-0.4}"
 TAG="${TAG:-iou0p1_0p4}"
+TIMELENS_MAX_SAMPLES="${TIMELENS_MAX_SAMPLES:-0}"
 RUN_FRAME_EXTRACTION="${RUN_FRAME_EXTRACTION:-true}"
 RUN_CHECK="${RUN_CHECK:-true}"
 CHECK_FRAME_JSONL="${CHECK_FRAME_JSONL:-${RUN_FRAME_EXTRACTION}}"
@@ -62,6 +63,7 @@ echo " TimeRFT source:   ${TIMERFT_SOURCE}"
 echo " TGBench source:   ${TVGBENCH_SOURCE}"
 echo " Val TG N:         ${VAL_TG_N_EFFECTIVE}"
 echo " IoU range:        [${IOU_MIN}, ${IOU_MAX}]"
+echo " TimeLens cap:     ${TIMELENS_MAX_SAMPLES} (0 = keep all)"
 echo " Output dir:       ${TG_REFRESH_DIR}"
 echo " Frames:           ${RUN_FRAME_EXTRACTION}"
 echo " Check:            ${RUN_CHECK}"
@@ -102,7 +104,8 @@ python3 "${SELECT_SCRIPT}" \
     --query-stats "${TIMELENS_QUERY_STATS}" \
     --output-jsonl "${TIMELENS_SELECTED}" \
     --min-iou "${IOU_MIN}" \
-    --max-iou "${IOU_MAX}"
+    --max-iou "${IOU_MAX}" \
+    --max-samples "${TIMELENS_MAX_SAMPLES}"
 
 echo ""
 echo "=== Step 2: rewrite TimeRFT train prompt format ==="
