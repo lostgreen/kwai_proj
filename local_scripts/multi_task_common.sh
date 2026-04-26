@@ -45,6 +45,12 @@ EL_VAL_SOURCE="${EL_VAL_SOURCE:-}"
 EL_TARGET="${EL_TARGET:-2000}"
 VAL_EL_N="${VAL_EL_N:-100}"
 
+# -- Temporal AoT 训练数据源 --
+AOT_TRAIN="${AOT_TRAIN:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/aot/train_nocot_reward_balanced.jsonl}"
+AOT_VAL_SOURCE="${AOT_VAL_SOURCE:-}"
+AOT_TARGET="${AOT_TARGET:-10000}"
+VAL_AOT_N="${VAL_AOT_N:-300}"
+
 # -- 启用的任务列表 (空格分隔) --
 TASKS="${TASKS:-tg mcq hier_seg}"
 

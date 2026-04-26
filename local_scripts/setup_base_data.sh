@@ -65,4 +65,7 @@ from local_scripts.data.mixer import main; main()
     --val-hier-n "${VAL_HIER_N:-150}" \
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
     ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
-    --val-el-n "${VAL_EL_N:-100}"
+    --val-el-n "${VAL_EL_N:-100}" \
+    ${AOT_TRAIN:+--aot-train "${AOT_TRAIN}"} \
+    ${AOT_VAL_SOURCE:+--aot-val-source "${AOT_VAL_SOURCE}"} \
+    --val-aot-n "${VAL_AOT_N:-300}"

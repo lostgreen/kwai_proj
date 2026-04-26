@@ -87,6 +87,9 @@ from local_scripts.data.mixer import main; main()
     ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
     ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
     --val-el-n "${VAL_EL_N}" \
+    ${AOT_TRAIN:+--aot-train "${AOT_TRAIN}"} \
+    ${AOT_VAL_SOURCE:+--aot-val-source "${AOT_VAL_SOURCE}"} \
+    --val-aot-n "${VAL_AOT_N}" \
 || { echo "[multi-task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
 
 # ============================================================
@@ -202,7 +205,11 @@ from local_scripts.data.mixer import main; main()
         ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
         ${EL_TARGET:+--el-target "${EL_TARGET}"} \
         ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
-        --val-el-n "${VAL_EL_N}"
+        --val-el-n "${VAL_EL_N}" \
+        ${AOT_TRAIN:+--aot-train "${AOT_TRAIN}"} \
+        ${AOT_TARGET:+--aot-target "${AOT_TARGET}"} \
+        ${AOT_VAL_SOURCE:+--aot-val-source "${AOT_VAL_SOURCE}"} \
+        --val-aot-n "${VAL_AOT_N}"
     echo "[multi-task] Data ready: train=$(wc -l < "${TRAIN_FILE}"), val=$(wc -l < "${TEST_FILE}")"
 fi
 

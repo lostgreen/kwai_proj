@@ -11,6 +11,7 @@ local_scripts/data/
 ├── mcq.py             # LLaVA Video MCQ
 ├── hier_seg.py        # Hierarchical Segmentation (L1/L2/L3_seg)
 ├── event_logic.py     # Event Logic Sort (event_logic_sort)
+├── aot.py             # Temporal AoT (seg_aot_*)
 └── mixer.py           # CLI 入口: setup / mix / check
 ```
 
@@ -22,6 +23,7 @@ local_scripts/data/
 | `mcq` | `llava_mcq` | 全量 | 按 `data_source` 分层 |
 | `hier_seg` | `L1`, `L2`, `L3_seg` | 按 problem_type 等比例到 target | 按 problem_type 等比例 |
 | `event_logic` | `event_logic_sort` | 按 problem_type 等比例到 target | 按 problem_type 分层 |
+| `aot` | `seg_aot_*` | 按 problem_type 等比例到 target | 按 problem_type 分层 |
 
 ## 使用方法
 
@@ -121,4 +123,6 @@ from local_scripts.data.mixer import main; main()
 | `HIER_TARGET` | `5000` | Hier Seg 训练采样目标 |
 | `EL_TRAIN` | (空) | Event Logic 训练数据源 |
 | `EL_TARGET` | `2000` | Event Logic 训练采样目标 |
+| `AOT_TRAIN` | `.../train_nocot_reward_balanced.jsonl` | Temporal AoT 训练数据源 |
+| `AOT_TARGET` | `10000` | Temporal AoT 训练采样目标 |
 | `FORCE` | `false` | 强制重新生成 |

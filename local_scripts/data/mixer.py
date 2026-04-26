@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-from . import event_logic, hier_seg, mcq, tg
+from . import aot, event_logic, hier_seg, mcq, tg
 from .common import print_summary, write_jsonl
 from .frame_policy import (
     apply_frame_policy,
@@ -52,12 +52,14 @@ _ALL_MODULES: dict[str, ModuleType] = {
     mcq.NAME: mcq,
     hier_seg.NAME: hier_seg,
     event_logic.NAME: event_logic,
+    aot.NAME: aot,
 }
 
 # ---- 需要 target 参数的任务 ----
 _TARGET_ARGS: dict[str, str] = {
     "hier_seg": "hier_target",
     "event_logic": "el_target",
+    "aot": "aot_target",
 }
 
 
@@ -187,10 +189,10 @@ def cmd_check(args: argparse.Namespace) -> None:
         else:
             print(f"[check] OK: {mod.NAME} val ({len(val_records)} samples)")
 
-        # 检查 base train (tg/mcq 在 base/ 下，hier_seg/event_logic 是外部路径)
+        # 检查 train: tg/mcq 在 base/ 下，hier_seg/event_logic/aot 是外部路径
         target_attr = _TARGET_ARGS.get(mod.NAME)
-        if not target_attr:
-            # base data (tg, mcq)
+        target = getattr(args, target_attr, 0) if target_attr else 0
+        if not target_attr or target > 0:
             records = mod.load_train(args.data_root, args)
             if not records:
                 print(f"[check] MISSING: {mod.NAME} train data")
