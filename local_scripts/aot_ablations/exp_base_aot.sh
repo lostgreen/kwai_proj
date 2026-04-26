@@ -13,6 +13,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_LOCAL="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+source "${REPO_ROOT_LOCAL}/local_scripts/ablation_common.sh"
 
 export EXP_NAME="${EXP_NAME:-aot_base_tg3k_llava0125_aot10k_mf256}"
 export TASKS="${TASKS:-tg mcq aot}"
@@ -23,7 +25,13 @@ export VAL_AOT_N="${VAL_AOT_N:-300}"
 export MAX_FRAMES="${MAX_FRAMES:-256}"
 export FRAME_SAMPLE_MAX_FRAMES="${FRAME_SAMPLE_MAX_FRAMES:-256}"
 export FRAME_SAMPLE_POLICY="${FRAME_SAMPLE_POLICY:-0:60:2.0,60:inf:1.0}"
-export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
 
-source "${SCRIPT_DIR}/../ablation_common.sh"
+export ADV_ESTIMATOR="${ADV_ESTIMATOR:-grpo}"
+export ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
+export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
+export MAX_PIXELS="${MAX_PIXELS:-65536}"
+export CLIP_RATIO_LOW="${CLIP_RATIO_LOW:-0.2}"
+export CLIP_RATIO_HIGH="${CLIP_RATIO_HIGH:-0.2}"
+export REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT_LOCAL}/verl/reward_function/mixed_proxy_reward.py:compute_score}"
+
 source "${SCRIPT_DIR}/../run_multi_task.sh"
