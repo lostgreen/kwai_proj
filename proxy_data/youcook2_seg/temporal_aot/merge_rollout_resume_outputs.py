@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import os
+import random
 import re
 import sys
 from collections import Counter, defaultdict
@@ -123,6 +124,17 @@ def content_identity(row: dict[str, Any]) -> tuple[str, str, str]:
         str(row.get("prompt") or ""),
         str(row.get("answer") or ""),
     )
+
+
+def _extract_domain(record: dict[str, Any], domain_key: str) -> str:
+    metadata = record.get("metadata")
+    value = None
+    if isinstance(metadata, dict):
+        value = metadata.get(domain_key)
+    if value is None:
+        value = record.get(domain_key)
+    text = str(value or "other").strip()
+    return text or "other"
 
 
 def merge_reports(report_files: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -334,6 +346,23 @@ def _save_input_duration_histogram(path: Path, records: list[dict[str, Any]], ti
     plt.close(fig)
 
 
+def _write_counter_csv(path: Path, key_name: str, counter: Counter[str]) -> None:
+    total = sum(counter.values())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=[key_name, "count", "ratio", "total"])
+        writer.writeheader()
+        for key, count in counter.most_common():
+            writer.writerow(
+                {
+                    key_name: key,
+                    "count": count,
+                    "ratio": _ratio(count, total),
+                    "total": total,
+                }
+            )
+
+
 def _save_stacked_report_chart(path: Path, summary: dict[str, Any]) -> None:
     labels = list(summary["by_problem_type"])
     if not labels:
@@ -417,6 +446,10 @@ def write_filtered_report_outputs(
     output_report_name: str,
     kept_records: list[dict[str, Any]] | None = None,
     output_kept_name: str | None = None,
+    balance_largest_fraction: float | None = None,
+    balance_domain_key: str = "domain_l1",
+    balance_seed: int = 42,
+    balanced_kept_name: str | None = None,
 ) -> dict[str, Any]:
     filtered_reports = filter_reports_by_mean_reward(
         reports,
@@ -438,6 +471,7 @@ def write_filtered_report_outputs(
     filtered_kept_output = None
     filtered_kept_summary = None
     filtered_kept_records: list[dict[str, Any]] = []
+    balanced_outputs = None
     if kept_records is not None and output_kept_name is not None:
         filtered_kept_records = filter_kept_records_by_reports(kept_records, filtered_reports)
         filtered_kept_path = output_dir / output_kept_name
@@ -454,6 +488,15 @@ def write_filtered_report_outputs(
             filtered_kept_records,
             "filtered sample input duration",
         )
+        if balance_largest_fraction is not None and balanced_kept_name is not None:
+            balanced_outputs = write_balanced_filtered_kept_outputs(
+                output_dir=output_dir,
+                records=filtered_kept_records,
+                largest_fraction=balance_largest_fraction,
+                domain_key=balance_domain_key,
+                seed=balance_seed,
+                output_name=balanced_kept_name,
+            )
     return {
         "filter": {
             "min_mean_reward": min_mean_reward,
@@ -468,6 +511,171 @@ def write_filtered_report_outputs(
         "kept_summary": filtered_kept_summary,
         "problem_type_pie": str(problem_type_pie_path),
         "input_duration_histogram": str(input_duration_histogram_path),
+        "balanced_outputs": balanced_outputs,
+    }
+
+
+def _record_stable_key(record: dict[str, Any]) -> str:
+    return json.dumps(build_raw_record_dedupe_key(record), ensure_ascii=False, sort_keys=False)
+
+
+def sample_records_by_domain_balance(
+    records: list[dict[str, Any]],
+    *,
+    target_count: int,
+    domain_key: str,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    if target_count <= 0:
+        return []
+    if target_count >= len(records):
+        selected = list(records)
+        rng.shuffle(selected)
+        return selected
+
+    by_domain: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        by_domain[_extract_domain(record, domain_key)].append(record)
+
+    pools: dict[str, list[dict[str, Any]]] = {}
+    for domain, domain_records in sorted(by_domain.items()):
+        pool = sorted(domain_records, key=_record_stable_key)
+        rng.shuffle(pool)
+        pools[domain] = pool
+
+    selected: list[dict[str, Any]] = []
+    domains = sorted(pools)
+    while len(selected) < target_count:
+        made_progress = False
+        for domain in domains:
+            pool = pools[domain]
+            if not pool:
+                continue
+            selected.append(pool.pop())
+            made_progress = True
+            if len(selected) >= target_count:
+                break
+        if not made_progress:
+            break
+
+    rng.shuffle(selected)
+    return selected
+
+
+def balance_largest_problem_type_by_domain(
+    records: list[dict[str, Any]],
+    *,
+    largest_fraction: float,
+    domain_key: str,
+    seed: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not 0.0 < largest_fraction <= 1.0:
+        raise ValueError(f"largest_fraction must be in (0, 1], got {largest_fraction!r}")
+    if not records:
+        return [], {
+            "largest_fraction": largest_fraction,
+            "domain_key": domain_key,
+            "original_total_count": 0,
+            "balanced_total_count": 0,
+        }
+
+    by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        by_type[str(record.get("problem_type") or "unknown")].append(record)
+
+    largest_problem_type, largest_records = max(
+        sorted(by_type.items()),
+        key=lambda item: len(item[1]),
+    )
+    target_largest_count = max(1, int(len(largest_records) * largest_fraction))
+    rng = random.Random(seed)
+    balanced_largest = sample_records_by_domain_balance(
+        largest_records,
+        target_count=target_largest_count,
+        domain_key=domain_key,
+        rng=rng,
+    )
+
+    balanced_records: list[dict[str, Any]] = []
+    for problem_type in sorted(by_type):
+        if problem_type == largest_problem_type:
+            balanced_records.extend(balanced_largest)
+        else:
+            balanced_records.extend(by_type[problem_type])
+    rng.shuffle(balanced_records)
+
+    original_by_type = Counter(str(record.get("problem_type") or "unknown") for record in records)
+    balanced_by_type = Counter(str(record.get("problem_type") or "unknown") for record in balanced_records)
+    balance_summary = {
+        "largest_fraction": largest_fraction,
+        "domain_key": domain_key,
+        "seed": seed,
+        "largest_problem_type": largest_problem_type,
+        "original_largest_count": len(largest_records),
+        "balanced_largest_count": len(balanced_largest),
+        "original_total_count": len(records),
+        "balanced_total_count": len(balanced_records),
+        "original_by_problem_type": dict(sorted(original_by_type.items())),
+        "balanced_by_problem_type": dict(sorted(balanced_by_type.items())),
+        "largest_original_by_domain": dict(sorted(Counter(_extract_domain(row, domain_key) for row in largest_records).items())),
+        "largest_balanced_by_domain": dict(sorted(Counter(_extract_domain(row, domain_key) for row in balanced_largest).items())),
+    }
+    return balanced_records, balance_summary
+
+
+def write_balanced_filtered_kept_outputs(
+    *,
+    output_dir: Path,
+    records: list[dict[str, Any]],
+    largest_fraction: float,
+    domain_key: str,
+    seed: int,
+    output_name: str,
+) -> dict[str, Any]:
+    balanced_records, balance_summary = balance_largest_problem_type_by_domain(
+        records,
+        largest_fraction=largest_fraction,
+        domain_key=domain_key,
+        seed=seed,
+    )
+    output_path = output_dir / output_name
+    stats_path = output_dir / "balanced_filtered_kept_stats.json"
+    problem_type_csv = output_dir / "balanced_filtered_kept_by_problem_type.csv"
+    domain_csv = output_dir / f"balanced_filtered_kept_by_{domain_key}.csv"
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    problem_type_pie = plot_dir / "balanced_filtered_problem_type_pie.png"
+    input_duration_histogram = plot_dir / "balanced_filtered_input_duration_histogram.png"
+
+    write_jsonl_rows(balanced_records, output_path)
+    summary = summarize_raw_records(balanced_records)
+    write_stats_output(
+        {
+            "stage": "balance-filtered-kept",
+            "output_kept": str(output_path),
+            "summary": summary,
+            "balance": balance_summary,
+        },
+        stats_path,
+    )
+    _write_counter_csv(problem_type_csv, "problem_type", Counter(str(row.get("problem_type") or "unknown") for row in balanced_records))
+    _write_counter_csv(domain_csv, domain_key, Counter(_extract_domain(row, domain_key) for row in balanced_records))
+    _save_problem_type_pie(problem_type_pie, balanced_records, "balanced filtered samples by problem_type")
+    _save_input_duration_histogram(
+        input_duration_histogram,
+        balanced_records,
+        "balanced filtered sample input duration",
+    )
+
+    return {
+        "output_kept": str(output_path),
+        "stats": str(stats_path),
+        "problem_type_csv": str(problem_type_csv),
+        "domain_csv": str(domain_csv),
+        "problem_type_pie": str(problem_type_pie),
+        "input_duration_histogram": str(input_duration_histogram),
+        "summary": summary,
+        "balance": balance_summary,
     }
 
 
@@ -499,6 +707,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--filtered-report", default="rollout_report.filtered.jsonl")
     parser.add_argument("--filtered-kept", default="rollout_output.filtered.jsonl")
+    parser.add_argument(
+        "--balance-largest-fraction",
+        type=float,
+        default=0.0,
+        help="If >0, downsample the largest problem_type in the filtered kept set by this fraction.",
+    )
+    parser.add_argument(
+        "--balance-domain-key",
+        default="domain_l1",
+        help="Metadata key used for balanced sampling within the largest problem_type.",
+    )
+    parser.add_argument("--balance-seed", type=int, default=42)
+    parser.add_argument("--balanced-kept", default="rollout_output.filtered.balanced.jsonl")
     return parser.parse_args()
 
 
@@ -539,6 +760,10 @@ def main() -> dict[str, Any]:
             output_report_name=args.filtered_report,
             kept_records=merged_kept,
             output_kept_name=args.filtered_kept,
+            balance_largest_fraction=args.balance_largest_fraction if args.balance_largest_fraction > 0 else None,
+            balance_domain_key=args.balance_domain_key,
+            balance_seed=args.balance_seed,
+            balanced_kept_name=args.balanced_kept,
         )
 
     summary = {
@@ -580,6 +805,16 @@ def main() -> dict[str, Any]:
             print("[merge-rollout] filtered raw kept by_problem_type:")
             for problem_type, count in kept_summary["by_problem_type"].items():
                 print(f"  {problem_type}: {count}")
+        if filtered_outputs.get("balanced_outputs") is not None:
+            balanced_outputs = filtered_outputs["balanced_outputs"]
+            balance = balanced_outputs["balance"]
+            print(
+                "[merge-rollout] balanced filtered raw kept "
+                f"largest={balance['largest_problem_type']} "
+                f"{balance['original_largest_count']} -> {balance['balanced_largest_count']} "
+                f"total={balance['balanced_total_count']}"
+            )
+            print(f"[merge-rollout] balanced output: {balanced_outputs['output_kept']}")
     return summary
 
 

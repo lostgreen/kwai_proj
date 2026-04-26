@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -1153,6 +1154,10 @@ def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path:
         output_report_name="rollout_report.reward_0.125_0.375.jsonl",
         kept_records=kept_records,
         output_kept_name="rollout_output.reward_0.125_0.375.jsonl",
+        balance_largest_fraction=0.5,
+        balance_domain_key="domain_l1",
+        balance_seed=19,
+        balanced_kept_name="rollout_output.reward_0.125_0.375.balanced.jsonl",
     )
 
     assert [path["path"].name for path in report_files] == ["_shard0_report.jsonl", "_shard0_resume2_report.jsonl"]
@@ -1172,7 +1177,69 @@ def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path:
     assert Path(filtered_outputs["plot"]).exists()
     assert Path(filtered_outputs["problem_type_pie"]).exists()
     assert Path(filtered_outputs["input_duration_histogram"]).exists()
+    assert filtered_outputs["balanced_outputs"]["summary"]["total_count"] == 1
+    assert Path(filtered_outputs["balanced_outputs"]["output_kept"]).exists()
     assert all(Path(path).exists() for path in plot_paths.values())
+
+
+def test_balanced_filtered_kept_outputs_halves_largest_type_by_domain(tmp_path: Path):
+    output_dir = tmp_path / "balanced"
+    largest_type = "seg_aot_action_t2v_binary"
+    smaller_type = "seg_aot_event_t2v_binary"
+    records = [
+        _raw_record(
+            prompt=f"large-{idx}",
+            answer="A",
+            problem_type=largest_type,
+            videos=[[f"large_{idx}.jpg"]],
+            domain_l1=domain,
+            domain_l2=domain,
+            duration=10.0 + idx,
+        )
+        for idx, domain in enumerate(["cooking", "home", "science", "cooking", "home", "cooking"])
+    ]
+    records.extend(
+        _raw_record(
+            prompt=f"small-{idx}",
+            answer="B",
+            problem_type=smaller_type,
+            videos=[[f"small_{idx}.jpg"]],
+            domain_l1=domain,
+            domain_l2=domain,
+            duration=20.0 + idx,
+        )
+        for idx, domain in enumerate(["home", "science"])
+    )
+
+    result = merge_rollout_resume_outputs.write_balanced_filtered_kept_outputs(
+        output_dir=output_dir,
+        records=records,
+        largest_fraction=0.5,
+        domain_key="domain_l1",
+        seed=13,
+        output_name="balanced.jsonl",
+    )
+
+    selected = hard_qa_pipeline.load_jsonl_rows([result["output_kept"]])
+    selected_by_type = Counter(row["problem_type"] for row in selected)
+    largest_domains = Counter(
+        row["metadata"]["domain_l1"]
+        for row in selected
+        if row["problem_type"] == largest_type
+    )
+
+    assert selected_by_type == {largest_type: 3, smaller_type: 2}
+    assert max(largest_domains.values()) - min(largest_domains.values()) <= 1
+    assert result["summary"]["total_count"] == 5
+    assert result["balance"]["largest_problem_type"] == largest_type
+    assert result["balance"]["original_largest_count"] == 6
+    assert result["balance"]["balanced_largest_count"] == 3
+    assert Path(result["output_kept"]).exists()
+    assert Path(result["stats"]).exists()
+    assert Path(result["problem_type_csv"]).exists()
+    assert Path(result["domain_csv"]).exists()
+    assert Path(result["problem_type_pie"]).exists()
+    assert Path(result["input_duration_histogram"]).exists()
 
 
 def test_rollout_filter_stage_dry_run_returns_planned_commands(tmp_path: Path):
