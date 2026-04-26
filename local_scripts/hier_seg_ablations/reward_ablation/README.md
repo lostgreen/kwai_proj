@@ -11,9 +11,10 @@
 - 模型: `Qwen3-VL-4B-Instruct`
 - 主线算法: `GRPO`
 - 保险对照: `R1_EMA` 使用 `EMA-GRPO`
-- `LR=1e-6`
-- `KL_COEF=0.001`
-- `ENTROPY_COEFF=0.0`
+- `LR=5e-7`
+- `KL_COEF=0.04`
+- `CHECKPOINT_ROOT=/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_lr5e-7_kl0p04_ablations`
+- `ENTROPY_COEFF=0.005`
 - `ROLLOUT_TEMPERATURE=1.0`
 - `MAX_FRAMES=256`
 - `MAX_PIXELS=65536`
@@ -73,8 +74,8 @@ HIER_TRAIN=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/
 EXPS="R1" \
 bash local_scripts/hier_seg_ablations/reward_ablation/run_reward_ablation.sh
 
-# 自定义学习率 / max pixels
-LR=2e-6 MAX_PIXELS=98304 EXPS="R4" \
+# 自定义 max pixels
+MAX_PIXELS=98304 EXPS="R4" \
 bash local_scripts/hier_seg_ablations/reward_ablation/run_reward_ablation.sh
 ```
 
@@ -83,4 +84,4 @@ bash local_scripts/hier_seg_ablations/reward_ablation/run_reward_ablation.sh
 - `R3` 已从当前 reward ablation 入口移除，避免和 `R1` 混淆。
 - 现在默认 `R1/R4` 先用纯 `GRPO`，方便先看 reward 本身会不会带来训练问题。
 - `R1_EMA` 只作为保险对照，不和 `R4` 组成主消融对。
-- 如果你之前跑过老版本 `reward_ablation_R1_f1iou` 之类的实验目录，这次默认 `EXP_NAME` 已更新，避免复用到旧的 `train.jsonl` 采样缓存。
+- 这轮默认写入新的 checkpoint root，避免自动续训旧的高 KL 目录。

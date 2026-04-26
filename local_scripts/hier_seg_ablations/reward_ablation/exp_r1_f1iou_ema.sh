@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_LOCAL="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+source "${REPO_ROOT_LOCAL}/local_scripts/ablation_common.sh"
 
 # ---- 实验特有配置 ----
 export EXP_NAME="${EXP_NAME:-reward_ablation_R1_f1iou_ema_grpo_full20k}"
@@ -32,9 +33,7 @@ fi
 # ---- 关键超参（EMA-GRPO + online filtering） ----
 export ADV_ESTIMATOR="${ADV_ESTIMATOR:-ema_grpo}"
 export ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
-export LR="${LR:-1e-6}"
-export KL_COEF="${KL_COEF:-0.001}"
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.0}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"
 export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
 export MAX_FRAMES="${MAX_FRAMES:-256}"
 export MAX_PIXELS="${MAX_PIXELS:-65536}"

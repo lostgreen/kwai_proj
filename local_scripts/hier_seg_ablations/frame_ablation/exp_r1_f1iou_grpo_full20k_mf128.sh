@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_LOCAL="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+source "${REPO_ROOT_LOCAL}/local_scripts/ablation_common.sh"
 
 PHASECROP_ROOT="${PHASECROP_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/train_phasecrop}"
 DEFAULT_HIER_TRAIN_PHASECROP="${PHASECROP_ROOT}/train_all_shared_frames.jsonl"
@@ -50,9 +51,7 @@ fi
 
 export ADV_ESTIMATOR="${ADV_ESTIMATOR:-grpo}"
 export ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
-export LR="${LR:-1e-6}"
-export KL_COEF="${KL_COEF:-0.001}"
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.0}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"
 export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
 export MAX_FRAMES="${MAX_FRAMES:-128}"
 export FRAME_SAMPLE_MAX_FRAMES="${FRAME_SAMPLE_MAX_FRAMES:-128}"

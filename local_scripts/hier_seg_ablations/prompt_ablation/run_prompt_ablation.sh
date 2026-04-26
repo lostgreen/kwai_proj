@@ -14,6 +14,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../ablation_common.sh"
 
 EXPS="${EXPS:-PA1 PA2}"
 MAX_STEPS="${MAX_STEPS:-60}"

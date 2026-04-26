@@ -75,6 +75,7 @@ python3 -m verl.trainer.main \
   algorithm.adv_estimator="${ADV_ESTIMATOR}" \
   algorithm.disable_kl="${DISABLE_KL}" \
   algorithm.use_kl_loss=true \
+  algorithm.kl_coef="${KL_COEF}" \
   algorithm.online_filtering="${ONLINE_FILTERING}" \
   algorithm.filter_low="${FILTER_LOW}" \
   algorithm.filter_high="${FILTER_HIGH}" \

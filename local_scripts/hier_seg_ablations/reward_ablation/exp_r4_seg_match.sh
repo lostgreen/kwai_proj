@@ -4,7 +4,7 @@
 #
 # 与 R1-GRPO 保持同一套数据规模和关键超参，只切换 hier reward:
 #   - ADV_ESTIMATOR=grpo
-#   - LR=1e-6, KL_COEF=0.001, ENTROPY=0
+#   - LR=5e-7, KL_COEF=0.04, ENTROPY=0.005
 #   - ROLLOUT_TEMPERATURE=1.0
 #   - MAX_FRAMES=256, MAX_PIXELS=65536
 #   - ONLINE_FILTERING=true
@@ -13,6 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_LOCAL="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+source "${REPO_ROOT_LOCAL}/local_scripts/ablation_common.sh"
 
 # ---- 实验特有配置 ----
 export EXP_NAME="${EXP_NAME:-reward_ablation_R4_seg_match_grpo_full20k}"
@@ -34,9 +35,7 @@ fi
 # ---- 关键超参（GRPO + online filtering） ----
 export ADV_ESTIMATOR="${ADV_ESTIMATOR:-grpo}"
 export ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
-export LR="${LR:-1e-6}"
-export KL_COEF="${KL_COEF:-0.001}"
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.0}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"
 export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
 export MAX_FRAMES="${MAX_FRAMES:-256}"
 export MAX_PIXELS="${MAX_PIXELS:-65536}"

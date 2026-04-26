@@ -9,9 +9,10 @@
 #
 # 三组实验默认都:
 #   - 使用 full hier-seg train (HIER_TARGET=0)
-#   - LR=1e-6, KL_COEF=0.001, ENTROPY=0, ROLLOUT_TEMPERATURE=1.0
+#   - LR=5e-7, KL_COEF=0.04, ENTROPY=0.005, ROLLOUT_TEMPERATURE=1.0
 #   - MAX_FRAMES=256, MAX_PIXELS=65536
 #   - 保留 online filtering=true
+#   - 写入新的 ablation checkpoint root，避免续训旧高 KL 目录
 # =============================================================
 set -euo pipefail
 

@@ -31,4 +31,5 @@ export ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
 
 # ---- 启动 (multi_task_common + 数据构建 + 训练) ----
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../ablation_common.sh"
 source "${SCRIPT_DIR}/../run_multi_task.sh"
