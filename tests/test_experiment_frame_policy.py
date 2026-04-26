@@ -110,6 +110,85 @@ def test_frame_policy_infers_cache_dir_from_existing_frame_lists(tmp_path: Path)
     assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["source"] == "inferred_2fps_cache"
 
 
+def test_frame_policy_keeps_inferred_multiclip_frame_spans(tmp_path: Path):
+    frame_dir = _frame_dir(tmp_path, "source_2fps", 600)
+    record = {
+        "prompt": "Sort the clips.",
+        "answer": "123",
+        "problem_type": "event_logic_sort",
+        "data_type": "video",
+        "videos": [
+            [str(frame_dir / f"{idx:06d}.jpg") for idx in range(101, 111)],
+            [str(frame_dir / f"{idx:06d}.jpg") for idx in range(201, 211)],
+            [str(frame_dir / f"{idx:06d}.jpg") for idx in range(301, 311)],
+        ],
+        "metadata": {
+            "video_fps_override": 2.0,
+            "shared_source_frames": {
+                "cache_dir": str(frame_dir),
+                "cache_fps": 2.0,
+                "target_view_fps": 2.0,
+                "spans": [
+                    {"id": "Action 1.1", "start_sec": 50.0, "end_sec": 55.0, "n_frames": 10},
+                    {"id": "Action 1.2", "start_sec": 100.0, "end_sec": 105.0, "n_frames": 10},
+                    {"id": "Action 1.3", "start_sec": 150.0, "end_sec": 155.0, "n_frames": 10},
+                ],
+            },
+        },
+    }
+
+    sampled = apply_frame_policy(
+        [record],
+        policy="0:60:2.0,60:inf:1.0",
+        max_frames=256,
+        cache_roots=[tmp_path],
+    )[0]
+
+    assert [len(video) for video in sampled["videos"]] == [10, 10, 10]
+    assert sampled["videos"][0][0] == str(frame_dir / "000101.jpg")
+    assert sampled["videos"][1][0] == str(frame_dir / "000201.jpg")
+    assert sampled["videos"][2][0] == str(frame_dir / "000301.jpg")
+    assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["input_frames"] == 10
+
+
+def test_frame_policy_keeps_aot_option_frame_spans(tmp_path: Path):
+    frame_dir = _frame_dir(tmp_path, "aot_source_2fps", 600)
+    record = {
+        "prompt": "<video>\n<video>\nWhich video matches the text?",
+        "answer": "A",
+        "problem_type": "seg_aot_action_t2v",
+        "data_type": "video",
+        "videos": [
+            [str(frame_dir / f"{idx:06d}.jpg") for idx in range(101, 121)],
+            [str(frame_dir / f"{idx:06d}.jpg") for idx in range(401, 421)],
+        ],
+        "metadata": {
+            "source": "aot_group_manifest_shared_frames",
+            "video_fps_override": 2.0,
+            "shared_source_frames": {
+                "cache_dir": str(frame_dir),
+                "cache_fps": 2.0,
+            },
+            "child_spans": [
+                {"id": 1, "start_sec": 50.0, "end_sec": 60.0},
+                {"id": 2, "start_sec": 200.0, "end_sec": 210.0},
+            ],
+        },
+    }
+
+    sampled = apply_frame_policy(
+        [record],
+        policy="0:60:2.0,60:inf:1.0",
+        max_frames=256,
+        cache_roots=[tmp_path],
+    )[0]
+
+    assert [len(video) for video in sampled["videos"]] == [20, 20]
+    assert sampled["videos"][0][0] == str(frame_dir / "000101.jpg")
+    assert sampled["videos"][1][0] == str(frame_dir / "000401.jpg")
+    assert sampled["metadata"]["experiment_frame_sampling"]["videos"][0]["input_frames"] == 20
+
+
 def test_frame_policy_rejects_existing_frame_lists_outside_trusted_cache_roots(tmp_path: Path):
     old_dir = _frame_dir(tmp_path, "old_1fps_cache", 120)
     trusted_dir = tmp_path / "base_cache_2fps"

@@ -420,6 +420,41 @@ def _cache_dir_from_frame_list(frames: list[str], context: FramePolicyContext) -
     return None, "frame list has no absolute frame path"
 
 
+def _zero_based_index_from_frame_path(frame_path: str | Path, frame_dir_info: FrameDirInfo) -> int | None:
+    path = _resolve_path(frame_path)
+    if path.parent != frame_dir_info.path:
+        return None
+    name = path.name
+    if frame_dir_info.prefix and not name.startswith(frame_dir_info.prefix):
+        return None
+    if frame_dir_info.suffix and not name.endswith(frame_dir_info.suffix):
+        return None
+    start = len(frame_dir_info.prefix)
+    end = len(name) - len(frame_dir_info.suffix) if frame_dir_info.suffix else len(name)
+    index_text = name[start:end]
+    if not index_text.isdigit():
+        return None
+    zero_based = int(index_text) - frame_dir_info.first_index
+    if zero_based < 0 or zero_based >= frame_dir_info.n_frames:
+        return None
+    return zero_based
+
+
+def _frame_indices_from_frame_list(
+    frames: list[str],
+    frame_dir_info: FrameDirInfo,
+) -> tuple[list[int] | None, str]:
+    indices: list[int] = []
+    for frame in frames:
+        index = _zero_based_index_from_frame_path(frame, frame_dir_info)
+        if index is None:
+            return None, f"unable to map frame path into cache indices: {frame}"
+        indices.append(index)
+    if not indices:
+        return None, "frame list is empty"
+    return indices, ""
+
+
 def _inferred_cache_sources_from_frame_list(
     record: dict[str, Any],
     context: FramePolicyContext,
@@ -440,14 +475,16 @@ def _inferred_cache_sources_from_frame_list(
         frame_dir_info, reason = _frame_dir_info_from_dir(cache_dir, context)
         if frame_dir_info is None:
             return None, reason
+        indices, reason = _frame_indices_from_frame_list(list(frames), frame_dir_info)
+        if indices is None:
+            return None, reason
         base_fps = 2.0
-        indices = list(range(frame_dir_info.n_frames))
         frame_videos.append(
             FrameVideoSource(
                 frame_dir=frame_dir_info,
                 source_indices=indices,
                 base_fps=base_fps,
-                duration_sec=_duration_from_record(record, len(indices), base_fps),
+                duration_sec=len(indices) / base_fps,
                 source="inferred_2fps_cache",
             )
         )
