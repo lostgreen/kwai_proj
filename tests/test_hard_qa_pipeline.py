@@ -1081,6 +1081,15 @@ def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path:
         domain_l2="science",
         duration=6.0,
     )
+    filtered_kept = _raw_record(
+        prompt="third",
+        answer="C",
+        problem_type="seg_aot_event_dir_binary",
+        videos=[["c0.jpg", "c1.jpg"]],
+        domain_l1="knowledge",
+        domain_l2="science",
+        duration=7.0,
+    )
 
     _write_jsonl(
         rollout_dir / "_shard0_report.jsonl",
@@ -1113,12 +1122,20 @@ def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path:
                 rewards=[1.0, 0.0],
                 index=0,
                 keep=True,
+            ),
+            _rollout_report(
+                prompt="third",
+                answer="C",
+                problem_type="seg_aot_event_dir_binary",
+                rewards=[1.0, 0.0, 0.0, 0.0],
+                index=2,
+                keep=True,
             )
         ],
     )
     _write_jsonl(rollout_dir / "_shard0_report_global.jsonl", [{"should": "be ignored"}])
     _write_jsonl(rollout_dir / "_shard0_kept.jsonl", [base_kept])
-    _write_jsonl(rollout_dir / "_shard0_resume2_kept.jsonl", [base_kept, resume_kept])
+    _write_jsonl(rollout_dir / "_shard0_resume2_kept.jsonl", [base_kept, resume_kept, filtered_kept])
 
     report_files = merge_rollout_resume_outputs.discover_files(rollout_dir, merge_rollout_resume_outputs.REPORT_RE)
     kept_files = merge_rollout_resume_outputs.discover_files(rollout_dir, merge_rollout_resume_outputs.KEPT_RE)
@@ -1126,14 +1143,35 @@ def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path:
     kept_records, kept_merge_summary = merge_rollout_resume_outputs.merge_kept_records(kept_files)
     report_summary = merge_rollout_resume_outputs.summarize_reports(reports, success_threshold=1.0)
     plot_paths = merge_rollout_resume_outputs.write_plots(output_dir, reports, report_summary, kept_records)
+    filtered_outputs = merge_rollout_resume_outputs.write_filtered_report_outputs(
+        output_dir=output_dir,
+        reports=reports,
+        success_threshold=1.0,
+        min_mean_reward=0.125,
+        max_mean_reward=0.375,
+        kept_only=True,
+        output_report_name="rollout_report.reward_0.125_0.375.jsonl",
+        kept_records=kept_records,
+        output_kept_name="rollout_output.reward_0.125_0.375.jsonl",
+    )
 
     assert [path["path"].name for path in report_files] == ["_shard0_report.jsonl", "_shard0_resume2_report.jsonl"]
-    assert report_merge_summary["report_attempt_count"] == 3
-    assert report_merge_summary["report_unique_count"] == 2
-    assert kept_merge_summary["kept_input_record_count"] == 3
-    assert kept_merge_summary["kept_unique_record_count"] == 2
-    assert report_summary["report_kept"] == 2
-    assert report_summary["by_problem_type"]["seg_aot_event_dir_binary"]["kept"] == 1
+    assert report_merge_summary["report_attempt_count"] == 4
+    assert report_merge_summary["report_unique_count"] == 3
+    assert kept_merge_summary["kept_input_record_count"] == 4
+    assert kept_merge_summary["kept_unique_record_count"] == 3
+    assert report_summary["report_kept"] == 3
+    assert report_summary["by_problem_type"]["seg_aot_event_dir_binary"]["kept"] == 2
+    assert filtered_outputs["summary"]["report_total"] == 1
+    assert filtered_outputs["summary"]["by_problem_type"]["seg_aot_event_dir_binary"]["total"] == 1
+    assert filtered_outputs["kept_summary"]["total_count"] == 1
+    assert filtered_outputs["kept_summary"]["by_problem_type"]["seg_aot_event_dir_binary"] == 1
+    assert Path(filtered_outputs["output_report"]).exists()
+    assert Path(filtered_outputs["output_kept"]).exists()
+    assert Path(filtered_outputs["csv"]).exists()
+    assert Path(filtered_outputs["plot"]).exists()
+    assert Path(filtered_outputs["problem_type_pie"]).exists()
+    assert Path(filtered_outputs["input_duration_histogram"]).exists()
     assert all(Path(path).exists() for path in plot_paths.values())
 
 

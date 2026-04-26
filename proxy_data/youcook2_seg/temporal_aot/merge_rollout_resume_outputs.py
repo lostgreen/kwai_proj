@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 from proxy_data.youcook2_seg.temporal_aot.filter_rollout_hard_cases import count_successes  # noqa: E402
 from proxy_data.youcook2_seg.temporal_aot.hard_qa_pipeline import (  # noqa: E402
     build_raw_record_dedupe_key,
+    extract_duration_sec,
     summarize_raw_records,
     write_jsonl_rows,
     write_stats_output,
@@ -114,6 +115,14 @@ def report_identity(row: dict[str, Any], shard: int) -> tuple[Any, ...]:
     if isinstance(index, int):
         return ("shard_index", shard, index)
     return ("row", shard, json.dumps(row, ensure_ascii=False, sort_keys=True))
+
+
+def content_identity(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("problem_type") or ""),
+        str(row.get("prompt") or ""),
+        str(row.get("answer") or ""),
+    )
 
 
 def merge_reports(report_files: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -211,6 +220,40 @@ def summarize_reports(reports: list[dict[str, Any]], success_threshold: float) -
     }
 
 
+def filter_reports_by_mean_reward(
+    reports: list[dict[str, Any]],
+    *,
+    min_mean_reward: float,
+    max_mean_reward: float,
+    kept_only: bool,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for row in reports:
+        if kept_only and row.get("keep") is not True:
+            continue
+        mean_reward = row.get("mean_reward")
+        if not isinstance(mean_reward, (int, float)):
+            continue
+        if min_mean_reward <= float(mean_reward) <= max_mean_reward:
+            filtered.append(row)
+    return filtered
+
+
+def filter_kept_records_by_reports(kept_records: list[dict[str, Any]], reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    wanted = {content_identity(row) for row in reports}
+    filtered: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for record in kept_records:
+        if content_identity(record) not in wanted:
+            continue
+        key = build_raw_record_dedupe_key(record)
+        if key in seen:
+            continue
+        seen.add(key)
+        filtered.append(record)
+    return filtered
+
+
 def write_report_csv(path: Path, summary: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -242,6 +285,51 @@ def _save_bar_chart(path: Path, title: str, labels: list[str], values: list[int]
     ax.set_ylabel(ylabel)
     ax.set_xticks(range(len(labels)), labels, rotation=35, ha="right")
     ax.bar_label(bars, padding=2, fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def _save_problem_type_pie(path: Path, records: list[dict[str, Any]], title: str) -> None:
+    counter = Counter(str(row.get("problem_type") or "unknown") for row in records)
+    if not counter:
+        path.unlink(missing_ok=True)
+        return
+    labels = [f"{problem_type}\n{count}" for problem_type, count in counter.most_common()]
+    values = [count for _, count in counter.most_common()]
+    fig, ax = plt.subplots(figsize=(7.6, 5.8))
+    _, _, autotexts = ax.pie(
+        values,
+        labels=labels,
+        autopct="%1.1f%%",
+        startangle=90,
+        counterclock=False,
+        wedgeprops={"edgecolor": "white"},
+        textprops={"fontsize": 9},
+    )
+    for autotext in autotexts:
+        autotext.set_color("white")
+        autotext.set_weight("bold")
+        autotext.set_fontsize(9)
+    ax.set_title(title)
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def _save_input_duration_histogram(path: Path, records: list[dict[str, Any]], title: str) -> None:
+    durations = [
+        duration
+        for duration in (extract_duration_sec(record) for record in records)
+        if duration is not None and duration > 0
+    ]
+    if not durations:
+        path.unlink(missing_ok=True)
+        return
+    bins = min(30, max(5, len(durations)))
+    fig, ax = plt.subplots(figsize=(7.6, 4.8))
+    ax.hist(durations, bins=bins, color="#0f766e", edgecolor="white")
+    ax.set_title(title)
+    ax.set_xlabel("input duration (sec)")
+    ax.set_ylabel("samples")
     fig.savefig(path)
     plt.close(fig)
 
@@ -318,6 +406,71 @@ def write_plots(output_dir: Path, reports: list[dict[str, Any]], report_summary:
     }
 
 
+def write_filtered_report_outputs(
+    *,
+    output_dir: Path,
+    reports: list[dict[str, Any]],
+    success_threshold: float,
+    min_mean_reward: float,
+    max_mean_reward: float,
+    kept_only: bool,
+    output_report_name: str,
+    kept_records: list[dict[str, Any]] | None = None,
+    output_kept_name: str | None = None,
+) -> dict[str, Any]:
+    filtered_reports = filter_reports_by_mean_reward(
+        reports,
+        min_mean_reward=min_mean_reward,
+        max_mean_reward=max_mean_reward,
+        kept_only=kept_only,
+    )
+    filtered_summary = summarize_reports(filtered_reports, success_threshold=success_threshold)
+    output_path = output_dir / output_report_name
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "filtered_report_by_problem_type.csv"
+    plot_path = plot_dir / "filtered_report_problem_type_distribution.png"
+    problem_type_pie_path = plot_dir / "filtered_problem_type_pie.png"
+    input_duration_histogram_path = plot_dir / "filtered_input_duration_histogram.png"
+    write_jsonl_rows(filtered_reports, output_path)
+    write_report_csv(csv_path, filtered_summary)
+    _save_stacked_report_chart(plot_path, filtered_summary)
+    filtered_kept_output = None
+    filtered_kept_summary = None
+    filtered_kept_records: list[dict[str, Any]] = []
+    if kept_records is not None and output_kept_name is not None:
+        filtered_kept_records = filter_kept_records_by_reports(kept_records, filtered_reports)
+        filtered_kept_path = output_dir / output_kept_name
+        write_jsonl_rows(filtered_kept_records, filtered_kept_path)
+        filtered_kept_output = str(filtered_kept_path)
+        filtered_kept_summary = summarize_raw_records(filtered_kept_records)
+        _save_problem_type_pie(
+            problem_type_pie_path,
+            filtered_kept_records,
+            "filtered samples by problem_type",
+        )
+        _save_input_duration_histogram(
+            input_duration_histogram_path,
+            filtered_kept_records,
+            "filtered sample input duration",
+        )
+    return {
+        "filter": {
+            "min_mean_reward": min_mean_reward,
+            "max_mean_reward": max_mean_reward,
+            "kept_only": kept_only,
+        },
+        "output_report": str(output_path),
+        "csv": str(csv_path),
+        "plot": str(plot_path),
+        "summary": filtered_summary,
+        "output_kept": filtered_kept_output,
+        "kept_summary": filtered_kept_summary,
+        "problem_type_pie": str(problem_type_pie_path),
+        "input_duration_histogram": str(input_duration_histogram_path),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Merge _shard*/resume offline rollout outputs and draw distribution charts.",
@@ -329,6 +482,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-kept", default="rollout_output.merged.jsonl")
     parser.add_argument("--stats-output", default="rollout_merge_stats.json")
     parser.add_argument("--success-threshold", type=float, default=1.0)
+    parser.add_argument(
+        "--filter-min-mean-reward",
+        type=float,
+        help="Optionally write a filtered report with mean_reward >= this value.",
+    )
+    parser.add_argument(
+        "--filter-max-mean-reward",
+        type=float,
+        help="Optionally write a filtered report with mean_reward <= this value.",
+    )
+    parser.add_argument(
+        "--filter-include-dropped",
+        action="store_true",
+        help="Include keep=False rows in the optional filtered report.",
+    )
+    parser.add_argument("--filtered-report", default="rollout_report.filtered.jsonl")
+    parser.add_argument("--filtered-kept", default="rollout_output.filtered.jsonl")
     return parser.parse_args()
 
 
@@ -355,6 +525,21 @@ def main() -> dict[str, Any]:
     write_jsonl_rows(merged_kept, output_kept)
     write_report_csv(output_dir / "rollout_report_by_problem_type.csv", report_summary)
     plot_paths = write_plots(output_dir, merged_reports, report_summary, merged_kept)
+    filtered_outputs = None
+    if args.filter_min_mean_reward is not None or args.filter_max_mean_reward is not None:
+        if args.filter_min_mean_reward is None or args.filter_max_mean_reward is None:
+            raise SystemExit("--filter-min-mean-reward and --filter-max-mean-reward must be provided together")
+        filtered_outputs = write_filtered_report_outputs(
+            output_dir=output_dir,
+            reports=merged_reports,
+            success_threshold=args.success_threshold,
+            min_mean_reward=args.filter_min_mean_reward,
+            max_mean_reward=args.filter_max_mean_reward,
+            kept_only=not args.filter_include_dropped,
+            output_report_name=args.filtered_report,
+            kept_records=merged_kept,
+            output_kept_name=args.filtered_kept,
+        )
 
     summary = {
         "stage": "merge-rollout-resume-outputs",
@@ -369,6 +554,7 @@ def main() -> dict[str, Any]:
         "report_summary": report_summary,
         "merged_kept_summary": raw_summary,
         "plots": plot_paths,
+        "filtered_outputs": filtered_outputs,
     }
     write_stats_output(summary, stats_output)
 
@@ -378,6 +564,22 @@ def main() -> dict[str, Any]:
     print(f"[merge-rollout] output kept: {output_kept}")
     print(f"[merge-rollout] stats: {stats_output}")
     print(f"[merge-rollout] plots: {output_dir / 'plots'}")
+    if filtered_outputs is not None:
+        filtered_summary = filtered_outputs["summary"]
+        print(
+            "[merge-rollout] filtered "
+            f"mean_reward=[{args.filter_min_mean_reward}, {args.filter_max_mean_reward}] "
+            f"kept_only={not args.filter_include_dropped}: {filtered_summary['report_total']} rows"
+        )
+        print("[merge-rollout] filtered by_problem_type:")
+        for problem_type, stats in filtered_summary["by_problem_type"].items():
+            print(f"  {problem_type}: {stats['total']}")
+        if filtered_outputs.get("kept_summary") is not None:
+            kept_summary = filtered_outputs["kept_summary"]
+            print(f"[merge-rollout] filtered raw kept records: {kept_summary['total_count']}")
+            print("[merge-rollout] filtered raw kept by_problem_type:")
+            for problem_type, count in kept_summary["by_problem_type"].items():
+                print(f"  {problem_type}: {count}")
     return summary
 
 
