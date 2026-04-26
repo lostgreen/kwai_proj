@@ -61,6 +61,11 @@ from shared.seg_source import (  # noqa: E402
     get_l2_event_atomic_path,
     get_l3_action_atomic_path,
 )
+from shared.frame_cache import (  # noqa: E402
+    build_source_cache_dir,
+    load_cached_frames,
+    select_frame_paths_for_span,
+)
 from vlm_task_prompts import (  # noqa: E402
     TASK_ARCHITECT_SYSTEM_PROMPT,
     get_predict_next_user_prompt,
@@ -475,6 +480,108 @@ def _same_video_instruction_distractors(
     return candidates[:target_count]
 
 
+def _source_video_path(ann: dict) -> str:
+    return str(ann.get("source_video_path") or ann.get("video_path") or "").strip()
+
+
+def _select_shared_frame_lists(
+    items: list[dict],
+    ann: dict,
+    frame_cache_root: str,
+    cache_fps: float,
+    frame_view_fps: float,
+) -> tuple[list[list[str]], dict]:
+    source_video_path = _source_video_path(ann)
+    if not source_video_path:
+        raise KeyError(f"missing source_video_path for clip_key={ann.get('clip_key')}")
+
+    cache_dir = build_source_cache_dir(
+        frames_root=frame_cache_root,
+        clip_key=str(ann.get("clip_key") or ""),
+        source_video_path=source_video_path,
+        fps=cache_fps,
+    )
+    cached_frames = load_cached_frames(cache_dir)
+    if not cached_frames:
+        raise FileNotFoundError(f"empty shared source frame cache: {cache_dir}")
+
+    frame_lists: list[list[str]] = []
+    spans: list[dict] = []
+    target_fps = frame_view_fps if frame_view_fps > 0 else cache_fps
+    for item in items:
+        start_sec = float(item["start"])
+        end_sec = float(item["end"])
+        selected = select_frame_paths_for_span(
+            frame_paths=cached_frames,
+            source_fps=cache_fps,
+            start_sec=start_sec,
+            end_sec=end_sec,
+            target_fps=target_fps,
+        )
+        if not selected:
+            raise RuntimeError(
+                f"no shared frames selected for {item.get('id')} span=[{start_sec}, {end_sec})"
+            )
+        frame_lists.append([str(path.resolve()) for path in selected])
+        spans.append({
+            "id": item.get("id"),
+            "text": item.get("text"),
+            "start_sec": start_sec,
+            "end_sec": end_sec,
+            "n_frames": len(selected),
+        })
+
+    return frame_lists, {
+        "cache_dir": str(cache_dir.resolve()),
+        "cache_fps": cache_fps,
+        "target_view_fps": target_fps,
+        "source_video_path": str(Path(source_video_path).resolve(strict=False)),
+        "spans": spans,
+        "n_frames": sum(len(frames) for frames in frame_lists),
+    }
+
+
+def _flatten_frame_lists(frame_lists: list[list[str]]) -> list[str]:
+    return [frame for frames in frame_lists for frame in frames]
+
+
+def _build_fill_blank_step_prompt(
+    total_steps: int,
+    missing_pos: int,
+    option_texts: list[str],
+    cot: bool = False,
+) -> str:
+    labels = [chr(ord("A") + i) for i in range(len(option_texts))]
+    step_lines = [
+        "Watch the following process carefully. The sequence has a [MISSING] step.",
+        "Context Sequence:",
+    ]
+    for i in range(total_steps):
+        if i == missing_pos:
+            step_lines.append(f"Step {i + 1}: [MISSING]")
+        else:
+            step_lines.append(f"Step {i + 1}: <video>")
+    step_lines += [
+        "",
+        "Based on the chronological visual content, "
+        "pick the correct textual option to fill in the [MISSING] step.",
+        "Options:",
+    ]
+    for label, opt in zip(labels, option_texts):
+        step_lines.append(f"{label}. {opt}")
+    step_lines.append("")
+    if cot:
+        step_lines.append(
+            f"Think step by step inside <think> </think> tags, then provide your "
+            f"final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags."
+        )
+    else:
+        step_lines.append(
+            f"Provide your answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags."
+        )
+    return "\n".join(step_lines)
+
+
 # =====================================================================
 # Video resolution probing & concatenation with inline black frame
 # =====================================================================
@@ -761,6 +868,9 @@ def _assemble_predict_next(
     complete_only: bool,
     rng: random.Random,
     cot: bool = False,
+    frame_cache_root: str = "",
+    cache_fps: float = 2.0,
+    frame_view_fps: float = 2.0,
 ) -> list[dict]:
     """Assemble Predict-Next MCQ record from validated LLM output."""
     context_ids = parsed.get("context_ids", [])
@@ -794,7 +904,7 @@ def _assemble_predict_next(
         if item is None:
             log.warning("[predict_next] %s: resolve_item returned None for %s", clip_key, cid)
             return []
-        if complete_only and not os.path.exists(item["clip_path"]):
+        if complete_only and not frame_cache_root and not os.path.exists(item["clip_path"]):
             log.warning("[predict_next] %s: clip missing: %s", clip_key, item["clip_path"])
             return []
         context_items.append(item)
@@ -826,22 +936,53 @@ def _assemble_predict_next(
     correct_letter = chr(ord("A") + correct_idx)
     option_texts = [text for text, _ in options]
 
-    # Concatenate context clips into single video; fall back to multi-video on failure
-    context_paths = [item["clip_path"] for item in context_items]
-    ids_tag = "_".join(cid.replace(" ", "").replace(".", "_") for cid in context_ids)
-    concat_dir = os.path.join(clip_dir, "concat")
-    concat_path = os.path.join(concat_dir, f"{clip_key}_pn_{ids_tag}.mp4")
-
-    ok = _concat_video_files(context_paths, concat_path)
-    if ok:
-        videos = [concat_path]
-        # Single video: prompt shows num_ctx steps in one video
+    shared_frames_meta = None
+    if frame_cache_root:
+        try:
+            context_frame_lists, shared_frames_meta = _select_shared_frame_lists(
+                context_items,
+                ann,
+                frame_cache_root,
+                cache_fps,
+                frame_view_fps,
+            )
+        except Exception as exc:
+            log.warning("[predict_next] %s: shared frame list failed: %s", clip_key, exc)
+            return []
+        videos = [_flatten_frame_lists(context_frame_lists)]
         prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
     else:
-        # Fallback: multi-video (original behavior)
-        log.warning("predict_next concat failed for %s, using multi-video fallback", clip_key)
-        videos = context_paths
-        prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
+        # Concatenate context clips into single video; fall back to multi-video on failure
+        context_paths = [item["clip_path"] for item in context_items]
+        ids_tag = "_".join(cid.replace(" ", "").replace(".", "_") for cid in context_ids)
+        concat_dir = os.path.join(clip_dir, "concat")
+        concat_path = os.path.join(concat_dir, f"{clip_key}_pn_{ids_tag}.mp4")
+
+        ok = _concat_video_files(context_paths, concat_path)
+        if ok:
+            videos = [concat_path]
+            prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
+        else:
+            log.warning("predict_next concat failed for %s, using multi-video fallback", clip_key)
+            videos = context_paths
+            prompt = get_add_prompt_generic(len(context_items), option_texts, cot=cot)
+
+    metadata = {
+        "clip_key": ann.get("clip_key", ""),
+        "granularity": granularity,
+        "context_ids": context_ids,
+        "correct_next_id": correct_next_id,
+        "correct_text": correct_text,
+        "distractors": distractors,
+        "same_video_instruction_distractors": same_video_distractors,
+        "domain_l1": ann.get("domain_l1", "other"),
+        "domain_l2": ann.get("domain_l2", "other"),
+        "source": "vlm_task_architect",
+    }
+    if shared_frames_meta is not None:
+        metadata["source_video_path"] = shared_frames_meta["source_video_path"]
+        metadata["video_fps_override"] = shared_frames_meta["target_view_fps"]
+        metadata["shared_source_frames"] = shared_frames_meta
 
     return [{
         "messages": [{"role": "user", "content": prompt}],
@@ -850,18 +991,7 @@ def _assemble_predict_next(
         "videos": videos,
         "data_type": "video",
         "problem_type": "event_logic_predict_next",
-        "metadata": {
-            "clip_key": ann.get("clip_key", ""),
-            "granularity": granularity,
-            "context_ids": context_ids,
-            "correct_next_id": correct_next_id,
-            "correct_text": correct_text,
-            "distractors": distractors,
-            "same_video_instruction_distractors": same_video_distractors,
-            "domain_l1": ann.get("domain_l1", "other"),
-            "domain_l2": ann.get("domain_l2", "other"),
-            "source": "vlm_task_architect",
-        },
+        "metadata": metadata,
     }]
 
 
@@ -872,6 +1002,9 @@ def _assemble_fill_blank(
     complete_only: bool,
     rng: random.Random,
     cot: bool = False,
+    frame_cache_root: str = "",
+    cache_fps: float = 2.0,
+    frame_view_fps: float = 2.0,
 ) -> list[dict]:
     """Assemble Fill-in-the-Blank MCQ record from validated LLM output."""
     before_ids = parsed.get("before_ids", [])
@@ -912,7 +1045,7 @@ def _assemble_fill_blank(
         log.warning("[fill_blank] %s: resolve_item returned None for missing_id %s", clip_key, missing_id)
         return []
 
-    if complete_only:
+    if complete_only and not frame_cache_root:
         all_items = before_items + after_items
         missing_paths = [item["clip_path"] for item in all_items if not os.path.exists(item["clip_path"])]  # type: ignore[union-attr]
         if missing_paths:
@@ -944,47 +1077,56 @@ def _assemble_fill_blank(
     total_steps = len(before_ids) + 1 + len(after_ids)
     missing_pos = len(before_ids)  # 0-indexed
 
-    prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
-
-    # Concatenate: before clips → inline black frame → after clips → single video
     before_paths = [item["clip_path"] for item in before_items]  # type: ignore[union-attr]
     after_paths = [item["clip_path"] for item in after_items]  # type: ignore[union-attr]
-
-    # Output path: {clip_dir}/concat/{clip_key}_fill_{missing_id_safe}.mp4
-    missing_id_safe = missing_id.replace(" ", "_").replace(".", "_")
-    concat_dir = os.path.join(clip_dir, "concat")
-    concat_path = os.path.join(concat_dir, f"{clip_key}_{missing_id_safe}.mp4")
-
-    ok = _concat_clips_with_black(before_paths, after_paths, concat_path)
-    if ok:
-        videos = [concat_path]
+    shared_frames_meta = None
+    if frame_cache_root:
+        try:
+            context_frame_lists, shared_frames_meta = _select_shared_frame_lists(
+                before_items + after_items,  # type: ignore[list-item]
+                ann,
+                frame_cache_root,
+                cache_fps,
+                frame_view_fps,
+            )
+        except Exception as exc:
+            log.warning("[fill_blank] %s: shared frame list failed: %s", clip_key, exc)
+            return []
+        videos = context_frame_lists
+        prompt = _build_fill_blank_step_prompt(total_steps, missing_pos, option_texts, cot=cot)
     else:
-        # Fallback: multi-video without black frame
-        log.warning("fill_blank concat failed for %s, using multi-video fallback", clip_key)
-        videos = before_paths + after_paths
-        # Rebuild prompt with explicit step-list format for multi-video
-        labels = [chr(ord("A") + i) for i in range(len(option_texts))]
-        step_lines = []
-        step_lines.append("Watch the following process carefully. The sequence has a [MISSING] step.")
-        step_lines.append("Context Sequence:")
-        video_idx = 0
-        for i in range(total_steps):
-            if i == missing_pos:
-                step_lines.append(f"Step {i + 1}: [MISSING]")
-            else:
-                step_lines.append(f"Step {i + 1}: <video>")
-                video_idx += 1
-        step_lines += ["", "Based on the chronological visual content, "
-                       "pick the correct textual option to fill in the [MISSING] step.", "Options:"]
-        for label, opt in zip(labels, option_texts):
-            step_lines.append(f"{label}. {opt}")
-        step_lines.append("")
-        if cot:
-            step_lines.append(f"Think step by step inside <think> </think> tags, then provide your "
-                              f"final answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.")
+        prompt = get_replace_prompt_generic(total_steps, missing_pos, option_texts, cot=cot)
+
+        # Concatenate: before clips → inline black frame → after clips → single video
+        missing_id_safe = missing_id.replace(" ", "_").replace(".", "_")
+        concat_dir = os.path.join(clip_dir, "concat")
+        concat_path = os.path.join(concat_dir, f"{clip_key}_{missing_id_safe}.mp4")
+
+        ok = _concat_clips_with_black(before_paths, after_paths, concat_path)
+        if ok:
+            videos = [concat_path]
         else:
-            step_lines.append(f"Provide your answer (a single letter from {', '.join(labels)}) inside <answer> </answer> tags.")
-        prompt = "\n".join(step_lines)
+            log.warning("fill_blank concat failed for %s, using multi-video fallback", clip_key)
+            videos = before_paths + after_paths
+            prompt = _build_fill_blank_step_prompt(total_steps, missing_pos, option_texts, cot=cot)
+
+    metadata = {
+        "clip_key": ann.get("clip_key", ""),
+        "granularity": granularity,
+        "before_ids": before_ids,
+        "missing_id": missing_id,
+        "after_ids": after_ids,
+        "correct_text": correct_text,
+        "distractors": distractors,
+        "same_video_instruction_distractors": same_video_distractors,
+        "domain_l1": ann.get("domain_l1", "other"),
+        "domain_l2": ann.get("domain_l2", "other"),
+        "source": "vlm_task_architect",
+    }
+    if shared_frames_meta is not None:
+        metadata["source_video_path"] = shared_frames_meta["source_video_path"]
+        metadata["video_fps_override"] = shared_frames_meta["target_view_fps"]
+        metadata["shared_source_frames"] = shared_frames_meta
 
     return [{
         "messages": [{"role": "user", "content": prompt}],
@@ -993,19 +1135,7 @@ def _assemble_fill_blank(
         "videos": videos,
         "data_type": "video",
         "problem_type": "event_logic_fill_blank",
-        "metadata": {
-            "clip_key": ann.get("clip_key", ""),
-            "granularity": granularity,
-            "before_ids": before_ids,
-            "missing_id": missing_id,
-            "after_ids": after_ids,
-            "correct_text": correct_text,
-            "distractors": distractors,
-            "same_video_instruction_distractors": same_video_distractors,
-            "domain_l1": ann.get("domain_l1", "other"),
-            "domain_l2": ann.get("domain_l2", "other"),
-            "source": "vlm_task_architect",
-        },
+        "metadata": metadata,
     }]
 
 
@@ -1016,6 +1146,9 @@ def _assemble_sort(
     complete_only: bool,
     rng: random.Random,
     cot: bool = False,
+    frame_cache_root: str = "",
+    cache_fps: float = 2.0,
+    frame_view_fps: float = 2.0,
 ) -> list[dict]:
     """Assemble VLM-curated Sort record from validated LLM output."""
     ordered_ids = parsed.get("ordered_ids", [])
@@ -1033,7 +1166,7 @@ def _assemble_sort(
         item = resolve_item(oid, ann, clip_dir)
         if item is None:
             return []
-        if complete_only and not os.path.exists(item["clip_path"]):
+        if complete_only and not frame_cache_root and not os.path.exists(item["clip_path"]):
             return []
         items.append(item)
 
@@ -1056,7 +1189,37 @@ def _assemble_sort(
 
     shuffled_items = [items[i] for i in shuf_idx]
     prompt = get_sort_prompt_generic(n, cot=cot)
-    videos = [item["clip_path"] for item in shuffled_items]
+    shared_frames_meta = None
+    if frame_cache_root:
+        try:
+            frame_lists, shared_frames_meta = _select_shared_frame_lists(
+                items,
+                ann,
+                frame_cache_root,
+                cache_fps,
+                frame_view_fps,
+            )
+        except Exception as exc:
+            log.warning("[sort] %s: shared frame list failed: %s", ann.get("clip_key", "?"), exc)
+            return []
+        videos = [frame_lists[i] for i in shuf_idx]
+    else:
+        videos = [item["clip_path"] for item in shuffled_items]
+
+    metadata = {
+        "clip_key": ann.get("clip_key", ""),
+        "granularity": granularity,
+        "ordered_ids": ordered_ids,
+        "shuffled_indices": shuf_idx,
+        "instructions": [item["text"] for item in shuffled_items],
+        "domain_l1": ann.get("domain_l1", "other"),
+        "domain_l2": ann.get("domain_l2", "other"),
+        "source": "vlm_task_architect",
+    }
+    if shared_frames_meta is not None:
+        metadata["source_video_path"] = shared_frames_meta["source_video_path"]
+        metadata["video_fps_override"] = shared_frames_meta["target_view_fps"]
+        metadata["shared_source_frames"] = shared_frames_meta
 
     return [{
         "messages": [{"role": "user", "content": prompt}],
@@ -1065,16 +1228,7 @@ def _assemble_sort(
         "videos": videos,
         "data_type": "video",
         "problem_type": "event_logic_sort",
-        "metadata": {
-            "clip_key": ann.get("clip_key", ""),
-            "granularity": granularity,
-            "ordered_ids": ordered_ids,
-            "shuffled_indices": shuf_idx,
-            "instructions": [item["text"] for item in shuffled_items],
-            "domain_l1": ann.get("domain_l1", "other"),
-            "domain_l2": ann.get("domain_l2", "other"),
-            "source": "vlm_task_architect",
-        },
+        "metadata": metadata,
     }]
 
 
@@ -1108,6 +1262,9 @@ def process_one_annotation(
     rng_seed: int,
     collect_only: bool = False,
     cot: bool = False,
+    frame_cache_root: str = "",
+    cache_fps: float = 2.0,
+    frame_view_fps: float = 2.0,
 ) -> dict:
     """Process one annotation: build script, call LLM for each task, assemble records.
 
@@ -1190,7 +1347,17 @@ def process_one_annotation(
                 result["needed_clips"].extend(collector(q, ann, clip_dir))
             else:
                 assembler = _TASK_ASSEMBLERS[task_name]
-                records = assembler(q, ann, clip_dir, complete_only, rng, cot=cot)
+                records = assembler(
+                    q,
+                    ann,
+                    clip_dir,
+                    complete_only,
+                    rng,
+                    cot=cot,
+                    frame_cache_root=frame_cache_root,
+                    cache_fps=cache_fps,
+                    frame_view_fps=frame_view_fps,
+                )
                 result[task_name].extend(records)
 
     if not collect_only:
@@ -1343,6 +1510,13 @@ def main():
     parser.add_argument("--prompt-style", choices=["direct", "cot"], default="direct",
                         help="Prompt format: 'direct' omits <think> tags (default), "
                              "'cot' includes chain-of-thought reasoning instructions.")
+    parser.add_argument("--frame-cache-root", default="",
+                        help="Shared source-video frame cache root. When set, Event Logic "
+                             "records use frame-list videos instead of concatenated mp4 clips.")
+    parser.add_argument("--cache-fps", type=float, default=2.0,
+                        help="Physical fps used by --frame-cache-root")
+    parser.add_argument("--frame-view-fps", type=float, default=2.0,
+                        help="Logical fps selected from the shared frame cache")
     parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
@@ -1438,6 +1612,9 @@ def main():
                 rng.randint(0, 2**31),
                 False,   # collect_only
                 use_cot,
+                args.frame_cache_root,
+                args.cache_fps,
+                args.frame_view_fps,
             ): ann.get("clip_key", "")
             for ann in annotations
         }
@@ -1524,6 +1701,9 @@ def main():
             r.get("metadata", {}).get("domain_l1", "other") for r in all_train
         )),
         "token_usage": dict(_token_usage),
+        "frame_cache_root": args.frame_cache_root,
+        "cache_fps": args.cache_fps,
+        "frame_view_fps": args.frame_view_fps,
     }
     stats_path = os.path.join(args.output_dir, "stats.json")
     with open(stats_path, "w", encoding="utf-8") as f:

@@ -43,6 +43,8 @@ ANN_DIR="${ANN_DIR:-${DATA_ROOT}/annotations_reclassified}"
 CLIP_DIR="${CLIP_DIR:-${DATA_ROOT}/clips}"
 SOURCE_VIDEO_DIR="${SOURCE_VIDEO_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-${DATA_ROOT}/event_logic}"
+SHARED_FRAME_ROOT="${SHARED_FRAME_ROOT:-${DATA_ROOT}/frame_cache/source_2fps}"
+CACHE_DIR="${CACHE_DIR:-${OUTPUT_DIR}/cache}"
 
 # LLM config
 API_BASE="${API_BASE:-https://api.novita.ai/v3/openai}"
@@ -63,11 +65,19 @@ LIMIT="${LIMIT:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 COMPLETE_ONLY="${COMPLETE_ONLY:-1}"
 SKIP_CLIPS="${SKIP_CLIPS:-0}"
+USE_SHARED_FRAMES="${USE_SHARED_FRAMES:-1}"
 
 # Clip cutting config
 CLIP_LEVELS="${CLIP_LEVELS:-L2 L3}"
 CLIP_FPS="${CLIP_FPS:-2}"
 CLIP_WORKERS="${CLIP_WORKERS:-8}"
+
+# Shared source-frame config (same physical cache as hier-seg / AoT)
+CACHE_FPS="${CACHE_FPS:-2.0}"
+FRAME_VIEW_FPS="${FRAME_VIEW_FPS:-2.0}"
+BUILD_SOURCE_FRAME_CACHE="${BUILD_SOURCE_FRAME_CACHE:-0}"
+SHARED_FRAME_WORKERS="${SHARED_FRAME_WORKERS:-16}"
+SHARED_FRAME_JPEG_QUALITY="${SHARED_FRAME_JPEG_QUALITY:-2}"
 
 # ── Logging ─────────────────────────────────────────────────────────
 LOG_DIR="${OUTPUT_DIR}/logs"
@@ -98,6 +108,11 @@ log "DATA_ROOT:     $DATA_ROOT"
 log "ANN_DIR:       $ANN_DIR"
 log "CLIP_DIR:      $CLIP_DIR"
 log "OUTPUT_DIR:    $OUTPUT_DIR"
+log "CACHE_DIR:     $CACHE_DIR"
+log "SHARED_FRAMES: $USE_SHARED_FRAMES"
+log "FRAME_ROOT:    $SHARED_FRAME_ROOT"
+log "CACHE_FPS:     $CACHE_FPS"
+log "VIEW_FPS:      $FRAME_VIEW_FPS"
 log "MODEL:         $MODEL"
 log "API_BASE:      $API_BASE"
 log "WORKERS:       $WORKERS"
@@ -142,6 +157,16 @@ if [[ -n "$SOURCE_VIDEO_DIR" ]]; then
     CLIP_BASE_FLAGS="$CLIP_BASE_FLAGS --source-video-dir $SOURCE_VIDEO_DIR"
 fi
 
+# ── Shared-frame flags for build_event_logic_vlm.py ─────────────────
+FRAME_FLAGS=()
+if [[ "$USE_SHARED_FRAMES" -eq 1 ]]; then
+    FRAME_FLAGS=(
+        --frame-cache-root "$SHARED_FRAME_ROOT"
+        --cache-fps "$CACHE_FPS"
+        --frame-view-fps "$FRAME_VIEW_FPS"
+    )
+fi
+
 # =====================================================================
 # DRY RUN: show script texts only, no API calls, no clip cutting
 # =====================================================================
@@ -158,7 +183,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
             --temperature "$TEMPERATURE" \
             --workers "$WORKERS" \
             --tasks $TASKS \
-            --cache-dir "$OUTPUT_DIR/cache" \
+            --cache-dir "$CACHE_DIR" \
             --seed "$SEED" \
             --dry-run \
             $VLM_FLAGS
@@ -173,7 +198,10 @@ fi
 # STEP 1: LLM question design → needed_clips.txt
 #   (skipped if SKIP_CLIPS=1, assuming needed_clips.txt already exists)
 # =====================================================================
-if [[ "$SKIP_CLIPS" -eq 0 ]]; then
+if [[ "$USE_SHARED_FRAMES" -eq 1 ]]; then
+    log ""
+    log ">>>>>>>>>> STEP 1: SKIP (USE_SHARED_FRAMES=1, using source frame cache) <<<<<<<<<<"
+elif [[ "$SKIP_CLIPS" -eq 0 ]]; then
     log ""
     log ">>>>>>>>>> STEP 1: LLM QUESTION DESIGN → needed_clips.txt <<<<<<<<<<"
     run_step "S1_COLLECT_CLIPS" \
@@ -186,7 +214,7 @@ if [[ "$SKIP_CLIPS" -eq 0 ]]; then
             --temperature "$TEMPERATURE" \
             --workers "$WORKERS" \
             --tasks $TASKS \
-            --cache-dir "$OUTPUT_DIR/cache" \
+            --cache-dir "$CACHE_DIR" \
             --seed "$SEED" \
             --collect-clips-only \
             $VLM_FLAGS
@@ -198,7 +226,10 @@ fi
 # =====================================================================
 # STEP 2: Cut only the needed clips
 # =====================================================================
-if [[ "$SKIP_CLIPS" -eq 0 ]]; then
+if [[ "$USE_SHARED_FRAMES" -eq 1 ]]; then
+    log ""
+    log ">>>>>>>>>> STEP 2: SKIP (USE_SHARED_FRAMES=1, no atomic mp4 cutting needed) <<<<<<<<<<"
+elif [[ "$SKIP_CLIPS" -eq 0 ]]; then
     if [[ ! -f "$CLIPS_LIST" ]]; then
         log "ERROR: needed_clips.txt not found at $CLIPS_LIST — clip cutting skipped"
     else
@@ -223,6 +254,18 @@ fi
 log ""
 log ">>>>>>>>>> STEP 3: ASSEMBLE TRAINING RECORDS <<<<<<<<<<"
 
+if [[ "$USE_SHARED_FRAMES" -eq 1 && "$BUILD_SOURCE_FRAME_CACHE" -eq 1 ]]; then
+    log ""
+    log ">>>>>>>>>> PREPARE SHARED SOURCE FRAME CACHE <<<<<<<<<<"
+    run_step "S0_SOURCE_FRAME_CACHE" \
+        python "local_scripts/data/build_source_frame_cache.py" \
+            --annotation-dir "$ANN_DIR" \
+            --frames-root "$SHARED_FRAME_ROOT" \
+            --cache-fps "$CACHE_FPS" \
+            --jpeg-quality "$SHARED_FRAME_JPEG_QUALITY" \
+            --workers "$SHARED_FRAME_WORKERS"
+fi
+
 ASSEMBLE_FLAGS="--complete-only"
 if [[ "$TRAIN_BUDGET" -gt 0 ]]; then
     ASSEMBLE_FLAGS="$ASSEMBLE_FLAGS --train-budget $TRAIN_BUDGET"
@@ -242,8 +285,9 @@ run_step "S3_ASSEMBLE" \
         --workers "$WORKERS" \
         --tasks $TASKS \
         --val-count "$VAL_COUNT" \
-        --cache-dir "$OUTPUT_DIR/cache" \
+        --cache-dir "$CACHE_DIR" \
         --seed "$SEED" \
+        "${FRAME_FLAGS[@]}" \
         $ASSEMBLE_FLAGS
 
 # ── Summary ─────────────────────────────────────────────────────────
@@ -256,7 +300,7 @@ if [[ -f "$OUTPUT_DIR/train.jsonl" ]]; then
     log "  train.jsonl: $OUTPUT_DIR/train.jsonl"
     log "  val.jsonl:   $OUTPUT_DIR/val.jsonl"
     log "  stats.json:  $OUTPUT_DIR/stats.json"
-    log "  cache:       $OUTPUT_DIR/cache/"
+    log "  cache:       $CACHE_DIR"
     log "  needed_clips: $CLIPS_LIST"
 fi
 
