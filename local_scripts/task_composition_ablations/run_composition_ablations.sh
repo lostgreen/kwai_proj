@@ -16,8 +16,14 @@ for EXP in ${EXPS}; do
         BASE_AOT)
             bash "${SCRIPT_DIR}/exp_base_aot.sh"
             ;;
+        BASE_LOGIC)
+            bash "${SCRIPT_DIR}/exp_base_logic.sh"
+            ;;
         BASE_SEG_AOT)
             bash "${SCRIPT_DIR}/exp_base_seg_aot.sh"
+            ;;
+        BASE_SEG_LOGIC_AOT)
+            bash "${SCRIPT_DIR}/exp_base_seg_logic_aot.sh"
             ;;
         *)
             echo "[composition_ablation] Unknown experiment: ${EXP}" >&2
