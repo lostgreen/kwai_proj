@@ -381,6 +381,100 @@ def _check_contiguity(id_list: list[str]) -> bool:
     return False
 
 
+def _normalise_option_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _canonical_granularity(value: str, id_list: list[str]) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "event":
+        return "Event"
+    if raw == "action":
+        return "Action"
+    if id_list:
+        try:
+            level, _, _ = parse_item_id(id_list[0])
+            return level
+        except ValueError:
+            return str(value or "")
+    return str(value or "")
+
+
+def _iter_instruction_items(ann: dict, granularity: str) -> list[dict]:
+    """Return same-video instruction/action text candidates for MCQ distractors."""
+    items: list[dict] = []
+    if granularity == "Event":
+        events = ann.get("level2", {}).get("events", [])
+        for ev in sorted(events, key=lambda e: e.get("start_time", 0) if isinstance(e, dict) else 0):
+            if not isinstance(ev, dict):
+                continue
+            event_id = ev.get("event_id")
+            text = str(ev.get("instruction", "")).strip()
+            if event_id is None or not text:
+                continue
+            items.append({
+                "id": f"Event {event_id}",
+                "text": text,
+                "start": int(ev.get("start_time", 0)),
+            })
+        return items
+
+    if granularity == "Action":
+        l3 = ann.get("level3", {})
+        grounding_results = l3.get("grounding_results", []) if isinstance(l3, dict) else []
+        for gr in grounding_results:
+            if not isinstance(gr, dict):
+                continue
+            event_id = gr.get("event_id")
+            for action in gr.get("sub_actions", []):
+                if not isinstance(action, dict):
+                    continue
+                action_id = action.get("action_id")
+                text = str(action.get("sub_action", "")).strip()
+                if event_id is None or action_id is None or not text:
+                    continue
+                items.append({
+                    "id": f"Action {event_id}.{action_id}",
+                    "text": text,
+                    "start": int(action.get("start_time", 0)),
+                })
+        items.sort(key=lambda item: item["start"])
+    return items
+
+
+def _same_video_instruction_distractors(
+    ann: dict,
+    *,
+    granularity: str,
+    exclude_ids: set[str],
+    existing_texts: list[str],
+    target_count: int,
+    rng: random.Random,
+) -> list[str]:
+    """Pick additional distractors from other instructions in the same video.
+
+    Event Logic PN/FB uses three LLM-designed same-scene distractors, then adds
+    two real same-video instructions to make six-way MCQ harder while keeping
+    all added options grounded in the source annotation.
+    """
+    if target_count <= 0:
+        return []
+
+    seen_text = {_normalise_option_text(text) for text in existing_texts}
+    candidates: list[str] = []
+    for item in _iter_instruction_items(ann, granularity):
+        if item["id"] in exclude_ids:
+            continue
+        norm = _normalise_option_text(item["text"])
+        if not norm or norm in seen_text:
+            continue
+        candidates.append(item["text"])
+        seen_text.add(norm)
+
+    rng.shuffle(candidates)
+    return candidates[:target_count]
+
+
 # =====================================================================
 # Video resolution probing & concatenation with inline black frame
 # =====================================================================
@@ -681,11 +775,13 @@ def _assemble_predict_next(
                   clip_key, len(context_ids), bool(correct_next_id), len(distractors))
         return []
 
-    # Trim to first 3 distractors if LLM returned more
-    distractors = distractors[:3]
+    # Keep the LLM's three local distractors, then add two grounded
+    # same-video instructions for a six-way MCQ.
+    distractors = list(distractors[:3])
 
     # Granularity consistency
     all_ids = list(context_ids) + [correct_next_id]
+    granularity = _canonical_granularity(granularity, all_ids)
     if not _check_granularity(all_ids):
         log.warning("[predict_next] %s: granularity mismatch in %s", clip_key, all_ids)
         return []
@@ -709,7 +805,21 @@ def _assemble_predict_next(
         log.warning("[predict_next] %s: resolve_item returned None for correct_next %s", clip_key, correct_next_id)
         return []
 
-    # Build MCQ: correct + 3 distractors, shuffled
+    same_video_distractors = _same_video_instruction_distractors(
+        ann,
+        granularity=granularity,
+        exclude_ids=set(all_ids),
+        existing_texts=[correct_text] + distractors,
+        target_count=2,
+        rng=rng,
+    )
+    if len(same_video_distractors) < 2:
+        log.warning("[predict_next] %s: REJECT only %d same-video instruction distractors",
+                    clip_key, len(same_video_distractors))
+        return []
+    distractors = distractors + same_video_distractors
+
+    # Build MCQ: correct + 5 distractors, shuffled
     options = [(correct_text, True)] + [(d, False) for d in distractors]
     rng.shuffle(options)
     correct_idx = next(i for i, (_, is_correct) in enumerate(options) if is_correct)
@@ -747,6 +857,7 @@ def _assemble_predict_next(
             "correct_next_id": correct_next_id,
             "correct_text": correct_text,
             "distractors": distractors,
+            "same_video_instruction_distractors": same_video_distractors,
             "domain_l1": ann.get("domain_l1", "other"),
             "domain_l2": ann.get("domain_l2", "other"),
             "source": "vlm_task_architect",
@@ -777,11 +888,13 @@ def _assemble_fill_blank(
                     clip_key, len(before_ids), bool(missing_id), len(after_ids), len(distractors))
         return []
 
-    # Trim to first 3 distractors if LLM returned more
-    distractors = distractors[:3]
+    # Keep the LLM's three local distractors, then add two grounded
+    # same-video instructions for a six-way MCQ.
+    distractors = list(distractors[:3])
 
     # Granularity consistency
     all_ids = list(before_ids) + [missing_id] + list(after_ids)
+    granularity = _canonical_granularity(granularity, all_ids)
     if not _check_granularity(all_ids):
         log.warning("[fill_blank] %s: granularity mismatch in %s", clip_key, all_ids)
         return []
@@ -806,6 +919,20 @@ def _assemble_fill_blank(
             log.warning("[fill_blank] %s: %d clips missing on disk, first: %s",
                         clip_key, len(missing_paths), missing_paths[0])
             return []
+
+    same_video_distractors = _same_video_instruction_distractors(
+        ann,
+        granularity=granularity,
+        exclude_ids=set(all_ids),
+        existing_texts=[correct_text] + distractors,
+        target_count=2,
+        rng=rng,
+    )
+    if len(same_video_distractors) < 2:
+        log.warning("[fill_blank] %s: REJECT only %d same-video instruction distractors",
+                    clip_key, len(same_video_distractors))
+        return []
+    distractors = distractors + same_video_distractors
 
     # Build MCQ
     options = [(correct_text, True)] + [(d, False) for d in distractors]
@@ -874,6 +1001,7 @@ def _assemble_fill_blank(
             "after_ids": after_ids,
             "correct_text": correct_text,
             "distractors": distractors,
+            "same_video_instruction_distractors": same_video_distractors,
             "domain_l1": ann.get("domain_l1", "other"),
             "domain_l2": ann.get("domain_l2", "other"),
             "source": "vlm_task_architect",

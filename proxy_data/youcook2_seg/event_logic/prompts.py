@@ -28,8 +28,8 @@ def _option_labels(n: int) -> list[str]:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Add — Predict the next cooking step
-# Input:  N consecutive event clips (context), 4 text options
-# Output: single letter A/B/C/D
+# Input:  N consecutive event clips (context), variable text options
+# Output: single option letter
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_add_prompt(num_ctx: int, options: list[str]) -> str:
@@ -70,8 +70,8 @@ def get_add_prompt(num_ctx: int, options: list[str]) -> str:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Replace — Fill in the missing step
-# Input:  N event clips with one position replaced by [MISSING], 4 text options
-# Output: single letter A/B/C/D
+# Input:  N event clips with one position replaced by [MISSING], variable text options
+# Output: single option letter
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_replace_prompt(total_steps: int, missing_pos: int, options: list[str]) -> str:
@@ -344,8 +344,8 @@ Respond strictly in JSON format:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # T→V Add — Predict next step video from text context
-# Input:  N consecutive step descriptions (text), 4 video clip options (<video>)
-# Output: single letter A/B/C/D
+# Input:  N consecutive step descriptions (text), variable video clip options (<video>)
+# Output: single option letter
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_add_t2v_prompt(context_steps: list[str], num_options: int) -> str:
@@ -354,7 +354,7 @@ def get_add_t2v_prompt(context_steps: list[str], num_options: int) -> str:
 
     Args:
         context_steps: List of recipe step descriptions (text context).
-        num_options: Number of video option clips (typically 4).
+        num_options: Number of video option clips.
 
     Returns:
         User-turn prompt string with <video> placeholders for options and CoT instructions.
@@ -386,8 +386,8 @@ def get_add_t2v_prompt(context_steps: list[str], num_options: int) -> str:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # T→V Replace — Fill in missing step with a video clip
-# Input:  N step descriptions with one [MISSING], 4 video clip options (<video>)
-# Output: single letter A/B/C/D
+# Input:  N step descriptions with one [MISSING], variable video clip options (<video>)
+# Output: single option letter
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_replace_t2v_prompt(all_steps: list[str | None], missing_pos: int, num_options: int) -> str:
@@ -398,7 +398,7 @@ def get_replace_t2v_prompt(all_steps: list[str | None], missing_pos: int, num_op
         all_steps: List of step descriptions; all_steps[missing_pos] should be None
                    (it will be rendered as [MISSING]).
         missing_pos: Zero-based index of the missing step.
-        num_options: Number of video option clips (typically 4).
+        num_options: Number of video option clips.
 
     Returns:
         User-turn prompt string with <video> placeholders for options and CoT instructions.
