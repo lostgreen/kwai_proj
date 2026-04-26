@@ -8,7 +8,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from proxy_data.shared.frame_cache import build_source_cache_dir
-from proxy_data.youcook2_seg.temporal_aot import filter_rollout_hard_cases, hard_qa_pipeline
+from proxy_data.youcook2_seg.temporal_aot import (
+    filter_rollout_hard_cases,
+    hard_qa_pipeline,
+    merge_rollout_resume_outputs,
+)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -1052,6 +1056,85 @@ def test_filter_rollout_hard_cases_keeps_multiple_fallback_matches_from_sharded_
     assert summary["candidate_count"] == 2
     assert len(selected_rows) == 2
     assert {row["prompt"] for row in selected_rows} == {"first", "second"}
+
+
+def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path: Path):
+    rollout_dir = tmp_path / "rollout"
+    output_dir = tmp_path / "merged"
+    rollout_dir.mkdir()
+
+    base_kept = _raw_record(
+        prompt="first",
+        answer="A",
+        problem_type="seg_aot_action_v2t_3way",
+        videos=[["a0.jpg", "a1.jpg"]],
+        domain_l1="task_howto",
+        domain_l2="food_cooking",
+        duration=5.0,
+    )
+    resume_kept = _raw_record(
+        prompt="second",
+        answer="B",
+        problem_type="seg_aot_event_dir_binary",
+        videos=[["b0.jpg", "b1.jpg"]],
+        domain_l1="knowledge",
+        domain_l2="science",
+        duration=6.0,
+    )
+
+    _write_jsonl(
+        rollout_dir / "_shard0_report.jsonl",
+        [
+            _rollout_report(
+                prompt="first",
+                answer="A",
+                problem_type="seg_aot_action_v2t_3way",
+                rewards=[1.0, 0.0],
+                index=0,
+                keep=True,
+            ),
+            _rollout_report(
+                prompt="second",
+                answer="B",
+                problem_type="seg_aot_event_dir_binary",
+                rewards=[0.0, 0.0],
+                index=1,
+                keep=False,
+            ),
+        ],
+    )
+    _write_jsonl(
+        rollout_dir / "_shard0_resume2_report.jsonl",
+        [
+            _rollout_report(
+                prompt="second",
+                answer="B",
+                problem_type="seg_aot_event_dir_binary",
+                rewards=[1.0, 0.0],
+                index=0,
+                keep=True,
+            )
+        ],
+    )
+    _write_jsonl(rollout_dir / "_shard0_report_global.jsonl", [{"should": "be ignored"}])
+    _write_jsonl(rollout_dir / "_shard0_kept.jsonl", [base_kept])
+    _write_jsonl(rollout_dir / "_shard0_resume2_kept.jsonl", [base_kept, resume_kept])
+
+    report_files = merge_rollout_resume_outputs.discover_files(rollout_dir, merge_rollout_resume_outputs.REPORT_RE)
+    kept_files = merge_rollout_resume_outputs.discover_files(rollout_dir, merge_rollout_resume_outputs.KEPT_RE)
+    reports, report_merge_summary = merge_rollout_resume_outputs.merge_reports(report_files)
+    kept_records, kept_merge_summary = merge_rollout_resume_outputs.merge_kept_records(kept_files)
+    report_summary = merge_rollout_resume_outputs.summarize_reports(reports, success_threshold=1.0)
+    plot_paths = merge_rollout_resume_outputs.write_plots(output_dir, reports, report_summary, kept_records)
+
+    assert [path["path"].name for path in report_files] == ["_shard0_report.jsonl", "_shard0_resume2_report.jsonl"]
+    assert report_merge_summary["report_attempt_count"] == 3
+    assert report_merge_summary["report_unique_count"] == 2
+    assert kept_merge_summary["kept_input_record_count"] == 3
+    assert kept_merge_summary["kept_unique_record_count"] == 2
+    assert report_summary["report_kept"] == 2
+    assert report_summary["by_problem_type"]["seg_aot_event_dir_binary"]["kept"] == 1
+    assert all(Path(path).exists() for path in plot_paths.values())
 
 
 def test_rollout_filter_stage_dry_run_returns_planned_commands(tmp_path: Path):
