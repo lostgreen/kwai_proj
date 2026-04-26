@@ -5,7 +5,7 @@
 # Reward 消融主线先用纯 GRPO，保留 online filtering:
 #   - ADV_ESTIMATOR=grpo
 #   - LR=5e-7
-#   - KL_COEF=0.04
+#   - KL_COEF=0.01
 #   - ENTROPY_COEFF=0.005
 #   - ROLLOUT_TEMPERATURE=1.0
 #   - MAX_FRAMES=256

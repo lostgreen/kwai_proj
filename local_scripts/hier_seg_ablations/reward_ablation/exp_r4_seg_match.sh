@@ -4,7 +4,7 @@
 #
 # 与 R1-GRPO 保持同一套数据规模和关键超参，只切换 hier reward:
 #   - ADV_ESTIMATOR=grpo
-#   - LR=5e-7, KL_COEF=0.04, ENTROPY=0.005
+#   - LR=5e-7, KL_COEF=0.01, ENTROPY=0.005
 #   - ROLLOUT_TEMPERATURE=1.0
 #   - MAX_FRAMES=256, MAX_PIXELS=65536
 #   - ONLINE_FILTERING=true
