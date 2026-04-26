@@ -83,11 +83,11 @@ proxy_data/youcook2_seg/
 
 | 参数 | 值 |
 |------|----|
-| Model | Qwen3-VL-8B-Instruct |
+| Model | Qwen3-VL-4B-Instruct |
 | Algorithm | `ema_grpo` |
 | LR | 5e-7 (cosine) |
 | KL_COEF | 0.04 |
-| CHECKPOINT_ROOT | `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_8b_lr5e-7_kl0p04_entropy0p005` |
+| CHECKPOINT_ROOT | `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_4b_lr5e-7_kl0p04_entropy0p005` |
 | MAX_STEPS | 60 |
 | ROLLOUT_N | 8 |
 

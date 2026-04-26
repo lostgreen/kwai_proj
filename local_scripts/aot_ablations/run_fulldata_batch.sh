@@ -24,7 +24,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Log 输出到 checkpoint 目录（当前目录可能只读）
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_8b_lr5e-7_kl0p04_entropy0p005}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/youcook2_seg_aot/ablations_4b_lr5e-7_kl0p04_entropy0p005}"
 LOG_DIR="${CHECKPOINT_ROOT}"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/batch_group${GROUP}_$(date '+%Y%m%d_%H%M%S').log"
