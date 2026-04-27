@@ -40,6 +40,7 @@ FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE="${FRAME_SAMPLE_PROGRESS_INTERVAL:-1000
 CHECK_EXPERIMENT_JSONL_EFFECTIVE="${CHECK_EXPERIMENT_JSONL:-true}"
 CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE="${CHECK_EXPERIMENT_FRAME_FILES:-false}"
 MIX_ONLY_EFFECTIVE="${MIX_ONLY:-false}"
+VAL_BATCH_SIZE_EFFECTIVE="${VAL_BATCH_SIZE:-16}"
 
 echo "[multi-task] EXP_NAME=${EXP_NAME}"
 echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
@@ -50,6 +51,7 @@ echo "[multi-task] FRAME_SAMPLE_POLICY_VERSION=${FRAME_SAMPLE_POLICY_VERSION_EFF
 echo "[multi-task] FRAME_SAMPLE_PROGRESS_INTERVAL=${FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE}"
 echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CHECK_EXPERIMENT_FRAME_FILES=${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE}"
 echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
+echo "[multi-task] VAL_BATCH_SIZE=${VAL_BATCH_SIZE_EFFECTIVE}"
 echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 
 # Keep Ray session/state files on the node-local filesystem by default. The
@@ -354,7 +356,7 @@ python3 -m verl.trainer.main \
     trainer.save_best="${SAVE_BEST}" \
     trainer.logger="[file,tensorboard]" \
     trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
-    data.val_batch_size=8 \
+    data.val_batch_size="${VAL_BATCH_SIZE_EFFECTIVE}" \
     data.dataloader_num_workers="${DATALOADER_NUM_WORKERS}" \
     data.dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}" \
     data.dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}" \
