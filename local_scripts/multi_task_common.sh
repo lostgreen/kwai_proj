@@ -71,8 +71,8 @@ MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-256}"
 # ============================================================
 # 硬件 (8卡默认, 可覆盖)
 # ============================================================
-ROLLOUT_BS="${ROLLOUT_BS:-32}"
-GLOBAL_BS="${GLOBAL_BS:-32}"
+ROLLOUT_BS="${ROLLOUT_BS:-64}"
+GLOBAL_BS="${GLOBAL_BS:-64}"
 MB_PER_UPDATE="${MB_PER_UPDATE:-1}"
 MB_PER_EXP="${MB_PER_EXP:-2}"
 ROLLOUT_N="${ROLLOUT_N:-8}"
