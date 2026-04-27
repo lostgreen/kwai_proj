@@ -70,7 +70,8 @@ def gpu_utilization(nvml_idx: int) -> int:
 # ---------------------------------------------------------------------------
 
 SIGNAL_PATH = os.environ.get("VERL_GPU_SIGNAL_PATH", "/tmp/verl_gpu_phase")
-BUSY_PHASES = {"gen", "update", "decode"}
+BUSY_PHASES = {"gen", "update", "decode", "val_decode"}
+IDLE_PHASES = {"idle", "val_idle"}
 STALE_SIGNAL_TIMEOUT = float(os.environ.get("FILLER_STALE_SIGNAL_TIMEOUT", "30"))
 
 
@@ -94,7 +95,9 @@ def get_signal_state() -> str:
         return "stale"
     if phase in BUSY_PHASES:
         return "busy"
-    return "idle"
+    if phase in IDLE_PHASES:
+        return "idle"
+    return "nosignal"
 
 
 def is_signal_stale() -> bool:
@@ -358,14 +361,15 @@ def filler_worker(
             if signal_state == "busy":
                 _last_busy_at = time.time()
                 with _status_lock:
-                    _status[gpu_id] = "LFILL(busy)"
-                with torch.cuda.stream(stream):
-                    for _ in range(busy_batch):
-                        torch.matmul(a_busy, b_busy)
+                    _status[gpu_id] = "BACK(busy)" if busy_batch <= 0 else "LFILL(busy)"
+                if busy_batch > 0:
+                    with torch.cuda.stream(stream):
+                        for _ in range(busy_batch):
+                            torch.matmul(a_busy, b_busy)
                 time.sleep(max(0.0, busy_sleep_ms / 1000.0))
                 continue
 
-            if (time.time() - _last_busy_at) * 1000.0 < busy_hold_ms:
+            if busy_batch > 0 and (time.time() - _last_busy_at) * 1000.0 < busy_hold_ms:
                 with _status_lock:
                     _status[gpu_id] = "LFILL(busy-hold)"
                 with torch.cuda.stream(stream):
@@ -385,10 +389,11 @@ def filler_worker(
                 continue
 
             with _status_lock:
-                _status[gpu_id] = f"MFILL({signal_state})"
-            with torch.cuda.stream(stream):
-                for _ in range(orphan_batch):
-                    torch.matmul(a_orphan, b_orphan)
+                _status[gpu_id] = f"BACK({signal_state})" if orphan_batch <= 0 else f"MFILL({signal_state})"
+            if orphan_batch > 0:
+                with torch.cuda.stream(stream):
+                    for _ in range(orphan_batch):
+                        torch.matmul(a_orphan, b_orphan)
             time.sleep(max(0.0, orphan_sleep_ms / 1000.0))
             continue
 
