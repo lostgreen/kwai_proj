@@ -279,9 +279,45 @@ fi
 
 # ============================================================
 # GPU filler: 训练期间常驻，维持平均 util 在目标附近
-# 训练结束后仅清理 signal，filler 继续占卡防回收
+# 训练结束后清理 signal，并启动外部占用脚本做双重保险
 # ============================================================
-trap 'gpu_filler_clear_signal' EXIT
+POST_TRAIN_OCCUPANCY="${POST_TRAIN_OCCUPANCY:-true}"
+POST_TRAIN_OCCUPANCY_DIR="${POST_TRAIN_OCCUPANCY_DIR:-/m2v_intern2/liuxiaokun/launch_scripts}"
+POST_TRAIN_OCCUPANCY_SCRIPT="${POST_TRAIN_OCCUPANCY_SCRIPT:-${POST_TRAIN_OCCUPANCY_DIR}/kaimm_run.sh}"
+POST_TRAIN_HTTP_PROXY="${POST_TRAIN_HTTP_PROXY:-http://oversea-squid2.ko.txyun:11080}"
+POST_TRAIN_HTTPS_PROXY="${POST_TRAIN_HTTPS_PROXY:-http://oversea-squid2.ko.txyun:11080}"
+POST_TRAIN_NO_PROXY="${POST_TRAIN_NO_PROXY:-localhost,127.0.0.1,localaddress,localdomain.com,internal,corp.kuaishou.com,test.gifshow.com,staging.kuaishou.com}"
+
+post_train_occupancy_start() {
+    case "${POST_TRAIN_OCCUPANCY,,}" in
+        true|1|yes) ;;
+        *) return 0 ;;
+    esac
+
+    if [[ ! -f "${POST_TRAIN_OCCUPANCY_SCRIPT}" ]]; then
+        echo "[multi-task] WARN: post-train occupancy script not found: ${POST_TRAIN_OCCUPANCY_SCRIPT}" >&2
+        return 0
+    fi
+
+    echo "[multi-task] Starting post-train occupancy: ${POST_TRAIN_OCCUPANCY_SCRIPT}"
+    (
+        export http_proxy="${POST_TRAIN_HTTP_PROXY}"
+        export https_proxy="${POST_TRAIN_HTTPS_PROXY}"
+        export no_proxy="${POST_TRAIN_NO_PROXY}"
+        cd "${POST_TRAIN_OCCUPANCY_DIR}"
+        bash "${POST_TRAIN_OCCUPANCY_SCRIPT}"
+    ) || echo "[multi-task] WARN: post-train occupancy failed: ${POST_TRAIN_OCCUPANCY_SCRIPT}" >&2
+}
+
+multi_task_cleanup() {
+    local exit_code=$?
+    trap - EXIT
+    gpu_filler_clear_signal
+    post_train_occupancy_start
+    exit "${exit_code}"
+}
+
+trap multi_task_cleanup EXIT
 gpu_filler_start "[multi-task]"
 
 TENSORBOARD_DIR="${CHECKPOINT_ROOT}/${EXP_NAME}/tensorboard"
@@ -361,5 +397,3 @@ python3 -m verl.trainer.main \
     data.dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}" \
     data.dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}" \
     data.dataloader_pin_memory="${DATALOADER_PIN_MEMORY}"
-
-gpu_filler_clear_signal

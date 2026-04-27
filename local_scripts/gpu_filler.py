@@ -27,9 +27,8 @@ Environment:
 Modes:
     nvml    — util-driven filler (default)
     signal  — no NVML polling; phase-aware open-loop filler
-              gen/update => light fill
-              idle       => heavy fill
-              no-signal  => medium fill
+              gen/update/val_decode => backoff
+              idle/no-signal        => heavy fill
 """
 
 import argparse
@@ -89,7 +88,7 @@ def get_signal_state() -> str:
         with open(SIGNAL_PATH, "r") as f:
             phase = f.read().strip()
     except (FileNotFoundError, OSError):
-        return "nosignal"
+        return "idle"
 
     if is_signal_stale():
         return "stale"
