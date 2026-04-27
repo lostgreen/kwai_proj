@@ -335,13 +335,19 @@ def _task_key_of(sample_problem_type: str, sample_data_type: str | None) -> str:
     """
     Coarse task grouping for EMA-GRPO advantage normalization.
 
-    Groups by reward type so that each EMA tracks a consistent reward distribution:
-      - "mcq": all choice-based tasks (binary/ternary {0,1})
-      - "seg": all temporal segmentation tasks (continuous F1-IoU [0,1])
-      - "segmentation/image", "segmentation/video": image/video segmentation
-      - Others (sort, temporal_grounding, etc.) keep their own key.
+    Groups by reward family so EMA tracks a stable reward distribution:
+      - "tg": temporal grounding IoU rewards
+      - "seg": temporal segmentation F1-IoU rewards
+      - "mcq": choice-style tasks, including LLaVA, AoT, and EL PN/FB
+      - "sort": ranking/order rewards
+      - "segmentation/image", "segmentation/video": non-proxy segmentation
     """
+    if sample_problem_type == "temporal_grounding":
+        return "tg"
+    if sample_problem_type in ("event_logic_sort", "sort"):
+        return "sort"
     if sample_problem_type in (
+        "llava_mcq", "mcq",
         "add", "delete", "replace",
         "aot_v2t", "aot_t2v", "aot_3way_v2t", "aot_3way_t2v",
     ) or sample_problem_type.startswith("seg_aot_"):
@@ -431,28 +437,7 @@ def compute_ema_grpo_outcome_advantage(
 
     bsz = scores.shape[0]
 
-    # —— Group sample positions by "task key" ——
-    # Task partition rule: default by problem_type;
-    # if problem_type == "segmentation", further split by data_type
-    def _task_key_of(sample_problem_type: str, sample_data_type: str | None) -> str:
-        # Coarse grouping by reward type for stable EMA estimation.
-        # MCQ: all choice-based tasks share one EMA (binary/ternary {0,1})
-        if sample_problem_type in (
-            "add", "delete", "replace",
-            "aot_v2t", "aot_t2v", "aot_3way_v2t", "aot_3way_t2v",
-        ) or sample_problem_type.startswith("seg_aot_"):
-            return "mcq"
-        # Seg: all temporal segmentation tasks share one EMA (continuous F1-IoU)
-        if sample_problem_type.startswith("temporal_seg"):
-            return "seg"
-        # Segmentation (image/video) from other frameworks
-        if sample_problem_type == "segmentation":
-            dt = (sample_data_type or "").lower()
-            if dt in ("video", "image"):
-                return f"segmentation/{dt}"
-        # Others (sort, temporal_grounding, etc.) keep own key
-        return sample_problem_type
-
+    # —— Group sample positions by reward-family task key ——
     task_to_pos: dict[str, list[int]] = {}
     for i in range(bsz):
         pt = str(problem_type_list[i]) if problem_type_list is not None else ""
