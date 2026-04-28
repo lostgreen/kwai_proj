@@ -6,7 +6,11 @@ This folder runs the current fast 4B EMA-GRPO task-composition sweep:
 | --- | --- | --- |
 | `exp_base_seg.sh` | `tg mcq hier_seg` | `composition_base_seg_hier10k_mf256_ema` |
 | `exp_base_aot.sh` | `tg mcq aot` | `composition_base_aot_aot10k_mf256_ema` |
+| `exp_base_logic.sh` | `tg mcq event_logic` | `composition_base_logic_el10k_mf256_ema` |
 | `exp_base_seg_aot.sh` | `tg mcq hier_seg aot` | `composition_base_seg_aot_hier10k_aot10k_mf256_ema` |
+| `exp_base_seg_logic.sh` | `tg mcq hier_seg event_logic` | `composition_base_seg_logic_hier10k_el10k_mf256_ema` |
+| `exp_base_aot_logic.sh` | `tg mcq aot event_logic` | `composition_base_aot_logic_aot10k_el10k_mf256_ema` |
+| `exp_base_seg_logic_aot.sh` | `tg mcq hier_seg event_logic aot` | `composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema` |
 
 Shared defaults:
 
@@ -14,7 +18,7 @@ Shared defaults:
 - Algorithm: `ema_grpo`
 - `KL_COEF=0.01`, `LR=5e-7`, `ENTROPY_COEFF=0.005`
 - `MAX_FRAMES=256`, `MAX_PIXELS=65536`
-- `HIER_TARGET=10000`, `AOT_TARGET=10000`
+- `HIER_TARGET=10000`, `AOT_TARGET=10000`, `EL_TARGET=10000`
 - checkpoint root: `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations`
 
 Run one experiment:
@@ -22,17 +26,28 @@ Run one experiment:
 ```bash
 bash local_scripts/task_composition_ablations/exp_base_seg.sh
 bash local_scripts/task_composition_ablations/exp_base_aot.sh
+bash local_scripts/task_composition_ablations/exp_base_logic.sh
 bash local_scripts/task_composition_ablations/exp_base_seg_aot.sh
+bash local_scripts/task_composition_ablations/exp_base_seg_logic.sh
+bash local_scripts/task_composition_ablations/exp_base_aot_logic.sh
+bash local_scripts/task_composition_ablations/exp_base_seg_logic_aot.sh
 ```
 
-Run all three sequentially:
+Run the default seed set sequentially:
 
 ```bash
 bash local_scripts/task_composition_ablations/run_composition_ablations.sh
 ```
 
-Limit to a subset:
+Run the two missing logic-composition experiments:
 
 ```bash
-EXPS="BASE_SEG BASE_AOT" bash local_scripts/task_composition_ablations/run_composition_ablations.sh
+EXPS="BASE_SEG_LOGIC BASE_AOT_LOGIC" bash local_scripts/task_composition_ablations/run_composition_ablations.sh
+```
+
+Run the full composition suite:
+
+```bash
+EXPS="BASE_SEG BASE_AOT BASE_LOGIC BASE_SEG_AOT BASE_SEG_LOGIC BASE_AOT_LOGIC BASE_SEG_LOGIC_AOT" \
+  bash local_scripts/task_composition_ablations/run_composition_ablations.sh
 ```

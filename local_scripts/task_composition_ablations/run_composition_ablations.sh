@@ -22,6 +22,12 @@ for EXP in ${EXPS}; do
         BASE_SEG_AOT)
             bash "${SCRIPT_DIR}/exp_base_seg_aot.sh"
             ;;
+        BASE_SEG_LOGIC)
+            bash "${SCRIPT_DIR}/exp_base_seg_logic.sh"
+            ;;
+        BASE_AOT_LOGIC)
+            bash "${SCRIPT_DIR}/exp_base_aot_logic.sh"
+            ;;
         BASE_SEG_LOGIC_AOT)
             bash "${SCRIPT_DIR}/exp_base_seg_logic_aot.sh"
             ;;
