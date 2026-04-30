@@ -17,7 +17,7 @@ Actor config
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -124,6 +124,10 @@ class ActorConfig:
 class RefConfig:
     strategy: str = "fsdp"
     model: ModelConfig = field(default_factory=ModelConfig)
+    teacher_models: Dict[str, ModelConfig] = field(default_factory=dict)
+    teacher_key: str = "problem_type"
+    teacher_task_map: Dict[str, str] = field(default_factory=dict)
+    default_teacher: Optional[str] = None
     fsdp: FSDPConfig = field(default_factory=FSDPConfig)
     offload: OffloadConfig = field(default_factory=OffloadConfig)
     # below are auto keys

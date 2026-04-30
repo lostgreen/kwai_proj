@@ -15,10 +15,10 @@
 The main entry point to run the PPO algorithm
 """
 
+import os
 from typing import Literal, Optional, Union, cast
 
 import numpy as np
-import os
 import psutil
 import torch
 import torch.distributed as dist
@@ -61,6 +61,7 @@ from .config import ActorConfig, CriticConfig, FSDPConfig, ModelConfig, OptimCon
 from .rollout import vLLMRollout
 from .sharding_manager import FSDPVLLMShardingManager
 from .sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
+from .teacher_routing import resolve_opd_teacher_name
 
 
 class FSDPWorker(Worker):
@@ -73,6 +74,8 @@ class FSDPWorker(Worker):
         self.config = config
         self.role = role
         self._cache = {}
+        self.ref_fsdp_modules = {}
+        self.ref_policies = {}
 
         from datetime import timedelta
 
@@ -158,7 +161,8 @@ class FSDPWorker(Worker):
         optim_config: Optional[OptimConfig],
         padding_free: bool,
         role: Literal["actor", "critic", "ref"],
-    ) -> None:
+        ref_name: Optional[str] = None,
+    ) -> FSDP:
         if role != "ref" or not hasattr(self, "tokenizer"):
             self.tokenizer = get_tokenizer(
                 model_config.tokenizer_path,
@@ -342,10 +346,15 @@ class FSDPWorker(Worker):
                 offload_fsdp_optimizer(optimizer=self.optimizer)
                 print_gpu_memory_usage(f"After offload {role} optimizer during init")
         else:
-            self.ref_fsdp_module = fsdp_module
+            if ref_name is None:
+                self.ref_fsdp_module = fsdp_module
+            else:
+                self.ref_fsdp_modules[ref_name] = fsdp_module
             if self._use_ref_param_offload:
-                offload_fsdp_model(self.ref_fsdp_module)
+                offload_fsdp_model(fsdp_module)
                 print_gpu_memory_usage(f"After offload {role} model during init")
+
+        return fsdp_module
 
     def _build_rollout(self) -> None:
         tp_size = self.config.rollout.tensor_parallel_size
@@ -389,13 +398,24 @@ class FSDPWorker(Worker):
             )
 
         if self._has_ref:
-            self._build_model_optimizer(
-                model_config=self.config.ref.model,
-                fsdp_config=self.config.ref.fsdp,
-                optim_config=None,
-                padding_free=self.config.ref.padding_free,
-                role="ref",
-            )
+            if self.config.ref.teacher_models:
+                for teacher_name, teacher_model_config in self.config.ref.teacher_models.items():
+                    self._build_model_optimizer(
+                        model_config=teacher_model_config,
+                        fsdp_config=self.config.ref.fsdp,
+                        optim_config=None,
+                        padding_free=self.config.ref.padding_free,
+                        role="ref",
+                        ref_name=teacher_name,
+                    )
+            else:
+                self._build_model_optimizer(
+                    model_config=self.config.ref.model,
+                    fsdp_config=self.config.ref.fsdp,
+                    optim_config=None,
+                    padding_free=self.config.ref.padding_free,
+                    role="ref",
+                )
 
         if self._has_actor:
             from .actor.dp_actor import DataParallelPPOActor  # lazy import
@@ -421,10 +441,22 @@ class FSDPWorker(Worker):
         if self._has_ref:
             from .actor.dp_actor import DataParallelPPOActor  # lazy import
 
-            self.ref_policy = DataParallelPPOActor(
-                config=self.config.ref,
-                actor_module=self.ref_fsdp_module,
-            )
+            if self.ref_fsdp_modules:
+                self.ref_policies = {
+                    teacher_name: DataParallelPPOActor(
+                        config=self.config.ref,
+                        actor_module=ref_module,
+                    )
+                    for teacher_name, ref_module in self.ref_fsdp_modules.items()
+                }
+                first_teacher_name = next(iter(self.ref_fsdp_modules))
+                self.ref_fsdp_module = self.ref_fsdp_modules[first_teacher_name]
+                self.ref_policy = self.ref_policies[first_teacher_name]
+            else:
+                self.ref_policy = DataParallelPPOActor(
+                    config=self.config.ref,
+                    actor_module=self.ref_fsdp_module,
+                )
 
         if self._has_actor or self._has_critic:
             self.flops_counter = FlopsCounter(self.model_config)
@@ -610,6 +642,7 @@ class FSDPWorker(Worker):
         assert self._has_rollout
         self._set_phase("gen")
         import time as _time
+
         from verl.utils.timing_logger import tlog
         _rank = torch.distributed.get_rank()
         _tp_rank = self.rollout_sharding_manager.tp_rank
@@ -723,34 +756,91 @@ class FSDPWorker(Worker):
         self._process_multi_modal_inputs(data)
         data = data.to(torch.cuda.current_device())
 
-        if self._use_ref_param_offload:
-            load_fsdp_model(self.ref_fsdp_module)
-
-        data.meta_info["temperature"] = self.config.rollout.temperature
-        with self.ulysses_sharding_manager:
-            data = self.ulysses_sharding_manager.preprocess_data(data)
-            topk_logps, topk_indices = self.ref_policy.compute_topk_log_probs(
-                data=data,
-                topk=self.config.actor.opd_topk,
-            )
-            output = DataProto.from_dict(
-                tensors={
-                    "teacher_topk_logps": topk_logps,
-                    "teacher_topk_indices": topk_indices,
-                },
-                meta_info={"temperature": self.config.rollout.temperature},
-            )
-            output = self.ulysses_sharding_manager.postprocess_data(output)
-
-        if self.world_size > 1:
-            self.ref_fsdp_module._handle.reshard(True)
-
-        if self._use_ref_param_offload:
-            offload_fsdp_model(self.ref_fsdp_module)
+        if self.ref_fsdp_modules:
+            output = self._compute_multi_teacher_ref_topk_log_probs(data)
+        else:
+            output = self._compute_ref_topk_log_probs_with_module(data, self.ref_fsdp_module, self.ref_policy)
 
         output = output.to("cpu")
         self._set_phase("idle")
         return output
+
+    def _compute_ref_topk_log_probs_with_module(self, data: DataProto, ref_module: FSDP, ref_policy) -> DataProto:
+        if self._use_ref_param_offload:
+            load_fsdp_model(ref_module)
+
+        try:
+            data.meta_info["temperature"] = self.config.rollout.temperature
+            with self.ulysses_sharding_manager:
+                teacher_data = self.ulysses_sharding_manager.preprocess_data(data)
+                topk_logps, topk_indices = ref_policy.compute_topk_log_probs(
+                    data=teacher_data,
+                    topk=self.config.actor.opd_topk,
+                )
+                output = DataProto.from_dict(
+                    tensors={
+                        "teacher_topk_logps": topk_logps,
+                        "teacher_topk_indices": topk_indices,
+                    },
+                    meta_info={"temperature": self.config.rollout.temperature},
+                )
+                output = self.ulysses_sharding_manager.postprocess_data(output)
+
+            if self.world_size > 1:
+                ref_module._handle.reshard(True)
+            return output
+        finally:
+            if self._use_ref_param_offload:
+                offload_fsdp_model(ref_module)
+
+    def _compute_multi_teacher_ref_topk_log_probs(self, data: DataProto) -> DataProto:
+        teacher_key = self.config.ref.teacher_key
+        routing_values = data.non_tensor_batch.get(teacher_key)
+        if routing_values is None:
+            if self.config.ref.default_teacher is None and len(self.ref_fsdp_modules) > 1:
+                raise ValueError(
+                    f"OPD multi-teacher routing key {teacher_key!r} is missing from batch non_tensor_batch."
+                )
+            routing_values = np.empty(len(data), dtype=object)
+            routing_values[:] = None
+
+        teacher_to_indices: dict[str, list[int]] = {}
+        teacher_names = tuple(self.ref_fsdp_modules.keys())
+        for index, routing_value in enumerate(routing_values):
+            teacher_name = resolve_opd_teacher_name(
+                routing_value,
+                teacher_names=teacher_names,
+                task_map=self.config.ref.teacher_task_map,
+                default_teacher=self.config.ref.default_teacher,
+            )
+            teacher_to_indices.setdefault(teacher_name, []).append(index)
+
+        full_topk_logps = None
+        full_topk_indices = None
+        for teacher_name, indices in teacher_to_indices.items():
+            ref_module = self.ref_fsdp_modules[teacher_name]
+            ref_policy = self.ref_policies[teacher_name]
+            teacher_data = data.index_select(indices)
+            teacher_output = self._compute_ref_topk_log_probs_with_module(teacher_data, ref_module, ref_policy)
+            topk_logps = teacher_output.batch["teacher_topk_logps"]
+            topk_indices = teacher_output.batch["teacher_topk_indices"]
+
+            if full_topk_logps is None:
+                full_shape = (len(data), *topk_logps.shape[1:])
+                full_topk_logps = torch.empty(full_shape, dtype=topk_logps.dtype, device=topk_logps.device)
+                full_topk_indices = torch.empty(full_shape, dtype=topk_indices.dtype, device=topk_indices.device)
+
+            scatter_indices = torch.tensor(indices, dtype=torch.long, device=topk_logps.device)
+            full_topk_logps[scatter_indices] = topk_logps
+            full_topk_indices[scatter_indices] = topk_indices
+
+        return DataProto.from_dict(
+            tensors={
+                "teacher_topk_logps": full_topk_logps,
+                "teacher_topk_indices": full_topk_indices,
+            },
+            meta_info={"temperature": self.config.rollout.temperature},
+        )
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_values(self, data: DataProto):

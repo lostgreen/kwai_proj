@@ -52,6 +52,7 @@ echo "[multi-task] FRAME_SAMPLE_PROGRESS_INTERVAL=${FRAME_SAMPLE_PROGRESS_INTERV
 echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CHECK_EXPERIMENT_FRAME_FILES=${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE}"
 echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
 echo "[multi-task] VAL_BATCH_SIZE=${VAL_BATCH_SIZE_EFFECTIVE}"
+echo "[multi-task] TASK_HOMOGENEOUS_BATCHING=${TASK_HOMOGENEOUS_BATCHING}"
 echo "[multi-task] TRAINING_MODE=${TRAINING_MODE} ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 if [[ "${TRAINING_MODE}" == "opd" ]]; then
     echo "[multi-task] OPD_TOPK=${OPD_TOPK} OPD_KL_COEF=${OPD_KL_COEF}"
@@ -59,6 +60,12 @@ fi
 if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
     echo "[multi-task] TEACHER_MODEL_PATH=${TEACHER_MODEL_PATH}"
     echo "[multi-task] TEACHER_TOKENIZER_PATH=${TEACHER_TOKENIZER_PATH:-<same-as-teacher>}"
+fi
+if [[ -n "${AOT_TEACHER_MODEL_PATH}${SEG_TEACHER_MODEL_PATH}${EVENTLOGIC_TEACHER_MODEL_PATH}" ]]; then
+    echo "[multi-task] OPD_TEACHER_KEY=${OPD_TEACHER_KEY}"
+    echo "[multi-task] AOT_TEACHER_MODEL_PATH=${AOT_TEACHER_MODEL_PATH:-<unset>}"
+    echo "[multi-task] SEG_TEACHER_MODEL_PATH=${SEG_TEACHER_MODEL_PATH:-<unset>}"
+    echo "[multi-task] EVENTLOGIC_TEACHER_MODEL_PATH=${EVENTLOGIC_TEACHER_MODEL_PATH:-<unset>}"
 fi
 
 # Keep Ray session/state files on the node-local filesystem by default. The
@@ -338,6 +345,31 @@ if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
     TEACHER_MODEL_ARGS+=(worker.ref.model.tokenizer_path="${TEACHER_TOKENIZER_PATH:-${TEACHER_MODEL_PATH}}")
     TEACHER_MODEL_ARGS+=(worker.ref.model.trust_remote_code="${TEACHER_TRUST_REMOTE_CODE}")
 fi
+if [[ -n "${AOT_TEACHER_MODEL_PATH}${SEG_TEACHER_MODEL_PATH}${EVENTLOGIC_TEACHER_MODEL_PATH}" ]]; then
+    if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
+        echo "[multi-task] ERROR: use either TEACHER_MODEL_PATH or multi-teacher paths, not both." >&2
+        exit 1
+    fi
+    for _required_teacher_var in AOT_TEACHER_MODEL_PATH SEG_TEACHER_MODEL_PATH EVENTLOGIC_TEACHER_MODEL_PATH; do
+        if [[ -z "${!_required_teacher_var:-}" ]]; then
+            echo "[multi-task] ERROR: set ${_required_teacher_var} for multi-teacher OPD." >&2
+            exit 1
+        fi
+    done
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.aot.tokenizer_path="${AOT_TEACHER_TOKENIZER_PATH:-${AOT_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.aot.trust_remote_code="${AOT_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.seg.model_path="${SEG_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.seg.tokenizer_path="${SEG_TEACHER_TOKENIZER_PATH:-${SEG_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.seg.trust_remote_code="${SEG_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.eventlogic.tokenizer_path="${EVENTLOGIC_TEACHER_TOKENIZER_PATH:-${EVENTLOGIC_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.eventlogic.trust_remote_code="${EVENTLOGIC_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_key="${OPD_TEACHER_KEY}")
+    if [[ -n "${OPD_DEFAULT_TEACHER}" ]]; then
+        TEACHER_MODEL_ARGS+=(worker.ref.default_teacher="${OPD_DEFAULT_TEACHER}")
+    fi
+fi
 
 # ============================================================
 # 启动训练
@@ -359,7 +391,7 @@ python3 -m verl.trainer.main \
     data.rollout_batch_size="${ROLLOUT_BS}" \
     data.format_prompt="" \
     data.filter_overlong_prompts=false \
-    data.task_homogeneous_batching=false \
+    data.task_homogeneous_batching="${TASK_HOMOGENEOUS_BATCHING}" \
     data.task_weights="${TASK_WEIGHTS}" \
     data.task_key="problem_type" \
     algorithm.training_mode="${TRAINING_MODE}" \
@@ -380,6 +412,8 @@ python3 -m verl.trainer.main \
     worker.actor.model.freeze_vision_tower=true \
     "${TEACHER_MODEL_ARGS[@]}" \
     worker.actor.fsdp.torch_dtype=bf16 \
+    worker.actor.offload.offload_params="${ACTOR_OFFLOAD_PARAMS}" \
+    worker.actor.offload.offload_optimizer="${ACTOR_OFFLOAD_OPTIMIZER}" \
     worker.actor.optim.strategy=adamw_bf16 \
     worker.actor.optim.lr="${LR}" \
     worker.actor.optim.lr_warmup_ratio="${LR_WARMUP_RATIO}" \
@@ -389,6 +423,7 @@ python3 -m verl.trainer.main \
     worker.actor.clip_ratio_high="${CLIP_RATIO_HIGH}" \
     worker.actor.loss_avg_mode=token \
     worker.actor.entropy_coeff="${ENTROPY_COEFF}" \
+    worker.ref.offload.offload_params="${REF_OFFLOAD_PARAMS}" \
     worker.rollout.n="${ROLLOUT_N}" \
     worker.rollout.temperature="${ROLLOUT_TEMPERATURE}" \
     worker.rollout.top_p=0.9 \

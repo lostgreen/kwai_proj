@@ -15,6 +15,7 @@
 ActorRolloutRef config
 """
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 
@@ -47,7 +48,9 @@ class WorkerConfig:
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
 
     def post_init(self):
-        if self.ref.model.model_path is None:
+        self.ref.teacher_models = self._normalize_ref_teacher_models()
+
+        if self.ref.model.model_path is None and not self.ref.teacher_models:
             self.ref.model = deepcopy(self.actor.model)
 
         self.ref.micro_batch_size_per_device_for_experience = self.actor.micro_batch_size_per_device_for_experience
@@ -55,3 +58,16 @@ class WorkerConfig:
         self.ref.dynamic_batching = self.actor.dynamic_batching
         self.ref.ulysses_size = self.actor.ulysses_size
         self.ref.use_torch_compile = self.actor.use_torch_compile
+
+    def _normalize_ref_teacher_models(self) -> dict[str, ModelConfig]:
+        teacher_models = {}
+        for name, model_config in self.ref.teacher_models.items():
+            if isinstance(model_config, ModelConfig):
+                normalized = model_config
+            elif isinstance(model_config, Mapping):
+                normalized = ModelConfig(**model_config)
+            else:
+                normalized = ModelConfig(**dict(model_config))
+            normalized.post_init()
+            teacher_models[name] = normalized
+        return teacher_models
