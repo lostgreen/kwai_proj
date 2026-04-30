@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared defaults for task-composition ablations:
-#   base+seg, base+aot, base+seg+aot.
+#   base-only and base plus seg/aot/event-logic combinations.
 
 COMPOSITION_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_LOCAL="$(cd -- "${COMPOSITION_DIR}/../.." && pwd)"

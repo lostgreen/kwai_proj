@@ -10,6 +10,9 @@ echo "[composition_ablation] $(date)"
 
 for EXP in ${EXPS}; do
     case "${EXP}" in
+        BASE)
+            bash "${SCRIPT_DIR}/exp_base.sh"
+            ;;
         BASE_SEG)
             bash "${SCRIPT_DIR}/exp_base_seg.sh"
             ;;

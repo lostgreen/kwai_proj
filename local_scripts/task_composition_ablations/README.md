@@ -4,6 +4,7 @@ This folder runs the current fast 4B EMA-GRPO task-composition sweep:
 
 | Script | Tasks | Default EXP_NAME |
 | --- | --- | --- |
+| `exp_base.sh` | `tg mcq` | `composition_base_mf256_ema` |
 | `exp_base_seg.sh` | `tg mcq hier_seg` | `composition_base_seg_hier10k_mf256_ema` |
 | `exp_base_aot.sh` | `tg mcq aot` | `composition_base_aot_aot10k_mf256_ema` |
 | `exp_base_logic.sh` | `tg mcq event_logic` | `composition_base_logic_el10k_mf256_ema` |
@@ -24,6 +25,7 @@ Shared defaults:
 Run one experiment:
 
 ```bash
+bash local_scripts/task_composition_ablations/exp_base.sh
 bash local_scripts/task_composition_ablations/exp_base_seg.sh
 bash local_scripts/task_composition_ablations/exp_base_aot.sh
 bash local_scripts/task_composition_ablations/exp_base_logic.sh
@@ -48,6 +50,6 @@ EXPS="BASE_SEG_LOGIC BASE_AOT_LOGIC" bash local_scripts/task_composition_ablatio
 Run the full composition suite:
 
 ```bash
-EXPS="BASE_SEG BASE_AOT BASE_LOGIC BASE_SEG_AOT BASE_SEG_LOGIC BASE_AOT_LOGIC BASE_SEG_LOGIC_AOT" \
+EXPS="BASE BASE_SEG BASE_AOT BASE_LOGIC BASE_SEG_AOT BASE_SEG_LOGIC BASE_AOT_LOGIC BASE_SEG_LOGIC_AOT" \
   bash local_scripts/task_composition_ablations/run_composition_ablations.sh
 ```
