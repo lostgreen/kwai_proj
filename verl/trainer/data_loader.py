@@ -72,6 +72,7 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
             dataset=train_dataset,
             batch_size=train_batch_size,
             task_key=config.task_key,
+            task_grouping=config.task_homogeneous_grouping,
             task_weights=task_weights,
             seed=config.seed,
             drop_last=True,

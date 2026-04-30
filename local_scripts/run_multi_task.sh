@@ -53,6 +53,7 @@ echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CH
 echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
 echo "[multi-task] VAL_BATCH_SIZE=${VAL_BATCH_SIZE_EFFECTIVE}"
 echo "[multi-task] TASK_HOMOGENEOUS_BATCHING=${TASK_HOMOGENEOUS_BATCHING}"
+echo "[multi-task] TASK_HOMOGENEOUS_GROUPING=${TASK_HOMOGENEOUS_GROUPING}"
 echo "[multi-task] TRAINING_MODE=${TRAINING_MODE} ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 if [[ "${TRAINING_MODE}" == "opd" ]]; then
     echo "[multi-task] OPD_TOPK=${OPD_TOPK} OPD_KL_COEF=${OPD_KL_COEF}"
@@ -252,18 +253,19 @@ fi
 TASK_WEIGHT_MODE="${TASK_WEIGHT_MODE:-count}"
 if [[ -z "${TASK_WEIGHTS:-}" ]]; then
     TASK_WEIGHTS="$(
-python3 - "${TRAIN_FILE}" "${TASK_WEIGHT_MODE}" <<'PY'
+python3 - "${TRAIN_FILE}" "${TASK_WEIGHT_MODE}" "${TASK_HOMOGENEOUS_GROUPING}" <<'PY'
 import json, sys
 from collections import Counter
+from verl.utils.task_grouping import resolve_task_homogeneous_bucket
 
-path, mode = sys.argv[1], sys.argv[2].strip().lower()
+path, mode, grouping = sys.argv[1], sys.argv[2].strip().lower(), sys.argv[3]
 counter = Counter()
 with open(path, encoding="utf-8") as f:
     for line in f:
         line = line.strip()
         if not line:
             continue
-        task = str(json.loads(line).get("problem_type") or "").strip()
+        task = resolve_task_homogeneous_bucket(json.loads(line).get("problem_type") or "", grouping).strip()
         if task:
             counter[task] += 1
 
@@ -394,6 +396,7 @@ python3 -m verl.trainer.main \
     data.task_homogeneous_batching="${TASK_HOMOGENEOUS_BATCHING}" \
     data.task_weights="${TASK_WEIGHTS}" \
     data.task_key="problem_type" \
+    data.task_homogeneous_grouping="${TASK_HOMOGENEOUS_GROUPING}" \
     algorithm.training_mode="${TRAINING_MODE}" \
     algorithm.adv_estimator="${ADV_ESTIMATOR}" \
     algorithm.disable_kl="${DISABLE_KL}" \

@@ -63,6 +63,7 @@ class DataConfig:
     task_homogeneous_batching: bool = False
     task_weights: Optional[Dict[str, float]] = None  # e.g. {"temporal_seg": 0.4, "add": 0.15}
     task_key: str = "problem_type"
+    task_homogeneous_grouping: str = "raw"
 
     def post_init(self):
         if self.image_dir is not None:

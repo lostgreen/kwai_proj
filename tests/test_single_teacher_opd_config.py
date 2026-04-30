@@ -159,7 +159,9 @@ def test_multi_teacher_opd_launcher_enables_homogeneous_batching_by_default():
     runner = Path("local_scripts/run_multi_task.sh").read_text()
 
     assert 'TASK_HOMOGENEOUS_BATCHING="${TASK_HOMOGENEOUS_BATCHING:-true}"' in launcher
+    assert 'TASK_HOMOGENEOUS_GROUPING="${TASK_HOMOGENEOUS_GROUPING:-opd_task_group}"' in launcher
     assert 'data.task_homogeneous_batching="${TASK_HOMOGENEOUS_BATCHING}"' in runner
+    assert 'data.task_homogeneous_grouping="${TASK_HOMOGENEOUS_GROUPING}"' in runner
 
 
 def test_multi_teacher_opd_launcher_preserves_mf256_default():

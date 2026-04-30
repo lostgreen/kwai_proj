@@ -285,6 +285,8 @@ SAVE_LIMIT=3
 ACTOR_OFFLOAD_PARAMS=true
 ACTOR_OFFLOAD_OPTIMIZER=true
 REF_OFFLOAD_PARAMS=true
+TASK_HOMOGENEOUS_BATCHING=true
+TASK_HOMOGENEOUS_GROUPING=opd_task_group
 ```
 
 默认训练数据直接使用 task-composition 产出的全组合 `mf256` 数据：
@@ -296,6 +298,17 @@ TASKS="tg mcq hier_seg event_logic aot"
 ```
 
 如果 `TRAIN_FILE` 和 `TEST_FILE` 已存在，`run_multi_task.sh` 会直接使用这批 experiment JSONL，不再先检查 `EL_TRAIN/EL_VAL_SOURCE` 等 raw source；只有缺文件、`MIX_FORCE=true` 或 frame policy/val count 不匹配需要重混时，才会执行 raw-source preflight。
+
+`opd_task_group` 会把 task-homogeneous batching 从原始 `problem_type` 合并成 4 个桶：
+
+| Bucket | problem_type |
+| --- | --- |
+| `base` | `temporal_grounding`, `llava_mcq` |
+| `aot` | `seg_aot_*` / 其他包含 `aot` 的任务 |
+| `seg` | `temporal_seg*`, `hier_seg*` |
+| `logic` | `event_logic*` |
+
+注意：当前 teacher routing 仍然把 `base` 样本路由到 AoT teacher；这里的 `base` 只是 batch sampler 的桶名，为后续单独接 TG/Base teacher 预留。
 
 ### 6.2 `run_multi_task.sh` 支持 multi-teacher 参数
 
