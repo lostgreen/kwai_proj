@@ -77,3 +77,30 @@ def test_teacher_topk_result_carries_temperature_meta_info():
     ]
 
     assert any(keyword.arg == "meta_info" for call in data_proto_calls for keyword in call.keywords)
+
+
+def test_opd_metrics_path_does_not_require_reward_or_advantage_fields():
+    metrics_source = Path("verl/trainer/metrics.py").read_text()
+    metrics_module = ast.parse(metrics_source)
+    fn = next(
+        (
+            node
+            for node in ast.walk(metrics_module)
+            if isinstance(node, ast.FunctionDef) and node.name == "compute_opd_data_metrics"
+        ),
+        None,
+    )
+
+    assert fn is not None
+    string_constants = {
+        node.value
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "token_level_scores" not in string_constants
+    assert "token_level_rewards" not in string_constants
+    assert "advantages" not in string_constants
+    assert "returns" not in string_constants
+
+    trainer_source = Path("verl/trainer/ray_trainer.py").read_text()
+    assert "compute_opd_data_metrics" in trainer_source

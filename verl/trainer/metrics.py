@@ -145,12 +145,34 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = False) -> dict[str
     }
 
 
+def compute_opd_data_metrics(batch: DataProto) -> dict[str, Any]:
+    metrics = compute_length_metrics(batch)
+
+    if "teacher_topk_logps" in batch.batch and "response_mask" in batch.batch:
+        response_mask = batch.batch["response_mask"].bool()
+        teacher_topk_mass = batch.batch["teacher_topk_logps"].float().exp().sum(dim=-1)
+        valid_teacher_topk_mass = torch.masked_select(teacher_topk_mass, response_mask)
+        if valid_teacher_topk_mass.numel() > 0:
+            metrics.update(
+                {
+                    "opd/teacher_topk_prob_mass/mean": torch.mean(valid_teacher_topk_mass).detach().item(),
+                    "opd/teacher_topk_prob_mass/max": torch.max(valid_teacher_topk_mass).detach().item(),
+                    "opd/teacher_topk_prob_mass/min": torch.min(valid_teacher_topk_mass).detach().item(),
+                }
+            )
+
+    return metrics
+
+
 def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> dict[str, Any]:
     num_response_tokens = torch.sum(batch.batch["response_mask"]).item()
     num_overall_tokens = sum(batch.meta_info["global_token_num"])
     num_tokens_of_section = {
         **dict.fromkeys(["gen", "reward"], num_response_tokens),
-        **dict.fromkeys(["ref", "old", "values", "adv", "update_critic", "update_actor"], num_overall_tokens),
+        **dict.fromkeys(
+            ["ref", "old", "values", "adv", "teacher", "update_critic", "update_actor"],
+            num_overall_tokens,
+        ),
     }
     return {
         **{f"timing_s/{name}": value for name, value in timing_raw.items()},

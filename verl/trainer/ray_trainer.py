@@ -58,6 +58,7 @@ from .core_algos import (
 from .metrics import (
     compute_data_metrics,
     compute_length_metrics,
+    compute_opd_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
     reduce_metrics,
@@ -1016,7 +1017,10 @@ class RayPPOTrainer:
 
             # collect metrics
             num_gpus = self.resource_pool_manager.get_num_gpus()
-            metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+            if self.use_opd:
+                metrics.update(compute_opd_data_metrics(batch=batch))
+            else:
+                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
             metrics["debug/consumed_samples"] = self._consumed_samples
             metrics["debug/effective_epoch"] = self._consumed_samples / max(self._dataset_size, 1)
             metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
