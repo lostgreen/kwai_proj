@@ -246,7 +246,7 @@ finally:
 
 文件：`local_scripts/run_multi_teacher_opd.sh`
 
-必须提供：
+可覆盖默认 teacher：
 
 ```bash
 AOT_TEACHER_MODEL_PATH=/path/to/aot_teacher
@@ -266,15 +266,33 @@ EVENTLOGIC_TEACHER_MODEL_PATH=/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed
 
 ```bash
 N_GPUS_PER_NODE=2
-TP_SIZE=2
+TP_SIZE=1
+ROLLOUT_BS=16
+GLOBAL_BS=16
 ROLLOUT_N=1
+ROLLOUT_TEMPERATURE=1.0
 TRAINING_MODE=opd
 DISABLE_KL=false
 USE_KL_LOSS=false
 ONLINE_FILTERING=false
+OPD_TOPK=10
+OPD_KL_COEF=1.0
+MAX_FRAMES=256
+MAX_PIXELS=65536
+MAX_STEPS=50
+SAVE_FREQ=50
+SAVE_LIMIT=3
 ACTOR_OFFLOAD_PARAMS=true
 ACTOR_OFFLOAD_OPTIMIZER=true
 REF_OFFLOAD_PARAMS=true
+```
+
+默认训练数据直接使用 task-composition 产出的全组合 `mf256` 数据：
+
+```bash
+TRAIN_FILE=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/experiments/composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema/train.jsonl
+TEST_FILE=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/experiments/composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema/val.jsonl
+TASKS="tg mcq hier_seg event_logic aot"
 ```
 
 ### 6.2 `run_multi_task.sh` 支持 multi-teacher 参数
@@ -304,9 +322,6 @@ worker.ref.model.model_path="${TEACHER_MODEL_PATH}"
 最小 2 卡 smoke run：
 
 ```bash
-AOT_TEACHER_MODEL_PATH=/path/to/aot_teacher \
-SEG_TEACHER_MODEL_PATH=/path/to/seg_teacher \
-EVENTLOGIC_TEACHER_MODEL_PATH=/path/to/eventlogic_teacher \
 bash local_scripts/run_multi_teacher_opd.sh
 ```
 
@@ -314,12 +329,12 @@ bash local_scripts/run_multi_teacher_opd.sh
 
 ```bash
 MODEL_PATH=/path/to/student
-EXP_NAME=multi_teacher_opd_2gpu_smoke
-ROLLOUT_BS=8
-GLOBAL_BS=8
+EXP_NAME=multi_teacher_opd_2gpu_mf256_sanity
+ROLLOUT_BS=16
+GLOBAL_BS=16
 MB_PER_UPDATE=1
 MB_PER_EXP=1
-OPD_TOPK=20
+OPD_TOPK=10
 OPD_KL_COEF=1.0
 ROLLOUT_GPU_MEM_UTIL=0.35
 ```

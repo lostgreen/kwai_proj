@@ -151,7 +151,7 @@ def test_multi_teacher_opd_launcher_wires_three_teachers_and_cpu_offload():
     assert "EVENTLOGIC_TEACHER_MODEL_PATH" in script
     assert "REF_OFFLOAD_PARAMS=\"${REF_OFFLOAD_PARAMS:-true}\"" in script
     assert "ACTOR_OFFLOAD_PARAMS=\"${ACTOR_OFFLOAD_PARAMS:-true}\"" in script
-    assert "TASKS=\"${TASKS:-hier_seg aot event_logic}\"" in script
+    assert "TASKS=\"${TASKS:-tg mcq hier_seg event_logic aot}\"" in script
 
 
 def test_multi_teacher_opd_launcher_enables_homogeneous_batching_by_default():
@@ -160,3 +160,62 @@ def test_multi_teacher_opd_launcher_enables_homogeneous_batching_by_default():
 
     assert 'TASK_HOMOGENEOUS_BATCHING="${TASK_HOMOGENEOUS_BATCHING:-true}"' in launcher
     assert 'data.task_homogeneous_batching="${TASK_HOMOGENEOUS_BATCHING}"' in runner
+
+
+def test_multi_teacher_opd_launcher_preserves_mf256_default():
+    launcher = Path("local_scripts/run_multi_teacher_opd.sh").read_text()
+
+    assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in launcher
+
+
+def test_single_teacher_opd_launcher_defaults_to_base_aot_mf256_sanity_data():
+    launcher = Path("local_scripts/run_single_teacher_opd.sh").read_text()
+
+    assert (
+        'TEACHER_MODEL_PATH="${TEACHER_MODEL_PATH:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/'
+        "multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations/"
+        'composition_base_aot_aot10k_mf256_ema/global_step_200/actor/huggingface}"'
+    ) in launcher
+    assert (
+        'TRAIN_FILE="${TRAIN_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
+        'experiments/composition_base_aot_aot10k_mf256_ema/train.jsonl}"'
+    ) in launcher
+    assert (
+        'TEST_FILE="${TEST_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
+        'experiments/composition_base_aot_aot10k_mf256_ema/val.jsonl}"'
+    ) in launcher
+    assert 'TASKS="${TASKS:-tg mcq aot}"' in launcher
+    assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in launcher
+    assert 'MAX_PIXELS="${MAX_PIXELS:-65536}"' in launcher
+    assert 'TP_SIZE="${TP_SIZE:-1}"' in launcher
+    assert 'ROLLOUT_BS="${ROLLOUT_BS:-16}"' in launcher
+    assert 'GLOBAL_BS="${GLOBAL_BS:-16}"' in launcher
+    assert 'ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"' in launcher
+    assert 'OPD_TOPK="${OPD_TOPK:-10}"' in launcher
+    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in launcher
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:-3}"' in launcher
+    assert 'MAX_STEPS="${MAX_STEPS:-50}"' in launcher
+
+
+def test_multi_teacher_opd_launcher_defaults_to_full_composition_mf256_data():
+    launcher = Path("local_scripts/run_multi_teacher_opd.sh").read_text()
+
+    assert (
+        'TRAIN_FILE="${TRAIN_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
+        'experiments/composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema/train.jsonl}"'
+    ) in launcher
+    assert (
+        'TEST_FILE="${TEST_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
+        'experiments/composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema/val.jsonl}"'
+    ) in launcher
+    assert 'TASKS="${TASKS:-tg mcq hier_seg event_logic aot}"' in launcher
+    assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in launcher
+    assert 'MAX_PIXELS="${MAX_PIXELS:-65536}"' in launcher
+    assert 'TP_SIZE="${TP_SIZE:-1}"' in launcher
+    assert 'ROLLOUT_BS="${ROLLOUT_BS:-16}"' in launcher
+    assert 'GLOBAL_BS="${GLOBAL_BS:-16}"' in launcher
+    assert 'ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"' in launcher
+    assert 'OPD_TOPK="${OPD_TOPK:-10}"' in launcher
+    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in launcher
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:-3}"' in launcher
+    assert 'MAX_STEPS="${MAX_STEPS:-50}"' in launcher
