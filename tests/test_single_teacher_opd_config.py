@@ -154,6 +154,15 @@ def test_multi_teacher_opd_launcher_wires_three_teachers_and_cpu_offload():
     assert "TASKS=\"${TASKS:-tg mcq hier_seg event_logic aot}\"" in script
 
 
+def test_multi_teacher_cli_overrides_do_not_use_hydra_plus_prefix():
+    runner = Path("local_scripts/run_multi_task.sh").read_text()
+
+    assert "+worker.ref.teacher_models" not in runner
+    assert 'worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}"' in runner
+    assert 'worker.ref.teacher_models.seg.model_path="${SEG_TEACHER_MODEL_PATH}"' in runner
+    assert 'worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}"' in runner
+
+
 def test_multi_teacher_opd_launcher_enables_homogeneous_batching_by_default():
     launcher = Path("local_scripts/run_multi_teacher_opd.sh").read_text()
     runner = Path("local_scripts/run_multi_task.sh").read_text()

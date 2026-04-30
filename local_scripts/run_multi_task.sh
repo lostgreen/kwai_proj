@@ -358,15 +358,15 @@ if [[ -n "${AOT_TEACHER_MODEL_PATH}${SEG_TEACHER_MODEL_PATH}${EVENTLOGIC_TEACHER
             exit 1
         fi
     done
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.aot.tokenizer_path="${AOT_TEACHER_TOKENIZER_PATH:-${AOT_TEACHER_MODEL_PATH}}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.aot.trust_remote_code="${AOT_TEACHER_TRUST_REMOTE_CODE}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.seg.model_path="${SEG_TEACHER_MODEL_PATH}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.seg.tokenizer_path="${SEG_TEACHER_TOKENIZER_PATH:-${SEG_TEACHER_MODEL_PATH}}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.seg.trust_remote_code="${SEG_TEACHER_TRUST_REMOTE_CODE}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.eventlogic.tokenizer_path="${EVENTLOGIC_TEACHER_TOKENIZER_PATH:-${EVENTLOGIC_TEACHER_MODEL_PATH}}")
-    TEACHER_MODEL_ARGS+=(+worker.ref.teacher_models.eventlogic.trust_remote_code="${EVENTLOGIC_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.tokenizer_path="${AOT_TEACHER_TOKENIZER_PATH:-${AOT_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.trust_remote_code="${AOT_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.model_path="${SEG_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.tokenizer_path="${SEG_TEACHER_TOKENIZER_PATH:-${SEG_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.trust_remote_code="${SEG_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.tokenizer_path="${EVENTLOGIC_TEACHER_TOKENIZER_PATH:-${EVENTLOGIC_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.trust_remote_code="${EVENTLOGIC_TEACHER_TRUST_REMOTE_CODE}")
     TEACHER_MODEL_ARGS+=(worker.ref.teacher_key="${OPD_TEACHER_KEY}")
     if [[ -n "${OPD_DEFAULT_TEACHER}" ]]; then
         TEACHER_MODEL_ARGS+=(worker.ref.default_teacher="${OPD_DEFAULT_TEACHER}")
