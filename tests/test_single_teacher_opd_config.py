@@ -219,3 +219,19 @@ def test_multi_teacher_opd_launcher_defaults_to_full_composition_mf256_data():
     assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in launcher
     assert 'SAVE_LIMIT="${SAVE_LIMIT:-3}"' in launcher
     assert 'MAX_STEPS="${MAX_STEPS:-50}"' in launcher
+    assert 'HIER_TARGET="${HIER_TARGET:-10000}"' in launcher
+    assert 'EL_TRAIN="${EL_TRAIN:-${EL_HARDER_DATA}/train_10k.jsonl}"' in launcher
+    assert 'EL_VAL_SOURCE="${EL_VAL_SOURCE:-${EL_HARDER_DATA}/val_logic.jsonl}"' in launcher
+    assert 'EL_TARGET="${EL_TARGET:-10000}"' in launcher
+    assert 'VAL_EL_N="${VAL_EL_N:-300}"' in launcher
+    assert 'AOT_TARGET="${AOT_TARGET:-10000}"' in launcher
+    assert 'VAL_AOT_N="${VAL_AOT_N:-300}"' in launcher
+
+
+def test_multi_task_runner_checks_raw_sources_only_when_mix_is_needed():
+    runner = Path("local_scripts/run_multi_task.sh").read_text()
+
+    mix_gate_index = runner.index('if [[ "${NEEDS_MIX}" == "true" ]]; then')
+    source_check_index = runner.index("    check \\")
+
+    assert mix_gate_index < source_check_index

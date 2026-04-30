@@ -295,6 +295,8 @@ TEST_FILE=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/experiments/c
 TASKS="tg mcq hier_seg event_logic aot"
 ```
 
+如果 `TRAIN_FILE` 和 `TEST_FILE` 已存在，`run_multi_task.sh` 会直接使用这批 experiment JSONL，不再先检查 `EL_TRAIN/EL_VAL_SOURCE` 等 raw source；只有缺文件、`MIX_FORCE=true` 或 frame policy/val count 不匹配需要重混时，才会执行 raw-source preflight。
+
 ### 6.2 `run_multi_task.sh` 支持 multi-teacher 参数
 
 文件：`local_scripts/run_multi_task.sh`

@@ -87,28 +87,6 @@ if [[ "${EXP_NAME}" == frame_ablation_* && "${HIER_TRAIN:-}" != *"/train_phasecr
 fi
 
 # ============================================================
-# Pre-flight: 检查 base/ val/ 是否存在
-# ============================================================
-# shellcheck disable=SC2086
-python3 -c "
-import sys; sys.path.insert(0, '${REPO_ROOT}')
-from local_scripts.data.mixer import main; main()
-" \
-    --data-root "${MULTI_TASK_DATA_ROOT}" \
-    check \
-    --tasks ${TASKS} \
-    --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
-    --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
-    ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
-    ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
-    ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
-    --val-el-n "${VAL_EL_N}" \
-    ${AOT_TRAIN:+--aot-train "${AOT_TRAIN}"} \
-    ${AOT_VAL_SOURCE:+--aot-val-source "${AOT_VAL_SOURCE}"} \
-    --val-aot-n "${VAL_AOT_N}" \
-|| { echo "[multi-task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
-
-# ============================================================
 # Step 0: 混合实验数据（仅首次）
 # ============================================================
 NEEDS_MIX=false
@@ -195,6 +173,28 @@ PY
 fi
 
 if [[ "${NEEDS_MIX}" == "true" ]]; then
+    # ============================================================
+    # Pre-flight: 检查需要重新混合时的 base/val/raw source
+    # ============================================================
+    # shellcheck disable=SC2086
+    python3 -c "
+import sys; sys.path.insert(0, '${REPO_ROOT}')
+from local_scripts.data.mixer import main; main()
+" \
+        --data-root "${MULTI_TASK_DATA_ROOT}" \
+        check \
+        --tasks ${TASKS} \
+        --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
+        --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
+        ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
+        ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
+        ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
+        --val-el-n "${VAL_EL_N}" \
+        ${AOT_TRAIN:+--aot-train "${AOT_TRAIN}"} \
+        ${AOT_VAL_SOURCE:+--aot-val-source "${AOT_VAL_SOURCE}"} \
+        --val-aot-n "${VAL_AOT_N}" \
+    || { echo "[multi-task] Please run: bash local_scripts/setup_base_data.sh" >&2; exit 1; }
+
     echo "[multi-task] Building experiment data for: ${EXP_NAME} (${MIX_REASON})"
     _MIX_FORCE_FLAG=""
     if [[ -f "${TRAIN_FILE}" || -f "${TEST_FILE}" ]]; then
