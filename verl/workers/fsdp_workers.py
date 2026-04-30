@@ -737,7 +737,8 @@ class FSDPWorker(Worker):
                 tensors={
                     "teacher_topk_logps": topk_logps,
                     "teacher_topk_indices": topk_indices,
-                }
+                },
+                meta_info={"temperature": self.config.rollout.temperature},
             )
             output = self.ulysses_sharding_manager.postprocess_data(output)
 

@@ -1,3 +1,5 @@
+import ast
+from pathlib import Path
 import sys
 import types
 
@@ -53,3 +55,25 @@ def test_opd_mode_syncs_distillation_knobs_to_actor():
     assert config.worker.actor.opd_enabled is True
     assert config.worker.actor.opd_topk == 16
     assert config.worker.actor.opd_kl_coef == 0.7
+
+
+def test_teacher_topk_result_carries_temperature_meta_info():
+    source = Path("verl/workers/fsdp_workers.py").read_text()
+    module = ast.parse(source)
+    fn = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "compute_ref_topk_log_probs"
+    )
+
+    data_proto_calls = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "from_dict"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "DataProto"
+    ]
+
+    assert any(keyword.arg == "meta_info" for call in data_proto_calls for keyword in call.keywords)
