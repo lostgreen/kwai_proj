@@ -15,11 +15,12 @@
 ActorRolloutRef config
 """
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from .actor import ActorConfig, FSDPConfig, ModelConfig, OptimConfig, RefConfig
 from .critic import CriticConfig
-from .reward import RewardConfig
+from .reward.config import RewardConfig
 from .rollout import RolloutConfig
 
 
@@ -46,6 +47,9 @@ class WorkerConfig:
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
 
     def post_init(self):
+        if self.ref.model.model_path is None:
+            self.ref.model = deepcopy(self.actor.model)
+
         self.ref.micro_batch_size_per_device_for_experience = self.actor.micro_batch_size_per_device_for_experience
         self.ref.padding_free = self.actor.padding_free
         self.ref.dynamic_batching = self.actor.dynamic_batching

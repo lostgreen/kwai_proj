@@ -159,7 +159,7 @@ class FSDPWorker(Worker):
         padding_free: bool,
         role: Literal["actor", "critic", "ref"],
     ) -> None:
-        if role != "ref":  # ref model's tokenizer is same as actor
+        if role != "ref" or not hasattr(self, "tokenizer"):
             self.tokenizer = get_tokenizer(
                 model_config.tokenizer_path,
                 trust_remote_code=model_config.trust_remote_code,
@@ -170,24 +170,28 @@ class FSDPWorker(Worker):
                 trust_remote_code=model_config.trust_remote_code,
                 use_fast=True,
             )
-            self.model_config = AutoConfig.from_pretrained(
-                model_config.model_path,
-                trust_remote_code=model_config.trust_remote_code,
-                bos_token_id=self.tokenizer.bos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=self.tokenizer.pad_token_id,
-                **model_config.override_config,
-            )
 
+        hf_model_config = AutoConfig.from_pretrained(
+            model_config.model_path,
+            trust_remote_code=model_config.trust_remote_code,
+            bos_token_id=self.tokenizer.bos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            pad_token_id=self.tokenizer.pad_token_id,
+            **model_config.override_config,
+        )
+        if role != "ref":
+            self.model_config = hf_model_config
             try:
                 self.generation_config = GenerationConfig.from_pretrained(model_config.model_path)
             except Exception:
-                self.generation_config = GenerationConfig.from_model_config(self.model_config)
+                self.generation_config = GenerationConfig.from_model_config(hf_model_config)
 
-            self.print_rank0(f"Model config: {self.model_config}")
+            self.print_rank0(f"Model config: {hf_model_config}")
+        else:
+            self.print_rank0(f"Ref/teacher model config: {hf_model_config}")
 
         if padding_free:
-            apply_ulysses_patch(self.model_config.model_type)
+            apply_ulysses_patch(hf_model_config.model_type)
             self.print_rank0("Ulysses patch applied!")
 
         if fsdp_config.torch_dtype is None:
@@ -197,7 +201,7 @@ class FSDPWorker(Worker):
 
         if role == "critic":
             AutoClass = AutoModelForTokenClassification
-        elif type(self.model_config) in AutoModelForImageTextToText._model_mapping.keys():
+        elif type(hf_model_config) in AutoModelForImageTextToText._model_mapping.keys():
             AutoClass = AutoModelForImageTextToText
         else:
             AutoClass = AutoModelForCausalLM
@@ -205,7 +209,7 @@ class FSDPWorker(Worker):
         if (not fsdp_config.enable_rank0_init) or self.device_mesh.get_local_rank("fsdp") == 0:
             model = AutoClass.from_pretrained(
                 model_config.model_path,
-                config=self.model_config,
+                config=hf_model_config,
                 torch_dtype=torch_dtype,
                 attn_implementation="flash_attention_2",
                 device_map="cpu" if fsdp_config.enable_rank0_init else "cuda",
@@ -215,7 +219,7 @@ class FSDPWorker(Worker):
         else:
             with no_init_weights(), init_empty_weights():
                 model = AutoClass.from_config(
-                    self.model_config,
+                    hf_model_config,
                     torch_dtype=torch_dtype,
                     attn_implementation="flash_attention_2",
                     trust_remote_code=model_config.trust_remote_code,
@@ -386,7 +390,7 @@ class FSDPWorker(Worker):
 
         if self._has_ref:
             self._build_model_optimizer(
-                model_config=self.config.actor.model,
+                model_config=self.config.ref.model,
                 fsdp_config=self.config.ref.fsdp,
                 optim_config=None,
                 padding_free=self.config.ref.padding_free,
@@ -701,6 +705,42 @@ class FSDPWorker(Worker):
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
+        if self.world_size > 1:
+            self.ref_fsdp_module._handle.reshard(True)
+
+        if self._use_ref_param_offload:
+            offload_fsdp_model(self.ref_fsdp_module)
+
+        output = output.to("cpu")
+        self._set_phase("idle")
+        return output
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def compute_ref_topk_log_probs(self, data: DataProto):
+        assert self._has_ref
+        self._set_phase("update")
+
+        self._process_multi_modal_inputs(data)
+        data = data.to(torch.cuda.current_device())
+
+        if self._use_ref_param_offload:
+            load_fsdp_model(self.ref_fsdp_module)
+
+        data.meta_info["temperature"] = self.config.rollout.temperature
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data)
+            topk_logps, topk_indices = self.ref_policy.compute_topk_log_probs(
+                data=data,
+                topk=self.config.actor.opd_topk,
+            )
+            output = DataProto.from_dict(
+                tensors={
+                    "teacher_topk_logps": topk_logps,
+                    "teacher_topk_indices": topk_indices,
+                }
+            )
+            output = self.ulysses_sharding_manager.postprocess_data(output)
+
         if self.world_size > 1:
             self.ref_fsdp_module._handle.reshard(True)
 

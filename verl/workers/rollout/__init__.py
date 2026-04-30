@@ -12,9 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from .config import RolloutConfig
-from .vllm_rollout_spmd import vLLMRollout
 
 
 __all__ = ["RolloutConfig", "vLLMRollout"]
+
+
+def __getattr__(name: str):
+    if name == "vLLMRollout":
+        from .vllm_rollout_spmd import vLLMRollout
+
+        return vLLMRollout
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

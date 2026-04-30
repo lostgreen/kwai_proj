@@ -247,6 +247,7 @@ class RayPPOTrainer:
         self.resource_pool_manager = resource_pool_manager
         self.use_reward_model = Role.RewardModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
+        self.use_opd = config.algorithm.training_mode == "opd"
 
         # define KL control
         if config.algorithm.disable_kl:
@@ -261,6 +262,16 @@ class RayPPOTrainer:
             self.use_critic = True
         else:
             self.use_critic = False
+
+        if self.use_opd:
+            if config.algorithm.disable_kl:
+                raise ValueError("OPD requires a teacher/reference policy. Set algorithm.disable_kl=false.")
+            if config.worker.rollout.n != 1:
+                raise ValueError("OPD uses single on-policy rollout per prompt. Set worker.rollout.n=1.")
+            if config.algorithm.online_filtering:
+                raise ValueError("OPD does not compute reward groups. Set algorithm.online_filtering=false.")
+            if self.use_critic:
+                raise ValueError("OPD is distillation-only and does not use a critic.")
 
         if config.algorithm.adv_estimator not in list(AdvantageEstimator):
             raise NotImplementedError(f"Unknown advantage estimator: {config.algorithm.adv_estimator}.")
@@ -287,7 +298,8 @@ class RayPPOTrainer:
                 )
 
         if (
-            config.algorithm.adv_estimator in (AdvantageEstimator.GRPO, AdvantageEstimator.RLOO)
+            not self.use_opd
+            and config.algorithm.adv_estimator in (AdvantageEstimator.GRPO, AdvantageEstimator.RLOO)
             and config.worker.rollout.n == 1
         ):
             raise ValueError("GRPO and RLOO algorithm need `config.worker.rollout.n > 1`.")
@@ -510,7 +522,10 @@ class RayPPOTrainer:
 
     def _save_train_rollouts(self, batch: DataProto) -> None:
         """Save training rollouts at current step to {save_checkpoint_path}/rollouts/step_XXXXXX.jsonl."""
-        scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+        if "token_level_scores" in batch.batch:
+            scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+        else:
+            scores = [0.0] * len(batch)
         multimodal_sources = batch.non_tensor_batch.get("multi_modal_data", [None] * len(scores))
         self._save_rollouts(batch, scores=scores, multimodal_sources=multimodal_sources, phase="train")
 
@@ -879,84 +894,97 @@ class RayPPOTrainer:
                 # compute global valid tokens
                 batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
-                # compute reward
-                if "token_level_scores" not in batch.batch:
-                    with timer("reward", timing_raw):
-                        reward_ref = self.reward_fn.compute_reward.remote(batch)
+                if self.use_opd:
+                    with timer("teacher", timing_raw):
+                        teacher_topk = self.actor_rollout_ref_wg.compute_ref_topk_log_probs(batch)
+                        batch = batch.union(teacher_topk)
 
-                # recompute old_log_probs
-                with timer("old", timing_raw):
-                    old_log_probs = self.actor_rollout_ref_wg.compute_log_probs(batch)
-                    batch = batch.union(old_log_probs)
+                    self._save_train_rollouts(batch)
 
-                # compute ref_log_probs
-                if self.use_reference_policy:
-                    with timer("ref", timing_raw):
-                        ref_log_probs = self.actor_rollout_ref_wg.compute_ref_log_probs(batch)
-                        batch = batch.union(ref_log_probs)
-
-                # compute values
-                if self.use_critic:
-                    with timer("values", timing_raw):
-                        values = self.critic_wg.compute_values(batch)
-                        batch = batch.union(values)
-
-                with timer("adv", timing_raw):
-                    if "token_level_scores" not in batch.batch:
-                        # get token level scores asynchronously
-                        reward_tensor, reward_metrics = ray.get(reward_ref)
-                        batch.batch["token_level_scores"] = reward_tensor
-                        reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
-                        metrics.update(reward_metrics)
-
-                        # 按任务类型统计奖励
-                        problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(reward_tensor))
-                        task_rewards = {}
-                        for pidx, ptype in enumerate(problem_types):
-                            if ptype not in task_rewards:
-                                task_rewards[ptype] = []
-                            task_rewards[ptype].append(reward_tensor[pidx].sum().item())
-
-                        # 计算每个任务的平均奖励并记录
-                        for task_type, task_scores in task_rewards.items():
-                            if task_scores:
-                                avg_reward = sum(task_scores) / len(task_scores)
-                                metrics[f"reward/{task_type}"] = avg_reward
-
-                    # apply kl penalty if available
-                    if not self.config.algorithm.use_kl_loss and self.use_reference_policy:
-                        # apply kl penalty to reward
-                        batch, kl_metrics = apply_kl_penalty(batch, self.kl_ctrl, self.config.algorithm.kl_penalty)
-                        metrics.update(kl_metrics)
-                    else:
-                        batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
-
-                    # compute advantages, executed on the driver process
-                    batch = compute_advantage(
-                        batch,
-                        adv_estimator=self.config.algorithm.adv_estimator,
-                        gamma=self.config.algorithm.gamma,
-                        lam=self.config.algorithm.lam,
-                    )
-
-                # save training rollouts to file (every step)
-                self._save_train_rollouts(batch)
-
-                # update critic
-                if self.use_critic:
-                    with timer("update_critic", timing_raw):
-                        critic_output = self.critic_wg.update_critic(batch)
-
-                    critic_metrics = reduce_metrics(critic_output.non_tensor_batch)
-                    metrics.update(critic_metrics)
-
-                # update actor
-                if self.config.trainer.critic_warmup <= self.global_step:
                     with timer("update_actor", timing_raw):
                         actor_output = self.actor_rollout_ref_wg.update_actor(batch)
 
                     actor_metrics = reduce_metrics(actor_output.non_tensor_batch)
                     metrics.update(actor_metrics)
+                else:
+                    # compute reward
+                    if "token_level_scores" not in batch.batch:
+                        with timer("reward", timing_raw):
+                            reward_ref = self.reward_fn.compute_reward.remote(batch)
+
+                    # recompute old_log_probs
+                    with timer("old", timing_raw):
+                        old_log_probs = self.actor_rollout_ref_wg.compute_log_probs(batch)
+                        batch = batch.union(old_log_probs)
+
+                    # compute ref_log_probs
+                    if self.use_reference_policy:
+                        with timer("ref", timing_raw):
+                            ref_log_probs = self.actor_rollout_ref_wg.compute_ref_log_probs(batch)
+                            batch = batch.union(ref_log_probs)
+
+                    # compute values
+                    if self.use_critic:
+                        with timer("values", timing_raw):
+                            values = self.critic_wg.compute_values(batch)
+                            batch = batch.union(values)
+
+                    with timer("adv", timing_raw):
+                        if "token_level_scores" not in batch.batch:
+                            # get token level scores asynchronously
+                            reward_tensor, reward_metrics = ray.get(reward_ref)
+                            batch.batch["token_level_scores"] = reward_tensor
+                            reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
+                            metrics.update(reward_metrics)
+
+                            # 按任务类型统计奖励
+                            problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(reward_tensor))
+                            task_rewards = {}
+                            for pidx, ptype in enumerate(problem_types):
+                                if ptype not in task_rewards:
+                                    task_rewards[ptype] = []
+                                task_rewards[ptype].append(reward_tensor[pidx].sum().item())
+
+                            # 计算每个任务的平均奖励并记录
+                            for task_type, task_scores in task_rewards.items():
+                                if task_scores:
+                                    avg_reward = sum(task_scores) / len(task_scores)
+                                    metrics[f"reward/{task_type}"] = avg_reward
+
+                        # apply kl penalty if available
+                        if not self.config.algorithm.use_kl_loss and self.use_reference_policy:
+                            # apply kl penalty to reward
+                            batch, kl_metrics = apply_kl_penalty(batch, self.kl_ctrl, self.config.algorithm.kl_penalty)
+                            metrics.update(kl_metrics)
+                        else:
+                            batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
+
+                        # compute advantages, executed on the driver process
+                        batch = compute_advantage(
+                            batch,
+                            adv_estimator=self.config.algorithm.adv_estimator,
+                            gamma=self.config.algorithm.gamma,
+                            lam=self.config.algorithm.lam,
+                        )
+
+                    # save training rollouts to file (every step)
+                    self._save_train_rollouts(batch)
+
+                    # update critic
+                    if self.use_critic:
+                        with timer("update_critic", timing_raw):
+                            critic_output = self.critic_wg.update_critic(batch)
+
+                        critic_metrics = reduce_metrics(critic_output.non_tensor_batch)
+                        metrics.update(critic_metrics)
+
+                    # update actor
+                    if self.config.trainer.critic_warmup <= self.global_step:
+                        with timer("update_actor", timing_raw):
+                            actor_output = self.actor_rollout_ref_wg.update_actor(batch)
+
+                        actor_metrics = reduce_metrics(actor_output.non_tensor_batch)
+                        metrics.update(actor_metrics)
 
                 # validate
                 if (

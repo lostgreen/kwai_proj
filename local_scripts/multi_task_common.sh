@@ -26,6 +26,9 @@ PROJECT_NAME="${PROJECT_NAME:-EasyR1-multi-task}"
 
 # ---- 模型 ----
 MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
+TEACHER_MODEL_PATH="${TEACHER_MODEL_PATH:-}"
+TEACHER_TOKENIZER_PATH="${TEACHER_TOKENIZER_PATH:-${TEACHER_MODEL_PATH}}"
+TEACHER_TRUST_REMOTE_CODE="${TEACHER_TRUST_REMOTE_CODE:-false}"
 
 # ============================================================
 # 数据路径 (统一管理)
@@ -99,6 +102,7 @@ WARMUP_STYLE="${WARMUP_STYLE:-cosine}"
 # 核心算法
 # ============================================================
 ADV_ESTIMATOR="${ADV_ESTIMATOR:-ema_grpo}"
+TRAINING_MODE="${TRAINING_MODE:-rl}"
 ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-0.7}"
 DISABLE_KL="${DISABLE_KL:-false}"
 ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
@@ -109,8 +113,11 @@ CLIP_RATIO_LOW="${CLIP_RATIO_LOW:-0.2}"
 CLIP_RATIO_HIGH="${CLIP_RATIO_HIGH:-0.2}"
 
 # KL: 独立 loss, coef=0.04
+USE_KL_LOSS="${USE_KL_LOSS:-true}"
 KL_COEF="${KL_COEF:-0.04}"
 KL_PENALTY="${KL_PENALTY:-low_var_kl}"
+OPD_TOPK="${OPD_TOPK:-20}"
+OPD_KL_COEF="${OPD_KL_COEF:-1.0}"
 
 # ============================================================
 # Reward (统一多任务: MCQ + TG + HierSeg F1-IoU)
@@ -124,6 +131,7 @@ TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:-}"
 SAVE_FREQ="${SAVE_FREQ:-100}"
 VAL_FREQ="${VAL_FREQ:-50}"
+VAL_BEFORE_TRAIN="${VAL_BEFORE_TRAIN:-true}"
 SAVE_LIMIT="${SAVE_LIMIT:-2}"
 SAVE_BEST="${SAVE_BEST:-true}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task}"

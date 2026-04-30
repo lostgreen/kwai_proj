@@ -115,11 +115,15 @@ class ActorConfig:
     use_kl_loss: bool = field(default=False, init=False)
     kl_penalty: str = field(default="kl", init=False)
     kl_coef: float = field(default=0.0, init=False)
+    opd_enabled: bool = field(default=False, init=False)
+    opd_topk: int = field(default=20, init=False)
+    opd_kl_coef: float = field(default=1.0, init=False)
 
 
 @dataclass
 class RefConfig:
     strategy: str = "fsdp"
+    model: ModelConfig = field(default_factory=ModelConfig)
     fsdp: FSDPConfig = field(default_factory=FSDPConfig)
     offload: OffloadConfig = field(default_factory=OffloadConfig)
     # below are auto keys

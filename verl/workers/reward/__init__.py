@@ -13,7 +13,19 @@
 # limitations under the License.
 
 from .config import RewardConfig
-from .function import BatchFunctionRewardManager, FunctionRewardManager, SequentialFunctionRewardManager
 
 
 __all__ = ["BatchFunctionRewardManager", "FunctionRewardManager", "RewardConfig", "SequentialFunctionRewardManager"]
+
+
+def __getattr__(name: str):
+    if name in {"BatchFunctionRewardManager", "FunctionRewardManager", "SequentialFunctionRewardManager"}:
+        from .function import BatchFunctionRewardManager, FunctionRewardManager, SequentialFunctionRewardManager
+
+        return {
+            "BatchFunctionRewardManager": BatchFunctionRewardManager,
+            "FunctionRewardManager": FunctionRewardManager,
+            "SequentialFunctionRewardManager": SequentialFunctionRewardManager,
+        }[name]
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

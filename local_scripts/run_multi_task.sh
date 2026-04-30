@@ -52,7 +52,14 @@ echo "[multi-task] FRAME_SAMPLE_PROGRESS_INTERVAL=${FRAME_SAMPLE_PROGRESS_INTERV
 echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CHECK_EXPERIMENT_FRAME_FILES=${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE}"
 echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
 echo "[multi-task] VAL_BATCH_SIZE=${VAL_BATCH_SIZE_EFFECTIVE}"
-echo "[multi-task] ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
+echo "[multi-task] TRAINING_MODE=${TRAINING_MODE} ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
+if [[ "${TRAINING_MODE}" == "opd" ]]; then
+    echo "[multi-task] OPD_TOPK=${OPD_TOPK} OPD_KL_COEF=${OPD_KL_COEF}"
+fi
+if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
+    echo "[multi-task] TEACHER_MODEL_PATH=${TEACHER_MODEL_PATH}"
+    echo "[multi-task] TEACHER_TOKENIZER_PATH=${TEACHER_TOKENIZER_PATH:-<same-as-teacher>}"
+fi
 
 # Keep Ray session/state files on the node-local filesystem by default. The
 # checkpoint path may live on a network mount, and Ray mmaps temp/session files.
@@ -325,6 +332,13 @@ mkdir -p "${CHECKPOINT_ROOT}/${EXP_NAME}" "${TENSORBOARD_DIR}"
 export TENSORBOARD_DIR
 export TENSORBOARD_FLAT=1
 
+TEACHER_MODEL_ARGS=()
+if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
+    TEACHER_MODEL_ARGS+=(worker.ref.model.model_path="${TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.model.tokenizer_path="${TEACHER_TOKENIZER_PATH:-${TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.model.trust_remote_code="${TEACHER_TRUST_REMOTE_CODE}")
+fi
+
 # ============================================================
 # 启动训练
 # ============================================================
@@ -348,11 +362,14 @@ python3 -m verl.trainer.main \
     data.task_homogeneous_batching=false \
     data.task_weights="${TASK_WEIGHTS}" \
     data.task_key="problem_type" \
+    algorithm.training_mode="${TRAINING_MODE}" \
     algorithm.adv_estimator="${ADV_ESTIMATOR}" \
     algorithm.disable_kl="${DISABLE_KL}" \
-    algorithm.use_kl_loss=true \
+    algorithm.use_kl_loss="${USE_KL_LOSS}" \
     algorithm.kl_penalty="${KL_PENALTY}" \
     algorithm.kl_coef="${KL_COEF}" \
+    algorithm.opd_topk="${OPD_TOPK}" \
+    algorithm.opd_kl_coef="${OPD_KL_COEF}" \
     algorithm.online_filtering="${ONLINE_FILTERING}" \
     algorithm.filter_low="${FILTER_LOW}" \
     algorithm.filter_high="${FILTER_HIGH}" \
@@ -361,6 +378,7 @@ python3 -m verl.trainer.main \
     worker.actor.micro_batch_size_per_device_for_experience="${MB_PER_EXP}" \
     worker.actor.model.model_path="${MODEL_PATH}" \
     worker.actor.model.freeze_vision_tower=true \
+    "${TEACHER_MODEL_ARGS[@]}" \
     worker.actor.fsdp.torch_dtype=bf16 \
     worker.actor.optim.strategy=adamw_bf16 \
     worker.actor.optim.lr="${LR}" \
@@ -386,6 +404,7 @@ python3 -m verl.trainer.main \
     trainer.total_epochs="${TOTAL_EPOCHS}" \
     ${MAX_STEPS:+trainer.max_steps="$MAX_STEPS"} \
     trainer.val_freq="${VAL_FREQ}" \
+    trainer.val_before_train="${VAL_BEFORE_TRAIN}" \
     trainer.val_generations_to_log=4 \
     trainer.save_freq="${SAVE_FREQ}" \
     trainer.save_limit="${SAVE_LIMIT}" \

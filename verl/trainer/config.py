@@ -82,6 +82,8 @@ class DataConfig:
 
 @dataclass
 class AlgorithmConfig:
+    training_mode: str = "rl"
+    """training mode, support `rl` and `opd`"""
     gamma: float = 1.0
     """discount factor for ppo gae advantage estimator"""
     lam: float = 1.0
@@ -110,6 +112,10 @@ class AlgorithmConfig:
     """filter out low reward samples if online filtering"""
     filter_high: float = 0.99
     """filter out high reward samples if online filtering"""
+    opd_topk: int = 20
+    """teacher top-k distribution size for on-policy distillation"""
+    opd_kl_coef: float = 1.0
+    """coefficient for OPD sparse KL loss"""
 
 
 @dataclass
@@ -193,6 +199,9 @@ class PPOConfig:
         self.worker.actor.use_kl_loss = self.algorithm.use_kl_loss
         self.worker.actor.kl_penalty = self.algorithm.kl_penalty
         self.worker.actor.kl_coef = self.algorithm.kl_coef
+        self.worker.actor.opd_enabled = self.algorithm.training_mode == "opd"
+        self.worker.actor.opd_topk = self.algorithm.opd_topk
+        self.worker.actor.opd_kl_coef = self.algorithm.opd_kl_coef
 
     def deep_post_init(self):
         recursive_post_init(self)
