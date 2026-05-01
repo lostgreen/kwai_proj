@@ -8,7 +8,7 @@ Shared defaults:
 - Full epoch: `TOTAL_EPOCHS=1`, no `MAX_STEPS` unless `ALLOW_MAX_STEPS_OVERRIDE=true`
 - 8 GPUs: `N_GPUS_PER_NODE=8`
 - 4B EMA-GRPO rerun batch: `ROLLOUT_BS=64`, `GLOBAL_BS=64`, `VAL_BATCH_SIZE=64`
-- MOPD batch: `ROLLOUT_BS=32`, `GLOBAL_BS=32`, `VAL_BATCH_SIZE=32`
+- MOPD batch: `ROLLOUT_BS=64`, `GLOBAL_BS=64`, `VAL_BATCH_SIZE=64`
 - Save every 50 steps with no checkpoint pruning: `SAVE_FREQ=50`, `SAVE_LIMIT=-1`
 - Checkpoints:
   - 4B: `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/opd_comparison_4b`

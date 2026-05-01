@@ -107,9 +107,9 @@ opd_comparison_mopd_defaults() {
     ACTOR_OFFLOAD_PARAMS="${ACTOR_OFFLOAD_PARAMS:-true}"
     ACTOR_OFFLOAD_OPTIMIZER="${ACTOR_OFFLOAD_OPTIMIZER:-true}"
     REF_OFFLOAD_PARAMS="${REF_OFFLOAD_PARAMS:-true}"
-    ROLLOUT_BS="${ROLLOUT_BS:-32}"
-    GLOBAL_BS="${GLOBAL_BS:-32}"
-    VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-32}"
+    ROLLOUT_BS="${ROLLOUT_BS:-64}"
+    GLOBAL_BS="${GLOBAL_BS:-64}"
+    VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
 }
 
 opd_comparison_validate_rollout_tokens() {

@@ -239,6 +239,26 @@ def test_multi_teacher_opd_launcher_defaults_to_full_composition_mf256_data():
     assert 'VAL_AOT_N="${VAL_AOT_N:-300}"' in launcher
 
 
+def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
+    common = Path("local_scripts/opd_comparison/common.sh").read_text()
+    launcher = Path("local_scripts/opd_comparison/run_mopd_4b_full_epoch.sh").read_text()
+    runner = Path("local_scripts/run_multi_task.sh").read_text()
+
+    mopd_defaults = common[
+        common.index("opd_comparison_mopd_defaults()") : common.index("opd_comparison_validate_rollout_tokens()")
+    ]
+
+    assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"' in launcher
+    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"' in launcher
+    assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in mopd_defaults
+    assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in mopd_defaults
+    assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in mopd_defaults
+    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in common
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:--1}"' in common
+    assert 'trainer.save_freq="${SAVE_FREQ}"' in runner
+    assert 'trainer.save_limit="${SAVE_LIMIT}"' in runner
+
+
 def test_multi_task_runner_checks_raw_sources_only_when_mix_is_needed():
     runner = Path("local_scripts/run_multi_task.sh").read_text()
 

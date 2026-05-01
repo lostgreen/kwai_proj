@@ -13,7 +13,7 @@ opd_comparison_mopd_defaults
 
 MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"
-EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_full_comp_4b_teachers_bs32_mf256_epoch1_save50}"
+EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_full_comp_4b_teachers_bs64_mf256_epoch1_save50}"
 TP_SIZE="${TP_SIZE:-1}"
 
 opd_comparison_validate_rollout_tokens
