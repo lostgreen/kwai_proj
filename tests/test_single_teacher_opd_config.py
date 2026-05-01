@@ -268,6 +268,28 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
     assert 'trainer.save_limit="${SAVE_LIMIT}"' in runner
 
 
+def test_opd_comparison_grpo_defaults_do_not_enable_opd_teachers():
+    common = Path("local_scripts/opd_comparison/common.sh").read_text()
+
+    preamble = common[: common.index("opd_comparison_full_data_defaults()")]
+    grpo_defaults = common[
+        common.index("opd_comparison_grpo_defaults()") : common.index("opd_comparison_mopd_defaults()")
+    ]
+    mopd_defaults = common[
+        common.index("opd_comparison_mopd_defaults()") : common.index("opd_comparison_validate_rollout_tokens()")
+    ]
+
+    assert "AOT_TEACHER_MODEL_PATH=" not in preamble
+    assert "SEG_TEACHER_MODEL_PATH=" not in preamble
+    assert "EVENTLOGIC_TEACHER_MODEL_PATH=" not in preamble
+    assert 'AOT_TEACHER_MODEL_PATH=""' in grpo_defaults
+    assert 'SEG_TEACHER_MODEL_PATH=""' in grpo_defaults
+    assert 'EVENTLOGIC_TEACHER_MODEL_PATH=""' in grpo_defaults
+    assert 'AOT_TEACHER_MODEL_PATH="${AOT_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_aot_aot10k_mf256_ema/global_step_${AOT_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
+    assert 'SEG_TEACHER_MODEL_PATH="${SEG_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_seg_hier10k_mf256_ema/global_step_${SEG_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
+    assert 'EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_logic_el10k_mf256_ema/global_step_${EVENTLOGIC_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
+
+
 def test_multi_task_runner_checks_raw_sources_only_when_mix_is_needed():
     runner = Path("local_scripts/run_multi_task.sh").read_text()
 

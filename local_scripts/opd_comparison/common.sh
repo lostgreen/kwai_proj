@@ -20,9 +20,6 @@ CHECKPOINT_ROOT_8B_COMPARISON="${CHECKPOINT_ROOT_8B_COMPARISON:-/m2v_intern/xubo
 AOT_TEACHER_STEP="${AOT_TEACHER_STEP:-200}"
 SEG_TEACHER_STEP="${SEG_TEACHER_STEP:-250}"
 EVENTLOGIC_TEACHER_STEP="${EVENTLOGIC_TEACHER_STEP:-272}"
-AOT_TEACHER_MODEL_PATH="${AOT_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_aot_aot10k_mf256_ema/global_step_${AOT_TEACHER_STEP}/actor/huggingface}"
-SEG_TEACHER_MODEL_PATH="${SEG_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_seg_hier10k_mf256_ema/global_step_${SEG_TEACHER_STEP}/actor/huggingface}"
-EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_logic_el10k_mf256_ema/global_step_${EVENTLOGIC_TEACHER_STEP}/actor/huggingface}"
 
 validate_opd_teacher_paths() {
     local missing=0
@@ -107,6 +104,9 @@ opd_comparison_grpo_defaults() {
     VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
     ROLLOUT_GPU_MEM_UTIL="${ROLLOUT_GPU_MEM_UTIL:-0.55}"
     MB_PER_EXP="${MB_PER_EXP:-2}"
+    AOT_TEACHER_MODEL_PATH=""
+    SEG_TEACHER_MODEL_PATH=""
+    EVENTLOGIC_TEACHER_MODEL_PATH=""
 }
 
 opd_comparison_mopd_defaults() {
@@ -128,6 +128,9 @@ opd_comparison_mopd_defaults() {
     ACTOR_OFFLOAD_PARAMS="${ACTOR_OFFLOAD_PARAMS:-true}"
     ACTOR_OFFLOAD_OPTIMIZER="${ACTOR_OFFLOAD_OPTIMIZER:-true}"
     REF_OFFLOAD_PARAMS="${REF_OFFLOAD_PARAMS:-true}"
+    AOT_TEACHER_MODEL_PATH="${AOT_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_aot_aot10k_mf256_ema/global_step_${AOT_TEACHER_STEP}/actor/huggingface}"
+    SEG_TEACHER_MODEL_PATH="${SEG_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_seg_hier10k_mf256_ema/global_step_${SEG_TEACHER_STEP}/actor/huggingface}"
+    EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_logic_el10k_mf256_ema/global_step_${EVENTLOGIC_TEACHER_STEP}/actor/huggingface}"
     ROLLOUT_BS="${ROLLOUT_BS:-64}"
     GLOBAL_BS="${GLOBAL_BS:-64}"
     VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
