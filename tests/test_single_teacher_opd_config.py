@@ -247,6 +247,8 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
     launcher = Path("local_scripts/opd_comparison/run_mopd_4b_full_epoch.sh").read_text()
     launcher_8b = Path("local_scripts/opd_comparison/run_mopd_8b_from_4b_teachers.sh").read_text()
     runner = Path("local_scripts/run_multi_task.sh").read_text()
+    rollout_config = Path("verl/workers/rollout/config.py").read_text()
+    rollout_impl = Path("verl/workers/rollout/vllm_rollout_spmd.py").read_text()
 
     mopd_defaults = common[
         common.index("opd_comparison_mopd_defaults()") : common.index("opd_comparison_validate_rollout_tokens()")
@@ -262,10 +264,14 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
     assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in mopd_defaults
     assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in mopd_defaults
     assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in mopd_defaults
+    assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-64}"' in mopd_defaults
     assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in common
     assert 'SAVE_LIMIT="${SAVE_LIMIT:--1}"' in common
     assert 'trainer.save_freq="${SAVE_FREQ}"' in runner
     assert 'trainer.save_limit="${SAVE_LIMIT}"' in runner
+    assert 'worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}"' in runner
+    assert "max_num_seqs: int = 1024" in rollout_config
+    assert "max_num_seqs=config.max_num_seqs" in rollout_impl
 
 
 def test_opd_comparison_grpo_defaults_do_not_enable_opd_teachers():
@@ -285,6 +291,7 @@ def test_opd_comparison_grpo_defaults_do_not_enable_opd_teachers():
     assert 'AOT_TEACHER_MODEL_PATH=""' in grpo_defaults
     assert 'SEG_TEACHER_MODEL_PATH=""' in grpo_defaults
     assert 'EVENTLOGIC_TEACHER_MODEL_PATH=""' in grpo_defaults
+    assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-512}"' in grpo_defaults
     assert 'AOT_TEACHER_MODEL_PATH="${AOT_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_aot_aot10k_mf256_ema/global_step_${AOT_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
     assert 'SEG_TEACHER_MODEL_PATH="${SEG_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_seg_hier10k_mf256_ema/global_step_${SEG_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
     assert 'EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_logic_el10k_mf256_ema/global_step_${EVENTLOGIC_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults

@@ -103,6 +103,7 @@ opd_comparison_grpo_defaults() {
     GLOBAL_BS="${GLOBAL_BS:-64}"
     VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
     ROLLOUT_GPU_MEM_UTIL="${ROLLOUT_GPU_MEM_UTIL:-0.55}"
+    ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-512}"
     MB_PER_EXP="${MB_PER_EXP:-2}"
     AOT_TEACHER_MODEL_PATH=""
     SEG_TEACHER_MODEL_PATH=""
@@ -134,6 +135,7 @@ opd_comparison_mopd_defaults() {
     ROLLOUT_BS="${ROLLOUT_BS:-64}"
     GLOBAL_BS="${GLOBAL_BS:-64}"
     VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
+    ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-64}"
 }
 
 opd_comparison_validate_rollout_tokens() {

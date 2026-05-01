@@ -145,6 +145,7 @@ class vLLMRollout(BaseRollout):
             tensor_parallel_size=config.tensor_parallel_size,
             gpu_memory_utilization=config.gpu_memory_utilization,
             max_num_batched_tokens=config.max_num_batched_tokens,
+            max_num_seqs=config.max_num_seqs,
             disable_log_stats=config.disable_log_stats,
             enforce_eager=config.enforce_eager,
             disable_custom_all_reduce=True,

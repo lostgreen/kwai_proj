@@ -433,6 +433,7 @@ python3 -m verl.trainer.main \
     worker.rollout.tensor_parallel_size="${TP_SIZE}" \
     worker.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEM_UTIL}" \
     worker.rollout.max_num_batched_tokens="${ROLLOUT_MAX_BATCHED_TOKENS}" \
+    worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}" \
     worker.reward.reward_function="${REWARD_FUNCTION}" \
     worker.reward.reward_type=batch \
     trainer.project_name="${PROJECT_NAME}" \
