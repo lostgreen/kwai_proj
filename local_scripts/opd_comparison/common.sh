@@ -41,9 +41,6 @@ opd_comparison_full_data_defaults() {
 opd_comparison_8gpu_defaults() {
     N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
     NNODES="${NNODES:-1}"
-    ROLLOUT_BS="${ROLLOUT_BS:-32}"
-    GLOBAL_BS="${GLOBAL_BS:-32}"
-    VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-32}"
     MB_PER_UPDATE="${MB_PER_UPDATE:-1}"
     MB_PER_EXP="${MB_PER_EXP:-1}"
     MAX_FRAMES="${MAX_FRAMES:-256}"
@@ -73,10 +70,10 @@ opd_comparison_full_epoch_save_defaults() {
 
 opd_comparison_grpo_defaults() {
     TRAINING_MODE="rl"
-    ADV_ESTIMATOR="${ADV_ESTIMATOR:-grpo}"
+    ADV_ESTIMATOR="${ADV_ESTIMATOR:-ema_grpo}"
     DISABLE_KL="${DISABLE_KL:-false}"
     USE_KL_LOSS="${USE_KL_LOSS:-true}"
-    ONLINE_FILTERING="${ONLINE_FILTERING:-false}"
+    ONLINE_FILTERING="${ONLINE_FILTERING:-true}"
     ROLLOUT_N="${ROLLOUT_N:-8}"
     ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
     LR="${LR:-5e-7}"
@@ -84,6 +81,11 @@ opd_comparison_grpo_defaults() {
     ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"
     CLIP_RATIO_LOW="${CLIP_RATIO_LOW:-0.2}"
     CLIP_RATIO_HIGH="${CLIP_RATIO_HIGH:-0.2}"
+    ROLLOUT_BS="${ROLLOUT_BS:-64}"
+    GLOBAL_BS="${GLOBAL_BS:-64}"
+    VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
+    ROLLOUT_GPU_MEM_UTIL="${ROLLOUT_GPU_MEM_UTIL:-0.55}"
+    MB_PER_EXP="${MB_PER_EXP:-2}"
 }
 
 opd_comparison_mopd_defaults() {
@@ -105,6 +107,9 @@ opd_comparison_mopd_defaults() {
     ACTOR_OFFLOAD_PARAMS="${ACTOR_OFFLOAD_PARAMS:-true}"
     ACTOR_OFFLOAD_OPTIMIZER="${ACTOR_OFFLOAD_OPTIMIZER:-true}"
     REF_OFFLOAD_PARAMS="${REF_OFFLOAD_PARAMS:-true}"
+    ROLLOUT_BS="${ROLLOUT_BS:-32}"
+    GLOBAL_BS="${GLOBAL_BS:-32}"
+    VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-32}"
 }
 
 opd_comparison_validate_rollout_tokens() {

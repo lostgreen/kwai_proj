@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 4B full-composition GRPO baseline for convergence comparison.
+# 4B full-composition EMA-GRPO rerun for convergence comparison.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +13,7 @@ opd_comparison_grpo_defaults
 
 MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"
-EXP_NAME="${EXP_NAME:-grpo_qwen3vl4b_full_comp_bs32_mf256_epoch1_save50}"
+EXP_NAME="${EXP_NAME:-ema_grpo_qwen3vl4b_full_comp_bs64_mf256_epoch1_save50}"
 TP_SIZE="${TP_SIZE:-1}"
 
 opd_comparison_validate_rollout_tokens

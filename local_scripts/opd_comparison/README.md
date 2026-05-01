@@ -7,7 +7,8 @@ Shared defaults:
 - Data: `composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema`
 - Full epoch: `TOTAL_EPOCHS=1`, no `MAX_STEPS` unless `ALLOW_MAX_STEPS_OVERRIDE=true`
 - 8 GPUs: `N_GPUS_PER_NODE=8`
-- Batch: `ROLLOUT_BS=32`, `GLOBAL_BS=32`, `VAL_BATCH_SIZE=32`
+- 4B EMA-GRPO rerun batch: `ROLLOUT_BS=64`, `GLOBAL_BS=64`, `VAL_BATCH_SIZE=64`
+- MOPD batch: `ROLLOUT_BS=32`, `GLOBAL_BS=32`, `VAL_BATCH_SIZE=32`
 - Save every 50 steps with no checkpoint pruning: `SAVE_FREQ=50`, `SAVE_LIMIT=-1`
 - Checkpoints:
   - 4B: `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/opd_comparison_4b`
@@ -23,7 +24,7 @@ Run the 8B student MOPD setting:
 bash local_scripts/opd_comparison/run_mopd_8b_from_4b_teachers.sh
 ```
 
-Run the 4B full-data GRPO baseline:
+Run the 4B full-data EMA-GRPO rerun:
 
 ```bash
 bash local_scripts/opd_comparison/run_grpo_4b_full_epoch.sh
