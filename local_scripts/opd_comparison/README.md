@@ -1,0 +1,36 @@
+# OPD Comparison Settings
+
+These scripts run full-composition data settings for GRPO/MOPD comparisons.
+
+Shared defaults:
+
+- Data: `composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema`
+- Full epoch: `TOTAL_EPOCHS=1`, no `MAX_STEPS` unless `ALLOW_MAX_STEPS_OVERRIDE=true`
+- 8 GPUs: `N_GPUS_PER_NODE=8`
+- Batch: `ROLLOUT_BS=32`, `GLOBAL_BS=32`, `VAL_BATCH_SIZE=32`
+- Save every 50 steps with no checkpoint pruning: `SAVE_FREQ=50`, `SAVE_LIMIT=-1`
+- Checkpoints:
+  - 4B: `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/opd_comparison_4b`
+  - 8B: `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/opd_comparison_8b`
+- MOPD teachers:
+  - AoT: `composition_base_aot_aot10k_mf256_ema/global_step_200`
+  - Seg: `composition_base_seg_hier10k_mf256_ema/global_step_250`
+  - Event logic: `composition_base_logic_el10k_mf256_ema/global_step_300`
+
+Run the 8B student MOPD setting:
+
+```bash
+bash local_scripts/opd_comparison/run_mopd_8b_from_4b_teachers.sh
+```
+
+Run the 4B full-data GRPO baseline:
+
+```bash
+bash local_scripts/opd_comparison/run_grpo_4b_full_epoch.sh
+```
+
+Run the 4B full-data MOPD setting:
+
+```bash
+bash local_scripts/opd_comparison/run_mopd_4b_full_epoch.sh
+```
