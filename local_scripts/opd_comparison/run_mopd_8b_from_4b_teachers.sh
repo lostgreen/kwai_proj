@@ -18,5 +18,6 @@ TP_SIZE="${TP_SIZE:-2}"
 FILLER_GPUS="${FILLER_GPUS:-0,1,2,3,4,6,7}"
 
 opd_comparison_validate_rollout_tokens
+validate_opd_teacher_paths
 
 source "${REPO_ROOT_LOCAL}/local_scripts/run_multi_task.sh"

@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
 AOT_TEACHER_MODEL_PATH="${AOT_TEACHER_MODEL_PATH:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations/composition_base_aot_aot10k_mf256_ema/global_step_200/actor/huggingface}"
 SEG_TEACHER_MODEL_PATH="${SEG_TEACHER_MODEL_PATH:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations/composition_base_seg_hier10k_mf256_ema/global_step_250/actor/huggingface}"
-EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations/composition_base_aot_logic_aot10k_el10k_mf256_ema/global_step_300/actor/huggingface}"
+EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations/composition_base_logic_el10k_mf256_ema/global_step_272/actor/huggingface}"
 
 for _teacher_var in AOT_TEACHER_MODEL_PATH SEG_TEACHER_MODEL_PATH EVENTLOGIC_TEACHER_MODEL_PATH; do
     if [[ -z "${!_teacher_var:-}" ]]; then
@@ -28,6 +28,27 @@ for _teacher_var in AOT_TEACHER_MODEL_PATH SEG_TEACHER_MODEL_PATH EVENTLOGIC_TEA
         exit 1
     fi
 done
+
+validate_opd_teacher_paths() {
+    local missing=0
+    local teacher_name teacher_path_var teacher_path
+    for teacher_name in AOT SEG EVENTLOGIC; do
+        teacher_path_var="${teacher_name}_TEACHER_MODEL_PATH"
+        teacher_path="${!teacher_path_var:-}"
+        if [[ -z "${teacher_path}" ]]; then
+            echo "[multi-teacher-opd] ERROR: ${teacher_path_var} is empty" >&2
+            missing=1
+        elif [[ ! -f "${teacher_path}/config.json" ]]; then
+            echo "[multi-teacher-opd] ERROR: ${teacher_path_var} does not contain config.json: ${teacher_path}" >&2
+            missing=1
+        fi
+    done
+
+    if (( missing != 0 )); then
+        echo "[multi-teacher-opd] Set *_TEACHER_MODEL_PATH to an existing merged HuggingFace checkpoint." >&2
+        exit 1
+    fi
+}
 
 EXP_NAME="${EXP_NAME:-multi_teacher_opd_2gpu_mf256_sanity}"
 TRAIN_FILE="${TRAIN_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/experiments/composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema/train.jsonl}"
@@ -86,5 +107,6 @@ if (( ROLLOUT_MAX_BATCHED_TOKENS < MIN_ROLLOUT_MAX_BATCHED_TOKENS )); then
     echo "[multi-teacher-opd] ERROR: ROLLOUT_MAX_BATCHED_TOKENS=${ROLLOUT_MAX_BATCHED_TOKENS} must be >= MAX_PROMPT_LEN + MAX_RESPONSE_LEN = ${MIN_ROLLOUT_MAX_BATCHED_TOKENS}" >&2
     exit 1
 fi
+validate_opd_teacher_paths
 
 source "${SCRIPT_DIR}/run_multi_task.sh"

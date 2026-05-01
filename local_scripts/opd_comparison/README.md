@@ -16,7 +16,7 @@ Shared defaults:
 - MOPD teachers:
   - AoT: `composition_base_aot_aot10k_mf256_ema/global_step_200`
   - Seg: `composition_base_seg_hier10k_mf256_ema/global_step_250`
-  - Event logic: `composition_base_logic_el10k_mf256_ema/global_step_300`
+  - Event logic: `composition_base_logic_el10k_mf256_ema/global_step_272`
 
 Run the 8B student MOPD setting:
 

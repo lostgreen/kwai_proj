@@ -149,6 +149,9 @@ def test_multi_teacher_opd_launcher_wires_three_teachers_and_cpu_offload():
     assert "AOT_TEACHER_MODEL_PATH" in script
     assert "SEG_TEACHER_MODEL_PATH" in script
     assert "EVENTLOGIC_TEACHER_MODEL_PATH" in script
+    assert "composition_base_logic_el10k_mf256_ema/global_step_272/actor/huggingface" in script
+    assert "composition_base_aot_logic_aot10k_el10k_mf256_ema/global_step_300" not in script
+    assert "validate_opd_teacher_paths" in script
     assert "REF_OFFLOAD_PARAMS=\"${REF_OFFLOAD_PARAMS:-true}\"" in script
     assert "ACTOR_OFFLOAD_PARAMS=\"${ACTOR_OFFLOAD_PARAMS:-true}\"" in script
     assert "TASKS=\"${TASKS:-tg mcq hier_seg event_logic aot}\"" in script
@@ -242,6 +245,7 @@ def test_multi_teacher_opd_launcher_defaults_to_full_composition_mf256_data():
 def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
     common = Path("local_scripts/opd_comparison/common.sh").read_text()
     launcher = Path("local_scripts/opd_comparison/run_mopd_4b_full_epoch.sh").read_text()
+    launcher_8b = Path("local_scripts/opd_comparison/run_mopd_8b_from_4b_teachers.sh").read_text()
     runner = Path("local_scripts/run_multi_task.sh").read_text()
 
     mopd_defaults = common[
@@ -250,6 +254,11 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
 
     assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"' in launcher
     assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"' in launcher
+    assert 'EVENTLOGIC_TEACHER_STEP="${EVENTLOGIC_TEACHER_STEP:-272}"' in common
+    assert "composition_base_logic_el10k_mf256_ema" in common
+    assert "validate_opd_teacher_paths" in common
+    assert "validate_opd_teacher_paths" in launcher
+    assert "validate_opd_teacher_paths" in launcher_8b
     assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in mopd_defaults
     assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in mopd_defaults
     assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in mopd_defaults

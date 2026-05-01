@@ -17,5 +17,6 @@ EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_full_comp_4b_teachers_bs64_mf256_epoch1_sav
 TP_SIZE="${TP_SIZE:-1}"
 
 opd_comparison_validate_rollout_tokens
+validate_opd_teacher_paths
 
 source "${REPO_ROOT_LOCAL}/local_scripts/run_multi_task.sh"

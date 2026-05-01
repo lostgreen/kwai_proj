@@ -19,10 +19,31 @@ CHECKPOINT_ROOT_8B_COMPARISON="${CHECKPOINT_ROOT_8B_COMPARISON:-/m2v_intern/xubo
 
 AOT_TEACHER_STEP="${AOT_TEACHER_STEP:-200}"
 SEG_TEACHER_STEP="${SEG_TEACHER_STEP:-250}"
-EVENTLOGIC_TEACHER_STEP="${EVENTLOGIC_TEACHER_STEP:-300}"
+EVENTLOGIC_TEACHER_STEP="${EVENTLOGIC_TEACHER_STEP:-272}"
 AOT_TEACHER_MODEL_PATH="${AOT_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_aot_aot10k_mf256_ema/global_step_${AOT_TEACHER_STEP}/actor/huggingface}"
 SEG_TEACHER_MODEL_PATH="${SEG_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_seg_hier10k_mf256_ema/global_step_${SEG_TEACHER_STEP}/actor/huggingface}"
 EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_logic_el10k_mf256_ema/global_step_${EVENTLOGIC_TEACHER_STEP}/actor/huggingface}"
+
+validate_opd_teacher_paths() {
+    local missing=0
+    local teacher_name teacher_path_var teacher_path
+    for teacher_name in AOT SEG EVENTLOGIC; do
+        teacher_path_var="${teacher_name}_TEACHER_MODEL_PATH"
+        teacher_path="${!teacher_path_var:-}"
+        if [[ -z "${teacher_path}" ]]; then
+            echo "[opd-comparison] ERROR: ${teacher_path_var} is empty" >&2
+            missing=1
+        elif [[ ! -f "${teacher_path}/config.json" ]]; then
+            echo "[opd-comparison] ERROR: ${teacher_path_var} does not contain config.json: ${teacher_path}" >&2
+            missing=1
+        fi
+    done
+
+    if (( missing != 0 )); then
+        echo "[opd-comparison] Set *_TEACHER_MODEL_PATH or *_TEACHER_STEP to an existing merged HuggingFace checkpoint." >&2
+        exit 1
+    fi
+}
 
 opd_comparison_full_data_defaults() {
     TRAIN_FILE="${TRAIN_FILE:-${FULL_COMPOSITION_TRAIN_FILE}}"
