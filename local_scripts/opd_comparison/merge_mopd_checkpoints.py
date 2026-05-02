@@ -114,6 +114,7 @@ def merge_checkpoint(
     base_model: Path,
     merger_script: Path,
     force: bool,
+    reuse_existing_hf: bool,
     dry_run: bool,
 ) -> Path:
     dest_dir = output_dir / model_name_for_step(model_prefix, checkpoint.step)
@@ -130,7 +131,11 @@ def merge_checkpoint(
             return dest_dir
         shutil.rmtree(dest_dir)
 
-    if not hf_dir.is_dir() or force:
+    if reuse_existing_hf and hf_dir.is_dir() and not force:
+        print(f"[step {checkpoint.step}] reuse existing merged HuggingFace dir")
+    else:
+        if hf_dir.exists():
+            shutil.rmtree(hf_dir)
         command = [
             sys.executable,
             str(merger_script),
@@ -157,6 +162,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--registry-json", default="model_registry.json")
     parser.add_argument("--registry-py", default="model_meta.py")
     parser.add_argument("--force", action="store_true", help="Re-merge and overwrite existing destinations.")
+    parser.add_argument(
+        "--reuse-existing-hf",
+        action="store_true",
+        help="Skip model_merger.py when actor/huggingface already exists.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print planned work without merging or writing files.")
     return parser.parse_args()
 
@@ -186,6 +196,7 @@ def main() -> None:
             base_model=args.base_model,
             merger_script=merger_script,
             force=args.force,
+            reuse_existing_hf=args.reuse_existing_hf,
             dry_run=args.dry_run,
         )
         entries.append((checkpoint.step, dest_dir))
