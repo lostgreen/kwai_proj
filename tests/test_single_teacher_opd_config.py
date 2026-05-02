@@ -256,6 +256,15 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
 
     assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"' in launcher
     assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"' in launcher
+    assert 'EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_full_comp_4b_teachers_bs64_mf256_epoch1_save50}"' in launcher
+    assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_8B_MODEL_PATH}}"' in launcher_8b
+    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_8B_COMPARISON}}"' in launcher_8b
+    assert 'EXP_NAME="${EXP_NAME:-mopd_qwen3vl8b_full_comp_4b_teachers_bs64_mf256_epoch1_save50_keep1}"' in launcher_8b
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:-1}"' in launcher_8b
+    assert 'SAVE_BEST="${SAVE_BEST:-true}"' in launcher_8b
+    assert launcher_8b.index('SAVE_LIMIT="${SAVE_LIMIT:-1}"') < launcher_8b.index("opd_comparison_full_epoch_save_defaults")
+    assert 'ENABLE_GPU_FILLER="${ENABLE_GPU_FILLER:-false}"' in launcher_8b
+    assert "FILLER_GPUS" not in launcher_8b
     assert 'EVENTLOGIC_TEACHER_STEP="${EVENTLOGIC_TEACHER_STEP:-272}"' in common
     assert "composition_base_logic_el10k_mf256_ema" in common
     assert "validate_opd_teacher_paths" in common
