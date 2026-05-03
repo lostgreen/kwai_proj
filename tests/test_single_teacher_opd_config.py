@@ -283,6 +283,36 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
     assert "max_num_seqs=config.max_num_seqs" in rollout_impl
 
 
+def test_opd_comparison_4b_mopd_base_r1_r2_uses_base_seg_aot_data_without_event_logic_task():
+    common = Path("local_scripts/opd_comparison/common.sh").read_text()
+    launcher = Path("local_scripts/opd_comparison/run_mopd_4b_base_r1_r2.sh").read_text()
+
+    base_r1_r2_defaults = common[
+        common.index("opd_comparison_base_r1_r2_data_defaults()") : common.index("opd_comparison_8gpu_defaults()")
+    ]
+
+    assert (
+        'BASE_R1_R2_COMPOSITION_EXP_NAME="${BASE_R1_R2_COMPOSITION_EXP_NAME:-'
+        'composition_base_seg_aot_hier10k_aot10k_mf256_ema}"'
+    ) in common
+    assert 'FULL_COMPOSITION_EXP_NAME="${FULL_COMPOSITION_EXP_NAME:-composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema}"' in common
+    assert 'TASKS="${TASKS:-tg mcq hier_seg aot}"' in base_r1_r2_defaults
+    assert "event_logic" not in base_r1_r2_defaults
+
+    assert "opd_comparison_base_r1_r2_data_defaults" in launcher
+    assert "opd_comparison_full_data_defaults" not in launcher
+    assert "opd_comparison_8gpu_defaults" in launcher
+    assert "opd_comparison_full_epoch_save_defaults" in launcher
+    assert "opd_comparison_mopd_defaults" in launcher
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:-1}"' in launcher
+    assert 'SAVE_BEST="${SAVE_BEST:-true}"' in launcher
+    assert launcher.index('SAVE_LIMIT="${SAVE_LIMIT:-1}"') < launcher.index("opd_comparison_full_epoch_save_defaults")
+    assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"' in launcher
+    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"' in launcher
+    assert 'EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_base_r1_r2_4b_teachers_bs64_mf256_epoch1_save50_keep1}"' in launcher
+    assert "validate_opd_teacher_paths" in launcher
+
+
 def test_opd_comparison_grpo_defaults_do_not_enable_opd_teachers():
     common = Path("local_scripts/opd_comparison/common.sh").read_text()
 

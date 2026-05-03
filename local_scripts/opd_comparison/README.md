@@ -5,12 +5,13 @@ These scripts run full-composition data settings for GRPO/MOPD comparisons.
 Shared defaults:
 
 - Data: `composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema`
+- Base+R1/R2 data: `composition_base_seg_aot_hier10k_aot10k_mf256_ema` (`tg mcq hier_seg aot`, no event-logic/R3 samples)
 - Full epoch: `TOTAL_EPOCHS=1`, no `MAX_STEPS` unless `ALLOW_MAX_STEPS_OVERRIDE=true`
 - 8 GPUs: `N_GPUS_PER_NODE=8`
 - 4B EMA-GRPO rerun batch: `ROLLOUT_BS=64`, `GLOBAL_BS=64`, `VAL_BATCH_SIZE=64`
 - MOPD batch: `ROLLOUT_BS=64`, `GLOBAL_BS=64`, `VAL_BATCH_SIZE=64` for both 4B and 8B students
 - 4B comparison runs save every 50 steps with no checkpoint pruning: `SAVE_FREQ=50`, `SAVE_LIMIT=-1`
-- 8B MOPD saves every 50 steps but keeps only the latest regular checkpoint plus the best validation checkpoint: `SAVE_LIMIT=1`, `SAVE_BEST=true`
+- 8B MOPD and 4B base+R1/R2 MOPD save every 50 steps but keep only the latest regular checkpoint plus the best validation checkpoint: `SAVE_LIMIT=1`, `SAVE_BEST=true`
 - 8B MOPD disables the training GPU filler by default: `ENABLE_GPU_FILLER=false`
 - Checkpoints:
   - 4B: `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/opd_comparison_4b`
@@ -37,4 +38,10 @@ Run the 4B full-data MOPD setting:
 
 ```bash
 bash local_scripts/opd_comparison/run_mopd_4b_full_epoch.sh
+```
+
+Run the 4B base+R1/R2 MOPD setting:
+
+```bash
+bash local_scripts/opd_comparison/run_mopd_4b_base_r1_r2.sh
 ```
