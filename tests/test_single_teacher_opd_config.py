@@ -343,3 +343,13 @@ def test_multi_task_runner_checks_raw_sources_only_when_mix_is_needed():
     source_check_index = runner.index("    check \\")
 
     assert mix_gate_index < source_check_index
+
+
+def test_multi_task_common_defines_rollout_limits_used_by_runner():
+    common = Path("local_scripts/multi_task_common.sh").read_text()
+    runner = Path("local_scripts/run_multi_task.sh").read_text()
+
+    assert 'ROLLOUT_MAX_BATCHED_TOKENS="${ROLLOUT_MAX_BATCHED_TOKENS:-20480}"' in common
+    assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-512}"' in common
+    assert 'worker.rollout.max_num_batched_tokens="${ROLLOUT_MAX_BATCHED_TOKENS}"' in runner
+    assert 'worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}"' in runner
