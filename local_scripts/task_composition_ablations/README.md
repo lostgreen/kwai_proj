@@ -33,7 +33,7 @@ Shared defaults:
 8B defaults:
 
 - Model: `Qwen3-VL-8B-Instruct`
-- `TP_SIZE=2`, `ROLLOUT_BS=32`, `GLOBAL_BS=32`, `VAL_BATCH_SIZE=32`
+- `TP_SIZE=2`, `ROLLOUT_BS=32`, `GLOBAL_BS=32`, `VAL_BATCH_SIZE=128`
 - GPU filler skips local GPU 5 by default: `FILLER_GPUS=0,1,2,3,4,6,7`
 - Training/validation JSONL defaults read the corresponding 4B mixed-data experiment directories under `ABLATION_4B_EXPERIMENTS_DIR`.
 - checkpoint root: `/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task_8b_lr5e-7_kl0p01_entropy0p005_ablations`

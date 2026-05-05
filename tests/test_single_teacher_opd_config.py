@@ -353,3 +353,11 @@ def test_multi_task_common_defines_rollout_limits_used_by_runner():
     assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-512}"' in common
     assert 'worker.rollout.max_num_batched_tokens="${ROLLOUT_MAX_BATCHED_TOKENS}"' in runner
     assert 'worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}"' in runner
+
+
+def test_task_composition_8b_defaults_use_larger_validation_batch():
+    common_8b = Path("local_scripts/task_composition_ablations/common_8b.sh").read_text()
+    readme = Path("local_scripts/task_composition_ablations/README.md").read_text()
+
+    assert 'export VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-128}"' in common_8b
+    assert "`VAL_BATCH_SIZE=128`" in readme
