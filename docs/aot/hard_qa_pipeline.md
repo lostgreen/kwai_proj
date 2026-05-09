@@ -1,8 +1,8 @@
-# AoT Hard QA Pipeline
+# Event Progression Hard QA Pipeline
 
 ## 概览
 
-这条管线的目标是：从 seg 标注先全量构造一个 AoT raw QA 池，再用 `Qwen3-VL-8B` rollout 过滤出“能做对，但不稳定全对”的 hard cases。
+这条管线的目标是：从层级标注先全量构造一个 event-progression raw QA 池，再用 `Qwen3-VL-8B` rollout 过滤出“能做对，但不稳定全对”的 hard cases。
 
 当前设计遵循三条原则：
 - 物理层只维护一套原视频 `2fps source frame cache`
@@ -17,7 +17,7 @@
 ## 输入与输出
 
 输入：
-- seg annotation 目录
+- hierarchical annotation 目录
 - annotation 里可解析到的 `source_video_path`
 - source frame cache 根目录 `frames_root`
 
@@ -62,7 +62,7 @@ rollout 输出：
 ## Stage 1: 构造 group manifests
 
 脚本：
-- [build_aot_group_manifest.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/proxy_data/youcook2_seg/temporal_aot/build_aot_group_manifest.py)
+- [build_progression_manifests.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/video_proxy/data/pipelines/proxy_construction/event_progression/build_progression_manifests.py)
 
 输出三类 manifest：
 - `action`：一个 `event` 下的 `sub_actions`
@@ -72,7 +72,7 @@ rollout 输出：
 最小命令：
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/build_aot_group_manifest.py \
+python video_proxy/data/pipelines/proxy_construction/event_progression/build_progression_manifests.py \
   --annotation-dir /path/to/seg_annotations \
   --action-output data/manifests/action.jsonl \
   --event-output data/manifests/event.jsonl \
@@ -88,7 +88,7 @@ python proxy_data/youcook2_seg/temporal_aot/build_aot_group_manifest.py \
 ## Stage 2: 构造 shared 2fps source cache
 
 脚本：
-- [hard_qa_pipeline.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py)
+- [run_progression_pipeline.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py)
 
 子命令：
 - `build-source-cache`
@@ -96,7 +96,7 @@ python proxy_data/youcook2_seg/temporal_aot/build_aot_group_manifest.py \
 最小命令：
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py build-source-cache \
+python video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py build-source-cache \
   --manifest data/manifests/action.jsonl \
   --manifest data/manifests/event.jsonl \
   --manifest data/manifests/event_dir.jsonl \
@@ -109,17 +109,17 @@ python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py build-source-cac
 - dry-run 可先看预期目录与汇总
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py build-source-cache \
+python video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py build-source-cache \
   --manifest data/manifests/action.jsonl \
   --frames-root data/source_frame_cache \
   --dry-run \
   --stats-output data/cache_plan.json
 ```
 
-## Stage 3: 构造 action/event AoT raw
+## Stage 3: 构造 action/event progression raw
 
 脚本：
-- [build_aot_from_frames.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/proxy_data/youcook2_seg/temporal_aot/build_aot_from_frames.py)
+- [build_progression_frame_list_data.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/video_proxy/data/pipelines/proxy_construction/event_progression/build_progression_frame_list_data.py)
 
 输出：
 - `action_v2t_3way`
@@ -130,7 +130,7 @@ python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py build-source-cac
 最小命令：
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/build_aot_from_frames.py \
+python video_proxy/data/pipelines/proxy_construction/event_progression/build_progression_frame_list_data.py \
   --frames-root data/source_frame_cache \
   --action-manifest data/manifests/action.jsonl \
   --event-manifest data/manifests/event.jsonl \
@@ -149,12 +149,12 @@ python proxy_data/youcook2_seg/temporal_aot/build_aot_from_frames.py \
 ## Stage 4: 构造真正的 event forward/reverse
 
 脚本：
-- [build_event_forward_reverse_from_frames.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/proxy_data/youcook2_seg/temporal_aot/build_event_forward_reverse_from_frames.py)
+- [build_forward_reverse_frame_list_data.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/video_proxy/data/pipelines/proxy_construction/event_progression/build_forward_reverse_frame_list_data.py)
 
 最小命令：
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/build_event_forward_reverse_from_frames.py \
+python video_proxy/data/pipelines/proxy_construction/event_progression/build_forward_reverse_frame_list_data.py \
   --event-manifest data/manifests/event_dir.jsonl \
   --frames-root data/source_frame_cache \
   --output data/raw/event_forward_reverse.jsonl \
@@ -172,7 +172,7 @@ python proxy_data/youcook2_seg/temporal_aot/build_event_forward_reverse_from_fra
 最小命令：
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py merge-raw \
+python video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py merge-raw \
   --input data/raw/action_v2t.jsonl \
   --input data/raw/action_t2v.jsonl \
   --input data/raw/event_v2t.jsonl \
@@ -216,14 +216,14 @@ python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py merge-raw \
 最小命令：
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py rollout-filter \
+python video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py rollout-filter \
   --input data/merged_raw/train.jsonl \
   --output-dir data/rollout
 ```
 
 它会顺序编排：
 1. [local_scripts/offline_rollout_filter.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/local_scripts/offline_rollout_filter.py)
-2. [filter_rollout_hard_cases.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/proxy_data/youcook2_seg/temporal_aot/filter_rollout_hard_cases.py)
+2. [filter_progression_rollouts.py](/Users/lostgreen/Desktop/Codes/VideoProxy/train/video_proxy/data/pipelines/proxy_construction/event_progression/filter_progression_rollouts.py)
 
 最终输出：
 - `rollout_output.jsonl`
@@ -238,7 +238,7 @@ python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py rollout-filter \
 如果只想先看命令和路径，不实际跑模型：
 
 ```bash
-python proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py rollout-filter \
+python video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py rollout-filter \
   --input data/merged_raw/train.jsonl \
   --output-dir data/rollout \
   --dry-run \

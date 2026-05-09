@@ -6,14 +6,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPT_SPEC = importlib.util.spec_from_file_location(
-    "prompt_variants_v4_under_test",
+    "boundary_prompts_under_test",
     REPO_ROOT
     / "video_proxy"
     / "data"
     / "pipelines"
-    / "youcook2_seg"
-    / "hier_seg_annotation"
-    / "prompt_variants_v4.py",
+    / "proxy_construction"
+    / "event_boundary"
+    / "boundary_prompts.py",
 )
 assert PROMPT_SPEC is not None and PROMPT_SPEC.loader is not None
 PROMPT_MODULE = importlib.util.module_from_spec(PROMPT_SPEC)

@@ -8,7 +8,7 @@ and `256`.
 
 ```bash
 python video_proxy/insights/hier_seg_frame_budget/analyze.py \
-  --annotation-dir /path/to/youcook2_seg/hier_seg_annotation/annotations \
+  --annotation-dir /path/to/proxy_construction/annotation/annotations \
   --output-dir video_proxy/insights/hier_seg_frame_budget/outputs
 ```
 

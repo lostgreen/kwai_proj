@@ -206,8 +206,9 @@ docs/
 .worktrees/
 proxy_data/llava_video_178k/results
 proxy_data/temporal_grounding/data
-video_proxy/data/pipelines/llava_video_178k/results
-video_proxy/data/pipelines/temporal_grounding/data
+video_proxy/data/base_sources/mcq/results
+video_proxy/data/base_sources/tg/data
+video_proxy/data/base_sources/tg/results
 video_proxy/analysis/outputs/
 _debug*
 bad_samples.txt

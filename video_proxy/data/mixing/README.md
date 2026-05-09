@@ -1,57 +1,60 @@
-# Multi-Task Data Management
+# 多任务数据混合
 
-模块化多任务训练数据管理。每种数据类型有独立模块，通过 `mixer.py` 统一调度。
+`mixing/` 负责把 TG、MCQ、HierSeg、Event Logic、Temporal AoT 等任务统一采样成训练入口。每种任务各自维护一个模块，`mixer.py` 负责 CLI 调度。
 
 ## 目录结构
 
-```
+```text
 video_proxy/data/mixing/
-├── common.py          # 共享工具: load_jsonl, write_jsonl, stratified_sample 等
-├── tg.py              # Temporal Grounding (TimeRFT train + TVGBench val)
-├── mcq.py             # LLaVA Video MCQ
-├── hier_seg.py        # Hierarchical Segmentation (L1/L2/L3_seg)
-├── event_logic.py     # Event Logic Sort (event_logic_sort)
-├── aot.py             # Temporal AoT (seg_aot_*)
-└── mixer.py           # CLI 入口: setup / mix / check
+├── common.py          # JSONL 读写、分层采样、路径处理等共享工具
+├── tg.py              # Temporal Grounding
+├── mcq.py             # LLaVA-Video MCQ
+├── hier_seg.py        # Hierarchical Segmentation
+├── event_logic.py     # Event Logic Sort
+├── aot.py             # Temporal AoT
+└── mixer.py           # CLI 入口：setup / mix / check
 ```
 
-## 数据类型
+## 支持任务
 
-| 模块 | problem_type | Train | Val 采样 |
-|------|-------------|-------|---------|
-| `tg` | `temporal_grounding` | TimeRFT 全量 (~2.2k) | TVGBench random sample |
-| `mcq` | `llava_mcq` | 全量 | 按 `data_source` 分层 |
-| `hier_seg` | `L1`, `L2`, `L3_seg` | 按 problem_type 等比例到 target | 按 problem_type 等比例 |
-| `event_logic` | `event_logic_sort` | 按 problem_type 等比例到 target | 按 problem_type 分层 |
-| `aot` | `seg_aot_*` | 按 problem_type 等比例到 target | 按 problem_type 分层 |
+| 模块 | problem_type | 训练来源 | 验证来源 |
+| --- | --- | --- | --- |
+| `tg` | `temporal_grounding` | TimeR1/TimeLens | TVGBench 采样 |
+| `mcq` | `llava_mcq` | LLaVA-Video MCQ | 按 `data_source` 分层采样 |
+| `hier_seg` | `L1`, `L2`, `L3_seg` | 分层标注结果 | 分层标注 val |
+| `event_logic` | `event_logic_sort` | 事件关系代理数据 | 事件关系 val |
+| `aot` | `seg_aot_*` | 事件进展代理数据 | 事件进展 val |
 
-## 使用方法
+## 入口命令
 
-所有命令在 **train/** 目录下执行。
-
-### Step 1: 生成基座数据 (只需运行一次)
+所有命令都从 `train/` 根目录运行。因为 `mixer.py` 是模块入口，推荐用下面这种形式调用：
 
 ```bash
-# 使用默认路径 (由 three_task_common.sh 配置)
+python3 -c "import sys; sys.path.insert(0, '.'); from video_proxy.data.mixing.mixer import main; main()" -- --help
+```
+
+## 步骤 1：生成 base 与 val
+
+```bash
 bash video_proxy/data/scripts/setup_base_data.sh
-
-# 或者直接调用 Python
-python3 -c "
-import sys; sys.path.insert(0, '.')
-from video_proxy.data.mixing.mixer import main; main()
-" -- \
-    --data-root /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/three_task \
-    --tasks tg mcq hier_seg \
-    setup \
-    --tg-timerft-json /path/to/train_2k5.json \
-    --tg-tvgbench-json /path/to/tvgbench.json \
-    --tg-video-base /path/to/TimeR1-Dataset \
-    --mcq-source video_proxy/data/pipelines/llava_video_178k/results/train_final.jsonl \
-    --hier-val-source /path/to/val_all.jsonl
 ```
 
-生成目录:
+等价的 Python 调用：
+
+```bash
+python3 -c "import sys; sys.path.insert(0, '.'); from video_proxy.data.mixing.mixer import main; main()" -- \
+  --data-root /path/to/VideoProxyMixed/three_task \
+  setup \
+  --tasks tg mcq hier_seg \
+  --tg-train-source /path/to/tg_timerft_max256s_validated.jsonl \
+  --tg-tvgbench-source /path/to/tg_tvgbench_max256s_validated.jsonl \
+  --mcq-source /path/to/train_final_direct.jsonl \
+  --hier-val-source /path/to/hier_seg_val_all.jsonl
 ```
+
+典型输出：
+
+```text
 $DATA_ROOT/
 ├── base/
 │   ├── tg_train_no_tvgbench.jsonl
@@ -62,68 +65,56 @@ $DATA_ROOT/
     └── hier_seg_val_150.jsonl
 ```
 
-### Step 2: 混合实验数据
+## 步骤 2：混合实验数据
 
 ```bash
-python3 -c "
-import sys; sys.path.insert(0, '.')
-from video_proxy.data.mixing.mixer import main; main()
-" -- \
-    --data-root /m2v_intern/.../three_task \
-    --tasks tg mcq hier_seg \
-    mix \
-    --exp-name R1_f1iou \
-    --hier-train /path/to/train_all.jsonl \
-    --hier-target 5000
+python3 -c "import sys; sys.path.insert(0, '.'); from video_proxy.data.mixing.mixer import main; main()" -- \
+  --data-root /path/to/VideoProxyMixed/three_task \
+  mix \
+  --tasks tg mcq hier_seg event_logic aot \
+  --exp-name R1_f1iou \
+  --hier-train /path/to/hier_seg_train_all.jsonl \
+  --hier-target 5000 \
+  --el-train /path/to/event_logic_train.jsonl \
+  --el-target 2000 \
+  --aot-train /path/to/aot_train.jsonl \
+  --aot-target 10000
 ```
 
-生成:
-```
+输出：
+
+```text
 $DATA_ROOT/experiments/R1_f1iou/
-├── train.jsonl    # TG + MCQ + HierSeg(5k) 混合
-└── val.jsonl      # 各任务 val 合并
+├── train.jsonl
+└── val.jsonl
 ```
 
-### Step 3: 启动训练
+## 步骤 3：检查数据
 
 ```bash
-# 按模型启动 teacher EMA-GRPO 训练
-bash video_proxy/experiments/teacher_train/qwen3_vl_4b/run.sh
-
-# 使用 teacher checkpoint 启动 OPD 训练
-TEACHER_MODEL_PATH=/path/to/teacher \
-  bash video_proxy/experiments/opd/qwen3_vl_4b/run.sh
+python3 -c "import sys; sys.path.insert(0, '.'); from video_proxy.data.mixing.mixer import main; main()" -- \
+  --data-root /path/to/VideoProxyMixed/three_task \
+  check \
+  --tasks tg mcq hier_seg event_logic aot
 ```
 
-### 检查数据完整性
+## 常用环境变量
 
-```bash
-python3 -c "
-import sys; sys.path.insert(0, '.')
-from video_proxy.data.mixing.mixer import main; main()
-" -- \
-    --data-root /m2v_intern/.../three_task \
-    --tasks tg mcq hier_seg \
-    check
-```
+| 变量 | 说明 |
+| --- | --- |
+| `MULTI_TASK_DATA_ROOT` | base、val、experiments 的根目录 |
+| `TASKS` | 启用任务，例如 `tg mcq hier_seg` |
+| `TG_TRAIN_SOURCE` | TG train JSONL 来源 |
+| `TG_TVGBENCH_SOURCE` | TG val 采样来源 |
+| `MCQ_SOURCE` | MCQ train JSONL 来源 |
+| `HIER_TRAIN` / `HIER_VAL_SOURCE` | HierSeg train/val 来源 |
+| `EL_TRAIN` / `EL_VAL_SOURCE` | Event Logic train/val 来源 |
+| `AOT_TRAIN` / `AOT_VAL_SOURCE` | Temporal AoT train/val 来源 |
+| `FORCE=true` | 覆盖已有 base/val 产物 |
 
-## 添加新任务
+## 新增任务
 
-1. 在 `video_proxy/data/mixing/` 下创建 `new_task.py`
-2. 实现: `NAME`, `PROBLEM_TYPES`, `add_cli_args()`, `setup_base()`, `load_train()`, `sample_train()`, `load_val()`
-3. 在 `mixer.py` 的 `_ALL_MODULES` 中注册
-4. 在 `video_proxy/training/common/multi_task_common.sh` 中添加对应的环境变量
-
-## 环境变量 (可在 shell 中覆盖)
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `THREE_TASK_DATA_ROOT` | `/m2v_intern/.../three_task` | 数据根目录 |
-| `TASKS` | `tg mcq hier_seg` | 启用的任务列表 |
-| `HIER_TRAIN` | `.../train_all.jsonl` | Hier Seg 训练数据源 |
-| `HIER_TARGET` | `5000` | Hier Seg 训练采样目标 |
-| `EL_TRAIN` | (空) | Event Logic 训练数据源 |
-| `EL_TARGET` | `2000` | Event Logic 训练采样目标 |
-| `AOT_TRAIN` | `.../train_nocot_reward_balanced.jsonl` | Temporal AoT 训练数据源 |
-| `AOT_TARGET` | `10000` | Temporal AoT 训练采样目标 |
-| `FORCE` | `false` | 强制重新生成 |
+1. 在 `video_proxy/data/mixing/` 下新增任务模块。
+2. 实现 `NAME`、`PROBLEM_TYPES`、`add_cli_args()`、`setup_base()`、`load_train()`、`sample_train()`、`load_val()`。
+3. 在 `mixer.py` 的任务注册表中加入新模块。
+4. 在 `video_proxy/training/common/multi_task_common.sh` 中补默认路径和环境变量。

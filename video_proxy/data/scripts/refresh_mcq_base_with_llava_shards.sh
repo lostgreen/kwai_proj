@@ -9,7 +9,7 @@ LLAVA_ROLLOUT_DIR="${LLAVA_ROLLOUT_DIR:-/m2v_intern/xuboshen/zgw/data/VideoProxy
 LLAVA_MCQ_INPUT="${LLAVA_MCQ_INPUT:-${LLAVA_ROLLOUT_DIR}/mcq_all.jsonl}"
 LLAVA_REPORT_GLOB="${LLAVA_REPORT_GLOB:-${LLAVA_ROLLOUT_DIR}/_shard*_report.jsonl}"
 LLAVA_REPORT_JSONL="${LLAVA_REPORT_JSONL:-}"
-MCQ_BASE_SOURCE="${MCQ_BASE_SOURCE:-${REPO_ROOT}/video_proxy/data/pipelines/llava_video_178k/results/train_final_direct.jsonl}"
+MCQ_BASE_SOURCE="${MCQ_BASE_SOURCE:-${REPO_ROOT}/video_proxy/data/base_sources/mcq/results/train_final_direct.jsonl}"
 
 REWARD_MIN="${REWARD_MIN:-0.0}"
 REWARD_MAX="${REWARD_MAX:-0.375}"
@@ -25,7 +25,7 @@ SKIP_BAD_REPORT_LINES="${SKIP_BAD_REPORT_LINES:-true}"
 
 TAG_DEFAULT="reward_${REWARD_MIN//./p}_${REWARD_MAX//./p}"
 TAG="${TAG:-${TAG_DEFAULT}}"
-MCQ_REFRESH_DIR="${MCQ_REFRESH_DIR:-${REPO_ROOT}/video_proxy/data/pipelines/llava_video_178k/results/base_refresh/${TAG}}"
+MCQ_REFRESH_DIR="${MCQ_REFRESH_DIR:-${REPO_ROOT}/video_proxy/data/base_sources/mcq/results/base_refresh/${TAG}}"
 MCQ_SELECTED="${MCQ_REFRESH_DIR}/mcq_llava_${TAG}_direct.jsonl"
 MCQ_MERGED="${MCQ_REFRESH_DIR}/mcq_base_plus_llava_${TAG}_direct.jsonl"
 MCQ_SELECTION_SUMMARY="${MCQ_REFRESH_DIR}/mcq_llava_${TAG}_summary.json"
@@ -75,7 +75,7 @@ if [[ "${SKIP_BAD_REPORT_LINES,,}" == "true" ]]; then
     SELECT_ARGS+=(--skip-bad-report-lines)
 fi
 
-python3 "${REPO_ROOT}/video_proxy/data/pipelines/llava_video_178k/select_mcq_from_rollout_shards.py" "${SELECT_ARGS[@]}"
+python3 "${REPO_ROOT}/video_proxy/data/base_sources/mcq/rollout/select_from_shards.py" "${SELECT_ARGS[@]}"
 
 case "${RUN_SETUP}" in
     true|TRUE|1|yes|YES)
@@ -125,7 +125,7 @@ case "${RUN_CHECK}" in
             CHECK_EXTRA_ARGS+=(--check-frame-files)
         fi
 
-        python3 "${REPO_ROOT}/video_proxy/data/pipelines/llava_video_178k/check_mcq_prompt_format.py" \
+        python3 "${REPO_ROOT}/video_proxy/data/base_sources/mcq/check_format.py" \
             "${CHECK_JSONL_ARGS[@]}" \
             "${CHECK_FRAME_ARGS[@]}" \
             "${CHECK_EXTRA_ARGS[@]}" \

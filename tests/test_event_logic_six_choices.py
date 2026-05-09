@@ -7,7 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from video_proxy.data.pipelines.youcook2_seg.event_logic import build_event_logic_vlm as el
+from video_proxy.data.pipelines.proxy_construction.event_relation import build_relation_frame_list_data as el
 from video_proxy.data.pipelines.shared.frame_cache import build_source_cache_dir
 
 
@@ -180,7 +180,7 @@ def test_fill_blank_can_emit_step_frame_lists_from_shared_source_cache(tmp_path:
 
 
 def test_event_logic_rollout_script_defaults_to_qwen3_vl_8b_with_eight_rollouts():
-    script = (REPO_ROOT / "video_proxy/data/pipelines/youcook2_seg/event_logic/run_event_logic_rollout.sh").read_text(
+    script = (REPO_ROOT / "video_proxy/data/pipelines/proxy_construction/event_relation/run_event_relation_rollout.sh").read_text(
         encoding="utf-8"
     )
 
@@ -189,7 +189,7 @@ def test_event_logic_rollout_script_defaults_to_qwen3_vl_8b_with_eight_rollouts(
 
 
 def test_event_logic_vlm_script_defaults_to_shared_source_frame_cache():
-    script = (REPO_ROOT / "video_proxy/data/pipelines/youcook2_seg/event_logic/run_event_logic_vlm.sh").read_text(
+    script = (REPO_ROOT / "video_proxy/data/pipelines/proxy_construction/event_relation/run_event_relation_vlm.sh").read_text(
         encoding="utf-8"
     )
 

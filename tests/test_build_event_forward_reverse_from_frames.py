@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from video_proxy.data.pipelines.shared.frame_cache import build_source_cache_dir, select_frame_paths_for_span
-from video_proxy.data.pipelines.youcook2_seg.temporal_aot.build_event_forward_reverse_from_frames import (
+from video_proxy.data.pipelines.proxy_construction.event_progression.build_forward_reverse_frame_list_data import (
     _build_video_fps_override,
     _load_jsonl,
     build_records,
@@ -226,7 +226,7 @@ def test_cli_writes_records_for_tiny_fake_cache(tmp_path: Path):
     subprocess.run(
         [
             sys.executable,
-            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/build_event_forward_reverse_from_frames.py",
+            "video_proxy/data/pipelines/proxy_construction/event_progression/build_forward_reverse_frame_list_data.py",
             "--event-manifest",
             str(manifest),
             "--frames-root",

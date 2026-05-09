@@ -1,22 +1,18 @@
-# Data Curation
+# 候选数据筛选
 
-This directory contains the active candidate-building pipeline for videos that
-may enter hierarchical segmentation annotation.
-
-The current pipeline is intentionally small:
+`data_curation/` 是进入层级标注和代理任务构造前的候选视频筛选流水线。当前流程故意保持简单：
 
 ```text
 raw dataset
-  -> duration filter + unified schema
-  -> optional local model score
+  -> 时长过滤 + 统一字段
+  -> 可选本地 VLM 打分
   -> screen_keep.jsonl
 ```
 
-## Active Layout
+## 目录结构
 
 ```text
 data_curation/
-├── README.md
 ├── run.sh
 ├── configs/
 │   ├── et_instruct_164k.yaml
@@ -30,60 +26,65 @@ data_curation/
     └── local_screen.py
 ```
 
-## Outputs
-
-`run.sh` writes outputs under `results/<dataset>/` by default:
-
-| File | Meaning |
-| --- | --- |
-| `duration_keep.jsonl` | Records that passed duration filtering and were converted to the unified schema. |
-| `duration_summary.json` | Input count, kept count, duration settings, sampling settings, and source distribution. |
-| `screen_keep.jsonl` | Downstream-compatible keep file. Without local scoring, this equals `duration_keep.jsonl`. |
-| `screen_results.jsonl` | Local model score output, only when `LOCAL_SCORE=1`. |
-| `screen_reject.jsonl` | Local model rejects, only when `LOCAL_SCORE=1`. |
-
-## Run
+## 一键运行
 
 ```bash
-# ET-Instruct duration-only curation
+# ET-Instruct：只做时长过滤
 DATASET=et_instruct_164k \
 INPUT=/path/to/et_instruct_164k_txt.json \
 VIDEO_ROOT=/path/to/ET-Instruct-164K/videos \
 bash video_proxy/data/pipelines/data_curation/run.sh
 
-# TimeLens short-video pool, balanced to 3k
+# TimeLens：短视频池，平衡采样到 3000 条
 DATASET=timelens_100k \
 INPUT=/path/to/timelens-100k.jsonl \
 VIDEO_ROOT=/path/to/TimeLens-100K/video_shards \
-MIN_DURATION=0 MAX_DURATION=60 TARGET_TOTAL=3000 BALANCED_TOTAL=1 \
+MIN_DURATION=0 \
+MAX_DURATION=60 \
+TARGET_TOTAL=3000 \
+BALANCED_TOTAL=1 \
 bash video_proxy/data/pipelines/data_curation/run.sh
 
-# Add optional local model scoring
-LOCAL_SCORE=1 LOCAL_MODEL=/path/to/Qwen3-VL-4B-Instruct NUM_GPUS=2 \
+# 增加本地 VLM 打分
+LOCAL_SCORE=1 \
+LOCAL_MODEL=/path/to/Qwen3-VL-4B-Instruct \
+NUM_GPUS=2 \
 bash video_proxy/data/pipelines/data_curation/run.sh
 ```
 
-## Environment Variables
+## 关键环境变量
 
-| Variable | Default | Meaning |
+| 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `DATASET` | `et_instruct_164k` | `et_instruct_164k` or `timelens_100k`. |
-| `INPUT` | dataset-specific cluster path | Raw ET JSON or TimeLens JSONL. |
-| `VIDEO_ROOT` | dataset-specific cluster path | Root prepended to relative video paths. |
-| `OUTPUT_ROOT` | `results/<dataset>` | Output directory. |
-| `MIN_DURATION` | `60` | Minimum duration in seconds. |
-| `MAX_DURATION` | `240` | Maximum duration in seconds. |
-| `PER_SOURCE` | `0` | Per-source cap before total sampling; `0` means no cap. |
-| `TARGET_TOTAL` | `0` | Total sample cap; `0` means no cap. |
-| `BALANCED_TOTAL` | `0` | If `1`, distribute `TARGET_TOTAL` across sources. |
-| `LOCAL_SCORE` | `0` | If `1`, run local VLM scoring after duration filtering. |
-| `LOCAL_MODEL` | Qwen3-VL-4B cluster path | Model path used by `shared/local_screen.py`. |
-| `NUM_GPUS` | `1` | Data-parallel local scoring GPUs when `TP_SIZE=1`. |
-| `TP_SIZE` | `1` | Tensor parallel size for local scoring. |
+| `DATASET` | `et_instruct_164k` | 支持 `et_instruct_164k` 或 `timelens_100k` |
+| `INPUT` | 按数据集选择默认集群路径 | 原始 JSON/JSONL |
+| `VIDEO_ROOT` | 按数据集选择默认集群路径 | 相对视频路径的根目录 |
+| `OUTPUT_ROOT` | `results/<dataset>` | 输出目录 |
+| `MIN_DURATION` | `60` | 最短时长，单位秒 |
+| `MAX_DURATION` | `240` | 最长时长，单位秒 |
+| `PER_SOURCE` | `0` | 每个来源的上限，`0` 表示不限 |
+| `TARGET_TOTAL` | `0` | 总采样上限，`0` 表示不限 |
+| `BALANCED_TOTAL` | `0` | 为 `1` 时按来源均衡分配 `TARGET_TOTAL` |
+| `LOCAL_SCORE` | `0` | 为 `1` 时启用本地 VLM 打分 |
+| `LOCAL_MODEL` | 集群默认 Qwen3-VL-4B | 本地打分模型路径 |
+| `NUM_GPUS` | `1` | 多卡 shard 打分数量 |
+| `TP_SIZE` | `1` | 本地打分 tensor parallel size |
 
-## Unified Record Contract
+## 输出文件
 
-Downstream annotation expects each JSONL record to contain:
+默认写到 `results/<dataset>/`：
+
+| 文件 | 说明 |
+| --- | --- |
+| `duration_keep.jsonl` | 通过时长过滤并转成统一 schema 的样本 |
+| `duration_summary.json` | 输入数、保留数、时长阈值、采样设置和来源分布 |
+| `screen_keep.jsonl` | 下游使用的保留文件；未启用本地打分时等同于 `duration_keep.jsonl` |
+| `screen_results.jsonl` | 本地 VLM 打分结果，仅 `LOCAL_SCORE=1` 时生成 |
+| `screen_reject.jsonl` | 本地 VLM 拒绝样本，仅 `LOCAL_SCORE=1` 时生成 |
+
+## 统一记录格式
+
+下游标注至少依赖这些字段：
 
 ```json
 {
@@ -104,4 +105,4 @@ Downstream annotation expects each JSONL record to contain:
 }
 ```
 
-Source-specific raw metadata is preserved in `_et_raw` or `_tl_raw`.
+原始来源字段会保留在 `_et_raw` 或 `_tl_raw` 中，方便后续追踪。

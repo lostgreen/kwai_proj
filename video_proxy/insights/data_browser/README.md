@@ -4,25 +4,25 @@
 
 | 标签页 | 数据 | 核心功能 |
 |--------|------|---------|
-| **Segmentation** | annotation JSON / seg JSONL | 三层时序标注段条 + 1fps 帧条 + diagnostics |
-| **AoT Caption** | `caption_pairs.jsonl` + `aot_event_manifest.jsonl` | forward / reverse / shuffle 帧条 + VLM caption 并排对比 |
-| **AoT MCQ** | `v2t / t2v / 4way` JSONL | 视频帧 + A/B(/C/D) 选项卡 + 正确答案高亮 |
+| **Annotation** | annotation JSON / event-boundary JSONL | 三层时序标注段条 + 1fps 帧条 + diagnostics |
+| **Event Progression Caption** | `caption_pairs.jsonl` + progression manifest | forward / reverse / shuffle 帧条 + VLM caption 并排对比 |
+| **Event Progression MCQ** | `v2t / t2v / 4way` JSONL | 视频帧 + A/B(/C/D) 选项卡 + 正确答案高亮 |
 
 启动后访问 **http://127.0.0.1:8890/**
 
 ---
 
-## Segmentation 标注可视化
+## Annotation / Event Boundary 可视化
 
 ```bash
 # 加载 annotation JSON 目录
-./video_proxy/insights/data_browser/run.sh --data-path video_proxy/data/pipelines/hier_seg_annotation/datasets/
+./video_proxy/insights/data_browser/run.sh --data-path video_proxy/data/pipelines/proxy_construction/annotation/datasets/
 
 # 加载单个 dataset JSONL（任一层级）
-./video_proxy/insights/data_browser/run.sh --data-path video_proxy/data/pipelines/hier_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl
+./video_proxy/insights/data_browser/run.sh --data-path video_proxy/data/pipelines/proxy_construction/event_boundary/datasets/hier_mixed_train.jsonl
 
 # 限制预加载数量（大数据集提速）
-./video_proxy/insights/data_browser/run.sh --data-path video_proxy/data/pipelines/hier_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
+./video_proxy/insights/data_browser/run.sh --data-path video_proxy/data/pipelines/proxy_construction/event_boundary/datasets/hier_mixed_train.jsonl \
   --max-samples 200 --prefer-complete
 
 # 远端服务器（env-var 方式，路径较长时更方便）
@@ -32,15 +32,15 @@ DATA_PATH=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/hier_seg_annotation_v1/a
 
 ---
 
-## AoT Caption 可视化
+## Event Progression Caption 可视化
 
 **必须同时提供 `--manifest`，否则视频帧无法抽取。**
 
 ```bash
 # 标准启动（有视频帧预览）
 ./video_proxy/insights/data_browser/run.sh \
-  --caption-pairs video_proxy/data/pipelines/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
-  --manifest      video_proxy/data/pipelines/temporal_aot/data/aot_event_manifest.jsonl
+  --caption-pairs video_proxy/data/pipelines/proxy_construction/event_progression/data/aot_annotations/caption_pairs.jsonl \
+  --manifest      video_proxy/data/pipelines/proxy_construction/event_progression/data/aot_event_manifest.jsonl
 
 # 远端服务器（env-var 方式）
 CAPTION_PAIRS=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/caption_pairs.jsonl \
@@ -50,17 +50,17 @@ MANIFEST=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/aot_event_ma
 
 ---
 
-## AoT MCQ 可视化
+## Event Progression MCQ 可视化
 
 ```bash
 # V2T（视频 → 选 caption）
-./video_proxy/insights/data_browser/run.sh --mcq-data video_proxy/data/pipelines/temporal_aot/data/aot_annotations/v2t_train.jsonl
+./video_proxy/insights/data_browser/run.sh --mcq-data video_proxy/data/pipelines/proxy_construction/event_progression/data/aot_annotations/v2t_train.jsonl
 
 # T2V（caption → 选视频）
-./video_proxy/insights/data_browser/run.sh --mcq-data video_proxy/data/pipelines/temporal_aot/data/aot_annotations/t2v_train.jsonl
+./video_proxy/insights/data_browser/run.sh --mcq-data video_proxy/data/pipelines/proxy_construction/event_progression/data/aot_annotations/t2v_train.jsonl
 
 # 混合训练集
-./video_proxy/insights/data_browser/run.sh --mcq-data video_proxy/data/pipelines/temporal_aot/data/mixed_aot_train.jsonl
+./video_proxy/insights/data_browser/run.sh --mcq-data video_proxy/data/pipelines/proxy_construction/event_progression/data/mixed_aot_train.jsonl
 
 # 远端服务器（env-var 方式）
 MCQ_DATA=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/v2t_train.jsonl \
@@ -75,10 +75,10 @@ MCQ_DATA=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/v2t_train.js
 
 ```bash
 ./video_proxy/insights/data_browser/run.sh \
-  --data-path     video_proxy/data/pipelines/hier_seg_annotation/datasets/youcook2_hier_mixed_train.jsonl \
-  --caption-pairs video_proxy/data/pipelines/temporal_aot/data/aot_annotations/caption_pairs.jsonl \
-  --manifest      video_proxy/data/pipelines/temporal_aot/data/aot_event_manifest.jsonl \
-  --mcq-data      video_proxy/data/pipelines/temporal_aot/data/aot_annotations/v2t_train.jsonl
+  --data-path     video_proxy/data/pipelines/proxy_construction/event_boundary/datasets/hier_mixed_train.jsonl \
+  --caption-pairs video_proxy/data/pipelines/proxy_construction/event_progression/data/aot_annotations/caption_pairs.jsonl \
+  --manifest      video_proxy/data/pipelines/proxy_construction/event_progression/data/aot_event_manifest.jsonl \
+  --mcq-data      video_proxy/data/pipelines/proxy_construction/event_progression/data/aot_annotations/v2t_train.jsonl
 ```
 
 ---
@@ -87,7 +87,7 @@ MCQ_DATA=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/v2t_train.js
 
 | 参数 / 环境变量 | 说明 | 默认值 |
 |----------------|------|--------|
-| `--data-path` / `DATA_PATH` | seg annotation 目录或 JSONL | — |
+| `--data-path` / `DATA_PATH` | annotation 目录或 event-boundary JSONL | — |
 | `--caption-pairs` / `CAPTION_PAIRS` | caption_pairs.jsonl 路径 | — |
 | `--manifest` / `MANIFEST` | aot_event_manifest.jsonl（配合 caption 使视频帧可见） | — |
 | `--mcq-data` / `MCQ_DATA` | MCQ JSONL 路径 | — |
@@ -102,7 +102,7 @@ MCQ_DATA=/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/youcook2_aot/v2t_train.js
 
 ```
 video_proxy/insights/data_browser/
-├── server.py   — 统一后端：SegmentationStore + AoTCaptionStore + AoTMCQStore
+├── server.py   — 统一后端：Annotation/EventBoundary + EventProgression caption/MCQ stores
 ├── index.html  — 统一前端：三标签页，帧条 / 段条 / 选项卡复用同一套 CSS 组件
 ├── run.sh      — 启动脚本，支持 CLI 参数和环境变量两种方式
 ├── DESIGN.md   — 完整架构设计文档

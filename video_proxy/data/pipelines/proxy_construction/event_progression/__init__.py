@@ -1,0 +1,1 @@
+"""Event-progression proxy construction."""

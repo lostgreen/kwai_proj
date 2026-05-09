@@ -2,10 +2,10 @@
 """
 seg_source.py — Unified annotation loading and clip-path resolution.
 
-Shared by all three proxy-data pipelines:
-  - hier_seg   (video_proxy/data/pipelines/youcook2_seg/hier_seg_annotation/build_hier_data.py)
-  - temporal_aot (video_proxy/data/pipelines/temporal_aot/build_aot_from_seg.py)
-  - event_logic  (video_proxy/data/pipelines/event_logic/build_l2_event_logic.py)
+Shared by proxy construction pipelines:
+  - event_boundary
+  - event_progression
+  - event_relation
 
 Responsibilities
 ----------------
@@ -16,8 +16,8 @@ Responsibilities
 
 NOT responsible for
 -------------------
-- ffmpeg execution  → stays in prepare_clips.py
-- Prompt templates  → stays in hier_seg_annotation/prompts.py
+- ffmpeg execution for legacy mp4 clip artifacts
+- Prompt templates  → stay with each proxy construction package
 - Task-specific record building → stays in each pipeline's builder script
 
 Import pattern (add video_proxy/data/pipelines/ parent to sys.path first):
@@ -180,7 +180,8 @@ def get_l1_clip_path(
 
         {clip_dir_l1}/{clip_key}_L1_{fps}fps.mp4
 
-    The file is created by ``prepare_clips.py`` using::
+    The file is created by legacy clip artifact builders such as
+    ``event_boundary/legacy/prepare_legacy_clips.py`` using::
 
         ffmpeg -i <source_video> -vf fps={fps} -c:v libx264 <output>
     """
@@ -239,8 +240,8 @@ def get_l3_clip_path(
     )
 
 
-# ── Atomic clip-path naming (prepare_all_clips.py output) ───────────────────
-# 三层原子片段：按标注时间戳直接切出的最小单元，供 aot / event_logic 共用。
+# ── Legacy atomic clip-path naming ───────────────────────────────────────────
+# 三层原子片段：旧 mp4 clip 构造使用。新 proxy 构造优先使用 source frame cache。
 
 def get_l1_phase_atomic_path(
     clip_key: str,

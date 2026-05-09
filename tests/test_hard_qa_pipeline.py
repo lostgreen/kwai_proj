@@ -9,10 +9,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from video_proxy.data.pipelines.shared.frame_cache import build_source_cache_dir
-from video_proxy.data.pipelines.youcook2_seg.temporal_aot import (
-    filter_rollout_hard_cases,
-    hard_qa_pipeline,
-    merge_rollout_resume_outputs,
+from video_proxy.data.pipelines.proxy_construction.event_progression import (
+    filter_progression_rollouts,
+    run_progression_pipeline,
+    merge_progression_rollout_shards,
 )
 
 
@@ -75,7 +75,7 @@ def test_load_manifest_rows_reads_multiple_files(tmp_path: Path):
     _write_jsonl(first, [{"clip_key": "clip_a", "source_video_path": "/tmp/a.mp4"}])
     _write_jsonl(second, [{"clip_key": "clip_b", "source_video_path": "/tmp/b.mp4"}])
 
-    rows = hard_qa_pipeline.load_manifest_rows([first, second])
+    rows = run_progression_pipeline.load_manifest_rows([first, second])
 
     assert [row["clip_key"] for row in rows] == ["clip_a", "clip_b"]
     assert rows[0]["_manifest_dir"] == str(first.resolve().parent)
@@ -93,7 +93,7 @@ def test_collect_unique_source_infos_anchors_relative_paths_to_manifest_dir(tmp_
         }
     ]
 
-    infos = hard_qa_pipeline.collect_unique_source_infos(rows)
+    infos = run_progression_pipeline.collect_unique_source_infos(rows)
 
     assert infos[0].source_video_path == str((manifest_dir / "../videos/source_a.mp4").resolve())
 
@@ -105,7 +105,7 @@ def test_collect_unique_source_infos_deduplicates_shared_sources():
         {"clip_key": "clip_b", "source_video_path": "/tmp/source_b.mp4"},
     ]
 
-    infos = hard_qa_pipeline.collect_unique_source_infos(rows)
+    infos = run_progression_pipeline.collect_unique_source_infos(rows)
 
     assert len(infos) == 2
     assert infos[0].clip_key == "clip_a"
@@ -120,7 +120,7 @@ def test_collect_unique_source_infos_raises_on_conflicting_clip_keys():
     ]
 
     with pytest.raises(ValueError, match="conflicting clip_key"):
-        hard_qa_pipeline.collect_unique_source_infos(rows)
+        run_progression_pipeline.collect_unique_source_infos(rows)
 
 
 def test_collect_unique_source_infos_raises_on_conflicting_durations():
@@ -130,7 +130,7 @@ def test_collect_unique_source_infos_raises_on_conflicting_durations():
     ]
 
     with pytest.raises(ValueError, match="conflicting duration_sec"):
-        hard_qa_pipeline.collect_unique_source_infos(rows)
+        run_progression_pipeline.collect_unique_source_infos(rows)
 
 
 def test_build_source_cache_stage_dry_run_reports_expected_cache_dirs(tmp_path: Path):
@@ -143,7 +143,7 @@ def test_build_source_cache_stage_dry_run_reports_expected_cache_dirs(tmp_path: 
     _write_jsonl(manifest, rows)
 
     frames_root = tmp_path / "frames"
-    summary = hard_qa_pipeline.build_source_cache_stage(
+    summary = run_progression_pipeline.build_source_cache_stage(
         manifest_paths=[manifest],
         frames_root=frames_root,
         dry_run=True,
@@ -182,9 +182,9 @@ def test_build_source_cache_stage_calls_ensure_and_validates(monkeypatch: pytest
             "n_frames": 18,
         }
 
-    monkeypatch.setattr(hard_qa_pipeline, "ensure_source_frame_cache", fake_ensure)
+    monkeypatch.setattr(run_progression_pipeline, "ensure_source_frame_cache", fake_ensure)
 
-    summary = hard_qa_pipeline.build_source_cache_stage(
+    summary = run_progression_pipeline.build_source_cache_stage(
         manifest_paths=[manifest],
         frames_root=tmp_path / "frames",
         fps=2.0,
@@ -221,14 +221,14 @@ def test_summary_cache_shape_matches_between_dry_run_and_real(monkeypatch: pytes
             "n_frames": 18,
         }
 
-    monkeypatch.setattr(hard_qa_pipeline, "ensure_source_frame_cache", fake_ensure)
+    monkeypatch.setattr(run_progression_pipeline, "ensure_source_frame_cache", fake_ensure)
 
-    dry_run = hard_qa_pipeline.build_source_cache_stage(
+    dry_run = run_progression_pipeline.build_source_cache_stage(
         manifest_paths=[manifest],
         frames_root=tmp_path / "frames",
         dry_run=True,
     )
-    real_run = hard_qa_pipeline.build_source_cache_stage(
+    real_run = run_progression_pipeline.build_source_cache_stage(
         manifest_paths=[manifest],
         frames_root=tmp_path / "frames",
         dry_run=False,
@@ -241,7 +241,7 @@ def test_summary_cache_shape_matches_between_dry_run_and_real(monkeypatch: pytes
 
 def test_validate_cache_metadata_rejects_missing_fields():
     with pytest.raises(ValueError, match="duration_sec"):
-        hard_qa_pipeline.validate_cache_metadata(
+        run_progression_pipeline.validate_cache_metadata(
             {
                 "fps": 2.0,
                 "n_frames": 3,
@@ -258,7 +258,7 @@ def test_main_dry_run_writes_stats_output(tmp_path: Path, capsys: pytest.Capture
     )
     stats_output = tmp_path / "stats.json"
 
-    summary = hard_qa_pipeline.main(
+    summary = run_progression_pipeline.main(
         [
             "build-source-cache",
             "--manifest",
@@ -290,7 +290,7 @@ def test_cli_dry_run_subprocess(tmp_path: Path):
     proc = subprocess.run(
         [
             sys.executable,
-            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
+            "video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py",
             "build-source-cache",
             "--manifest",
             str(manifest),
@@ -331,7 +331,7 @@ def test_build_raw_record_dedupe_key_handles_nested_frame_lists():
         duration=6.0,
     )
 
-    deduped, duplicate_count = hard_qa_pipeline.dedupe_raw_records([record_a, record_b])
+    deduped, duplicate_count = run_progression_pipeline.dedupe_raw_records([record_a, record_b])
 
     assert len(deduped) == 1
     assert duplicate_count == 1
@@ -358,7 +358,7 @@ def test_dedupe_raw_records_raises_on_conflicting_stats_metadata():
     )
 
     with pytest.raises(ValueError, match="conflicting stats metadata"):
-        hard_qa_pipeline.dedupe_raw_records([record_a, record_b])
+        run_progression_pipeline.dedupe_raw_records([record_a, record_b])
 
 
 def test_split_raw_records_is_deterministic_and_stratified():
@@ -387,8 +387,8 @@ def test_split_raw_records_is_deterministic_and_stratified():
             )
         )
 
-    train_a, val_a = hard_qa_pipeline.split_raw_records(records, val_ratio=0.25, seed=7)
-    train_b, val_b = hard_qa_pipeline.split_raw_records(records, val_ratio=0.25, seed=7)
+    train_a, val_a = run_progression_pipeline.split_raw_records(records, val_ratio=0.25, seed=7)
+    train_b, val_b = run_progression_pipeline.split_raw_records(records, val_ratio=0.25, seed=7)
 
     assert train_a == train_b
     assert val_a == val_b
@@ -425,7 +425,7 @@ def test_split_raw_records_respects_global_budget_on_long_tail():
             )
         )
 
-    train_rows, val_rows = hard_qa_pipeline.split_raw_records(records, val_ratio=0.25, seed=13)
+    train_rows, val_rows = run_progression_pipeline.split_raw_records(records, val_ratio=0.25, seed=13)
 
     assert len(val_rows) == 3
     assert len(train_rows) == 9
@@ -455,7 +455,7 @@ def test_summarize_raw_records_computes_problem_domain_and_averages():
         ),
     ]
 
-    stats = hard_qa_pipeline.summarize_raw_records(records)
+    stats = run_progression_pipeline.summarize_raw_records(records)
 
     assert stats["total_count"] == 2
     assert stats["by_problem_type"] == {
@@ -510,7 +510,7 @@ def test_merge_raw_stage_dry_run_returns_summary_without_writing_files(tmp_path:
         ],
     )
 
-    summary = hard_qa_pipeline.merge_raw_stage(
+    summary = run_progression_pipeline.merge_raw_stage(
         input_paths=[first, second],
         output_dir=output_dir,
         seed=3,
@@ -573,7 +573,7 @@ def test_merge_raw_stage_writes_outputs_and_stats(tmp_path: Path):
         ],
     )
 
-    summary = hard_qa_pipeline.merge_raw_stage(
+    summary = run_progression_pipeline.merge_raw_stage(
         input_paths=[raw_path],
         output_dir=output_dir,
         seed=11,
@@ -581,8 +581,8 @@ def test_merge_raw_stage_writes_outputs_and_stats(tmp_path: Path):
         dry_run=False,
     )
 
-    train_rows = hard_qa_pipeline.load_jsonl_rows([output_dir / "train.jsonl"])
-    val_rows = hard_qa_pipeline.load_jsonl_rows([output_dir / "val.jsonl"])
+    train_rows = run_progression_pipeline.load_jsonl_rows([output_dir / "train.jsonl"])
+    val_rows = run_progression_pipeline.load_jsonl_rows([output_dir / "val.jsonl"])
     saved_stats = json.loads((output_dir / "stats.json").read_text(encoding="utf-8"))
 
     assert summary["train_count"] == len(train_rows)
@@ -652,7 +652,7 @@ def test_merge_raw_cli_subprocess(tmp_path: Path):
     proc = subprocess.run(
         [
             sys.executable,
-            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
+            "video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py",
             "merge-raw",
             "--input",
             str(first),
@@ -679,7 +679,7 @@ def test_merge_raw_cli_subprocess(tmp_path: Path):
     assert saved_stats["val_count"] == 1
 
 
-def test_filter_rollout_hard_cases_applies_success_threshold_range_and_balancing(tmp_path: Path):
+def test_filter_progression_rollouts_applies_success_threshold_range_and_balancing(tmp_path: Path):
     input_path = tmp_path / "merged_train.jsonl"
     report_path = tmp_path / "rollout_report.jsonl"
     output_path = tmp_path / "hard_cases.jsonl"
@@ -836,7 +836,7 @@ def test_filter_rollout_hard_cases_applies_success_threshold_range_and_balancing
     _write_jsonl(input_path, input_rows)
     _write_jsonl(report_path, report_rows)
 
-    summary = filter_rollout_hard_cases.filter_rollout_hard_cases(
+    summary = filter_progression_rollouts.filter_progression_rollouts(
         report_path=report_path,
         input_path=input_path,
         output_path=output_path,
@@ -850,7 +850,7 @@ def test_filter_rollout_hard_cases_applies_success_threshold_range_and_balancing
         seed=9,
     )
 
-    selected_rows = hard_qa_pipeline.load_jsonl_rows([output_path])
+    selected_rows = run_progression_pipeline.load_jsonl_rows([output_path])
     saved_stats = json.loads(stats_path.read_text(encoding="utf-8"))
 
     assert summary["candidate_count"] == 6
@@ -871,7 +871,7 @@ def test_filter_rollout_hard_cases_applies_success_threshold_range_and_balancing
     assert saved_stats["average_duration_sec"] > 0
 
 
-def test_filter_rollout_hard_cases_prefers_index_identity_over_prompt_answer(tmp_path: Path):
+def test_filter_progression_rollouts_prefers_index_identity_over_prompt_answer(tmp_path: Path):
     input_path = tmp_path / "merged_train.jsonl"
     report_path = tmp_path / "rollout_report.jsonl"
     output_path = tmp_path / "hard_cases.jsonl"
@@ -918,7 +918,7 @@ def test_filter_rollout_hard_cases_prefers_index_identity_over_prompt_answer(tmp
         ],
     )
 
-    summary = filter_rollout_hard_cases.filter_rollout_hard_cases(
+    summary = filter_progression_rollouts.filter_progression_rollouts(
         report_path=report_path,
         input_path=input_path,
         output_path=output_path,
@@ -930,14 +930,14 @@ def test_filter_rollout_hard_cases_prefers_index_identity_over_prompt_answer(tmp
         seed=3,
     )
 
-    selected_rows = hard_qa_pipeline.load_jsonl_rows([output_path])
+    selected_rows = run_progression_pipeline.load_jsonl_rows([output_path])
 
     assert summary["candidate_count"] == 2
     assert len(selected_rows) == 2
     assert selected_rows[0]["videos"] != selected_rows[1]["videos"]
 
 
-def test_filter_rollout_hard_cases_falls_back_when_index_mismatches_content(tmp_path: Path):
+def test_filter_progression_rollouts_falls_back_when_index_mismatches_content(tmp_path: Path):
     input_path = tmp_path / "merged_train.jsonl"
     report_path = tmp_path / "rollout_report.jsonl"
     output_path = tmp_path / "hard_cases.jsonl"
@@ -975,7 +975,7 @@ def test_filter_rollout_hard_cases_falls_back_when_index_mismatches_content(tmp_
         ],
     )
 
-    summary = filter_rollout_hard_cases.filter_rollout_hard_cases(
+    summary = filter_progression_rollouts.filter_progression_rollouts(
         report_path=report_path,
         input_path=input_path,
         output_path=output_path,
@@ -987,7 +987,7 @@ def test_filter_rollout_hard_cases_falls_back_when_index_mismatches_content(tmp_
         seed=5,
     )
 
-    selected_rows = hard_qa_pipeline.load_jsonl_rows([output_path])
+    selected_rows = run_progression_pipeline.load_jsonl_rows([output_path])
 
     assert summary["candidate_count"] == 1
     assert len(selected_rows) == 1
@@ -995,7 +995,7 @@ def test_filter_rollout_hard_cases_falls_back_when_index_mismatches_content(tmp_
     assert selected_rows[0]["videos"] == [["b0.jpg", "b1.jpg", "b2.jpg"]]
 
 
-def test_filter_rollout_hard_cases_keeps_multiple_fallback_matches_from_sharded_like_indices(tmp_path: Path):
+def test_filter_progression_rollouts_keeps_multiple_fallback_matches_from_sharded_like_indices(tmp_path: Path):
     input_path = tmp_path / "merged_train.jsonl"
     report_path = tmp_path / "rollout_report.jsonl"
     output_path = tmp_path / "hard_cases.jsonl"
@@ -1040,7 +1040,7 @@ def test_filter_rollout_hard_cases_keeps_multiple_fallback_matches_from_sharded_
         ],
     )
 
-    summary = filter_rollout_hard_cases.filter_rollout_hard_cases(
+    summary = filter_progression_rollouts.filter_progression_rollouts(
         report_path=report_path,
         input_path=input_path,
         output_path=output_path,
@@ -1052,14 +1052,14 @@ def test_filter_rollout_hard_cases_keeps_multiple_fallback_matches_from_sharded_
         seed=6,
     )
 
-    selected_rows = hard_qa_pipeline.load_jsonl_rows([output_path])
+    selected_rows = run_progression_pipeline.load_jsonl_rows([output_path])
 
     assert summary["candidate_count"] == 2
     assert len(selected_rows) == 2
     assert {row["prompt"] for row in selected_rows} == {"first", "second"}
 
 
-def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path: Path):
+def test_merge_progression_rollout_shards_dedupes_reports_and_kept_records(tmp_path: Path):
     rollout_dir = tmp_path / "rollout"
     output_dir = tmp_path / "merged"
     rollout_dir.mkdir()
@@ -1138,13 +1138,13 @@ def test_merge_rollout_resume_outputs_dedupes_reports_and_kept_records(tmp_path:
     _write_jsonl(rollout_dir / "_shard0_kept.jsonl", [base_kept])
     _write_jsonl(rollout_dir / "_shard0_resume2_kept.jsonl", [base_kept, resume_kept, filtered_kept])
 
-    report_files = merge_rollout_resume_outputs.discover_files(rollout_dir, merge_rollout_resume_outputs.REPORT_RE)
-    kept_files = merge_rollout_resume_outputs.discover_files(rollout_dir, merge_rollout_resume_outputs.KEPT_RE)
-    reports, report_merge_summary = merge_rollout_resume_outputs.merge_reports(report_files)
-    kept_records, kept_merge_summary = merge_rollout_resume_outputs.merge_kept_records(kept_files)
-    report_summary = merge_rollout_resume_outputs.summarize_reports(reports, success_threshold=1.0)
-    plot_paths = merge_rollout_resume_outputs.write_plots(output_dir, reports, report_summary, kept_records)
-    filtered_outputs = merge_rollout_resume_outputs.write_filtered_report_outputs(
+    report_files = merge_progression_rollout_shards.discover_files(rollout_dir, merge_progression_rollout_shards.REPORT_RE)
+    kept_files = merge_progression_rollout_shards.discover_files(rollout_dir, merge_progression_rollout_shards.KEPT_RE)
+    reports, report_merge_summary = merge_progression_rollout_shards.merge_reports(report_files)
+    kept_records, kept_merge_summary = merge_progression_rollout_shards.merge_kept_records(kept_files)
+    report_summary = merge_progression_rollout_shards.summarize_reports(reports, success_threshold=1.0)
+    plot_paths = merge_progression_rollout_shards.write_plots(output_dir, reports, report_summary, kept_records)
+    filtered_outputs = merge_progression_rollout_shards.write_filtered_report_outputs(
         output_dir=output_dir,
         reports=reports,
         success_threshold=1.0,
@@ -1211,7 +1211,7 @@ def test_balanced_filtered_kept_outputs_halves_largest_type_by_domain(tmp_path: 
         for idx, domain in enumerate(["home", "science"])
     )
 
-    result = merge_rollout_resume_outputs.write_balanced_filtered_kept_outputs(
+    result = merge_progression_rollout_shards.write_balanced_filtered_kept_outputs(
         output_dir=output_dir,
         records=records,
         largest_fraction=0.5,
@@ -1220,7 +1220,7 @@ def test_balanced_filtered_kept_outputs_halves_largest_type_by_domain(tmp_path: 
         output_name="balanced.jsonl",
     )
 
-    selected = hard_qa_pipeline.load_jsonl_rows([result["output_kept"]])
+    selected = run_progression_pipeline.load_jsonl_rows([result["output_kept"]])
     selected_by_type = Counter(row["problem_type"] for row in selected)
     largest_domains = Counter(
         row["metadata"]["domain_l1"]
@@ -1259,14 +1259,14 @@ def test_rollout_filter_stage_dry_run_returns_planned_commands(tmp_path: Path):
         ],
     )
 
-    summary = hard_qa_pipeline.rollout_filter_stage(
+    summary = run_progression_pipeline.rollout_filter_stage(
         input_path=input_path,
         output_dir=tmp_path / "rollout",
         dry_run=True,
     )
 
     assert summary["dry_run"] is True
-    assert summary["model_path"] == hard_qa_pipeline.DEFAULT_ROLLOUT_MODEL_PATH
+    assert summary["model_path"] == run_progression_pipeline.DEFAULT_ROLLOUT_MODEL_PATH
     assert summary["num_rollouts"] == 8
     assert summary["target_total"] == 5000
     assert summary["min_mean_reward"] == 0.125
@@ -1275,7 +1275,7 @@ def test_rollout_filter_stage_dry_run_returns_planned_commands(tmp_path: Path):
     assert len(summary["planned_commands"]) == 2
     assert summary["rollout_output_path"].endswith("rollout_output.jsonl")
     assert "offline_rollout_filter.py" in summary["planned_commands"][0]["display"]
-    assert "filter_rollout_hard_cases.py" in summary["planned_commands"][1]["display"]
+    assert "filter_progression_rollouts.py" in summary["planned_commands"][1]["display"]
     assert summary["hard_cases_output_path"].endswith("hard_cases.jsonl")
     assert summary["hard_cases_stats_output_path"].endswith("hard_cases.stats.json")
 
@@ -1298,7 +1298,7 @@ def test_main_rollout_filter_dry_run_writes_stats_output(tmp_path: Path, capsys:
         ],
     )
 
-    summary = hard_qa_pipeline.main(
+    summary = run_progression_pipeline.main(
         [
             "rollout-filter",
             "--input",
@@ -1398,8 +1398,8 @@ def test_rollout_filter_stage_runs_planned_commands_with_monkeypatched_subproces
                     ),
                 ],
             )
-        elif script_name == "filter_rollout_hard_cases.py":
-            filter_rollout_hard_cases.filter_rollout_hard_cases(
+        elif script_name == "filter_progression_rollouts.py":
+            filter_progression_rollouts.filter_progression_rollouts(
                 report_path=_arg(command, "--report"),
                 input_path=_arg(command, "--input"),
                 output_path=_arg(command, "--output"),
@@ -1416,9 +1416,9 @@ def test_rollout_filter_stage_runs_planned_commands_with_monkeypatched_subproces
             raise AssertionError(f"Unexpected command: {command}")
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(hard_qa_pipeline.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_progression_pipeline.subprocess, "run", fake_run)
 
-    summary = hard_qa_pipeline.rollout_filter_stage(
+    summary = run_progression_pipeline.rollout_filter_stage(
         input_path=input_path,
         output_dir=output_dir,
         dry_run=False,
@@ -1426,7 +1426,7 @@ def test_rollout_filter_stage_runs_planned_commands_with_monkeypatched_subproces
 
     assert len(calls) == 2
     assert Path(calls[0][1]).name == "offline_rollout_filter.py"
-    assert Path(calls[1][1]).name == "filter_rollout_hard_cases.py"
+    assert Path(calls[1][1]).name == "filter_progression_rollouts.py"
     assert summary["rollout_output_record_count"] == 2
     assert summary["report_record_count"] == 3
     assert summary["hard_case_count"] == 2
@@ -1458,7 +1458,7 @@ def test_rollout_filter_cli_dry_run_subprocess(tmp_path: Path):
     proc = subprocess.run(
         [
             sys.executable,
-            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
+            "video_proxy/data/pipelines/proxy_construction/event_progression/run_progression_pipeline.py",
             "rollout-filter",
             "--input",
             str(input_path),

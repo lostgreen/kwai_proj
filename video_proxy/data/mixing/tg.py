@@ -4,7 +4,7 @@ Train: 直接复制 run_pipeline.sh 预构建的 TimeRFT validated JSONL
 Val: 从 run_pipeline.sh 预构建的 TVGBench validated JSONL 中随机采样
 
 前置条件:
-  bash video_proxy/data/pipelines/temporal_grounding/run_pipeline.sh
+  bash video_proxy/data/base_sources/tg/time_r1/run_pipeline.sh
   → tg_timerft_max256s_validated.jsonl  (train)
   → tg_tvgbench_max256s_validated.jsonl (val)
 """
@@ -57,7 +57,7 @@ def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:
         source = getattr(args, "tg_train_source", None)
         if not source or not os.path.exists(source):
             print(f"  [tg] WARN: train source not found: {source}")
-            print("  请先运行: bash video_proxy/data/pipelines/temporal_grounding/run_pipeline.sh")
+            print("  请先运行: bash video_proxy/data/base_sources/tg/time_r1/run_pipeline.sh")
             return
         print(f"\n>>> TG train: copy from {source}")
         shutil.copy2(source, tg_train)
@@ -72,7 +72,7 @@ def setup_base(data_root: str, args: Namespace, force: bool, seed: int) -> None:
         tvg_source = getattr(args, "tg_tvgbench_source", None)
         if not tvg_source or not os.path.exists(tvg_source):
             print(f"  [tg] WARN: TVGBench source not found: {tvg_source}")
-            print("  请先运行: TVGBENCH_JSON=... bash video_proxy/data/pipelines/temporal_grounding/run_pipeline.sh")
+            print("  请先运行: TVGBENCH_JSON=... bash video_proxy/data/base_sources/tg/time_r1/run_pipeline.sh")
             return
         print(f"\n>>> TG val: sample {val_n} from {tvg_source}")
         all_records = load_jsonl(tvg_source)

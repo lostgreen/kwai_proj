@@ -40,7 +40,7 @@ FORCE="${FORCE:-0}"
 
 REWARD_FUNCTION="${REWARD_FUNCTION:-${REPO_ROOT}/verl/reward_function/mixed_proxy_reward.py:compute_score}"
 ROLLOUT_SCRIPT="${REPO_ROOT}/video_proxy/training/tools/offline_rollout_filter.py"
-FILTER_SCRIPT="${REPO_ROOT}/video_proxy/data/pipelines/youcook2_seg/temporal_aot/filter_rollout_hard_cases.py"
+FILTER_SCRIPT="${REPO_ROOT}/video_proxy/data/pipelines/proxy_construction/event_progression/filter_progression_rollouts.py"
 
 if [[ ! -f "${INPUT_JSONL}" ]]; then
   echo "[aot-rollout] input not found: ${INPUT_JSONL}" >&2

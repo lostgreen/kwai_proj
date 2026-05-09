@@ -4,11 +4,11 @@
 #
 # 前置条件 (在服务器上先运行):
 #   1. TG 数据 (TimeRFT + TVGBench 分别处理):
-#      TVGBENCH_JSON=/path/to/tvgbench.json bash video_proxy/data/pipelines/temporal_grounding/run_pipeline.sh
+#      TVGBENCH_JSON=/path/to/tvgbench.json bash video_proxy/data/base_sources/tg/time_r1/run_pipeline.sh
 #      → tg_timerft_max256s_validated.jsonl  (train)
 #      → tg_tvgbench_max256s_validated.jsonl (val 采样源)
 #
-#   2. MCQ: video_proxy/data/pipelines/llava_video_178k/ pipeline → results/train_final.jsonl
+#   2. MCQ: video_proxy/data/base_sources/mcq/ pipeline → results/train_final.jsonl
 #   3. Hier Seg: annotation pipeline → train_all.jsonl / val_all.jsonl
 #   4. Event Logic (可选): event_logic pipeline → train.jsonl / val.jsonl
 #
@@ -27,9 +27,9 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 source "${SCRIPT_DIR}/../../training/common/multi_task_common.sh"
 
 # ---- 数据源路径 ----
-TG_TRAIN_SOURCE="${TG_TRAIN_SOURCE:-${REPO_ROOT}/video_proxy/data/pipelines/temporal_grounding/data/tg_timerft_max256s_validated.jsonl}"
-TG_TVGBENCH_SOURCE="${TG_TVGBENCH_SOURCE:-${REPO_ROOT}/video_proxy/data/pipelines/temporal_grounding/data/tg_tvgbench_max256s_validated.jsonl}"
-MCQ_SOURCE="${MCQ_SOURCE:-${REPO_ROOT}/video_proxy/data/pipelines/llava_video_178k/results/train_final_direct.jsonl}"
+TG_TRAIN_SOURCE="${TG_TRAIN_SOURCE:-${REPO_ROOT}/video_proxy/data/base_sources/tg/data/tg_timerft_max256s_validated.jsonl}"
+TG_TVGBENCH_SOURCE="${TG_TVGBENCH_SOURCE:-${REPO_ROOT}/video_proxy/data/base_sources/tg/data/tg_tvgbench_max256s_validated.jsonl}"
+MCQ_SOURCE="${MCQ_SOURCE:-${REPO_ROOT}/video_proxy/data/base_sources/mcq/results/train_final_direct.jsonl}"
 
 # ---- 构建参数 ----
 _FORCE_FLAG=""
