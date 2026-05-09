@@ -27,6 +27,7 @@ REASONING_TAG="${REASONING_TAG:-think}"
 SAMPLE_PROMPTS_PER_TYPE="${SAMPLE_PROMPTS_PER_TYPE:-2}"
 SAMPLE_PROMPT_MAX_CHARS="${SAMPLE_PROMPT_MAX_CHARS:-1600}"
 CONVERT_FORCE="${CONVERT_FORCE:-false}"
+CONVERT_ONLY="${CONVERT_ONLY:-false}"
 
 if [[ ! -f "${SOURCE_TRAIN_FILE}" ]]; then
     echo "[single-teacher] ERROR: SOURCE_TRAIN_FILE not found: ${SOURCE_TRAIN_FILE}" >&2
@@ -69,6 +70,15 @@ if [[ "${COT_MODE,,}" =~ ^(true|1|yes)$ ]]; then
 else
     TRAIN_FILE="${SOURCE_TRAIN_FILE}"
     TEST_FILE="${SOURCE_TEST_FILE}"
+fi
+
+echo "[single-teacher] Source train: ${SOURCE_TRAIN_FILE}"
+echo "[single-teacher] Source val: ${SOURCE_TEST_FILE}"
+echo "[single-teacher] Data ready: train=${TRAIN_FILE}"
+echo "[single-teacher] Data ready: val=${TEST_FILE}"
+if [[ "${CONVERT_ONLY,,}" =~ ^(true|1|yes)$ ]]; then
+    echo "[single-teacher] CONVERT_ONLY=true; skip training."
+    exit 0
 fi
 
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"

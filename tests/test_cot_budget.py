@@ -251,6 +251,8 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     helper = Path("video_proxy/training/recipes/single_teacher_from_experiment.sh").read_text()
 
     assert "convert_jsonl_to_cot.py" in helper
+    assert "CONVERT_ONLY" in helper
+    assert "Data ready:" in helper
     assert "check_cot_budget_rollout.py" in helper
     assert '--tokenizer "${MODEL_PATH}"' in helper
     assert "--require-start" in helper
