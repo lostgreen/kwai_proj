@@ -50,3 +50,29 @@ def test_legacy_events_tag_is_still_supported():
     pred = "<events>[[12.5, 17.8]]</events>"
     result = temporal_grounding_reward(pred, gt, metadata={})
     assert result["overall"] == 1.0
+
+
+def test_cot_thought_range_does_not_override_final_sentence():
+    gt = "The event happens in the 20 - 30 seconds."
+    pred = (
+        "<thought>A tempting but wrong draft is: "
+        "The event happens in the 1 - 2 seconds.</thought>"
+        "The event happens in the 20 - 30 seconds."
+    )
+
+    result = temporal_grounding_reward(pred, gt, metadata={})
+
+    assert result["overall"] == 1.0
+
+
+def test_answer_tag_range_takes_precedence_over_thought_range():
+    gt = "The event happens in the 20 - 30 seconds."
+    pred = (
+        "<thought>A distracting draft is: "
+        "The event happens in the 1 - 2 seconds.</thought>"
+        "<answer>The event happens in the 20 - 30 seconds.</answer>"
+    )
+
+    result = temporal_grounding_reward(pred, gt, metadata={})
+
+    assert result["overall"] == 1.0

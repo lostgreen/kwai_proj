@@ -47,6 +47,10 @@ _ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 _TIME_RANGE_PATTERN = re.compile(
     r"(\d+\.?\d*)\s+(?:to|and)\s+(\d+\.?\d*)", re.IGNORECASE
 )
+_THOUGHT_PATTERN = re.compile(
+    r"<(?:think|thought)>\s*.*?\s*</(?:think|thought)>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 # <events>[[12.5, 17.8]]</events>  (legacy)
 _EVENTS_PATTERN = re.compile(r"<events>(.*?)</events>", re.DOTALL)
@@ -107,6 +111,21 @@ def _parse_single_segment(text: str) -> Optional[Tuple[float, float]]:
     return None
 
 
+def _parse_prediction_segment(text: str) -> Optional[Tuple[float, float]]:
+    """
+    解析模型预测。CoT 输出中思考区可能包含草稿时间段；如果存在
+    <answer>，只信任最终答案，否则先移除 <think>/<thought> 再解析。
+    """
+    answer_match = _ANSWER_PATTERN.search(text)
+    if answer_match is not None:
+        pair = _extract_pair_from_free_text(answer_match.group(1))
+        if pair is not None:
+            return pair
+
+    answer_free_text = _THOUGHT_PATTERN.sub("", text)
+    return _parse_single_segment(answer_free_text)
+
+
 def temporal_grounding_reward(
     response: str,
     ground_truth: str,
@@ -132,7 +151,7 @@ def temporal_grounding_reward(
     gt_s, gt_e = gt_pair
 
     # 解析预测
-    pred_pair = _parse_single_segment(response)
+    pred_pair = _parse_prediction_segment(response)
     if pred_pair is None:
         return dict(_ZERO)
     pred_s, pred_e = pred_pair
