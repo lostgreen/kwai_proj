@@ -1,11 +1,8 @@
 # Data Curation Configs
 
-YAML configs for source-specific data curation pipelines.
+These YAML files document dataset defaults for the duration-first curation
+pipeline. `run.sh` is controlled through environment variables, so the configs
+are lightweight references rather than a second execution system.
 
-## Files
-
-- `et_instruct_164k.yaml`
-- `timelens_100k.yaml`
-
-Keep configs declarative. Put implementation logic in the corresponding
-pipeline directory.
+- `et_instruct_164k.yaml`: ET-Instruct source paths and default duration window.
+- `timelens_100k.yaml`: TimeLens source paths and default duration window.

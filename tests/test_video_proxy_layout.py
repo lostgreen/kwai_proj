@@ -55,3 +55,27 @@ def test_major_video_proxy_directories_have_readmes():
     missing = [path for path in readme_dirs if not (Path(path) / "README.md").is_file()]
 
     assert missing == []
+
+
+def test_data_curation_pipeline_is_duration_first():
+    root = Path("video_proxy/data/pipelines/data_curation")
+
+    active_files = [
+        root / "run.sh",
+        root / "curation" / "README.md",
+        root / "curation" / "sources.py",
+        root / "curation" / "duration_filter.py",
+        root / "curation" / "local_score.py",
+    ]
+    missing = [str(path) for path in active_files if not path.is_file()]
+    assert missing == []
+
+    removed_active_files = [
+        root / "PIPELINE_REPORT.md",
+        root / "et_instruct_164k" / "text_filter.py",
+        root / "et_instruct_164k" / "sample_per_source.py",
+        root / "timelens_100k" / "text_filter.py",
+        root / "timelens_100k" / "sample_per_source.py",
+    ]
+    lingering = [str(path) for path in removed_active_files if path.exists()]
+    assert lingering == []

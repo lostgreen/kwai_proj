@@ -5,9 +5,9 @@ This joins the query-level rollout input with ``analysis/query_stats.jsonl`` and
 keeps records whose mean IoU falls in the requested inclusive range.
 
 Usage from train/:
-    python video_proxy/data/pipelines/data_curation/timelens_100k/select_tg_iou_range.py \
-        --input-jsonl video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
-        --query-stats video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis/query_stats.jsonl \
+    python video_proxy/data/pipelines/temporal_grounding/timelens_rollout/select_tg_iou_range.py \
+        --input-jsonl video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
+        --query-stats video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis/query_stats.jsonl \
         --output-jsonl video_proxy/data/pipelines/temporal_grounding/data/tg_timelens_iou0p1_0p4.jsonl
 """
 

@@ -1,11 +1,7 @@
-# Data Curation Shared Helpers
+# Shared Local Scoring
 
-Shared utilities for data curation pipelines.
+`local_screen.py` is the retained local VLM scorer. It is optional and is called
+through `../curation/local_score.py` when `LOCAL_SCORE=1`.
 
-## Files
-
-- `local_screen.py`: local filtering and screening helpers.
-- `visualize_distribution.py`: distribution plots for curated candidates.
-
-Dataset-specific curation logic belongs in sibling directories such as
-`et_instruct_164k/` or `timelens_100k/`.
+The default curation path does not run a model; it only filters by duration and
+writes `screen_keep.jsonl` for downstream compatibility.

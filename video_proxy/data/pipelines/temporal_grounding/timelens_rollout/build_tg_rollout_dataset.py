@@ -6,9 +6,9 @@ Each source video can yield multiple TG questions, one per event query/span.
 The prompt/answer style is aligned with video_proxy/data/pipelines/temporal_grounding/build_dataset.py.
 
 Usage:
-    python video_proxy/data/pipelines/data_curation/timelens_100k/build_tg_rollout_dataset.py \
-        --input video_proxy/data/pipelines/data_curation/results/timelens_100k_short/short_pool_raw.jsonl \
-        --output video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_input.jsonl \
+    python video_proxy/data/pipelines/temporal_grounding/timelens_rollout/build_tg_rollout_dataset.py \
+        --input video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/short_pool_raw.jsonl \
+        --output video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_input.jsonl \
         --video-root /m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards
 """
 

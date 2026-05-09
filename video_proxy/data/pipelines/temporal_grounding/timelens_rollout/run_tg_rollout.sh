@@ -11,7 +11,7 @@
 #     so report.mean_reward is effectively raw temporal IoU for this workflow
 #
 # Usage (from train/):
-#   bash video_proxy/data/pipelines/data_curation/timelens_100k/run_tg_rollout.sh
+#   bash video_proxy/data/pipelines/temporal_grounding/timelens_rollout/run_tg_rollout.sh
 #
 # Key env vars:
 #   INPUT_RAW       — raw TimeLens JSONL (default short_pool_raw.jsonl)
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
 cd "$REPO_ROOT"
 
 source "${REPO_ROOT}/video_proxy/training/common/gpu_filler_common.sh"
@@ -39,10 +39,10 @@ ROLLOUT_SCRIPT="${REPO_ROOT}/video_proxy/training/tools/offline_rollout_filter.p
 RESUME_HELPER="${REPO_ROOT}/video_proxy/data/pipelines/llava_video_178k/resume_helper.py"
 REWARD_FN="${REPO_ROOT}/verl/reward_function/temporal_grounding_reward.py:compute_score"
 
-INPUT_RAW="${INPUT_RAW:-${REPO_ROOT}/video_proxy/data/pipelines/data_curation/results/timelens_100k_short/short_pool_raw.jsonl}"
+INPUT_RAW="${INPUT_RAW:-${REPO_ROOT}/video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/short_pool_raw.jsonl}"
 VIDEO_ROOT="${VIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/TimeLens-100K/video_shards}"
 MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8}"
 ANALYSIS_DIR="${ANALYSIS_DIR:-$OUTPUT_ROOT/analysis}"
 
 NUM_GPUS="${NUM_GPUS:-8}"

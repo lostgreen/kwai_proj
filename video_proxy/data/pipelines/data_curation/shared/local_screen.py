@@ -702,7 +702,7 @@ def parse_args() -> argparse.Namespace:
         description="Local VLM pre-screening for hierarchical annotation candidates.",
     )
     # I/O
-    parser.add_argument("--input_jsonl", required=True, help="Input JSONL from sample_per_source.py")
+    parser.add_argument("--input_jsonl", required=True, help="Unified input JSONL, usually duration_keep.jsonl")
     parser.add_argument("--output_jsonl", required=True, help="All results with _screen field")
     parser.add_argument("--keep_jsonl", required=True, help="Kept records (decision=keep)")
     parser.add_argument("--reject_jsonl", required=True, help="Rejected records (decision=reject)")

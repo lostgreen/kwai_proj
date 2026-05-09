@@ -8,16 +8,16 @@ produces query/video-level score summaries, duration summaries, threshold
 sweeps, and plots for choosing an IoU cutoff.
 
 Usage from train/:
-    python video_proxy/data/pipelines/data_curation/timelens_100k/analyze_tg_rollout.py \
-        --report video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/rollout_report.jsonl \
-        --input-jsonl video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
-        --output-dir video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis
+    python video_proxy/data/pipelines/temporal_grounding/timelens_rollout/analyze_tg_rollout.py \
+        --report video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/rollout_report.jsonl \
+        --input-jsonl video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
+        --output-dir video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis
 
     # If final merge failed, analyze shard reports directly:
-    python video_proxy/data/pipelines/data_curation/timelens_100k/analyze_tg_rollout.py \
-        --report-glob 'video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/_shard*_report.jsonl' \
-        --input-jsonl video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
-        --output-dir video_proxy/data/pipelines/data_curation/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis
+    python video_proxy/data/pipelines/temporal_grounding/timelens_rollout/analyze_tg_rollout.py \
+        --report-glob 'video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/_shard*_report.jsonl' \
+        --input-jsonl video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/tg_rollout_input.jsonl \
+        --output-dir video_proxy/data/pipelines/temporal_grounding/results/timelens_100k_short/tg_rollout_qwen3_vl_8b_roll8/analysis
 """
 
 from __future__ import annotations
