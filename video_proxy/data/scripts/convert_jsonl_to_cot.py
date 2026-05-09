@@ -45,6 +45,10 @@ _ANSWER_SEQUENCE_TAG_INSTRUCTION = re.compile(
     r"Provide your answer\s+(?P<detail>as .*?)\s*inside\s*<answer>\s*</answer>\s*tags\.?",
     re.IGNORECASE | re.DOTALL,
 )
+_ONLY_ONE_LETTER_INSTRUCTION = re.compile(
+    r"Answer with only one letter:\s*(?P<letters>[^\n.]+)\.?",
+    re.IGNORECASE,
+)
 _OLD_MCQ_DIRECT = "Answer with the option letter."
 _EVENTS_OUTPUT_PATTERN = re.compile(
     r"(?=Output the start and end time .*?<events>)",
@@ -137,6 +141,13 @@ def _choice_replacement(match: re.Match[str], reasoning_tag: str) -> str:
     return f"{_choice_prefix(reasoning_tag)}{detail_text} {CHOICE_COT_SUFFIX}"
 
 
+def _only_one_letter_replacement(match: re.Match[str], reasoning_tag: str) -> str:
+    raw_letters = (match.group("letters") or "").strip()
+    letters = re.findall(r"\b[A-Z]\b", raw_letters.upper())
+    detail = ", ".join(letters[:-1]) + f", or {letters[-1]}" if len(letters) > 2 else raw_letters
+    return f"{_choice_prefix(reasoning_tag)} (a single letter: {detail}) {CHOICE_COT_SUFFIX}"
+
+
 def _rewrite_choice_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
     new_prompt, n = _ANSWER_TAG_INSTRUCTION.subn(
         lambda match: _choice_replacement(match, reasoning_tag),
@@ -154,6 +165,13 @@ def _rewrite_choice_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
 
     new_prompt, n = _ANSWER_SEQUENCE_TAG_INSTRUCTION.subn(
         lambda match: _choice_replacement(match, reasoning_tag),
+        prompt,
+    )
+    if n > 0:
+        return _normalize_answer_tag_spacing(new_prompt).rstrip(), True
+
+    new_prompt, n = _ONLY_ONE_LETTER_INSTRUCTION.subn(
+        lambda match: _only_one_letter_replacement(match, reasoning_tag),
         prompt,
     )
     if n > 0:

@@ -78,6 +78,44 @@ def test_rewrite_choice_direct_instruction_can_use_thought_tag():
     assert "<think>" not in converted["prompt"]
 
 
+def test_rewrite_aot_only_one_letter_instruction_to_cot_answer_tags():
+    prompt = (
+        "<video><video>\n\n"
+        "Here are two video clips (Clip A and Clip B).\n\n"
+        "Which clip (A or B) shows these events in the listed order?\n\n"
+        "Answer with only one letter: A or B."
+    )
+    record = {"prompt": prompt, "answer": "A", "problem_type": "seg_aot_action_t2v_binary"}
+
+    converted, changed, reason = convert_jsonl_to_cot.convert_record(record, reasoning_tag="thought")
+
+    assert changed is True
+    assert reason == "answer_tag"
+    assert "Think step by step inside <thought></thought> tags" in converted["prompt"]
+    assert "then provide your final answer (a single letter: A or B) inside <answer></answer> tags." in converted["prompt"]
+    assert "Answer with only one letter" not in converted["prompt"]
+    assert converted["messages"] == [{"role": "user", "content": converted["prompt"]}]
+
+
+def test_rewrite_aot_three_way_only_one_letter_instruction_to_cot_answer_tags():
+    prompt = (
+        "<video>\n"
+        "Which option lists the events in chronological order?\n\n"
+        "A. first option\n"
+        "B. second option\n"
+        "C. third option\n\n"
+        "Answer with only one letter: A, B, or C."
+    )
+    record = {"prompt": prompt, "answer": "C", "problem_type": "seg_aot_event_v2t_3way"}
+
+    converted, changed, reason = convert_jsonl_to_cot.convert_record(record, reasoning_tag="thought")
+
+    assert changed is True
+    assert reason == "answer_tag"
+    assert "final answer (a single letter: A, B, or C) inside <answer></answer> tags." in converted["prompt"]
+    assert "Answer with only one letter" not in converted["prompt"]
+
+
 def test_rewrite_sort_direct_instruction_keeps_sequence_answer_detail():
     prompt = (
         "<video>\n"
