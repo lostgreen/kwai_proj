@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -178,3 +179,82 @@ def test_multi_task_launcher_exposes_cot_budget_flags():
     assert 'worker.rollout.cot_budget_start_token="${COT_BUDGET_START_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_end_token="${COT_BUDGET_END_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_max_tokens="${COT_BUDGET_MAX_TOKENS}"' in source
+
+
+def test_rollout_checker_counts_closed_and_over_budget_cot_spans(tmp_path: Path):
+    module_path = Path(__file__).resolve().parents[1] / "video_proxy" / "training" / "tools" / "check_cot_budget_rollout.py"
+    spec = importlib.util.spec_from_file_location("check_cot_budget_rollout", module_path)
+    checker = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = checker
+    spec.loader.exec_module(checker)
+
+    path = tmp_path / "step_000001.jsonl"
+    rows = [
+        {"response": "<think>one two</think><answer>A</answer>"},
+        {"response": "<think>one two three</think><answer>B</answer>"},
+        {"response": "<answer>C</answer>"},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    summary = checker.analyze_rollout_file(
+        path,
+        start_token="<think>",
+        end_token="</think>",
+        max_tokens=2,
+    )
+
+    assert summary.total == 3
+    assert summary.started == 2
+    assert summary.closed == 2
+    assert summary.over_budget == 1
+    assert summary.missing_start == 1
+
+
+def test_rollout_checker_can_count_cot_span_with_tokenizer(tmp_path: Path):
+    module_path = Path(__file__).resolve().parents[1] / "video_proxy" / "training" / "tools" / "check_cot_budget_rollout.py"
+    spec = importlib.util.spec_from_file_location("check_cot_budget_rollout", module_path)
+    checker = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = checker
+    spec.loader.exec_module(checker)
+
+    class FakeTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            return list(text)
+
+    path = tmp_path / "step_000001.jsonl"
+    path.write_text(json.dumps({"response": "<think>abc</think><answer>A</answer>"}) + "\n", encoding="utf-8")
+
+    summary = checker.analyze_rollout_file(
+        path,
+        start_token="<think>",
+        end_token="</think>",
+        max_tokens=2,
+        tokenizer=FakeTokenizer(),
+    )
+
+    assert summary.max_observed_tokens == 3
+    assert summary.over_budget == 1
+
+
+def test_qwen3_cot_2gpu_launcher_converts_data_and_enables_budget_check():
+    launcher = Path("video_proxy/experiments/teacher_train/qwen3_vl_4b/run_cot_2gpu.sh").read_text()
+    launcher_8b = Path("video_proxy/experiments/teacher_train/qwen3_vl_8b/run_cot_2gpu.sh").read_text()
+    runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
+
+    assert "convert_jsonl_to_cot.py" in launcher
+    assert "--sample-prompts" in launcher
+    assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"' in launcher
+    assert 'COT_BUDGET_ENABLED="${COT_BUDGET_ENABLED:-true}"' in launcher
+    assert 'REUSE_EXISTING_DATA="${REUSE_EXISTING_DATA:-true}"' in launcher
+    assert "check_cot_budget_rollout.py" in launcher
+    assert "--require-start" in launcher
+    assert '--tokenizer "${MODEL_PATH}"' in launcher
+    assert 'MODEL_SIZE="8b"' in launcher_8b
+    assert 'SOURCE_EXP_NAME="${SOURCE_EXP_NAME:-composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema}"' in launcher
+    assert 'SOURCE_EXP_NAME="${SOURCE_EXP_NAME:-composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema}"' in launcher_8b
+    assert 'Qwen3-VL-8B-Instruct' in launcher_8b
+    assert "--require-start" in launcher_8b
+    assert '--tokenizer "${MODEL_PATH}"' in launcher_8b
+    assert 'REUSE_EXISTING_DATA=${REUSE_EXISTING_DATA_EFFECTIVE}' in runner
+    assert 'REUSE_EXISTING_DATA_EFFECTIVE' in runner and "missing train/val experiment JSONL" in runner

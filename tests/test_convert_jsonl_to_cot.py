@@ -116,6 +116,29 @@ def test_rewrite_events_prompt_inserts_cot_before_final_output_instruction():
     assert converted["answer"] == record["answer"]
 
 
+def test_rewrite_generic_events_prompt_inserts_cot_before_output_format_and_scopes_timestamp_rule():
+    prompt = (
+        "<video>\n"
+        "Segment the clip into steps.\n\n"
+        "Output format (strictly follow this):\n"
+        "<events>\n"
+        "[start1, end1]\n"
+        "</events>\n\n"
+        "Rules:\n"
+        "- Output only timestamps, no descriptions.\n"
+        "- Timestamps must be in chronological order."
+    )
+    record = {"prompt": prompt, "answer": "<events>\n[0, 10]\n</events>"}
+
+    converted, changed, reason = convert_jsonl_to_cot.convert_record(record)
+
+    assert changed is True
+    assert reason == "events"
+    assert converted["prompt"].index("First, think step by step") < converted["prompt"].index("Output format")
+    assert "In the final <events> block, output only timestamps" in converted["prompt"]
+    assert "- Output only timestamps, no descriptions." not in converted["prompt"]
+
+
 def test_existing_cot_prompt_is_left_unchanged():
     prompt = (
         "<video>\n"
@@ -190,3 +213,22 @@ def test_convert_jsonl_uses_custom_reasoning_tag(tmp_path: Path):
     assert summary.converted == 1
     assert "<thought></thought>" in written[0]["prompt"]
     assert "<think>" not in written[0]["prompt"]
+
+
+def test_collect_prompt_samples_groups_by_problem_type_and_limits_per_type(tmp_path: Path):
+    path = tmp_path / "converted.jsonl"
+    rows = [
+        {"prompt": "tg prompt 0", "problem_type": "temporal_grounding"},
+        {"prompt": "tg prompt 1", "problem_type": "temporal_grounding"},
+        {"prompt": "tg prompt 2", "problem_type": "temporal_grounding"},
+        {"prompt": "mcq prompt 0", "problem_type": "llava_mcq"},
+        {"prompt": "missing type prompt"},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    samples = convert_jsonl_to_cot.collect_prompt_samples(path, per_type=2)
+
+    assert list(samples) == ["llava_mcq", "temporal_grounding", "unknown"]
+    assert samples["temporal_grounding"] == ["tg prompt 0", "tg prompt 1"]
+    assert samples["llava_mcq"] == ["mcq prompt 0"]
+    assert samples["unknown"] == ["missing type prompt"]

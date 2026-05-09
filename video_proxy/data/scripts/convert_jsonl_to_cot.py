@@ -50,6 +50,11 @@ _EVENTS_OUTPUT_PATTERN = re.compile(
     r"(?=Output the start and end time .*?<events>)",
     re.IGNORECASE | re.DOTALL,
 )
+_EVENTS_OUTPUT_FORMAT_PATTERN = re.compile(
+    r"(?=Output format\s*\(strictly follow this\):\s*<events>)",
+    re.IGNORECASE | re.DOTALL,
+)
+_OUTPUT_ONLY_TIMESTAMPS_RULE = "- Output only timestamps, no descriptions."
 _STRICT_EVENTS_OUTPUT = (
     "Output format (strictly follow this):\n"
     "<events>\n"
@@ -168,7 +173,12 @@ def _rewrite_events_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
     if _STRICT_EVENTS_OUTPUT in prompt:
         return prompt.replace(_STRICT_EVENTS_OUTPUT, _strict_events_cot(reasoning_tag)).rstrip(), True
 
-    match = _EVENTS_OUTPUT_PATTERN.search(prompt)
+    prompt = prompt.replace(
+        _OUTPUT_ONLY_TIMESTAMPS_RULE,
+        "- In the final <events> block, output only timestamps, no descriptions.",
+    )
+
+    match = _EVENTS_OUTPUT_PATTERN.search(prompt) or _EVENTS_OUTPUT_FORMAT_PATTERN.search(prompt)
     if match is not None:
         idx = match.start()
         new_prompt = prompt[:idx].rstrip() + "\n\n" + _events_cot_instruction(reasoning_tag) + prompt[idx:]
@@ -246,6 +256,48 @@ def convert_jsonl(input_path: Path, output_path: Path, reasoning_tag: str = "thi
     return summary
 
 
+def collect_prompt_samples(input_path: Path, per_type: int = 2) -> dict[str, list[str]]:
+    if per_type <= 0:
+        return {}
+
+    samples: dict[str, list[str]] = {}
+    with input_path.open(encoding="utf-8") as fin:
+        for line_no, line in enumerate(fin, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSONL at {input_path}:{line_no}: {exc}") from exc
+
+            problem_type = str(record.get("problem_type") or "unknown")
+            prompt = str(record.get("prompt") or "")
+            bucket = samples.setdefault(problem_type, [])
+            if len(bucket) < per_type:
+                bucket.append(prompt)
+
+    return {problem_type: samples[problem_type] for problem_type in sorted(samples)}
+
+
+def print_prompt_samples(
+    samples: dict[str, list[str]],
+    *,
+    max_chars: int = 1600,
+) -> None:
+    if not samples:
+        return
+
+    print("Prompt samples by problem_type:")
+    for problem_type, prompts in samples.items():
+        print(f"\n## {problem_type}")
+        for idx, prompt in enumerate(prompts, start=1):
+            shown = prompt
+            if max_chars > 0 and len(shown) > max_chars:
+                shown = shown[:max_chars].rstrip() + "\n...<truncated>"
+            print(f"[{idx}] {shown}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert direct/no-CoT JSONL prompts to CoT prompts")
     parser.add_argument("input", help="Input JSONL path")
@@ -256,6 +308,19 @@ def parse_args() -> argparse.Namespace:
         choices=SUPPORTED_REASONING_TAGS,
         default="think",
         help="Reasoning tag to request in converted prompts",
+    )
+    parser.add_argument(
+        "--sample-prompts",
+        type=int,
+        default=0,
+        metavar="N",
+        help="After conversion, print up to N prompt fields per problem_type from the output JSONL",
+    )
+    parser.add_argument(
+        "--sample-prompt-max-chars",
+        type=int,
+        default=1600,
+        help="Maximum characters to print per sampled prompt; use 0 for no truncation",
     )
     return parser.parse_args()
 
@@ -290,6 +355,12 @@ def main() -> None:
     if summary.reasons:
         reason_text = ", ".join(f"{key}={value}" for key, value in sorted(summary.reasons.items()))
         print(f"Reasons: {reason_text}")
+
+    if args.sample_prompts > 0:
+        print_prompt_samples(
+            collect_prompt_samples(output_path, per_type=args.sample_prompts),
+            max_chars=args.sample_prompt_max_chars,
+        )
 
 
 if __name__ == "__main__":
