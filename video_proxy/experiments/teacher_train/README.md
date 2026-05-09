@@ -46,7 +46,9 @@ The Qwen3-VL single-teacher wrappers train one teacher at a time from existing
 The no-CoT scripts read the source `train.jsonl`/`val.jsonl` directly. The CoT
 scripts convert `prompt`/`messages` to tagged CoT under a new experiment data
 directory, print prompt samples grouped by `problem_type`, run the 2-GPU smoke
-defaults, and check saved rollouts for the CoT budget.
+defaults, and check saved rollouts for the CoT budget. Qwen3-VL CoT scripts
+default to `<thought></thought>` tags; override `REASONING_TAG` only if a
+different tag pair is desired.
 
 ```bash
 SAMPLE_PROMPTS_PER_TYPE=3 \

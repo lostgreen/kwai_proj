@@ -253,6 +253,8 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert "convert_jsonl_to_cot.py" in helper
     assert "CONVERT_ONLY" in helper
     assert "Data ready:" in helper
+    assert 'REASONING_TAG="${REASONING_TAG:-thought}"' in helper
+    assert 'COT_BUDGET_START_TOKEN="${COT_BUDGET_START_TOKEN:-<${REASONING_TAG}>}"' in helper
     assert "check_cot_budget_rollout.py" in helper
     assert '--tokenizer "${MODEL_PATH}"' in helper
     assert "--require-start" in helper
