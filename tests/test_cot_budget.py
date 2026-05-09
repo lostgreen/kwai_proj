@@ -180,7 +180,7 @@ def test_multi_task_launcher_exposes_cot_budget_flags():
     assert 'worker.rollout.cot_budget_start_token="${COT_BUDGET_START_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_end_token="${COT_BUDGET_END_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_max_tokens="${COT_BUDGET_MAX_TOKENS}"' in source
-    assert 'runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "0")' in trainer_source
+    assert 'runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "1")' in trainer_source
 
 
 def test_rollout_checker_counts_closed_and_over_budget_cot_spans(tmp_path: Path):
@@ -273,7 +273,7 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert 'LR="${LR:-5e-7}"' in helper
     assert 'KL_COEF="${KL_COEF:-0.01}"' in helper
     assert 'ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"' in helper
-    assert 'VLLM_USE_V1="${VLLM_USE_V1:-0}"' in helper
+    assert 'VLLM_USE_V1="${VLLM_USE_V1:-1}"' in helper
     assert "export VLLM_USE_V1" in helper
 
     for dirname, (size, model_name) in model_specs.items():
