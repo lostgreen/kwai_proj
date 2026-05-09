@@ -262,6 +262,15 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert 'FRAME_SAMPLE_POLICY="${FRAME_SAMPLE_POLICY:-${_SOURCE_FRAME_SAMPLE_POLICY}}"' in helper
     assert 'FRAME_SAMPLE_MAX_FRAMES="${FRAME_SAMPLE_MAX_FRAMES:-${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}}"' in helper
     assert 'MAX_FRAMES="${MAX_FRAMES:-${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}}"' in helper
+    assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"' in helper
+    assert 'ROLLOUT_BS="$((N_GPUS_PER_NODE * 4))"' in helper
+    assert 'GLOBAL_BS="${GLOBAL_BS:-${ROLLOUT_BS}}"' in helper
+    assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-${GLOBAL_BS}}"' in helper
+    assert 'ROLLOUT_N="${ROLLOUT_N:-8}"' in helper
+    assert 'ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"' in helper
+    assert 'LR="${LR:-5e-7}"' in helper
+    assert 'KL_COEF="${KL_COEF:-0.01}"' in helper
+    assert 'ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"' in helper
 
     for dirname, (size, model_name) in model_specs.items():
         base = Path("video_proxy/experiments/teacher_train") / dirname
