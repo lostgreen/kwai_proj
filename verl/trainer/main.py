@@ -20,7 +20,7 @@ from omegaconf import OmegaConf
 
 from ..single_controller.ray import RayWorkerGroup
 from ..utils.tokenizer import get_processor, get_tokenizer
-from ..workers.fsdp_workers import FSDPWorker
+from ..workers.rollout.cot_budget import configure_vllm_engine_for_cot_budget
 from ..workers.reward import BatchFunctionRewardManager, SequentialFunctionRewardManager
 from .config import PPOConfig
 from .data_loader import create_dataloader
@@ -73,6 +73,9 @@ class Runner:
         else:
             raise NotImplementedError(f"Unknown reward type {config.worker.reward.reward_type}.")
 
+        configure_vllm_engine_for_cot_budget(config.worker.rollout.cot_budget_enabled)
+        from ..workers.fsdp_workers import FSDPWorker
+
         RemoteRewardManager = ray.remote(RewardManager).options(num_cpus=config.worker.reward.num_cpus)
         reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
         val_reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
@@ -107,6 +110,7 @@ def main():
     ppo_config = OmegaConf.merge(default_config, cli_args)
     ppo_config: PPOConfig = OmegaConf.to_object(ppo_config)
     ppo_config.deep_post_init()
+    configure_vllm_engine_for_cot_budget(ppo_config.worker.rollout.cot_budget_enabled)
 
     if not ray.is_initialized():
         runtime_env_vars = {

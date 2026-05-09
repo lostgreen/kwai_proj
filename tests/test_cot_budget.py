@@ -214,6 +214,20 @@ def test_sharding_manager_package_does_not_import_vllm_manager_eagerly():
     assert 'if name == "FSDPVLLMShardingManager":' in source
 
 
+def test_trainer_configures_cot_budget_before_importing_fsdp_worker():
+    source = (Path(__file__).resolve().parents[1] / "verl" / "trainer" / "main.py").read_text()
+    module = ast.parse(source)
+    top_level_imports = [node for node in module.body if isinstance(node, ast.ImportFrom)]
+    top_level_import_text = "\n".join(ast.get_source_segment(source, node) or "" for node in top_level_imports)
+
+    assert "from ..workers.fsdp_workers import FSDPWorker" not in top_level_import_text
+    configure_call = "configure_vllm_engine_for_cot_budget(config.worker.rollout.cot_budget_enabled)"
+    worker_import = "from ..workers.fsdp_workers import FSDPWorker"
+    assert configure_call in source
+    assert worker_import in source
+    assert source.index(configure_call) < source.index(worker_import)
+
+
 def test_multi_task_launcher_exposes_cot_budget_flags():
     source = (
         Path(__file__).resolve().parents[1] / "video_proxy" / "training" / "launchers" / "run_multi_task.sh"
