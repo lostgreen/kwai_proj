@@ -143,22 +143,32 @@ def test_fsdp_worker_has_multi_teacher_topk_routing_and_ref_offload_hooks():
     assert "offload_fsdp_model(ref_module)" in source
 
 
-def test_multi_teacher_opd_launcher_wires_three_teachers_and_cpu_offload():
-    script = Path("local_scripts/run_multi_teacher_opd.sh").read_text()
+def test_model_training_tree_has_teacher_and_opd_entrypoints_for_each_target_model():
+    base = Path("video_proxy/training/models")
+    expected_models = {
+        "qwen3_vl_4b": ("qwen3_vl", "4b", "Qwen3-VL-4B-Instruct"),
+        "qwen3_vl_8b": ("qwen3_vl", "8b", "Qwen3-VL-8B-Instruct"),
+        "qwen2_5_vl_3b": ("qwen2_5_vl", "3b", "Qwen2.5-VL-3B-Instruct"),
+        "qwen2_5_vl_7b": ("qwen2_5_vl", "7b", "Qwen2.5-VL-7B-Instruct"),
+    }
 
-    assert "AOT_TEACHER_MODEL_PATH" in script
-    assert "SEG_TEACHER_MODEL_PATH" in script
-    assert "EVENTLOGIC_TEACHER_MODEL_PATH" in script
-    assert "composition_base_logic_el10k_mf256_ema/global_step_272/actor/huggingface" in script
-    assert "composition_base_aot_logic_aot10k_el10k_mf256_ema/global_step_300" not in script
-    assert "validate_opd_teacher_paths" in script
-    assert "REF_OFFLOAD_PARAMS=\"${REF_OFFLOAD_PARAMS:-true}\"" in script
-    assert "ACTOR_OFFLOAD_PARAMS=\"${ACTOR_OFFLOAD_PARAMS:-true}\"" in script
-    assert "TASKS=\"${TASKS:-tg mcq hier_seg event_logic aot}\"" in script
+    for dirname, (family, size, model_name) in expected_models.items():
+        teacher = (base / dirname / "teacher_train_ema_grpo.sh").read_text()
+        opd = (base / dirname / "opd_train.sh").read_text()
+
+        assert f'MODEL_FAMILY="{family}"' in teacher
+        assert f'MODEL_SIZE="{size}"' in teacher
+        assert model_name in teacher
+        assert "recipes/teacher_train_ema_grpo.sh" in teacher
+        assert f'MODEL_FAMILY="{family}"' in opd
+        assert f'MODEL_SIZE="{size}"' in opd
+        assert model_name in opd
+        assert "TEACHER_MODEL_PATH" in opd
+        assert "recipes/opd_train.sh" in opd
 
 
 def test_multi_teacher_cli_overrides_do_not_use_hydra_plus_prefix():
-    runner = Path("local_scripts/run_multi_task.sh").read_text()
+    runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
 
     assert "+worker.ref.teacher_models" not in runner
     assert 'worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}"' in runner
@@ -166,87 +176,48 @@ def test_multi_teacher_cli_overrides_do_not_use_hydra_plus_prefix():
     assert 'worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}"' in runner
 
 
-def test_multi_teacher_opd_launcher_enables_homogeneous_batching_by_default():
-    launcher = Path("local_scripts/run_multi_teacher_opd.sh").read_text()
-    runner = Path("local_scripts/run_multi_task.sh").read_text()
+def test_opd_recipe_supports_multi_teacher_paths_and_homogeneous_batching_runner():
+    recipe = Path("video_proxy/training/recipes/opd_train.sh").read_text()
+    runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
 
-    assert 'TASK_HOMOGENEOUS_BATCHING="${TASK_HOMOGENEOUS_BATCHING:-true}"' in launcher
-    assert 'TASK_HOMOGENEOUS_GROUPING="${TASK_HOMOGENEOUS_GROUPING:-opd_task_group}"' in launcher
+    assert "AOT_TEACHER_MODEL_PATH" in recipe
+    assert "TEACHER_MODEL_PATH" in recipe
     assert 'data.task_homogeneous_batching="${TASK_HOMOGENEOUS_BATCHING}"' in runner
     assert 'data.task_homogeneous_grouping="${TASK_HOMOGENEOUS_GROUPING}"' in runner
 
 
-def test_multi_teacher_opd_launcher_preserves_mf256_default():
-    launcher = Path("local_scripts/run_multi_teacher_opd.sh").read_text()
+def test_opd_recipe_preserves_mf256_default():
+    launcher = Path("video_proxy/training/recipes/opd_train.sh").read_text()
 
     assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in launcher
 
 
-def test_single_teacher_opd_launcher_defaults_to_base_aot_mf256_sanity_data():
-    launcher = Path("local_scripts/run_single_teacher_opd.sh").read_text()
+def test_qwen3_4b_opd_entrypoint_defaults_to_teacher_checkpoint_and_sanity_settings():
+    launcher = Path("video_proxy/training/models/qwen3_vl_4b/opd_train.sh").read_text()
+    recipe = Path("video_proxy/training/recipes/opd_train.sh").read_text()
 
     assert (
         'TEACHER_MODEL_PATH="${TEACHER_MODEL_PATH:-/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/'
-        "multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations/"
-        'composition_base_aot_aot10k_mf256_ema/global_step_200/actor/huggingface}"'
+        'multi_task/qwen3_vl_4b_teacher_ema_grpo/global_step_200/actor/huggingface}"'
     ) in launcher
-    assert (
-        'TRAIN_FILE="${TRAIN_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
-        'experiments/composition_base_aot_aot10k_mf256_ema/train.jsonl}"'
-    ) in launcher
-    assert (
-        'TEST_FILE="${TEST_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
-        'experiments/composition_base_aot_aot10k_mf256_ema/val.jsonl}"'
-    ) in launcher
-    assert 'TASKS="${TASKS:-tg mcq aot}"' in launcher
-    assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in launcher
-    assert 'MAX_PIXELS="${MAX_PIXELS:-65536}"' in launcher
-    assert 'TP_SIZE="${TP_SIZE:-1}"' in launcher
-    assert 'ROLLOUT_BS="${ROLLOUT_BS:-16}"' in launcher
-    assert 'GLOBAL_BS="${GLOBAL_BS:-16}"' in launcher
-    assert 'ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"' in launcher
-    assert 'OPD_TOPK="${OPD_TOPK:-10}"' in launcher
-    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in launcher
-    assert 'SAVE_LIMIT="${SAVE_LIMIT:-3}"' in launcher
-    assert 'MAX_STEPS="${MAX_STEPS:-50}"' in launcher
-
-
-def test_multi_teacher_opd_launcher_defaults_to_full_composition_mf256_data():
-    launcher = Path("local_scripts/run_multi_teacher_opd.sh").read_text()
-
-    assert (
-        'TRAIN_FILE="${TRAIN_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
-        'experiments/composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema/train.jsonl}"'
-    ) in launcher
-    assert (
-        'TEST_FILE="${TEST_FILE:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/multi_task/'
-        'experiments/composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema/val.jsonl}"'
-    ) in launcher
-    assert 'TASKS="${TASKS:-tg mcq hier_seg event_logic aot}"' in launcher
-    assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in launcher
-    assert 'MAX_PIXELS="${MAX_PIXELS:-65536}"' in launcher
-    assert 'TP_SIZE="${TP_SIZE:-1}"' in launcher
-    assert 'ROLLOUT_BS="${ROLLOUT_BS:-16}"' in launcher
-    assert 'GLOBAL_BS="${GLOBAL_BS:-16}"' in launcher
-    assert 'ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"' in launcher
-    assert 'OPD_TOPK="${OPD_TOPK:-10}"' in launcher
-    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in launcher
-    assert 'SAVE_LIMIT="${SAVE_LIMIT:-3}"' in launcher
-    assert 'MAX_STEPS="${MAX_STEPS:-50}"' in launcher
-    assert 'HIER_TARGET="${HIER_TARGET:-10000}"' in launcher
-    assert 'EL_TRAIN="${EL_TRAIN:-${EL_HARDER_DATA}/train_10k.jsonl}"' in launcher
-    assert 'EL_VAL_SOURCE="${EL_VAL_SOURCE:-${EL_HARDER_DATA}/val_logic.jsonl}"' in launcher
-    assert 'EL_TARGET="${EL_TARGET:-10000}"' in launcher
-    assert 'VAL_EL_N="${VAL_EL_N:-300}"' in launcher
-    assert 'AOT_TARGET="${AOT_TARGET:-10000}"' in launcher
-    assert 'VAL_AOT_N="${VAL_AOT_N:-300}"' in launcher
+    assert 'TASKS="${TASKS:-tg mcq aot}"' in recipe
+    assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in recipe
+    assert 'MAX_PIXELS="${MAX_PIXELS:-65536}"' in recipe
+    assert 'TP_SIZE="${TP_SIZE:-1}"' in recipe
+    assert 'ROLLOUT_BS="${ROLLOUT_BS:-16}"' in recipe
+    assert 'GLOBAL_BS="${GLOBAL_BS:-16}"' in recipe
+    assert 'ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"' in recipe
+    assert 'OPD_TOPK="${OPD_TOPK:-10}"' in recipe
+    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in recipe
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:-3}"' in recipe
+    assert 'MAX_STEPS="${MAX_STEPS:-50}"' in recipe
 
 
 def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
-    common = Path("local_scripts/opd_comparison/common.sh").read_text()
-    launcher = Path("local_scripts/opd_comparison/run_mopd_4b_full_epoch.sh").read_text()
-    launcher_8b = Path("local_scripts/opd_comparison/run_mopd_8b_from_4b_teachers.sh").read_text()
-    runner = Path("local_scripts/run_multi_task.sh").read_text()
+    common = Path("video_proxy/experiments/comparisons/opd/common.sh").read_text()
+    launcher = Path("video_proxy/experiments/comparisons/opd/run_mopd_4b_full_epoch.sh").read_text()
+    launcher_8b = Path("video_proxy/experiments/comparisons/opd/run_mopd_8b_from_4b_teachers.sh").read_text()
+    runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
     rollout_config = Path("verl/workers/rollout/config.py").read_text()
     rollout_impl = Path("verl/workers/rollout/vllm_rollout_spmd.py").read_text()
 
@@ -284,8 +255,8 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
 
 
 def test_opd_comparison_4b_mopd_base_r1_r2_uses_base_seg_aot_data_without_event_logic_task():
-    common = Path("local_scripts/opd_comparison/common.sh").read_text()
-    launcher = Path("local_scripts/opd_comparison/run_mopd_4b_base_r1_r2.sh").read_text()
+    common = Path("video_proxy/experiments/comparisons/opd/common.sh").read_text()
+    launcher = Path("video_proxy/experiments/comparisons/opd/run_mopd_4b_base_r1_r2.sh").read_text()
 
     base_r1_r2_defaults = common[
         common.index("opd_comparison_base_r1_r2_data_defaults()") : common.index("opd_comparison_8gpu_defaults()")
@@ -314,7 +285,7 @@ def test_opd_comparison_4b_mopd_base_r1_r2_uses_base_seg_aot_data_without_event_
 
 
 def test_opd_comparison_grpo_defaults_do_not_enable_opd_teachers():
-    common = Path("local_scripts/opd_comparison/common.sh").read_text()
+    common = Path("video_proxy/experiments/comparisons/opd/common.sh").read_text()
 
     preamble = common[: common.index("opd_comparison_full_data_defaults()")]
     grpo_defaults = common[
@@ -337,7 +308,7 @@ def test_opd_comparison_grpo_defaults_do_not_enable_opd_teachers():
 
 
 def test_multi_task_runner_checks_raw_sources_only_when_mix_is_needed():
-    runner = Path("local_scripts/run_multi_task.sh").read_text()
+    runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
 
     mix_gate_index = runner.index('if [[ "${NEEDS_MIX}" == "true" ]]; then')
     source_check_index = runner.index("    check \\")
@@ -346,8 +317,8 @@ def test_multi_task_runner_checks_raw_sources_only_when_mix_is_needed():
 
 
 def test_multi_task_common_defines_rollout_limits_used_by_runner():
-    common = Path("local_scripts/multi_task_common.sh").read_text()
-    runner = Path("local_scripts/run_multi_task.sh").read_text()
+    common = Path("video_proxy/training/common/multi_task_common.sh").read_text()
+    runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
 
     assert 'ROLLOUT_MAX_BATCHED_TOKENS="${ROLLOUT_MAX_BATCHED_TOKENS:-20480}"' in common
     assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-512}"' in common
@@ -355,9 +326,5 @@ def test_multi_task_common_defines_rollout_limits_used_by_runner():
     assert 'worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}"' in runner
 
 
-def test_task_composition_8b_defaults_use_larger_validation_batch():
-    common_8b = Path("local_scripts/task_composition_ablations/common_8b.sh").read_text()
-    readme = Path("local_scripts/task_composition_ablations/README.md").read_text()
-
-    assert 'export VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-128}"' in common_8b
-    assert "`VAL_BATCH_SIZE=128`" in readme
+def test_legacy_ablation_tree_removed_from_training_workspace():
+    assert not Path("video_proxy/experiments/ablations").exists()

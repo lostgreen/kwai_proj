@@ -8,8 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proxy_data.shared.frame_cache import build_source_cache_dir
-from proxy_data.youcook2_seg.temporal_aot import (
+from video_proxy.data.pipelines.shared.frame_cache import build_source_cache_dir
+from video_proxy.data.pipelines.youcook2_seg.temporal_aot import (
     filter_rollout_hard_cases,
     hard_qa_pipeline,
     merge_rollout_resume_outputs,
@@ -290,7 +290,7 @@ def test_cli_dry_run_subprocess(tmp_path: Path):
     proc = subprocess.run(
         [
             sys.executable,
-            "proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
+            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
             "build-source-cache",
             "--manifest",
             str(manifest),
@@ -652,7 +652,7 @@ def test_merge_raw_cli_subprocess(tmp_path: Path):
     proc = subprocess.run(
         [
             sys.executable,
-            "proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
+            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
             "merge-raw",
             "--input",
             str(first),
@@ -1458,7 +1458,7 @@ def test_rollout_filter_cli_dry_run_subprocess(tmp_path: Path):
     proc = subprocess.run(
         [
             sys.executable,
-            "proxy_data/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
+            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/hard_qa_pipeline.py",
             "rollout-filter",
             "--input",
             str(input_path),

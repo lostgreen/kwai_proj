@@ -39,6 +39,10 @@ class RolloutConfig:
     max_num_seqs: int = 1024
     disable_log_stats: bool = True
     disable_tqdm: bool = False
+    cot_budget_enabled: bool = False
+    cot_budget_start_token: str = "<think>"
+    cot_budget_end_token: str = "</think>"
+    cot_budget_max_tokens: int = 0
     val_override_config: dict[str, Any] = field(default_factory=dict)
     # below are auto keys
     prompt_length: int = field(default=-1, init=False)

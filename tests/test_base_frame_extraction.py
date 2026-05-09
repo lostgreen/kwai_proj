@@ -7,7 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from local_scripts.data.rewrite_videos_to_frames import compute_shared_fps
+from video_proxy.data.mixing.rewrite_videos_to_frames import compute_shared_fps
 
 
 def test_uncapped_extraction_keeps_target_fps_for_long_videos():

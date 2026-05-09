@@ -10,9 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from local_scripts.data import mcq, tg
-from proxy_data.llava_video_178k.convert_mcq_to_direct import DIRECT_INSTRUCTION
-from proxy_data.llava_video_178k.select_mcq_from_rollout_shards import (
+from video_proxy.data.mixing import mcq, tg
+from video_proxy.data.pipelines.llava_video_178k.convert_mcq_to_direct import DIRECT_INSTRUCTION
+from video_proxy.data.pipelines.llava_video_178k.select_mcq_from_rollout_shards import (
     select_records_from_reports,
 )
 

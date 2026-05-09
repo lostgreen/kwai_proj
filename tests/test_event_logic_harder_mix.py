@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from proxy_data.youcook2_seg.event_logic.build_harder_training_mix import build_harder_mix
+from video_proxy.data.pipelines.youcook2_seg.event_logic.build_harder_training_mix import build_harder_mix
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:

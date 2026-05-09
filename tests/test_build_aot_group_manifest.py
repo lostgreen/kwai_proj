@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proxy_data.youcook2_seg.temporal_aot.build_aot_group_manifest import (
+from video_proxy.data.pipelines.youcook2_seg.temporal_aot.build_aot_group_manifest import (
     MANIFEST_ACTION,
     MANIFEST_EVENT,
     MANIFEST_EVENT_DIR,
@@ -381,7 +381,7 @@ def test_cli_resolves_nested_annotation_source_and_meta(tmp_path: Path):
     subprocess.run(
         [
             sys.executable,
-            "proxy_data/youcook2_seg/temporal_aot/build_aot_group_manifest.py",
+            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/build_aot_group_manifest.py",
             "--annotation-dir",
             str(ann_dir),
             "--action-output",
@@ -415,7 +415,7 @@ def test_cli_writes_requested_outputs(tmp_path: Path):
     subprocess.run(
         [
             sys.executable,
-            "proxy_data/youcook2_seg/temporal_aot/build_aot_group_manifest.py",
+            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/build_aot_group_manifest.py",
             "--annotation-dir",
             str(ann_dir),
             "--action-output",

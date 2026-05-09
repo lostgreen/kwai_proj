@@ -467,6 +467,7 @@ class RayPPOTrainer:
         data_types = batch.non_tensor_batch.get("data_type", [None] * len(scores))
         problem_ids = batch.non_tensor_batch.get("problem_id", [None] * len(scores))
         problems = batch.non_tensor_batch.get("problem_reserved_text", [None] * len(scores))
+        metadata = batch.non_tensor_batch.get("metadata", [None] * len(scores))
 
         total = len(scores)
         n = self.config.trainer.save_rollout_n_per_step
@@ -494,6 +495,7 @@ class RayPPOTrainer:
                     "data_type": str(data_types[i]) if data_types[i] is not None else None,
                     "problem_id": str(problem_ids[i]) if problem_ids[i] is not None else None,
                     "problem": str(problems[i]) if problems[i] is not None else None,
+                    "metadata": _to_jsonable(metadata[i]) if metadata[i] is not None else None,
                     "prompt": prompt_text,
                     "response": response_text,
                     "ground_truth": str(ground_truths[i]) if ground_truths[i] is not None else None,

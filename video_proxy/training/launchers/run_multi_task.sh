@@ -1,0 +1,466 @@
+#!/usr/bin/env bash
+# ============================================================
+# run_multi_task.sh — 多任务混合训练入口
+#
+# 可直接运行或被消融实验脚本 source:
+#   1) 直接运行: bash video_proxy/training/launchers/run_multi_task.sh
+#   2) 消融实验: EXP_NAME=xxx source run_multi_task.sh
+#
+# 前提: 先运行 setup_base_data.sh 生成 base/ 和 val/
+#
+# 特点:
+#   - freeze_vision_tower=true
+#   - KL 独立 loss (use_kl_loss=true, kl_coef=0.04)
+#   - EMA-GRPO + task homogeneous batching
+#   - 1 epoch, val every 20 steps
+# ============================================================
+set -euo pipefail
+set -x
+
+# ---- Source common (如果还没 source 过) ----
+if [[ -z "${REPO_ROOT:-}" ]]; then
+    _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    source "${_SCRIPT_DIR}/../common/multi_task_common.sh"
+fi
+source "${REPO_ROOT}/video_proxy/training/common/gpu_filler_common.sh"
+
+# ---- 实验配置 ----
+EXP_NAME="${EXP_NAME:-multi_task_demo_8gpu}"
+EXP_DATA_DIR="${EXPERIMENTS_DIR}/${EXP_NAME}"
+TRAIN_FILE="${TRAIN_FILE:-${EXP_DATA_DIR}/train.jsonl}"
+TEST_FILE="${TEST_FILE:-${EXP_DATA_DIR}/val.jsonl}"
+VAL_TG_N_EFFECTIVE="${VAL_TG_N:-600}"
+VAL_MCQ_N_EFFECTIVE="${VAL_MCQ_N:-600}"
+MIX_FORCE="${MIX_FORCE:-false}"
+FRAME_SAMPLE_POLICY_EFFECTIVE="${FRAME_SAMPLE_POLICY:-0:60:2.0,60:inf:1.0}"
+FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE="${FRAME_SAMPLE_MAX_FRAMES:-${MAX_FRAMES}}"
+FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE="${FRAME_SAMPLE_CACHE_ROOTS:-}"
+FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE="${FRAME_SAMPLE_POLICY_VERSION:-trusted_2fps_cache_v2}"
+FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE="${FRAME_SAMPLE_PROGRESS_INTERVAL:-1000}"
+CHECK_EXPERIMENT_JSONL_EFFECTIVE="${CHECK_EXPERIMENT_JSONL:-true}"
+CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE="${CHECK_EXPERIMENT_FRAME_FILES:-false}"
+MIX_ONLY_EFFECTIVE="${MIX_ONLY:-false}"
+VAL_BATCH_SIZE_EFFECTIVE="${VAL_BATCH_SIZE:-64}"
+COT_BUDGET_ENABLED="${COT_BUDGET_ENABLED:-false}"
+COT_BUDGET_START_TOKEN="${COT_BUDGET_START_TOKEN:-<think>}"
+COT_BUDGET_END_TOKEN="${COT_BUDGET_END_TOKEN:-</think>}"
+COT_BUDGET_MAX_TOKENS="${COT_BUDGET_MAX_TOKENS:-0}"
+
+echo "[multi-task] EXP_NAME=${EXP_NAME}"
+echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
+echo "[multi-task] TEST_FILE=${TEST_FILE}"
+echo "[multi-task] VAL_TG_N=${VAL_TG_N_EFFECTIVE} VAL_MCQ_N=${VAL_MCQ_N_EFFECTIVE}"
+echo "[multi-task] FRAME_SAMPLE_POLICY=${FRAME_SAMPLE_POLICY_EFFECTIVE} FRAME_SAMPLE_MAX_FRAMES=${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}"
+echo "[multi-task] FRAME_SAMPLE_POLICY_VERSION=${FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE} FRAME_SAMPLE_CACHE_ROOTS=${FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE:-<default>}"
+echo "[multi-task] FRAME_SAMPLE_PROGRESS_INTERVAL=${FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE}"
+echo "[multi-task] CHECK_EXPERIMENT_JSONL=${CHECK_EXPERIMENT_JSONL_EFFECTIVE} CHECK_EXPERIMENT_FRAME_FILES=${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE}"
+echo "[multi-task] MIX_ONLY=${MIX_ONLY_EFFECTIVE}"
+echo "[multi-task] VAL_BATCH_SIZE=${VAL_BATCH_SIZE_EFFECTIVE}"
+echo "[multi-task] TASK_HOMOGENEOUS_BATCHING=${TASK_HOMOGENEOUS_BATCHING}"
+echo "[multi-task] TASK_HOMOGENEOUS_GROUPING=${TASK_HOMOGENEOUS_GROUPING}"
+echo "[multi-task] TRAINING_MODE=${TRAINING_MODE} ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
+echo "[multi-task] COT_BUDGET_ENABLED=${COT_BUDGET_ENABLED} COT_BUDGET_START_TOKEN=${COT_BUDGET_START_TOKEN} COT_BUDGET_END_TOKEN=${COT_BUDGET_END_TOKEN} COT_BUDGET_MAX_TOKENS=${COT_BUDGET_MAX_TOKENS}"
+if [[ "${TRAINING_MODE}" == "opd" ]]; then
+    echo "[multi-task] OPD_TOPK=${OPD_TOPK} OPD_KL_COEF=${OPD_KL_COEF}"
+fi
+if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
+    echo "[multi-task] TEACHER_MODEL_PATH=${TEACHER_MODEL_PATH}"
+    echo "[multi-task] TEACHER_TOKENIZER_PATH=${TEACHER_TOKENIZER_PATH:-<same-as-teacher>}"
+fi
+if [[ -n "${AOT_TEACHER_MODEL_PATH}${SEG_TEACHER_MODEL_PATH}${EVENTLOGIC_TEACHER_MODEL_PATH}" ]]; then
+    echo "[multi-task] OPD_TEACHER_KEY=${OPD_TEACHER_KEY}"
+    echo "[multi-task] AOT_TEACHER_MODEL_PATH=${AOT_TEACHER_MODEL_PATH:-<unset>}"
+    echo "[multi-task] SEG_TEACHER_MODEL_PATH=${SEG_TEACHER_MODEL_PATH:-<unset>}"
+    echo "[multi-task] EVENTLOGIC_TEACHER_MODEL_PATH=${EVENTLOGIC_TEACHER_MODEL_PATH:-<unset>}"
+fi
+
+# Keep Ray session/state files on the node-local filesystem by default. The
+# checkpoint path may live on a network mount, and Ray mmaps temp/session files.
+# Ray creates AF_UNIX sockets under this directory; keep it short or Linux's
+# 107-byte socket path limit can be exceeded by long experiment names.
+if [[ -z "${RAY_TMPDIR:-}" ]]; then
+    _RAY_EXP_HASH="$(printf '%s' "${EXP_NAME}" | cksum | awk '{print $1}')"
+    RAY_TMPDIR="/tmp/ray_vp_${EXP_NAME:0:12}_${_RAY_EXP_HASH}"
+fi
+mkdir -p "${RAY_TMPDIR}"
+export RAY_TMPDIR
+echo "[multi-task] RAY_TMPDIR=${RAY_TMPDIR}"
+
+if [[ "${EXP_NAME}" == frame_ablation_* && "${HIER_TRAIN:-}" != *"/train_phasecrop/"* ]]; then
+    echo "[multi-task] ERROR: frame ablation requires phase-crop HIER_TRAIN, got: ${HIER_TRAIN:-<unset>}" >&2
+    echo "[multi-task] Run build_phasecrop_shared_hier.sh and use train_phasecrop/train_all_shared_frames.jsonl." >&2
+    exit 1
+fi
+
+# ============================================================
+# Step 0: 混合实验数据（仅首次）
+# ============================================================
+NEEDS_MIX=false
+MIX_REASON=""
+
+if [[ ! -f "${TRAIN_FILE}" ]] || [[ ! -f "${TEST_FILE}" ]]; then
+    NEEDS_MIX=true
+    MIX_REASON="missing train/val experiment JSONL"
+elif [[ "${MIX_FORCE,,}" =~ ^(true|1|yes)$ ]]; then
+    NEEDS_MIX=true
+    MIX_REASON="MIX_FORCE=${MIX_FORCE}"
+else
+    VAL_COUNT_CHECK="$(
+python3 - "${TEST_FILE}" "${TASKS}" "${VAL_TG_N_EFFECTIVE}" "${VAL_MCQ_N_EFFECTIVE}" <<'PY'
+import json
+import sys
+from collections import Counter
+
+path, tasks_raw, val_tg_n, val_mcq_n = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+tasks = set(tasks_raw.split())
+counter = Counter()
+with open(path, encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        counter[json.loads(line).get("problem_type", "unknown")] += 1
+
+problems = []
+if "tg" in tasks and counter.get("temporal_grounding", 0) != val_tg_n:
+    problems.append(f"temporal_grounding={counter.get('temporal_grounding', 0)} expected={val_tg_n}")
+if "mcq" in tasks and counter.get("llava_mcq", 0) != val_mcq_n:
+    problems.append(f"llava_mcq={counter.get('llava_mcq', 0)} expected={val_mcq_n}")
+
+print("OK" if not problems else "; ".join(problems))
+PY
+)"
+    if [[ "${VAL_COUNT_CHECK}" != "OK" ]]; then
+        NEEDS_MIX=true
+        MIX_REASON="val count mismatch: ${VAL_COUNT_CHECK}"
+    fi
+fi
+
+if [[ "${NEEDS_MIX}" != "true" ]]; then
+    FRAME_POLICY_CHECK="$(
+python3 - "${TRAIN_FILE}" "${TEST_FILE}" "${FRAME_SAMPLE_POLICY_EFFECTIVE}" "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" "${FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE}" <<'PY'
+import json
+import sys
+
+train_path, val_path, policy, max_frames, version = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
+
+def first_frame_policy(path):
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            videos = row.get("videos") or []
+            if videos and isinstance(videos[0], list):
+                return (row.get("metadata") or {}).get("experiment_frame_sampling") or {}
+    return {}
+
+problems = []
+for label, path in [("train", train_path), ("val", val_path)]:
+    meta = first_frame_policy(path)
+    if (
+        meta.get("policy", "") != policy
+        or int(meta.get("max_frames", -1)) != max_frames
+        or meta.get("implementation_version") != version
+    ):
+        problems.append(
+            f"{label} frame_policy={meta.get('policy', '')!r}/{meta.get('max_frames')} "
+            f"version={meta.get('implementation_version')!r} expected={policy!r}/{max_frames}/{version}"
+        )
+
+print("OK" if not problems else "; ".join(problems))
+PY
+)"
+    if [[ "${FRAME_POLICY_CHECK}" != "OK" ]]; then
+        NEEDS_MIX=true
+        MIX_REASON="frame policy mismatch: ${FRAME_POLICY_CHECK}"
+    fi
+fi
+
+if [[ "${NEEDS_MIX}" == "true" ]]; then
+    # ============================================================
+    # Pre-flight: 检查需要重新混合时的 base/val/raw source
+    # ============================================================
+    # shellcheck disable=SC2086
+    python3 -c "
+import sys; sys.path.insert(0, '${REPO_ROOT}')
+from video_proxy.data.mixing.mixer import main; main()
+" \
+        --data-root "${MULTI_TASK_DATA_ROOT}" \
+        check \
+        --tasks ${TASKS} \
+        --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
+        --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
+        ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
+        ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
+        ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
+        --val-el-n "${VAL_EL_N}" \
+        ${AOT_TRAIN:+--aot-train "${AOT_TRAIN}"} \
+        ${AOT_VAL_SOURCE:+--aot-val-source "${AOT_VAL_SOURCE}"} \
+        --val-aot-n "${VAL_AOT_N}" \
+    || { echo "[multi-task] Please run: bash video_proxy/data/scripts/setup_base_data.sh" >&2; exit 1; }
+
+    echo "[multi-task] Building experiment data for: ${EXP_NAME} (${MIX_REASON})"
+    _MIX_FORCE_FLAG=""
+    if [[ -f "${TRAIN_FILE}" || -f "${TEST_FILE}" ]]; then
+        _MIX_FORCE_FLAG="--force"
+    fi
+    # shellcheck disable=SC2086
+    python3 -c "
+import sys; sys.path.insert(0, '${REPO_ROOT}')
+from video_proxy.data.mixing.mixer import main; main()
+" \
+        --data-root "${MULTI_TASK_DATA_ROOT}" \
+        ${_MIX_FORCE_FLAG} \
+        mix \
+        --tasks ${TASKS} \
+        --exp-name "${EXP_NAME}" \
+        --frame-sample-policy "${FRAME_SAMPLE_POLICY_EFFECTIVE}" \
+        --frame-sample-max-frames "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" \
+        --frame-sample-cache-roots "${FRAME_SAMPLE_CACHE_ROOTS_EFFECTIVE}" \
+        --frame-sample-progress-interval "${FRAME_SAMPLE_PROGRESS_INTERVAL_EFFECTIVE}" \
+        --val-tg-n "${VAL_TG_N_EFFECTIVE}" \
+        --val-mcq-n "${VAL_MCQ_N_EFFECTIVE}" \
+        ${HIER_TRAIN:+--hier-train "${HIER_TRAIN}"} \
+        ${HIER_TARGET:+--hier-target "${HIER_TARGET}"} \
+        ${EL_TRAIN:+--el-train "${EL_TRAIN}"} \
+        ${EL_TARGET:+--el-target "${EL_TARGET}"} \
+        ${EL_VAL_SOURCE:+--el-val-source "${EL_VAL_SOURCE}"} \
+        --val-el-n "${VAL_EL_N}" \
+        ${AOT_TRAIN:+--aot-train "${AOT_TRAIN}"} \
+        ${AOT_TARGET:+--aot-target "${AOT_TARGET}"} \
+        ${AOT_VAL_SOURCE:+--aot-val-source "${AOT_VAL_SOURCE}"} \
+        --val-aot-n "${VAL_AOT_N}"
+    echo "[multi-task] Data ready: train=$(wc -l < "${TRAIN_FILE}"), val=$(wc -l < "${TEST_FILE}")"
+fi
+
+if [[ "${CHECK_EXPERIMENT_JSONL_EFFECTIVE,,}" =~ ^(true|1|yes)$ ]] && \
+   [[ -n "${FRAME_SAMPLE_POLICY_EFFECTIVE}" || "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" -gt 0 ]]; then
+    _CHECK_FRAME_FILES_FLAG=""
+    if [[ "${CHECK_EXPERIMENT_FRAME_FILES_EFFECTIVE,,}" =~ ^(true|1|yes)$ ]]; then
+        _CHECK_FRAME_FILES_FLAG="--check-frame-files"
+    fi
+    # shellcheck disable=SC2086
+    python3 "${REPO_ROOT}/video_proxy/data/mixing/check_experiment_jsonl.py" \
+        --jsonl "${TRAIN_FILE}" \
+        --jsonl "${TEST_FILE}" \
+        --max-frames "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" \
+        --require-frame-policy \
+        --expect-no-skipped \
+        --arrow-check \
+        ${_CHECK_FRAME_FILES_FLAG}
+fi
+
+# ============================================================
+# 任务采样权重（自动检测 problem_type）
+# ============================================================
+TASK_WEIGHT_MODE="${TASK_WEIGHT_MODE:-count}"
+if [[ -z "${TASK_WEIGHTS:-}" ]]; then
+    TASK_WEIGHTS="$(
+python3 - "${TRAIN_FILE}" "${TASK_WEIGHT_MODE}" "${TASK_HOMOGENEOUS_GROUPING}" <<'PY'
+import json, sys
+from collections import Counter
+from verl.utils.task_grouping import resolve_task_homogeneous_bucket
+
+path, mode, grouping = sys.argv[1], sys.argv[2].strip().lower(), sys.argv[3]
+counter = Counter()
+with open(path, encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        task = resolve_task_homogeneous_bucket(json.loads(line).get("problem_type") or "", grouping).strip()
+        if task:
+            counter[task] += 1
+
+if not counter:
+    raise SystemExit(f"No problem_type found in {path}")
+
+tasks = sorted(counter)
+if mode in {"equal", "uniform"}:
+    w = {t: 1.0 / len(tasks) for t in tasks}
+elif mode in {"proportional", "count", "counts", "auto"}:
+    total = sum(counter.values())
+    w = {t: counter[t] / total for t in tasks}
+else:
+    raise SystemExit(f"Unsupported TASK_WEIGHT_MODE={mode!r}")
+
+sys.stderr.write(f"Tasks: {', '.join(f'{t}={counter[t]}' for t in tasks)}\n")
+sys.stderr.write(f"Weights ({mode}): {json.dumps(w)}\n")
+print(json.dumps(w, separators=(",", ":")))
+PY
+)"
+fi
+
+if [[ "${MIX_ONLY_EFFECTIVE,,}" =~ ^(true|1|yes)$ ]]; then
+    echo "[multi-task] MIX_ONLY=true; data generated and validated. Skip filler/training."
+    exit 0
+fi
+
+# ============================================================
+# GPU filler: 训练期间常驻，维持平均 util 在目标附近
+# 训练结束后清理 signal，并启动外部占用脚本做双重保险
+# ============================================================
+POST_TRAIN_OCCUPANCY="${POST_TRAIN_OCCUPANCY:-true}"
+POST_TRAIN_OCCUPANCY_DIR="${POST_TRAIN_OCCUPANCY_DIR:-/m2v_intern2/liuxiaokun/launch_scripts}"
+POST_TRAIN_OCCUPANCY_SCRIPT="${POST_TRAIN_OCCUPANCY_SCRIPT:-${POST_TRAIN_OCCUPANCY_DIR}/kaimm_run.sh}"
+POST_TRAIN_HTTP_PROXY="${POST_TRAIN_HTTP_PROXY:-http://oversea-squid2.ko.txyun:11080}"
+POST_TRAIN_HTTPS_PROXY="${POST_TRAIN_HTTPS_PROXY:-http://oversea-squid2.ko.txyun:11080}"
+POST_TRAIN_NO_PROXY="${POST_TRAIN_NO_PROXY:-localhost,127.0.0.1,localaddress,localdomain.com,internal,corp.kuaishou.com,test.gifshow.com,staging.kuaishou.com}"
+
+post_train_occupancy_start() {
+    case "${POST_TRAIN_OCCUPANCY,,}" in
+        true|1|yes) ;;
+        *) return 0 ;;
+    esac
+
+    if [[ ! -f "${POST_TRAIN_OCCUPANCY_SCRIPT}" ]]; then
+        echo "[multi-task] WARN: post-train occupancy script not found: ${POST_TRAIN_OCCUPANCY_SCRIPT}" >&2
+        return 0
+    fi
+
+    echo "[multi-task] Starting post-train occupancy: ${POST_TRAIN_OCCUPANCY_SCRIPT}"
+    (
+        export http_proxy="${POST_TRAIN_HTTP_PROXY}"
+        export https_proxy="${POST_TRAIN_HTTPS_PROXY}"
+        export no_proxy="${POST_TRAIN_NO_PROXY}"
+        cd "${POST_TRAIN_OCCUPANCY_DIR}"
+        bash "${POST_TRAIN_OCCUPANCY_SCRIPT}"
+    ) || echo "[multi-task] WARN: post-train occupancy failed: ${POST_TRAIN_OCCUPANCY_SCRIPT}" >&2
+}
+
+multi_task_cleanup() {
+    local exit_code=$?
+    trap - EXIT
+    gpu_filler_clear_signal
+    post_train_occupancy_start
+    exit "${exit_code}"
+}
+
+trap multi_task_cleanup EXIT
+gpu_filler_start "[multi-task]"
+
+TENSORBOARD_DIR="${CHECKPOINT_ROOT}/${EXP_NAME}/tensorboard"
+mkdir -p "${CHECKPOINT_ROOT}/${EXP_NAME}" "${TENSORBOARD_DIR}"
+export TENSORBOARD_DIR
+export TENSORBOARD_FLAT=1
+
+TEACHER_MODEL_ARGS=()
+if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
+    TEACHER_MODEL_ARGS+=(worker.ref.model.model_path="${TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.model.tokenizer_path="${TEACHER_TOKENIZER_PATH:-${TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.model.trust_remote_code="${TEACHER_TRUST_REMOTE_CODE}")
+fi
+if [[ -n "${AOT_TEACHER_MODEL_PATH}${SEG_TEACHER_MODEL_PATH}${EVENTLOGIC_TEACHER_MODEL_PATH}" ]]; then
+    if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
+        echo "[multi-task] ERROR: use either TEACHER_MODEL_PATH or multi-teacher paths, not both." >&2
+        exit 1
+    fi
+    for _required_teacher_var in AOT_TEACHER_MODEL_PATH SEG_TEACHER_MODEL_PATH EVENTLOGIC_TEACHER_MODEL_PATH; do
+        if [[ -z "${!_required_teacher_var:-}" ]]; then
+            echo "[multi-task] ERROR: set ${_required_teacher_var} for multi-teacher OPD." >&2
+            exit 1
+        fi
+    done
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.tokenizer_path="${AOT_TEACHER_TOKENIZER_PATH:-${AOT_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.trust_remote_code="${AOT_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.model_path="${SEG_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.tokenizer_path="${SEG_TEACHER_TOKENIZER_PATH:-${SEG_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.trust_remote_code="${SEG_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.tokenizer_path="${EVENTLOGIC_TEACHER_TOKENIZER_PATH:-${EVENTLOGIC_TEACHER_MODEL_PATH}}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.trust_remote_code="${EVENTLOGIC_TEACHER_TRUST_REMOTE_CODE}")
+    TEACHER_MODEL_ARGS+=(worker.ref.teacher_key="${OPD_TEACHER_KEY}")
+    if [[ -n "${OPD_DEFAULT_TEACHER}" ]]; then
+        TEACHER_MODEL_ARGS+=(worker.ref.default_teacher="${OPD_DEFAULT_TEACHER}")
+    fi
+fi
+
+# ============================================================
+# 启动训练
+# ============================================================
+python3 -m verl.trainer.main \
+    config=examples/config_ema_grpo_64.yaml \
+    data.train_files="${TRAIN_FILE}" \
+    data.val_files="${TEST_FILE}" \
+    data.image_dir="${DATA_IMAGE_DIR}" \
+    data.prompt_key="prompt" \
+    data.answer_key="answer" \
+    data.video_key="videos" \
+    data.video_fps="${VIDEO_FPS}" \
+    data.max_pixels="${MAX_PIXELS}" \
+    data.min_pixels="${MIN_PIXELS}" \
+    data.max_frames="${MAX_FRAMES}" \
+    data.max_prompt_length="${MAX_PROMPT_LEN}" \
+    data.max_response_length="${MAX_RESPONSE_LEN}" \
+    data.rollout_batch_size="${ROLLOUT_BS}" \
+    data.format_prompt="" \
+    data.filter_overlong_prompts=false \
+    data.task_homogeneous_batching="${TASK_HOMOGENEOUS_BATCHING}" \
+    data.task_weights="${TASK_WEIGHTS}" \
+    data.task_key="problem_type" \
+    data.task_homogeneous_grouping="${TASK_HOMOGENEOUS_GROUPING}" \
+    algorithm.training_mode="${TRAINING_MODE}" \
+    algorithm.adv_estimator="${ADV_ESTIMATOR}" \
+    algorithm.disable_kl="${DISABLE_KL}" \
+    algorithm.use_kl_loss="${USE_KL_LOSS}" \
+    algorithm.kl_penalty="${KL_PENALTY}" \
+    algorithm.kl_coef="${KL_COEF}" \
+    algorithm.opd_topk="${OPD_TOPK}" \
+    algorithm.opd_kl_coef="${OPD_KL_COEF}" \
+    algorithm.online_filtering="${ONLINE_FILTERING}" \
+    algorithm.filter_low="${FILTER_LOW}" \
+    algorithm.filter_high="${FILTER_HIGH}" \
+    worker.actor.global_batch_size="${GLOBAL_BS}" \
+    worker.actor.micro_batch_size_per_device_for_update="${MB_PER_UPDATE}" \
+    worker.actor.micro_batch_size_per_device_for_experience="${MB_PER_EXP}" \
+    worker.actor.model.model_path="${MODEL_PATH}" \
+    worker.actor.model.freeze_vision_tower=true \
+    "${TEACHER_MODEL_ARGS[@]}" \
+    worker.actor.fsdp.torch_dtype=bf16 \
+    worker.actor.offload.offload_params="${ACTOR_OFFLOAD_PARAMS}" \
+    worker.actor.offload.offload_optimizer="${ACTOR_OFFLOAD_OPTIMIZER}" \
+    worker.actor.optim.strategy=adamw_bf16 \
+    worker.actor.optim.lr="${LR}" \
+    worker.actor.optim.lr_warmup_ratio="${LR_WARMUP_RATIO}" \
+    worker.actor.optim.warmup_style="${WARMUP_STYLE}" \
+    worker.actor.optim.min_lr_ratio="${LR_MIN_RATIO}" \
+    worker.actor.clip_ratio_low="${CLIP_RATIO_LOW}" \
+    worker.actor.clip_ratio_high="${CLIP_RATIO_HIGH}" \
+    worker.actor.loss_avg_mode=token \
+    worker.actor.entropy_coeff="${ENTROPY_COEFF}" \
+    worker.ref.offload.offload_params="${REF_OFFLOAD_PARAMS}" \
+    worker.rollout.n="${ROLLOUT_N}" \
+    worker.rollout.temperature="${ROLLOUT_TEMPERATURE}" \
+    worker.rollout.top_p=0.9 \
+    worker.rollout.tensor_parallel_size="${TP_SIZE}" \
+    worker.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEM_UTIL}" \
+    worker.rollout.max_num_batched_tokens="${ROLLOUT_MAX_BATCHED_TOKENS}" \
+    worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}" \
+    worker.rollout.cot_budget_enabled="${COT_BUDGET_ENABLED}" \
+    worker.rollout.cot_budget_start_token="${COT_BUDGET_START_TOKEN}" \
+    worker.rollout.cot_budget_end_token="${COT_BUDGET_END_TOKEN}" \
+    worker.rollout.cot_budget_max_tokens="${COT_BUDGET_MAX_TOKENS}" \
+    worker.reward.reward_function="${REWARD_FUNCTION}" \
+    worker.reward.reward_type=batch \
+    trainer.project_name="${PROJECT_NAME}" \
+    trainer.experiment_name="${EXP_NAME}" \
+    trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \
+    trainer.nnodes="${NNODES}" \
+    trainer.total_epochs="${TOTAL_EPOCHS}" \
+    ${MAX_STEPS:+trainer.max_steps="$MAX_STEPS"} \
+    trainer.val_freq="${VAL_FREQ}" \
+    trainer.val_before_train="${VAL_BEFORE_TRAIN}" \
+    trainer.val_generations_to_log=4 \
+    trainer.save_freq="${SAVE_FREQ}" \
+    trainer.save_limit="${SAVE_LIMIT}" \
+    trainer.save_best="${SAVE_BEST}" \
+    trainer.logger="[file,tensorboard]" \
+    trainer.save_checkpoint_path="${CHECKPOINT_ROOT}/${EXP_NAME}" \
+    data.val_batch_size="${VAL_BATCH_SIZE_EFFECTIVE}" \
+    data.dataloader_num_workers="${DATALOADER_NUM_WORKERS}" \
+    data.dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}" \
+    data.dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}" \
+    data.dataloader_pin_memory="${DATALOADER_PIN_MEMORY}"

@@ -125,7 +125,7 @@ def test_worker_paths_use_sample_level_video_fps():
 
 
 def test_offline_rollout_filter_uses_shared_fps_resolver():
-    text = (REPO_ROOT / "local_scripts" / "offline_rollout_filter.py").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "video_proxy" / "training" / "tools" / "offline_rollout_filter.py").read_text(encoding="utf-8")
 
     assert "resolve_video_fps_list" in text
     assert 'effective_fps = meta.get("video_fps_override")' not in text

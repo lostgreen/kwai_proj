@@ -29,6 +29,7 @@ from ...utils.dataset import process_image, process_video
 from ...utils.torch_dtypes import PrecisionType
 from .base import BaseRollout
 from .config import RolloutConfig
+from .cot_budget import make_cot_budget_processor
 
 
 def _repeat_interleave(value: Union[torch.Tensor, np.ndarray, list], repeats: int) -> Union[torch.Tensor, np.ndarray, list]:
@@ -168,6 +169,17 @@ class vLLMRollout(BaseRollout):
             "detokenize": False,
             "logit_bias": _get_logit_bias(processor),
         }
+        if config.cot_budget_enabled:
+            if config.cot_budget_max_tokens <= 0:
+                raise ValueError("worker.rollout.cot_budget_max_tokens must be positive when cot_budget_enabled=true.")
+            sampling_kwargs["logits_processors"] = [
+                make_cot_budget_processor(
+                    tokenizer,
+                    start_token=config.cot_budget_start_token,
+                    end_token=config.cot_budget_end_token,
+                    max_tokens=config.cot_budget_max_tokens,
+                )
+            ]
         default_sampling_params = SamplingParams()
         for key in config.to_dict().keys():
             if hasattr(default_sampling_params, key):

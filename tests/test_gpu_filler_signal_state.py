@@ -15,7 +15,7 @@ def _load_gpu_filler(signal_path: Path):
     try:
         spec = importlib.util.spec_from_file_location(
             "gpu_filler_under_test",
-            REPO_ROOT / "local_scripts" / "gpu_filler.py",
+            REPO_ROOT / "video_proxy" / "training" / "tools" / "gpu_filler.py",
         )
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)

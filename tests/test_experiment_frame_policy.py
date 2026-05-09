@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from local_scripts.data.frame_policy import apply_frame_policy, parse_frame_policy
+from video_proxy.data.mixing.frame_policy import apply_frame_policy, parse_frame_policy
 
 
 def _frame_dir(tmp_path: Path, name: str, n_frames: int) -> Path:

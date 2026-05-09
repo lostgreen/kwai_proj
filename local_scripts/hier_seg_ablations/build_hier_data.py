@@ -1,1 +1,0 @@
-../../proxy_data/youcook2_seg/hier_seg_annotation/build_hier_data.py

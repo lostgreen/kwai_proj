@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proxy_data.shared.frame_cache import build_source_cache_dir
-from proxy_data.youcook2_seg.temporal_aot.build_aot_from_frames import (
+from video_proxy.data.pipelines.shared.frame_cache import build_source_cache_dir
+from video_proxy.data.pipelines.youcook2_seg.temporal_aot.build_aot_from_frames import (
     _build_variant_payload,
     _build_video_fps_override,
     _load_jsonl,
@@ -382,7 +382,7 @@ def test_cli_writes_requested_outputs(tmp_path: Path):
     subprocess.run(
         [
             sys.executable,
-            "proxy_data/youcook2_seg/temporal_aot/build_aot_from_frames.py",
+            "video_proxy/data/pipelines/youcook2_seg/temporal_aot/build_aot_from_frames.py",
             "--frames-root",
             str(tmp_path / "frames"),
             "--cache-fps",

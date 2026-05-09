@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Rollout Viewer</title>
+<style>
+:root{
+  --bg:#f6f7f9;
+  --surface:#ffffff;
+  --surface-2:#f1f5f9;
+  --line:#d8dee8;
+  --line-strong:#aab4c3;
+  --text:#172033;
+  --muted:#647084;
+  --accent:#0f766e;
+  --accent-soft:#dff5ef;
+  --blue:#2563eb;
+  --warn:#b45309;
+  --bad:#be123c;
+  --good:#047857;
+  --radius:8px;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  min-height:100vh;
+  color:var(--text);
+  background:var(--bg);
+  font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+button,input,select{font:inherit}
+button{cursor:pointer}
+.shell{max-width:1500px;margin:0 auto;padding:18px}
+.topbar{
+  display:grid;
+  grid-template-columns:minmax(260px,1fr) auto;
+  gap:16px;
+  align-items:end;
+  padding-bottom:14px;
+  border-bottom:1px solid var(--line);
+}
+h1{margin:0;font-size:22px;letter-spacing:0}
+.subtitle{margin-top:4px;color:var(--muted);font-size:13px}
+.loadbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.input{
+  height:36px;
+  min-width:260px;
+  border:1px solid var(--line-strong);
+  border-radius:var(--radius);
+  background:var(--surface);
+  padding:0 10px;
+  color:var(--text);
+}
+.input.small{min-width:210px}
+.btn{
+  height:36px;
+  border:1px solid #0d5f58;
+  border-radius:var(--radius);
+  background:var(--accent);
+  color:#fff;
+  padding:0 14px;
+  font-weight:700;
+}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.status{min-height:20px;color:var(--muted);font-size:12px;margin-top:8px}
+.summary{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(120px,1fr));
+  gap:10px;
+  margin:14px 0;
+}
+.stat{
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  background:var(--surface);
+  padding:12px;
+}
+.stat .label{font-size:11px;color:var(--muted);text-transform:uppercase}
+.stat .value{font-size:22px;font-weight:800;margin-top:4px}
+.workspace{
+  display:grid;
+  grid-template-columns:340px minmax(0,1fr);
+  gap:14px;
+  min-height:calc(100vh - 180px);
+}
+.panel{
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  background:var(--surface);
+  min-width:0;
+}
+.sidebar{display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+.filters{
+  padding:12px;
+  border-bottom:1px solid var(--line);
+  display:grid;
+  gap:8px;
+}
+.filters .input{min-width:0;width:100%}
+.filters-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sample-list{overflow:auto}
+.sample-row{
+  display:grid;
+  gap:5px;
+  padding:10px 12px;
+  border-bottom:1px solid #e8edf4;
+  background:#fff;
+}
+.sample-row:hover{background:#f8fafc}
+.sample-row.active{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.sample-head{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.uid{font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace;font-size:11px;color:var(--muted);word-break:break-all}
+.badge{
+  display:inline-flex;
+  align-items:center;
+  min-height:22px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  padding:2px 8px;
+  color:#344154;
+  background:#fff;
+  font-size:11px;
+  white-space:nowrap;
+}
+.reward{font-weight:800;font-size:12px}
+.detail{padding:14px;overflow:auto;max-height:calc(100vh - 185px)}
+.empty{
+  min-height:320px;
+  display:grid;
+  place-items:center;
+  color:var(--muted);
+  text-align:center;
+}
+.section{margin-bottom:14px}
+.section-title{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin:0 0 8px;
+  font-size:14px;
+  font-weight:800;
+}
+.meta-line{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.frame-strip{
+  display:flex;
+  gap:8px;
+  overflow-x:auto;
+  padding:10px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+}
+.frame{
+  flex:0 0 132px;
+  display:grid;
+  gap:5px;
+}
+.frame-thumb{
+  width:132px;
+  height:74px;
+  border-radius:6px;
+  overflow:hidden;
+  border:1px solid var(--line-strong);
+  background:#e2e8f0;
+  display:grid;
+  place-items:center;
+  color:var(--muted);
+  font-size:12px;
+}
+.frame-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.frame-time{
+  text-align:center;
+  color:var(--muted);
+  font-size:11px;
+  font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+}
+.text-block{
+  white-space:pre-wrap;
+  word-break:break-word;
+  line-height:1.52;
+  background:#f8fafc;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:11px 12px;
+  margin:0;
+  font-size:13px;
+}
+.mono{
+  font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+  font-size:12px;
+}
+.options{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+  gap:8px;
+}
+.option{
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:10px;
+  background:#fff;
+  display:grid;
+  gap:6px;
+}
+.option.gt{border-color:#34d399;background:#ecfdf5}
+.option.pred{border-color:#60a5fa;background:#eff6ff}
+.option.both{border-color:#8b5cf6;background:#f5f3ff}
+.option-letter{font-size:13px;font-weight:900}
+.option-tag{color:var(--muted);font-size:11px}
+.rollout{
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  overflow:hidden;
+  margin-bottom:10px;
+  background:#fff;
+}
+.rollout-head{
+  padding:9px 11px;
+  border-bottom:1px solid var(--line);
+  background:#f8fafc;
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:wrap;
+}
+.rollout-body{padding:10px}
+.spin{
+  display:inline-block;
+  width:14px;
+  height:14px;
+  border:2px solid #b6c0cf;
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:spin .8s linear infinite;
+  vertical-align:middle;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.modal{
+  display:none;
+  position:fixed;
+  inset:0;
+  background:rgba(15,23,42,.72);
+  z-index:20;
+  align-items:center;
+  justify-content:center;
+  padding:22px;
+}
+.modal.active{display:flex}
+.modal img{max-width:94vw;max-height:92vh;border-radius:8px;background:#fff}
+@media (max-width:900px){
+  .topbar{grid-template-columns:1fr}
+  .loadbar{justify-content:stretch}
+  .input{min-width:0;width:100%}
+  .loadbar .btn{width:100%}
+  .summary{grid-template-columns:repeat(2,1fr)}
+  .workspace{grid-template-columns:1fr}
+  .detail{max-height:none}
+}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div>
+      <h1>Rollout Viewer</h1>
+      <div class="subtitle">1fps 视频帧、选择题选项、模型完整 rollout。</div>
+      <div id="status" class="status"></div>
+    </div>
+    <div class="loadbar">
+      <input id="rolloutDir" class="input" placeholder="rollouts 目录路径"/>
+      <input id="logFile" class="input small" placeholder="experiment_log.jsonl（可选）"/>
+      <button id="loadBtn" class="btn">加载</button>
+    </div>
+  </header>
+
+  <section class="summary" aria-label="summary">
+    <div class="stat"><div class="label">Groups</div><div id="statGroups" class="value">-</div></div>
+    <div class="stat"><div class="label">Rollouts</div><div id="statSamples" class="value">-</div></div>
+    <div class="stat"><div class="label">Steps</div><div id="statSteps" class="value">-</div></div>
+    <div class="stat"><div class="label">Mean Reward</div><div id="statReward" class="value">-</div></div>
+  </section>
+
+  <section class="workspace">
+    <aside class="panel sidebar">
+      <div class="filters">
+        <div class="filters-row">
+          <select id="stepFilter" class="input" aria-label="step filter">
+            <option value="">全部 step</option>
+          </select>
+          <select id="taskFilter" class="input" aria-label="task filter">
+            <option value="all">全部任务</option>
+          </select>
+        </div>
+        <input id="queryFilter" class="input" placeholder="搜索 uid / prompt / GT"/>
+        <div id="sampleCount" class="status"></div>
+      </div>
+      <div id="sampleList" class="sample-list">
+        <div class="empty">加载 rollout 后显示样本列表。</div>
+      </div>
+    </aside>
+
+    <section id="detail" class="panel detail">
+      <div class="empty">选择一条样本查看视频帧、选项和完整 rollout。</div>
+    </section>
+  </section>
+</main>
+
+<div id="frameModal" class="modal">
+  <img id="frameModalImg" alt="frame preview"/>
+</div>
+
+<script>
+const BASE=window.location.pathname.replace(/\/[^/]*$/,'');
+let state={summary:null,steps:[],groups:[],currentUid:null,detailCache:{},frameCache:{}};
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const rewardColor=v=>Number(v)>=.7?'var(--good)':Number(v)>=.45?'var(--warn)':'var(--bad)';
+const fmtReward=v=>Number.isFinite(Number(v))?Number(v).toFixed(3):'-';
+
+async function requestJson(url){
+  const res=await fetch(url);
+  const text=await res.text();
+  let payload={};
+  try{payload=text?JSON.parse(text):{}}
+  catch(_err){throw new Error(`HTTP ${res.status}: ${text.slice(0,160)}`)}
+  if(!res.ok) throw new Error(payload.error||`HTTP ${res.status}`);
+  return payload;
+}
+
+const api={
+  load(dir,logFile){
+    const q=new URLSearchParams({rollout_dir:dir});
+    if(logFile) q.set('log_file',logFile);
+    return requestJson(`${BASE}/api/load-data?${q}`);
+  },
+  state(){return requestJson(`${BASE}/api/state`)},
+  steps(){return requestJson(`${BASE}/api/steps`)},
+  groups({stepKey,task,q}){
+    const p=new URLSearchParams({limit:'5000'});
+    if(stepKey) p.set('step_key',stepKey);
+    if(task&&task!=='all') p.set('task',task);
+    if(q) p.set('q',q);
+    return requestJson(`${BASE}/api/groups?${p}`);
+  },
+  group(uid){return requestJson(`${BASE}/api/group/${encodeURIComponent(uid)}?text_only=1`)},
+  frames(uid){return requestJson(`${BASE}/api/group/${encodeURIComponent(uid)}/frames?max_frames=200&timeline_fps=0`)}
+};
+
+function setStatus(text,isError=false){
+  $('status').textContent=text||'';
+  $('status').style.color=isError?'var(--bad)':'var(--muted)';
+}
+
+function applySummary(summary){
+  state.summary=summary||{};
+  $('statGroups').textContent=summary.group_count??'-';
+  $('statSamples').textContent=summary.sample_count??'-';
+  $('statSteps').textContent=summary.step_count??'-';
+  $('statReward').textContent=fmtReward(summary.mean_group_reward);
+  if(summary.rollout_dir) $('rolloutDir').value=summary.rollout_dir;
+  if(summary.log_file) $('logFile').value=summary.log_file;
+}
+
+function populateFilters(){
+  const stepSel=$('stepFilter');
+  stepSel.innerHTML='<option value="">全部 step</option>';
+  for(const s of state.steps){
+    const label=s.step_label||`${s.phase==='val'?'Val':'Step'} ${s.step}`;
+    const opt=document.createElement('option');
+    opt.value=s.step_key||`${s.phase}:${s.step}`;
+    opt.textContent=`${label} (${s.n_groups})`;
+    stepSel.appendChild(opt);
+  }
+
+  const tasks=Object.keys(state.summary?.task_counts||{}).sort();
+  const taskSel=$('taskFilter');
+  taskSel.innerHTML='<option value="all">全部任务</option>';
+  for(const task of tasks){
+    const opt=document.createElement('option');
+    opt.value=task;
+    opt.textContent=`${task} (${state.summary.task_counts[task]})`;
+    taskSel.appendChild(opt);
+  }
+}
+
+async function loadAllGroups(){
+  const stepKey=$('stepFilter').value;
+  const task=$('taskFilter').value;
+  const q=$('queryFilter').value.trim();
+  const pre=window.__PRELOADED__;
+  if(pre?.all_groups){
+    let rows=pre.all_groups.slice();
+    if(stepKey) rows=rows.filter(g=>g.step_key===stepKey);
+    if(task&&task!=='all') rows=rows.filter(g=>g.problem_type===task);
+    if(q){
+      const needle=q.toLowerCase();
+      rows=rows.filter(g=>[g.uid,g.prompt_preview,g.problem_type].join(' ').toLowerCase().includes(needle));
+    }
+    state.groups=rows;
+  }else{
+    const res=await api.groups({stepKey,task,q});
+    state.groups=res.groups||[];
+  }
+  renderSampleList();
+}
+
+function renderSampleList(){
+  const list=$('sampleList');
+  $('sampleCount').textContent=`${state.groups.length} samples`;
+  if(!state.groups.length){
+    list.innerHTML='<div class="empty">没有匹配的样本。</div>';
+    return;
+  }
+  list.innerHTML='';
+  for(const g of state.groups){
+    const row=document.createElement('button');
+    row.type='button';
+    row.className='sample-row'+(g.uid===state.currentUid?' active':'');
+    row.onclick=()=>selectSample(g.uid);
+    row.innerHTML=`
+      <div class="sample-head">
+        <span class="badge">${esc(g.step_label||`Step ${g.step}`)}</span>
+        <span class="reward" style="color:${rewardColor(g.mean_reward)}">${fmtReward(g.mean_reward)}</span>
+      </div>
+      <div class="sample-head">
+        <span class="badge">${esc(g.problem_type||'unknown')}</span>
+        <span class="badge">n=${esc(g.n_rollouts??'-')}</span>
+      </div>
+      <div class="uid">${esc(g.uid)}</div>`;
+    list.appendChild(row);
+  }
+}
+
+async function selectSample(uid){
+  state.currentUid=uid;
+  renderSampleList();
+  $('detail').innerHTML='<div class="empty"><span><span class="spin"></span> 加载样本...</span></div>';
+  try{
+    let group=state.detailCache[uid];
+    const pre=window.__PRELOADED__;
+    if(!group&&pre?.all_details?.[uid]) group=pre.all_details[uid];
+    if(!group){
+      const res=await api.group(uid);
+      group=res.group;
+    }
+    state.detailCache[uid]=group;
+    renderDetail(group);
+    if(!group.frame_strip?.length) loadFrames(uid);
+  }catch(e){
+    $('detail').innerHTML=`<div class="empty" style="color:var(--bad)">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function loadFrames(uid){
+  const holder=$('framesHolder');
+  if(holder) holder.innerHTML='<span><span class="spin"></span> 正在按 1fps 加载视频帧...</span>';
+  try{
+    const res=await api.frames(uid);
+    const group=state.detailCache[uid]||{};
+    group.frame_strip=res.frames||[];
+    group.clip_boundaries=res.clip_boundaries||[];
+    state.detailCache[uid]=group;
+    if(state.currentUid===uid) renderDetail(group);
+  }catch(e){
+    if(holder) holder.innerHTML=`<span style="color:var(--bad)">视频帧加载失败：${esc(e.message)}</span>`;
+  }
+}
+
+function renderDetail(g){
+  const attempts=g.attempts||[];
+  const best=attempts[0]||{};
+  const frames=g.frame_strip||[];
+  const prompt=promptToPlainText(g.prompt||'');
+  const options=parseOptions(g);
+  const gtLetter=(g.choice_meta?.gt_letter||parseAnswerLetter(g.ground_truth)||'').toUpperCase();
+  const predLetters=new Set(attempts.map(a=>(a.pred_letter||parseAnswerLetter(a.response)||'').toUpperCase()).filter(Boolean));
+
+  $('detail').innerHTML=`
+    <div class="meta-line">
+      <span class="badge">${esc(g.step_label||`Step ${g.step}`)}</span>
+      <span class="badge">${esc(g.problem_type||'unknown')}</span>
+      <span class="badge">uid ${esc(g.uid)}</span>
+      <span class="badge">rollouts ${attempts.length}</span>
+      <span class="badge">mean ${fmtReward(g.mean_reward)}</span>
+      ${best.reward!=null?`<span class="badge">best ${fmtReward(best.reward)}</span>`:''}
+    </div>
+
+    <section class="section">
+      <h2 class="section-title"><span>1fps 视频帧</span><span class="badge">${frames.length?`${frames.length} frames`:'loading'}</span></h2>
+      <div id="framesHolder" class="frame-strip">
+        ${frames.length?renderFrames(frames):'<span><span class="spin"></span> 正在按 1fps 加载视频帧...</span>'}
+      </div>
+    </section>
+
+    ${prompt?`
+    <section class="section">
+      <h2 class="section-title">题目</h2>
+      <pre class="text-block">${esc(prompt)}</pre>
+    </section>`:''}
+
+    <section class="section">
+      <h2 class="section-title">选项</h2>
+      ${options.length?renderOptions(options,gtLetter,predLetters):'<div class="text-block">未从 prompt 或 metadata 中解析到选择题选项。</div>'}
+    </section>
+
+    ${g.ground_truth?`
+    <section class="section">
+      <h2 class="section-title">Ground Truth</h2>
+      <pre class="text-block mono">${esc(g.ground_truth)}</pre>
+    </section>`:''}
+
+    <section class="section">
+      <h2 class="section-title">模型 Rollout</h2>
+      ${attempts.length?attempts.map((a,i)=>renderRollout(a,i,gtLetter)).join(''):'<div class="text-block">暂无 rollout response。</div>'}
+    </section>`;
+}
+
+function renderFrames(frames){
+  return frames.map((src,i)=>`
+    <button class="frame" type="button" onclick="zoomFrame(${i})">
+      <span class="frame-thumb">${src?`<img src="${src}" alt="${i}s"/>`:`${i}s`}</span>
+      <span class="frame-time">${i}s</span>
+    </button>`).join('');
+}
+
+function renderOptions(options,gtLetter,predLetters){
+  return `<div class="options">${options.map(o=>{
+    const letter=String(o.letter||'').toUpperCase();
+    const isGt=letter&&letter===gtLetter;
+    const isPred=letter&&predLetters.has(letter);
+    const cls=isGt&&isPred?'both':isGt?'gt':isPred?'pred':'';
+    const tag=isGt&&isPred?'GT / Pred':isGt?'GT':isPred?'Pred':'';
+    return `<div class="option ${cls}">
+      <div><span class="option-letter">${esc(letter||'?')}.</span> ${tag?`<span class="option-tag">${tag}</span>`:''}</div>
+      <div>${esc(o.text||'')}</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderRollout(a,i,gtLetter){
+  const pred=(a.pred_letter||parseAnswerLetter(a.response)||'').toUpperCase();
+  return `<article class="rollout">
+    <div class="rollout-head">
+      <span class="badge">Rollout #${i+1}</span>
+      <span class="reward" style="color:${rewardColor(a.reward)}">${fmtReward(a.reward)}</span>
+      ${pred?`<span class="badge">Pred ${esc(pred)}</span>`:''}
+      ${gtLetter?`<span class="badge">GT ${esc(gtLetter)}</span>`:''}
+    </div>
+    <div class="rollout-body">
+      <pre class="text-block mono">${esc(a.response||'')}</pre>
+    </div>
+  </article>`;
+}
+
+function parseOptions(g){
+  const meta=g.metadata||{};
+  const candidates=[meta.options_list,meta.options,g.options_list,g.options].filter(Boolean);
+  for(const raw of candidates){
+    const opts=normalizeOptionList(raw);
+    if(opts.length) return opts;
+  }
+  const prompt=String(g.prompt||'');
+  const lines=prompt.split(/\r?\n/);
+  const options=[];
+  let current=null;
+  for(const line of lines){
+    const m=line.match(/^\s*([A-Z])[\.\):：、]\s*(.+?)\s*$/i);
+    if(m){
+      if(current) options.push(current);
+      current={letter:m[1].toUpperCase(),text:m[2].trim()};
+    }else if(current&&line.trim()&&!/^<video>|^<image>/i.test(line.trim())){
+      current.text+=`\n${line.trim()}`;
+    }else if(current&&line.trim()===''){
+      options.push(current);
+      current=null;
+    }
+  }
+  if(current) options.push(current);
+  return options;
+}
+
+function normalizeOptionList(raw){
+  if(Array.isArray(raw)){
+    return raw.map((item,i)=>{
+      if(item&&typeof item==='object'){
+        const letter=item.letter||item.label||String.fromCharCode(65+i);
+        const text=item.text||item.caption||item.value||item.description||JSON.stringify(item);
+        return {letter:String(letter).toUpperCase(),text:String(text)};
+      }
+      return {letter:String.fromCharCode(65+i),text:String(item)};
+    });
+  }
+  if(raw&&typeof raw==='object'){
+    return Object.entries(raw).map(([letter,text])=>({letter:String(letter).toUpperCase(),text:String(text)}));
+  }
+  return [];
+}
+
+function parseAnswerLetter(text){
+  const answer=String(text||'').match(/<answer>\s*([A-Z])\s*<\/answer>/i);
+  if(answer) return answer[1];
+  const plain=String(text||'').match(/\b([A-Z])\b/i);
+  return plain?plain[1]:'';
+}
+
+function promptToPlainText(s){
+  return String(s||'')
+    .replace(/<\s*video\s*>/gi,'[video]')
+    .replace(/<\s*image\s*>/gi,'[image]')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+}
+
+function zoomFrame(idx){
+  const g=state.detailCache[state.currentUid]||{};
+  const src=(g.frame_strip||[])[idx];
+  if(!src) return;
+  $('frameModalImg').src=src;
+  $('frameModal').classList.add('active');
+}
+
+async function bootstrapFromSummary(summary,steps=null){
+  applySummary(summary);
+  if(steps) state.steps=steps;
+  else{
+    const res=await api.steps();
+    state.steps=res.steps||[];
+  }
+  populateFilters();
+  await loadAllGroups();
+  if(state.groups[0]) selectSample(state.groups[0].uid);
+}
+
+$('loadBtn').onclick=async()=>{
+  const dir=$('rolloutDir').value.trim();
+  if(!dir){setStatus('请输入 rollout 目录路径。',true);return}
+  $('loadBtn').disabled=true;
+  $('loadBtn').textContent='加载中...';
+  try{
+    const res=await api.load(dir,$('logFile').value.trim());
+    await bootstrapFromSummary(res.summary);
+    setStatus(`已加载 ${res.summary.group_count} groups。`);
+  }catch(e){
+    setStatus(`加载失败：${e.message}`,true);
+  }finally{
+    $('loadBtn').disabled=false;
+    $('loadBtn').textContent='加载';
+  }
+};
+
+for(const id of ['stepFilter','taskFilter']) $(id).addEventListener('change',loadAllGroups);
+$('queryFilter').addEventListener('input',()=>{
+  clearTimeout(window.__queryTimer);
+  window.__queryTimer=setTimeout(loadAllGroups,180);
+});
+$('frameModal').onclick=()=>$('frameModal').classList.remove('active');
+
+(async()=>{
+  const pre=window.__PRELOADED__;
+  if(pre?.summary?.group_count){
+    await bootstrapFromSummary(pre.summary,pre.steps||[]);
+    setStatus(`已预加载 ${pre.summary.group_count} groups。`);
+    return;
+  }
+  try{
+    const res=await api.state();
+    if(res.summary?.group_count) await bootstrapFromSummary(res.summary);
+  }catch(_err){}
+})();
+</script>
+</body>
+</html>
