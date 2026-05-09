@@ -7,7 +7,7 @@
 #   - 删除 ray_logs/
 #
 # 用法:
-#   bash local_scripts/cleanup_checkpoints.sh [ROOT]
+#   bash video_proxy/training/tools/cleanup_checkpoints.sh [ROOT]
 #
 # ROOT 默认为 /m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed
 # 加 DRY_RUN=1 只打印，不实际删除（跳过确认）。

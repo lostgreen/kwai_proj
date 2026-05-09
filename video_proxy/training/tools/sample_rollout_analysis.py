@@ -8,7 +8,7 @@ Rollout Sampling & Analysis Tool
   - 高分 / 中分 / 低分 样本的具体表现
 
 用法:
-  python local_scripts/sample_rollout_analysis.py \\
+  python video_proxy/training/tools/sample_rollout_analysis.py \\
       --rollout_dir /path/to/rollout_dir \\
       --output_dir  /path/to/output \\
       [--task_type aot_v2t]    # 留空则分析全部 task

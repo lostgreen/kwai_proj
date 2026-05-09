@@ -4,6 +4,10 @@ import types
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 if "codetiming" not in sys.modules:
     codetiming_stub = types.ModuleType("codetiming")
     codetiming_stub.Timer = object
@@ -143,8 +147,9 @@ def test_fsdp_worker_has_multi_teacher_topk_routing_and_ref_offload_hooks():
     assert "offload_fsdp_model(ref_module)" in source
 
 
-def test_model_training_tree_has_teacher_and_opd_entrypoints_for_each_target_model():
-    base = Path("video_proxy/training/models")
+def test_experiments_tree_has_teacher_and_opd_entrypoints_for_each_target_model():
+    teacher_base = Path("video_proxy/experiments/teacher_train")
+    opd_base = Path("video_proxy/experiments/opd")
     expected_models = {
         "qwen3_vl_4b": ("qwen3_vl", "4b", "Qwen3-VL-4B-Instruct"),
         "qwen3_vl_8b": ("qwen3_vl", "8b", "Qwen3-VL-8B-Instruct"),
@@ -153,8 +158,8 @@ def test_model_training_tree_has_teacher_and_opd_entrypoints_for_each_target_mod
     }
 
     for dirname, (family, size, model_name) in expected_models.items():
-        teacher = (base / dirname / "teacher_train_ema_grpo.sh").read_text()
-        opd = (base / dirname / "opd_train.sh").read_text()
+        teacher = (teacher_base / dirname / "run.sh").read_text()
+        opd = (opd_base / dirname / "run.sh").read_text()
 
         assert f'MODEL_FAMILY="{family}"' in teacher
         assert f'MODEL_SIZE="{size}"' in teacher
@@ -165,6 +170,8 @@ def test_model_training_tree_has_teacher_and_opd_entrypoints_for_each_target_mod
         assert model_name in opd
         assert "TEACHER_MODEL_PATH" in opd
         assert "recipes/opd_train.sh" in opd
+
+    assert not Path("video_proxy/training/models").exists()
 
 
 def test_multi_teacher_cli_overrides_do_not_use_hydra_plus_prefix():
@@ -193,7 +200,7 @@ def test_opd_recipe_preserves_mf256_default():
 
 
 def test_qwen3_4b_opd_entrypoint_defaults_to_teacher_checkpoint_and_sanity_settings():
-    launcher = Path("video_proxy/training/models/qwen3_vl_4b/opd_train.sh").read_text()
+    launcher = Path("video_proxy/experiments/opd/qwen3_vl_4b/run.sh").read_text()
     recipe = Path("video_proxy/training/recipes/opd_train.sh").read_text()
 
     assert (
@@ -213,40 +220,27 @@ def test_qwen3_4b_opd_entrypoint_defaults_to_teacher_checkpoint_and_sanity_setti
     assert 'MAX_STEPS="${MAX_STEPS:-50}"' in recipe
 
 
-def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
-    common = Path("video_proxy/experiments/comparisons/opd/common.sh").read_text()
-    launcher = Path("video_proxy/experiments/comparisons/opd/run_mopd_4b_full_epoch.sh").read_text()
-    launcher_8b = Path("video_proxy/experiments/comparisons/opd/run_mopd_8b_from_4b_teachers.sh").read_text()
+def test_opd_full_epoch_presets_keep_batch64_and_checkpoint_controls():
+    launcher = Path("video_proxy/experiments/opd/qwen3_vl_4b/run.sh").read_text()
+    launcher_8b = Path("video_proxy/experiments/opd/qwen3_vl_8b/run.sh").read_text()
     runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
     rollout_config = Path("verl/workers/rollout/config.py").read_text()
     rollout_impl = Path("verl/workers/rollout/vllm_rollout_spmd.py").read_text()
 
-    mopd_defaults = common[
-        common.index("opd_comparison_mopd_defaults()") : common.index("opd_comparison_validate_rollout_tokens()")
-    ]
-
-    assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"' in launcher
-    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"' in launcher
-    assert 'EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_full_comp_4b_teachers_bs64_mf256_epoch1_save50}"' in launcher
-    assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_8B_MODEL_PATH}}"' in launcher_8b
-    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_8B_COMPARISON}}"' in launcher_8b
-    assert 'EXP_NAME="${EXP_NAME:-mopd_qwen3vl8b_full_comp_4b_teachers_bs64_mf256_epoch1_save50_keep1}"' in launcher_8b
+    assert 'MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"' in launcher
+    assert 'EXP_NAME="${EXP_NAME:-qwen3_vl_4b_opd}"' in launcher
+    assert 'MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct}"' in launcher_8b
+    assert 'EXP_NAME="${EXP_NAME:-qwen3_vl_8b_opd}"' in launcher_8b
     assert 'SAVE_LIMIT="${SAVE_LIMIT:-1}"' in launcher_8b
     assert 'SAVE_BEST="${SAVE_BEST:-true}"' in launcher_8b
-    assert launcher_8b.index('SAVE_LIMIT="${SAVE_LIMIT:-1}"') < launcher_8b.index("opd_comparison_full_epoch_save_defaults")
+    assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in launcher
+    assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in launcher
+    assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in launcher
     assert 'ENABLE_GPU_FILLER="${ENABLE_GPU_FILLER:-false}"' in launcher_8b
     assert "FILLER_GPUS" not in launcher_8b
-    assert 'EVENTLOGIC_TEACHER_STEP="${EVENTLOGIC_TEACHER_STEP:-272}"' in common
-    assert "composition_base_logic_el10k_mf256_ema" in common
-    assert "validate_opd_teacher_paths" in common
-    assert "validate_opd_teacher_paths" in launcher
-    assert "validate_opd_teacher_paths" in launcher_8b
-    assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in mopd_defaults
-    assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in mopd_defaults
-    assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in mopd_defaults
-    assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-64}"' in mopd_defaults
-    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in common
-    assert 'SAVE_LIMIT="${SAVE_LIMIT:--1}"' in common
+    assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-64}"' in launcher
+    assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in launcher
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:--1}"' in launcher
     assert 'trainer.save_freq="${SAVE_FREQ}"' in runner
     assert 'trainer.save_limit="${SAVE_LIMIT}"' in runner
     assert 'worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}"' in runner
@@ -254,57 +248,18 @@ def test_opd_comparison_4b_mopd_defaults_to_batch64_and_unlimited_checkpoints():
     assert "max_num_seqs=config.max_num_seqs" in rollout_impl
 
 
-def test_opd_comparison_4b_mopd_base_r1_r2_uses_base_seg_aot_data_without_event_logic_task():
-    common = Path("video_proxy/experiments/comparisons/opd/common.sh").read_text()
-    launcher = Path("video_proxy/experiments/comparisons/opd/run_mopd_4b_base_r1_r2.sh").read_text()
+def test_grpo_baseline_does_not_enable_opd_teachers():
+    launcher = Path("video_proxy/experiments/baselines/grpo/qwen3_vl_4b/run.sh").read_text()
 
-    base_r1_r2_defaults = common[
-        common.index("opd_comparison_base_r1_r2_data_defaults()") : common.index("opd_comparison_8gpu_defaults()")
-    ]
-
-    assert (
-        'BASE_R1_R2_COMPOSITION_EXP_NAME="${BASE_R1_R2_COMPOSITION_EXP_NAME:-'
-        'composition_base_seg_aot_hier10k_aot10k_mf256_ema}"'
-    ) in common
-    assert 'FULL_COMPOSITION_EXP_NAME="${FULL_COMPOSITION_EXP_NAME:-composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema}"' in common
-    assert 'TASKS="${TASKS:-tg mcq hier_seg aot}"' in base_r1_r2_defaults
-    assert "event_logic" not in base_r1_r2_defaults
-
-    assert "opd_comparison_base_r1_r2_data_defaults" in launcher
-    assert "opd_comparison_full_data_defaults" not in launcher
-    assert "opd_comparison_8gpu_defaults" in launcher
-    assert "opd_comparison_full_epoch_save_defaults" in launcher
-    assert "opd_comparison_mopd_defaults" in launcher
-    assert 'SAVE_LIMIT="${SAVE_LIMIT:-1}"' in launcher
-    assert 'SAVE_BEST="${SAVE_BEST:-true}"' in launcher
-    assert launcher.index('SAVE_LIMIT="${SAVE_LIMIT:-1}"') < launcher.index("opd_comparison_full_epoch_save_defaults")
-    assert 'MODEL_PATH="${MODEL_PATH:-${QWEN3_VL_4B_MODEL_PATH}}"' in launcher
-    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${CHECKPOINT_ROOT_4B_COMPARISON}}"' in launcher
-    assert 'EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_base_r1_r2_4b_teachers_bs64_mf256_epoch1_save50_keep1}"' in launcher
-    assert "validate_opd_teacher_paths" in launcher
-
-
-def test_opd_comparison_grpo_defaults_do_not_enable_opd_teachers():
-    common = Path("video_proxy/experiments/comparisons/opd/common.sh").read_text()
-
-    preamble = common[: common.index("opd_comparison_full_data_defaults()")]
-    grpo_defaults = common[
-        common.index("opd_comparison_grpo_defaults()") : common.index("opd_comparison_mopd_defaults()")
-    ]
-    mopd_defaults = common[
-        common.index("opd_comparison_mopd_defaults()") : common.index("opd_comparison_validate_rollout_tokens()")
-    ]
-
-    assert "AOT_TEACHER_MODEL_PATH=" not in preamble
-    assert "SEG_TEACHER_MODEL_PATH=" not in preamble
-    assert "EVENTLOGIC_TEACHER_MODEL_PATH=" not in preamble
-    assert 'AOT_TEACHER_MODEL_PATH=""' in grpo_defaults
-    assert 'SEG_TEACHER_MODEL_PATH=""' in grpo_defaults
-    assert 'EVENTLOGIC_TEACHER_MODEL_PATH=""' in grpo_defaults
-    assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-512}"' in grpo_defaults
-    assert 'AOT_TEACHER_MODEL_PATH="${AOT_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_aot_aot10k_mf256_ema/global_step_${AOT_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
-    assert 'SEG_TEACHER_MODEL_PATH="${SEG_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_seg_hier10k_mf256_ema/global_step_${SEG_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
-    assert 'EVENTLOGIC_TEACHER_MODEL_PATH="${EVENTLOGIC_TEACHER_MODEL_PATH:-${TEACHER_4B_CKPT_ROOT}/composition_base_logic_el10k_mf256_ema/global_step_${EVENTLOGIC_TEACHER_STEP}/actor/huggingface}"' in mopd_defaults
+    assert 'TRAINING_MODE="rl"' in launcher
+    assert 'ADV_ESTIMATOR="${ADV_ESTIMATOR:-ema_grpo}"' in launcher
+    assert 'AOT_TEACHER_MODEL_PATH=""' in launcher
+    assert 'SEG_TEACHER_MODEL_PATH=""' in launcher
+    assert 'EVENTLOGIC_TEACHER_MODEL_PATH=""' in launcher
+    assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-512}"' in launcher
+    assert "recipes/teacher_train_ema_grpo.sh" not in launcher
+    assert "recipes/opd_train.sh" not in launcher
+    assert "launchers/run_multi_task.sh" in launcher
 
 
 def test_multi_task_runner_checks_raw_sources_only_when_mix_is_needed():

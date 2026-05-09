@@ -3,7 +3,7 @@
 # run_pipeline_gemini.sh — 3-level annotation via Gemini native API
 #
 # Steps:
-#   1. Extract 1fps frames (for visualization in video_proxy/visualization/data_browser/)
+#   1. Extract 1fps frames (for visualization in video_proxy/insights/data_browser/)
 #   2. Full video → Gemini → L1+L2+L3 in one call
 #
 # Usage:

@@ -5,7 +5,7 @@ Reads each sample, tries to open every video path with decord,
 and drops samples where any video fails to decode.
 
 Usage:
-    python local_scripts/filter_bad_videos.py \
+    python video_proxy/data/scripts/filter_bad_videos.py \
         --input  /path/to/train.jsonl \
         --output /path/to/train_clean.jsonl \
         [--bad    /path/to/bad_samples.jsonl] \

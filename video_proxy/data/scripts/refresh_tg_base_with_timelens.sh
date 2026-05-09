@@ -10,7 +10,7 @@
 #   6. Check prompt/answer format, TimeLens IoU bounds, and frame-list structure.
 #
 # Usage from train/:
-#   bash local_scripts/refresh_tg_base_with_timelens.sh
+#   bash video_proxy/data/scripts/refresh_tg_base_with_timelens.sh
 
 set -euo pipefail
 

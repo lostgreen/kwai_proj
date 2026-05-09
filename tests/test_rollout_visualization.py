@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from video_proxy.visualization.rollout.server import RolloutStore
+from video_proxy.insights.rollout_viewer.server import RolloutStore
 
 
 class _FakeFrame:
@@ -135,7 +135,7 @@ def test_text_only_group_detail_does_not_extract_frames(monkeypatch, tmp_path: P
 
 
 def test_frontend_requests_text_only_group_detail_before_lazy_frames():
-    html = (REPO_ROOT / "video_proxy" / "visualization" / "rollout" / "index.html").read_text(
+    html = (REPO_ROOT / "video_proxy" / "insights" / "rollout_viewer" / "index.html").read_text(
         encoding="utf-8"
     )
 

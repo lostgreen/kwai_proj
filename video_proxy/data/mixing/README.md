@@ -88,11 +88,11 @@ $DATA_ROOT/experiments/R1_f1iou/
 
 ```bash
 # 按模型启动 teacher EMA-GRPO 训练
-bash video_proxy/training/models/qwen3_vl_4b/teacher_train_ema_grpo.sh
+bash video_proxy/experiments/teacher_train/qwen3_vl_4b/run.sh
 
 # 使用 teacher checkpoint 启动 OPD 训练
 TEACHER_MODEL_PATH=/path/to/teacher \
-  bash video_proxy/training/models/qwen3_vl_4b/opd_train.sh
+  bash video_proxy/experiments/opd/qwen3_vl_4b/run.sh
 ```
 
 ### 检查数据完整性
