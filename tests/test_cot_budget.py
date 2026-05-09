@@ -228,6 +228,30 @@ def test_trainer_configures_cot_budget_before_importing_fsdp_worker():
     assert source.index(configure_call) < source.index(worker_import)
 
 
+def test_runner_imports_fsdp_worker_before_role_mapping_uses_it():
+    source = (Path(__file__).resolve().parents[1] / "verl" / "trainer" / "main.py").read_text()
+    module = ast.parse(source)
+    runner_cls = next(
+        node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "Runner"
+    )
+    run_fn = next(
+        node for node in runner_cls.body if isinstance(node, ast.FunctionDef) and node.name == "run"
+    )
+    fsdp_import_line = next(
+        node.lineno
+        for node in ast.walk(run_fn)
+        if isinstance(node, ast.ImportFrom) and node.level == 2 and node.module == "workers.fsdp_workers"
+    )
+    role_mapping_line = next(
+        node.lineno
+        for node in ast.walk(run_fn)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "role_worker_mapping" for target in node.targets)
+    )
+
+    assert fsdp_import_line < role_mapping_line
+
+
 def test_multi_task_launcher_exposes_cot_budget_flags():
     source = (
         Path(__file__).resolve().parents[1] / "video_proxy" / "training" / "launchers" / "run_multi_task.sh"

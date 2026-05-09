@@ -51,6 +51,9 @@ class Runner:
         )
 
         # define worker classes
+        configure_vllm_engine_for_cot_budget(config.worker.rollout.cot_budget_enabled)
+        from ..workers.fsdp_workers import FSDPWorker
+
         ray_worker_group_cls = RayWorkerGroup
         role_worker_mapping = {
             Role.ActorRolloutRef: ray.remote(FSDPWorker),
@@ -72,9 +75,6 @@ class Runner:
             RewardManager = BatchFunctionRewardManager
         else:
             raise NotImplementedError(f"Unknown reward type {config.worker.reward.reward_type}.")
-
-        configure_vllm_engine_for_cot_budget(config.worker.rollout.cot_budget_enabled)
-        from ..workers.fsdp_workers import FSDPWorker
 
         RemoteRewardManager = ray.remote(RewardManager).options(num_cpus=config.worker.reward.num_cpus)
         reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
