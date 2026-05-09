@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import math
+import ast
 import importlib.util
 import json
+import math
+import os
 import sys
 import types
 from pathlib import Path
@@ -19,6 +21,7 @@ _SPEC.loader.exec_module(cot_budget)
 
 CoTBudgetController = cot_budget.CoTBudgetController
 CoTBudgetProcessor = cot_budget.CoTBudgetProcessor
+configure_vllm_engine_for_cot_budget = cot_budget.configure_vllm_engine_for_cot_budget
 make_cot_budget_processor = cot_budget.make_cot_budget_processor
 
 
@@ -145,6 +148,14 @@ def test_make_processor_uses_configurable_tags():
     assert tokenizer.calls == [("<thought>", False), ("</thought>", False)]
 
 
+def test_cot_budget_forces_vllm_v0_before_engine_import(monkeypatch):
+    monkeypatch.setenv("VLLM_USE_V1", "1")
+
+    configure_vllm_engine_for_cot_budget(True)
+
+    assert os.environ["VLLM_USE_V1"] == "0"
+
+
 def test_rollout_config_defaults_disable_cot_budget():
     module_path = Path(__file__).resolve().parents[1] / "verl" / "workers" / "rollout" / "config.py"
     spec = importlib.util.spec_from_file_location("rollout_config", module_path)
@@ -166,7 +177,41 @@ def test_vllm_rollout_wires_cot_processor_into_sampling_params():
 
     assert "make_cot_budget_processor" in source
     assert "cot_budget_enabled" in source
+    assert "configure_vllm_engine_for_cot_budget(config.cot_budget_enabled)" in source
+    assert "from vllm import LLM, RequestOutput, SamplingParams" not in source
     assert '"logits_processors"' in source
+
+
+def test_fsdp_worker_configures_cot_budget_before_lazy_vllm_imports():
+    source = (Path(__file__).resolve().parents[1] / "verl" / "workers" / "fsdp_workers.py").read_text()
+    module = ast.parse(source)
+    top_level_imports = [node for node in module.body if isinstance(node, ast.ImportFrom)]
+    top_level_import_text = "\n".join(ast.get_source_segment(source, node) or "" for node in top_level_imports)
+
+    assert "from .rollout import vLLMRollout" not in top_level_import_text
+    assert "from .sharding_manager import FSDPVLLMShardingManager" not in top_level_import_text
+    configure_call = "configure_vllm_engine_for_cot_budget(self.config.rollout.cot_budget_enabled)"
+    rollout_import = "from .rollout import vLLMRollout"
+    sharding_import = "from .sharding_manager.fsdp_vllm import FSDPVLLMShardingManager"
+    assert configure_call in source
+    assert rollout_import in source
+    assert sharding_import in source
+    assert source.index(configure_call) < source.index(rollout_import)
+    assert source.index(configure_call) < source.index(sharding_import)
+
+
+def test_sharding_manager_package_does_not_import_vllm_manager_eagerly():
+    source = (Path(__file__).resolve().parents[1] / "verl" / "workers" / "sharding_manager" / "__init__.py").read_text()
+    module = ast.parse(source)
+    import_text = "\n".join(
+        ast.get_source_segment(source, node) or ""
+        for node in module.body
+        if isinstance(node, ast.ImportFrom)
+    )
+
+    assert "from .fsdp_vllm import FSDPVLLMShardingManager" not in import_text
+    assert "def __getattr__(name: str):" in source
+    assert 'if name == "FSDPVLLMShardingManager":' in source
 
 
 def test_multi_task_launcher_exposes_cot_budget_flags():
@@ -180,7 +225,7 @@ def test_multi_task_launcher_exposes_cot_budget_flags():
     assert 'worker.rollout.cot_budget_start_token="${COT_BUDGET_START_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_end_token="${COT_BUDGET_END_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_max_tokens="${COT_BUDGET_MAX_TOKENS}"' in source
-    assert 'runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "1")' in trainer_source
+    assert 'runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "0")' in trainer_source
 
 
 def test_rollout_checker_counts_closed_and_over_budget_cot_spans(tmp_path: Path):
@@ -273,7 +318,7 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert 'LR="${LR:-5e-7}"' in helper
     assert 'KL_COEF="${KL_COEF:-0.01}"' in helper
     assert 'ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"' in helper
-    assert 'VLLM_USE_V1="${VLLM_USE_V1:-1}"' in helper
+    assert 'VLLM_USE_V1="${VLLM_USE_V1:-0}"' in helper
     assert "export VLLM_USE_V1" in helper
 
     for dirname, (size, model_name) in model_specs.items():

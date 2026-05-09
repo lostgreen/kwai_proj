@@ -58,8 +58,7 @@ from ..utils.tokenizer import get_processor, get_tokenizer
 from ..utils.torch_dtypes import PrecisionType
 from ..utils.torch_functional import AnyPrecisionAdamW, get_constant_schedule_with_warmup
 from .config import ActorConfig, CriticConfig, FSDPConfig, ModelConfig, OptimConfig, WorkerConfig
-from .rollout import vLLMRollout
-from .sharding_manager import FSDPVLLMShardingManager
+from .rollout.cot_budget import configure_vllm_engine_for_cot_budget
 from .sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 from .teacher_routing import resolve_opd_teacher_name
 
@@ -357,6 +356,10 @@ class FSDPWorker(Worker):
         return fsdp_module
 
     def _build_rollout(self) -> None:
+        configure_vllm_engine_for_cot_budget(self.config.rollout.cot_budget_enabled)
+        from .rollout import vLLMRollout
+        from .sharding_manager.fsdp_vllm import FSDPVLLMShardingManager
+
         tp_size = self.config.rollout.tensor_parallel_size
         dp_size = self.world_size // tp_size
         if self.world_size % tp_size != 0:

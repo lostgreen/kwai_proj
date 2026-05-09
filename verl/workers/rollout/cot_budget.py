@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
@@ -113,6 +114,11 @@ class CoTBudgetProcessor:
         masked = [-math.inf] * max(len(logits), token_id + 1)
         masked[token_id] = 0.0
         return masked
+
+
+def configure_vllm_engine_for_cot_budget(cot_budget_enabled: bool) -> None:
+    if cot_budget_enabled:
+        os.environ["VLLM_USE_V1"] = "0"
 
 
 def make_cot_budget_processor(

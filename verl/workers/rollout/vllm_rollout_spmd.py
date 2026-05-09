@@ -21,7 +21,6 @@ import torch
 import torch.distributed
 from tensordict import TensorDict
 from transformers import PreTrainedTokenizer, ProcessorMixin
-from vllm import LLM, RequestOutput, SamplingParams
 
 from ...protocol import DataProto
 from ...utils import torch_functional as VF
@@ -29,7 +28,7 @@ from ...utils.dataset import process_image, process_video
 from ...utils.torch_dtypes import PrecisionType
 from .base import BaseRollout
 from .config import RolloutConfig
-from .cot_budget import make_cot_budget_processor
+from .cot_budget import configure_vllm_engine_for_cot_budget, make_cot_budget_processor
 
 
 def _repeat_interleave(value: Union[torch.Tensor, np.ndarray, list], repeats: int) -> Union[torch.Tensor, np.ndarray, list]:
@@ -127,6 +126,9 @@ class vLLMRollout(BaseRollout):
 
         if config.max_num_batched_tokens < config.prompt_length + config.response_length:
             raise ValueError("max_num_batched_tokens should be greater than prompt_length + response_length.")
+
+        configure_vllm_engine_for_cot_budget(config.cot_budget_enabled)
+        from vllm import LLM, SamplingParams
 
         engine_kwargs = {}
         if processor is not None:  # only VLMs have processor
@@ -250,7 +252,7 @@ class vLLMRollout(BaseRollout):
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**prompts.meta_info):
-            completions: list[RequestOutput] = self.inference_engine.generate(
+            completions = self.inference_engine.generate(
                 prompts=vllm_inputs, sampling_params=self.sampling_params, use_tqdm=self.use_tqdm
             )
             _t2 = _time.time()

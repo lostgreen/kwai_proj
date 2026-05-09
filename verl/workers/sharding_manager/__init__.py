@@ -15,7 +15,15 @@
 
 from .base import BaseShardingManager
 from .fsdp_ulysses import FSDPUlyssesShardingManager
-from .fsdp_vllm import FSDPVLLMShardingManager
 
 
 __all__ = ["BaseShardingManager", "FSDPUlyssesShardingManager", "FSDPVLLMShardingManager"]
+
+
+def __getattr__(name: str):
+    if name == "FSDPVLLMShardingManager":
+        from .fsdp_vllm import FSDPVLLMShardingManager
+
+        return FSDPVLLMShardingManager
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
