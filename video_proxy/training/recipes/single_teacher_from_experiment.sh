@@ -40,6 +40,37 @@ if [[ ! -f "${SOURCE_TEST_FILE}" ]]; then
     exit 1
 fi
 
+_SOURCE_FRAME_INFO="$(
+python3 - "${SOURCE_TRAIN_FILE}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+policy = ""
+max_frames = ""
+version = ""
+with open(path, encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        sampling = (row.get("metadata") or {}).get("experiment_frame_sampling") or {}
+        policy = str(sampling.get("policy") or "")
+        value = sampling.get("max_frames")
+        if value not in (None, ""):
+            max_frames = str(int(value))
+        version = str(sampling.get("implementation_version") or "")
+        break
+print(policy)
+print(max_frames)
+print(version)
+PY
+)"
+_SOURCE_FRAME_SAMPLE_POLICY="$(printf '%s\n' "${_SOURCE_FRAME_INFO}" | sed -n '1p')"
+_SOURCE_FRAME_SAMPLE_MAX_FRAMES="$(printf '%s\n' "${_SOURCE_FRAME_INFO}" | sed -n '2p')"
+_SOURCE_FRAME_SAMPLE_POLICY_VERSION="$(printf '%s\n' "${_SOURCE_FRAME_INFO}" | sed -n '3p')"
+
 mkdir -p "${EXP_DATA_DIR}"
 if [[ "${COT_MODE,,}" =~ ^(true|1|yes)$ ]]; then
     if [[ ! -f "${TRAIN_FILE}" || "${CONVERT_FORCE,,}" =~ ^(true|1|yes)$ ]]; then
@@ -76,6 +107,9 @@ echo "[single-teacher] Source train: ${SOURCE_TRAIN_FILE}"
 echo "[single-teacher] Source val: ${SOURCE_TEST_FILE}"
 echo "[single-teacher] Data ready: train=${TRAIN_FILE}"
 echo "[single-teacher] Data ready: val=${TEST_FILE}"
+if [[ -n "${_SOURCE_FRAME_SAMPLE_POLICY}" || -n "${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}" ]]; then
+    echo "[single-teacher] Inherited frame policy: policy=${_SOURCE_FRAME_SAMPLE_POLICY:-<empty>} max_frames=${_SOURCE_FRAME_SAMPLE_MAX_FRAMES:-<empty>} version=${_SOURCE_FRAME_SAMPLE_POLICY_VERSION:-<empty>}"
+fi
 if [[ "${CONVERT_ONLY,,}" =~ ^(true|1|yes)$ ]]; then
     echo "[single-teacher] CONVERT_ONLY=true; skip training."
     exit 0
@@ -99,6 +133,12 @@ CHECK_EXPERIMENT_JSONL="${CHECK_EXPERIMENT_JSONL:-true}"
 CHECK_EXPERIMENT_FRAME_FILES="${CHECK_EXPERIMENT_FRAME_FILES:-false}"
 MIX_FORCE="${MIX_FORCE:-false}"
 REUSE_EXISTING_DATA="${REUSE_EXISTING_DATA:-true}"
+FRAME_SAMPLE_POLICY="${FRAME_SAMPLE_POLICY:-${_SOURCE_FRAME_SAMPLE_POLICY}}"
+FRAME_SAMPLE_MAX_FRAMES="${FRAME_SAMPLE_MAX_FRAMES:-${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}}"
+FRAME_SAMPLE_POLICY_VERSION="${FRAME_SAMPLE_POLICY_VERSION:-${_SOURCE_FRAME_SAMPLE_POLICY_VERSION}}"
+if [[ -n "${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}" ]]; then
+    MAX_FRAMES="${MAX_FRAMES:-${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}}"
+fi
 ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-16}"
 ROLLOUT_MAX_BATCHED_TOKENS="${ROLLOUT_MAX_BATCHED_TOKENS:-20480}"
 MAX_RESPONSE_LEN="${MAX_RESPONSE_LEN:-512}"
@@ -120,6 +160,7 @@ export TASKS N_GPUS_PER_NODE TP_SIZE ROLLOUT_BS GLOBAL_BS VAL_BATCH_SIZE ROLLOUT
 export VAL_BEFORE_TRAIN VAL_FREQ SAVE_FREQ SAVE_BEST SAVE_LIMIT
 export ENABLE_GPU_FILLER POST_TRAIN_OCCUPANCY CHECK_EXPERIMENT_JSONL CHECK_EXPERIMENT_FRAME_FILES MIX_FORCE
 export REUSE_EXISTING_DATA
+export FRAME_SAMPLE_POLICY FRAME_SAMPLE_MAX_FRAMES FRAME_SAMPLE_POLICY_VERSION MAX_FRAMES
 export ROLLOUT_MAX_NUM_SEQS ROLLOUT_MAX_BATCHED_TOKENS MAX_RESPONSE_LEN
 export COT_BUDGET_ENABLED COT_BUDGET_START_TOKEN COT_BUDGET_END_TOKEN COT_BUDGET_MAX_TOKENS
 

@@ -142,7 +142,10 @@ PY
 fi
 
 if [[ "${NEEDS_MIX}" != "true" ]]; then
-    FRAME_POLICY_CHECK="$(
+    if [[ "${REUSE_EXISTING_DATA_EFFECTIVE,,}" =~ ^(true|1|yes)$ ]]; then
+        echo "[multi-task] REUSE_EXISTING_DATA=true; skip frame policy remap check."
+    else
+        FRAME_POLICY_CHECK="$(
 python3 - "${TRAIN_FILE}" "${TEST_FILE}" "${FRAME_SAMPLE_POLICY_EFFECTIVE}" "${FRAME_SAMPLE_MAX_FRAMES_EFFECTIVE}" "${FRAME_SAMPLE_POLICY_VERSION_EFFECTIVE}" <<'PY'
 import json
 import sys
@@ -177,9 +180,10 @@ for label, path in [("train", train_path), ("val", val_path)]:
 print("OK" if not problems else "; ".join(problems))
 PY
 )"
-    if [[ "${FRAME_POLICY_CHECK}" != "OK" ]]; then
-        NEEDS_MIX=true
-        MIX_REASON="frame policy mismatch: ${FRAME_POLICY_CHECK}"
+        if [[ "${FRAME_POLICY_CHECK}" != "OK" ]]; then
+            NEEDS_MIX=true
+            MIX_REASON="frame policy mismatch: ${FRAME_POLICY_CHECK}"
+        fi
     fi
 fi
 

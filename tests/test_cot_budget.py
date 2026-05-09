@@ -258,6 +258,10 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert "check_cot_budget_rollout.py" in helper
     assert '--tokenizer "${MODEL_PATH}"' in helper
     assert "--require-start" in helper
+    assert "Inherited frame policy" in helper
+    assert 'FRAME_SAMPLE_POLICY="${FRAME_SAMPLE_POLICY:-${_SOURCE_FRAME_SAMPLE_POLICY}}"' in helper
+    assert 'FRAME_SAMPLE_MAX_FRAMES="${FRAME_SAMPLE_MAX_FRAMES:-${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}}"' in helper
+    assert 'MAX_FRAMES="${MAX_FRAMES:-${_SOURCE_FRAME_SAMPLE_MAX_FRAMES}}"' in helper
 
     for dirname, (size, model_name) in model_specs.items():
         base = Path("video_proxy/experiments/teacher_train") / dirname
@@ -282,3 +286,4 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
 
     assert 'REUSE_EXISTING_DATA=${REUSE_EXISTING_DATA_EFFECTIVE}' in runner
     assert 'REUSE_EXISTING_DATA_EFFECTIVE' in runner and "missing train/val experiment JSONL" in runner
+    assert "skip frame policy remap check" in runner
