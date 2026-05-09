@@ -237,24 +237,44 @@ def test_rollout_checker_can_count_cot_span_with_tokenizer(tmp_path: Path):
     assert summary.over_budget == 1
 
 
-def test_qwen3_cot_2gpu_launcher_converts_data_and_enables_budget_check():
-    launcher = Path("video_proxy/experiments/teacher_train/qwen3_vl_4b/run_cot_2gpu.sh").read_text()
-    launcher_8b = Path("video_proxy/experiments/teacher_train/qwen3_vl_8b/run_cot_2gpu.sh").read_text()
+def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
+    model_specs = {
+        "qwen3_vl_4b": ("4b", "Qwen3-VL-4B-Instruct"),
+        "qwen3_vl_8b": ("8b", "Qwen3-VL-8B-Instruct"),
+    }
+    teacher_specs = {
+        "aot": ("composition_base_aot_aot10k_mf256_ema", 'TASKS="${TASKS:-tg mcq aot}"'),
+        "seg": ("composition_base_seg_hier10k_mf256_ema", 'TASKS="${TASKS:-tg mcq hier_seg}"'),
+        "logic": ("composition_base_logic_el10k_mf256_ema", 'TASKS="${TASKS:-tg mcq event_logic}"'),
+    }
     runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
+    helper = Path("video_proxy/training/recipes/single_teacher_from_experiment.sh").read_text()
 
-    assert "convert_jsonl_to_cot.py" in launcher
-    assert "--sample-prompts" in launcher
-    assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"' in launcher
-    assert 'COT_BUDGET_ENABLED="${COT_BUDGET_ENABLED:-true}"' in launcher
-    assert 'REUSE_EXISTING_DATA="${REUSE_EXISTING_DATA:-true}"' in launcher
-    assert "check_cot_budget_rollout.py" in launcher
-    assert "--require-start" in launcher
-    assert '--tokenizer "${MODEL_PATH}"' in launcher
-    assert 'MODEL_SIZE="8b"' in launcher_8b
-    assert 'SOURCE_EXP_NAME="${SOURCE_EXP_NAME:-composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema}"' in launcher
-    assert 'SOURCE_EXP_NAME="${SOURCE_EXP_NAME:-composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema}"' in launcher_8b
-    assert 'Qwen3-VL-8B-Instruct' in launcher_8b
-    assert "--require-start" in launcher_8b
-    assert '--tokenizer "${MODEL_PATH}"' in launcher_8b
+    assert "convert_jsonl_to_cot.py" in helper
+    assert "check_cot_budget_rollout.py" in helper
+    assert '--tokenizer "${MODEL_PATH}"' in helper
+    assert "--require-start" in helper
+
+    for dirname, (size, model_name) in model_specs.items():
+        base = Path("video_proxy/experiments/teacher_train") / dirname
+        assert not (base / "run_cot_2gpu.sh").exists()
+        for teacher, (source_exp, task_line) in teacher_specs.items():
+            nocot = (base / f"run_{teacher}_nocot.sh").read_text()
+            cot = (base / f"run_{teacher}_cot.sh").read_text()
+
+            assert f'MODEL_SIZE="{size}"' in nocot
+            assert model_name in nocot
+            assert task_line in nocot
+            assert f'SOURCE_EXP_NAME="${{SOURCE_EXP_NAME:-{source_exp}}}"' in nocot
+            assert 'COT_MODE="${COT_MODE:-false}"' in nocot
+            assert "single_teacher_from_experiment.sh" in nocot
+
+            assert f'MODEL_SIZE="{size}"' in cot
+            assert model_name in cot
+            assert task_line in cot
+            assert f'SOURCE_EXP_NAME="${{SOURCE_EXP_NAME:-{source_exp}}}"' in cot
+            assert 'COT_MODE="${COT_MODE:-true}"' in cot
+            assert "single_teacher_from_experiment.sh" in cot
+
     assert 'REUSE_EXISTING_DATA=${REUSE_EXISTING_DATA_EFFECTIVE}' in runner
     assert 'REUSE_EXISTING_DATA_EFFECTIVE' in runner and "missing train/val experiment JSONL" in runner
