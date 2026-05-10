@@ -46,6 +46,12 @@ COT_BUDGET_ENABLED="${COT_BUDGET_ENABLED:-false}"
 COT_BUDGET_START_TOKEN="${COT_BUDGET_START_TOKEN:-<think>}"
 COT_BUDGET_END_TOKEN="${COT_BUDGET_END_TOKEN:-</think>}"
 COT_BUDGET_MAX_TOKENS="${COT_BUDGET_MAX_TOKENS:-0}"
+REWARD_KWARGS_ARGS=()
+if [[ "${COT_FORMAT_REWARD_ENABLED}" == "true" ]]; then
+    REWARD_KWARGS_ARGS+=(
+        worker.reward.reward_function_kwargs="{\"cot_format_reward_enabled\":true,\"cot_format_truncated\":${COT_FORMAT_REWARD_TRUNCATED},\"cot_format_ok\":${COT_FORMAT_REWARD_OK}}"
+    )
+fi
 
 echo "[multi-task] EXP_NAME=${EXP_NAME}"
 echo "[multi-task] TRAIN_FILE=${TRAIN_FILE}"
@@ -62,6 +68,8 @@ echo "[multi-task] TASK_HOMOGENEOUS_BATCHING=${TASK_HOMOGENEOUS_BATCHING}"
 echo "[multi-task] TASK_HOMOGENEOUS_GROUPING=${TASK_HOMOGENEOUS_GROUPING}"
 echo "[multi-task] TRAINING_MODE=${TRAINING_MODE} ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 echo "[multi-task] COT_BUDGET_ENABLED=${COT_BUDGET_ENABLED} COT_BUDGET_START_TOKEN=${COT_BUDGET_START_TOKEN} COT_BUDGET_END_TOKEN=${COT_BUDGET_END_TOKEN} COT_BUDGET_MAX_TOKENS=${COT_BUDGET_MAX_TOKENS}"
+echo "[multi-task] ONLINE_FILTERING=${ONLINE_FILTERING} FILTER_KEY=${FILTER_KEY} FILTER_LOW=${FILTER_LOW} FILTER_HIGH=${FILTER_HIGH}"
+echo "[multi-task] COT_FORMAT_REWARD_ENABLED=${COT_FORMAT_REWARD_ENABLED} COT_FORMAT_REWARD_TRUNCATED=${COT_FORMAT_REWARD_TRUNCATED} COT_FORMAT_REWARD_OK=${COT_FORMAT_REWARD_OK}"
 if [[ "${TRAINING_MODE}" == "opd" ]]; then
     echo "[multi-task] OPD_TOPK=${OPD_TOPK} OPD_KL_COEF=${OPD_KL_COEF}"
 fi
@@ -420,6 +428,7 @@ python3 -m verl.trainer.main \
     algorithm.opd_topk="${OPD_TOPK}" \
     algorithm.opd_kl_coef="${OPD_KL_COEF}" \
     algorithm.online_filtering="${ONLINE_FILTERING}" \
+    algorithm.filter_key="${FILTER_KEY}" \
     algorithm.filter_low="${FILTER_LOW}" \
     algorithm.filter_high="${FILTER_HIGH}" \
     worker.actor.global_batch_size="${GLOBAL_BS}" \
@@ -454,6 +463,7 @@ python3 -m verl.trainer.main \
     worker.rollout.cot_budget_max_tokens="${COT_BUDGET_MAX_TOKENS}" \
     worker.reward.reward_function="${REWARD_FUNCTION}" \
     worker.reward.reward_type=batch \
+    "${REWARD_KWARGS_ARGS[@]}" \
     trainer.project_name="${PROJECT_NAME}" \
     trainer.experiment_name="${EXP_NAME}" \
     trainer.n_gpus_per_node="${N_GPUS_PER_NODE}" \

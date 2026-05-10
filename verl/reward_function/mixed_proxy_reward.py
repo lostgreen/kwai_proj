@@ -236,6 +236,52 @@ def _seg_f1_iou_fallback(response: str, ground_truth: str) -> Dict[str, float]:
     return {"overall": float(f1_reward), "format": 0.0, "accuracy": float(f1_reward)}
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _cot_format_reward(
+    cot_budget_debug: Any,
+    *,
+    truncated_reward: float,
+    ok_reward: float,
+) -> float:
+    if not isinstance(cot_budget_debug, dict):
+        return float(ok_reward)
+    if not bool(cot_budget_debug.get("cot_budget_enabled", False)):
+        return float(ok_reward)
+    if bool(cot_budget_debug.get("cot_repaired", False)):
+        return float(truncated_reward)
+    return float(ok_reward)
+
+
+def _apply_cot_format_reward(
+    score: Dict[str, float],
+    cot_budget_debug: Any,
+    *,
+    enabled: bool,
+    truncated_reward: float,
+    ok_reward: float,
+) -> Dict[str, float]:
+    if not enabled:
+        return score
+
+    shaped = dict(score)
+    base_overall = _safe_float(shaped.get("overall", shaped.get("accuracy", 0.0)))
+    cot_format = _cot_format_reward(
+        cot_budget_debug,
+        truncated_reward=truncated_reward,
+        ok_reward=ok_reward,
+    )
+    shaped["overall_base"] = base_overall
+    shaped["cot_format"] = cot_format
+    shaped["overall"] = base_overall * cot_format
+    return shaped
+
+
 
 # ===================================================================
 # ④ 统一 dispatch 入口 (EasyR1 batch reward 接口)
@@ -278,6 +324,9 @@ _TASK_REWARD_DISPATCH = {
 
 def compute_score(
     reward_inputs: List[Dict[str, Any]],
+    cot_format_reward_enabled: bool = False,
+    cot_format_truncated: float = 0.5,
+    cot_format_ok: float = 1.0,
     **kwargs,
 ) -> List[Dict[str, float]]:
     """
@@ -316,7 +365,15 @@ def compute_score(
             if problem_type == "temporal_grounding":
                 metadata = item.get("metadata") or {}
                 score = temporal_grounding_reward(response, ground_truth, metadata)
-                results.append(score)
+                results.append(
+                    _apply_cot_format_reward(
+                        score,
+                        item.get("cot_budget_debug"),
+                        enabled=cot_format_reward_enabled,
+                        truncated_reward=cot_format_truncated,
+                        ok_reward=cot_format_ok,
+                    )
+                )
                 continue
 
             if reward_fn is None:
@@ -333,7 +390,15 @@ def compute_score(
                     reward_fn = _choice_reward
 
             score = reward_fn(response, ground_truth)
-            results.append(score)
+            results.append(
+                _apply_cot_format_reward(
+                    score,
+                    item.get("cot_budget_debug"),
+                    enabled=cot_format_reward_enabled,
+                    truncated_reward=cot_format_truncated,
+                    ok_reward=cot_format_ok,
+                )
+            )
 
         except Exception:
             # 防止单样本异常影响整个 batch

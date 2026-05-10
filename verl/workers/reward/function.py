@@ -18,7 +18,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from functools import partial
-from typing import Callable, Optional, Tuple, TypedDict
+from typing import Any, Callable, Optional, Tuple, TypedDict
 
 import torch
 from transformers import PreTrainedTokenizer
@@ -28,10 +28,16 @@ from .config import RewardConfig
 from .metrics import build_dense_reward_metrics, coerce_reward_metric
 
 
-class RewardInput(TypedDict):
+class RewardInput(TypedDict, total=False):
     response: str
     response_length: int
     ground_truth: str
+    data_type: str
+    problem_type: str
+    problem: Optional[str]
+    problem_id: Optional[str]
+    metadata: Any
+    cot_budget_debug: Any
 
 
 class RewardScore(TypedDict):
@@ -113,6 +119,7 @@ class BatchFunctionRewardManager(FunctionRewardManager):
         reward_inputs = []
         response_ids = data.batch["responses"]
         response_length = torch.sum(data.batch["response_mask"], dim=-1)
+        cot_budget_debug = data.non_tensor_batch.get("cot_budget_debug", [None] * len(data))
         for i in range(len(data)):
             cur_response_length = int(response_length[i].item())  # avoid tensor indexing error
             valid_response_ids = response_ids[i][:cur_response_length]
@@ -131,6 +138,7 @@ class BatchFunctionRewardManager(FunctionRewardManager):
                     "problem": data.non_tensor_batch.get("problem_reserved_text", [None]*len(data))[i],
                     "problem_id": data.non_tensor_batch.get("problem_id", [None]*len(data))[i],
                     "metadata": data.non_tensor_batch.get("metadata", [None]*len(data))[i],
+                    "cot_budget_debug": cot_budget_debug[i],
                 }
             )
 

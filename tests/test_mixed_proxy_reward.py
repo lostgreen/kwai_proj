@@ -56,3 +56,83 @@ def test_choice_reward_accepts_tagged_six_way_event_logic_answer():
     ])
 
     assert scores == [{"overall": 1.0, "format": 1.0, "accuracy": 1.0}]
+
+
+def test_cot_format_reward_penalizes_repaired_correct_answer_without_changing_accuracy():
+    scores = compute_score(
+        [
+            {
+                "response": "<answer>A</answer>",
+                "ground_truth": "A",
+                "problem_type": "event_logic_predict_next",
+                "data_type": "video",
+                "cot_budget_debug": {
+                    "cot_budget_enabled": True,
+                    "cot_repaired": True,
+                },
+            }
+        ],
+        cot_format_reward_enabled=True,
+        cot_format_truncated=0.5,
+        cot_format_ok=1.0,
+    )
+
+    assert scores == [
+        {
+            "overall": 0.5,
+            "format": 1.0,
+            "accuracy": 1.0,
+            "overall_base": 1.0,
+            "cot_format": 0.5,
+        }
+    ]
+
+
+def test_cot_format_reward_keeps_unrepaired_correct_answer_at_full_reward():
+    scores = compute_score(
+        [
+            {
+                "response": "<answer>B</answer>",
+                "ground_truth": "B",
+                "problem_type": "event_logic_fill_blank",
+                "data_type": "video",
+                "cot_budget_debug": {
+                    "cot_budget_enabled": True,
+                    "cot_repaired": False,
+                },
+            }
+        ],
+        cot_format_reward_enabled=True,
+        cot_format_truncated=0.5,
+        cot_format_ok=1.0,
+    )
+
+    assert scores[0]["overall"] == 1.0
+    assert scores[0]["accuracy"] == 1.0
+    assert scores[0]["overall_base"] == 1.0
+    assert scores[0]["cot_format"] == 1.0
+
+
+def test_cot_format_reward_does_not_give_wrong_answers_positive_reward():
+    scores = compute_score(
+        [
+            {
+                "response": "<answer>C</answer>",
+                "ground_truth": "D",
+                "problem_type": "event_logic_fill_blank",
+                "data_type": "video",
+                "cot_budget_debug": {
+                    "cot_budget_enabled": True,
+                    "cot_repaired": False,
+                },
+            }
+        ],
+        cot_format_reward_enabled=True,
+        cot_format_truncated=0.5,
+        cot_format_ok=1.0,
+    )
+
+    assert scores[0]["overall"] == 0.0
+    assert scores[0]["accuracy"] == 0.0
+    assert scores[0]["overall_base"] == 0.0
+    assert scores[0]["cot_format"] == 1.0
