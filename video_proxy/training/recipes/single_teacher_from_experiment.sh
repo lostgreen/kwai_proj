@@ -119,10 +119,23 @@ N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"
 TP_SIZE="${TP_SIZE:-1}"
 ROLLOUT_BS="${ROLLOUT_BS:-}"
 if [[ -z "${ROLLOUT_BS}" ]]; then
-    ROLLOUT_BS="$((N_GPUS_PER_NODE * 4))"
+    if [[ "${N_GPUS_PER_NODE}" == "8" ]]; then
+        ROLLOUT_BS=64
+    else
+        ROLLOUT_BS="$((N_GPUS_PER_NODE * 4))"
+    fi
 fi
 GLOBAL_BS="${GLOBAL_BS:-${ROLLOUT_BS}}"
-VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-${GLOBAL_BS}}"
+VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-}"
+if [[ -z "${VAL_BATCH_SIZE}" ]]; then
+    if [[ "${N_GPUS_PER_NODE}" == "2" ]]; then
+        VAL_BATCH_SIZE=32
+    elif [[ "${N_GPUS_PER_NODE}" == "8" ]]; then
+        VAL_BATCH_SIZE=128
+    else
+        VAL_BATCH_SIZE="${GLOBAL_BS}"
+    fi
+fi
 ROLLOUT_N="${ROLLOUT_N:-8}"
 ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"
 LR="${LR:-5e-7}"
