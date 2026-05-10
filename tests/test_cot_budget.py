@@ -415,8 +415,55 @@ def test_vllm_rollout_wires_cot_processor_into_sampling_params():
     assert "from vllm import LLM, RequestOutput, SamplingParams" not in source
     assert '"logits_processors"' not in source
     assert "_generate_with_cot_budget" in source
+    assert "_repair_cot_budget_from_text" in source
     assert "cot_budget_debug" in source
     assert "cot_budget_debug" in trainer_source
+
+
+def test_vllm_text_fallback_repairs_decoded_thought_when_token_patterns_miss():
+    module_path = Path(__file__).resolve().parents[1] / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py"
+    source = module_path.read_text()
+    module = ast.parse(source)
+    helper_names = {
+        "_cot_text_tag_pairs",
+        "_find_latest_cot_text_start",
+        "_find_earliest_cot_text_end",
+        "_repair_cot_budget_from_text",
+    }
+    helper_module = ast.Module(
+        body=[node for node in module.body if isinstance(node, ast.FunctionDef) and node.name in helper_names],
+        type_ignores=[],
+    )
+    ast.fix_missing_locations(helper_module)
+    namespace = {"Any": object, "Optional": object, "Sequence": object}
+    exec(compile(helper_module, str(module_path), "exec"), namespace)
+
+    class TextTokenizer:
+        response = "<thought>\nabcdefg</thought>\n<answer>A</answer>"
+
+        def decode(self, token_ids, skip_special_tokens=False):
+            assert token_ids == [901, 902, 903]
+            assert skip_special_tokens is False
+            return self.response
+
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            return [ord(ch) for ch in text]
+
+    repaired, status = namespace["_repair_cot_budget_from_text"](
+        TextTokenizer(),
+        [901, 902, 903],
+        start_token="<thought>",
+        end_token="</thought>",
+        max_cot_tokens=5,
+        max_length=512,
+    )
+
+    assert "".join(chr(token_id) for token_id in repaired) == "<thought>\nabcde</thought>"
+    assert status["cot_text_fallback_used"] is True
+    assert status["cot_start_detected"] is True
+    assert status["cot_end_detected"] is True
+    assert status["cot_detection_source"] == "text"
 
 
 def test_vllm_rollout_repairs_cot_budget_and_continues_generation():
@@ -539,6 +586,7 @@ def test_vllm_rollout_records_cot_budget_debug_info_for_repairs():
             "response_index": 0,
             "prompt_index": 0,
             "cot_budget_enabled": True,
+            "cot_text_fallback_used": False,
             "cot_start_detected": True,
             "cot_start_index": 0,
             "cot_start_token_ids": [10],
@@ -556,6 +604,88 @@ def test_vllm_rollout_records_cot_budget_debug_info_for_repairs():
             "max_response_length": 6,
         }
     ]
+
+
+def test_vllm_rollout_uses_text_fallback_when_token_start_is_missed():
+    module_path = Path(__file__).resolve().parents[1] / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py"
+    source = module_path.read_text()
+    tree = ast.parse(source)
+    rollout_cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "vLLMRollout")
+    method = next(node for node in rollout_cls.body if isinstance(node, ast.FunctionDef) and node.name == "_generate_with_cot_budget")
+    helper_module = ast.Module(body=[method], type_ignores=[])
+    ast.fix_missing_locations(helper_module)
+    namespace = {"Any": object, "Optional": object}
+    exec(compile(helper_module, str(module_path), "exec"), namespace)
+    generate_with_cot_budget = namespace["_generate_with_cot_budget"]
+
+    class FakeOutput:
+        def __init__(self, token_ids):
+            self.token_ids = token_ids
+
+    class FakeCompletion:
+        def __init__(self, outputs):
+            self.outputs = [FakeOutput(token_ids) for token_ids in outputs]
+
+    class FakeEngine:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, prompts, sampling_params, use_tqdm):
+            self.calls.append((prompts, sampling_params.max_tokens, use_tqdm))
+            if len(self.calls) == 1:
+                return [FakeCompletion([[901, 902, 903]])]
+            return [FakeCompletion([[301, 302]])]
+
+    class FakeRollout:
+        def __init__(self):
+            self.inference_engine = FakeEngine()
+            self.sampling_params = types.SimpleNamespace(n=1, max_tokens=8)
+            self.use_tqdm = True
+            self.config = types.SimpleNamespace(response_length=8)
+            self.cot_budget_controller = CoTBudgetController(
+                start_token_ids=[10],
+                end_token_ids=[20],
+                max_tokens=2,
+            )
+
+        def _repair_cot_budget_from_text(self, token_ids):
+            assert token_ids == [901, 902, 903]
+            return [101, 102, 20], {
+                "cot_text_fallback_used": True,
+                "cot_detection_source": "text",
+                "cot_start_detected": True,
+                "cot_start_index": -1,
+                "cot_start_text_index": 0,
+                "cot_start_token_ids": None,
+                "cot_end_detected": True,
+                "cot_end_index": -1,
+                "cot_end_text_index": 20,
+                "cot_end_token_ids": [20],
+                "cot_end_pattern_ids": None,
+            }
+
+        def update_sampling_params(self, **kwargs):
+            old_values = {key: getattr(self.sampling_params, key) for key in kwargs}
+
+            class Manager:
+                def __enter__(manager_self):
+                    for key, value in kwargs.items():
+                        setattr(self.sampling_params, key, value)
+
+                def __exit__(manager_self, exc_type, exc, tb):
+                    for key, value in old_values.items():
+                        setattr(self.sampling_params, key, value)
+
+            return Manager()
+
+    rollout = FakeRollout()
+    responses = generate_with_cot_budget(rollout, [{"prompt_token_ids": [1, 2]}])
+
+    assert responses == [[101, 102, 20, 301, 302]]
+    assert rollout.inference_engine.calls[1][0] == [{"prompt_token_ids": [1, 2, 101, 102, 20]}]
+    assert rollout._last_cot_budget_debug[0]["cot_text_fallback_used"] is True
+    assert rollout._last_cot_budget_debug[0]["cot_repaired"] is True
+    assert rollout._last_cot_budget_debug[0]["continuation_token_len"] == 2
 
 
 def test_fsdp_worker_configures_cot_budget_before_lazy_vllm_imports():

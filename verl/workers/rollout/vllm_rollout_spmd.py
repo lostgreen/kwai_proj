@@ -14,7 +14,7 @@
 
 import os
 from contextlib import contextmanager
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -110,6 +110,88 @@ def _process_multi_modal_data(
     return None, None
 
 
+def _cot_text_tag_pairs(start_token: str, end_token: str) -> list[tuple[str, str]]:
+    start_suffixes = ["\n\n", "\r\n", "\n", " ", "\t", ""]
+    pairs = [(start_token + suffix, end_token) for suffix in start_suffixes]
+    aliases = {
+        ("<think>", "</think>"): [("<thought>", "</thought>")],
+        ("<thought>", "</thought>"): [("<think>", "</think>")],
+    }
+    for alias_start, alias_end in aliases.get((start_token, end_token), []):
+        pairs.extend((alias_start + suffix, alias_end) for suffix in start_suffixes)
+    return pairs
+
+
+def _find_latest_cot_text_start(text: str, pairs: list[tuple[str, str]]) -> tuple[int, str, str]:
+    best_idx = -1
+    best_start = ""
+    best_end = ""
+    for start_token, end_token in pairs:
+        idx = text.rfind(start_token)
+        if idx > best_idx or (idx == best_idx and len(start_token) > len(best_start)):
+            best_idx = idx
+            best_start = start_token
+            best_end = end_token
+    return best_idx, best_start, best_end
+
+
+def _find_earliest_cot_text_end(text: str, end_token: str, start: int) -> int:
+    idx = text.find(end_token, max(0, start))
+    return idx
+
+
+def _repair_cot_budget_from_text(
+    tokenizer: PreTrainedTokenizer,
+    token_ids: Sequence[int],
+    *,
+    start_token: str,
+    end_token: str,
+    max_cot_tokens: int,
+    max_length: Optional[int] = None,
+) -> tuple[Optional[list[int]], dict[str, Any]]:
+    try:
+        text = tokenizer.decode(token_ids, skip_special_tokens=False)
+    except Exception:
+        return None, {"cot_text_fallback_used": False}
+
+    pairs = _cot_text_tag_pairs(start_token, end_token)
+    start_text_idx, matched_start, matched_end = _find_latest_cot_text_start(text, pairs)
+    if start_text_idx < 0:
+        return None, {"cot_text_fallback_used": False}
+
+    content_start_text_idx = start_text_idx + len(matched_start)
+    end_text_idx = _find_earliest_cot_text_end(text, matched_end, content_start_text_idx)
+    content_end_text_idx = end_text_idx if end_text_idx >= 0 else len(text)
+    cot_content = text[content_start_text_idx:content_end_text_idx]
+    try:
+        cot_content_ids = tokenizer.encode(cot_content, add_special_tokens=False)
+        prefix_ids = tokenizer.encode(text[:content_start_text_idx], add_special_tokens=False)
+        end_token_ids = tokenizer.encode(matched_end, add_special_tokens=False)
+    except Exception:
+        return None, {"cot_text_fallback_used": False}
+
+    status = {
+        "cot_text_fallback_used": True,
+        "cot_detection_source": "text",
+        "cot_start_detected": True,
+        "cot_start_index": -1,
+        "cot_start_text_index": start_text_idx,
+        "cot_start_token_ids": None,
+        "cot_end_detected": end_text_idx >= 0,
+        "cot_end_index": -1,
+        "cot_end_text_index": end_text_idx,
+        "cot_end_token_ids": end_token_ids,
+        "cot_end_pattern_ids": None,
+    }
+    if end_text_idx >= 0 and len(cot_content_ids) <= max_cot_tokens:
+        return None, status
+
+    repaired = prefix_ids + cot_content_ids[:max_cot_tokens] + end_token_ids
+    if max_length is not None:
+        repaired = repaired[:max_length]
+    return repaired, status
+
+
 class vLLMRollout(BaseRollout):
     def __init__(
         self,
@@ -128,6 +210,7 @@ class vLLMRollout(BaseRollout):
         super().__init__()
         self.rank = int(os.getenv("RANK", "0"))
         self.config = config
+        self.tokenizer = tokenizer
         self.processor = processor
         self.pad_token_id = tokenizer.pad_token_id
         self.use_tqdm = (self.rank == 0) and (not config.disable_tqdm)
@@ -201,6 +284,16 @@ class vLLMRollout(BaseRollout):
         self.sampling_params = SamplingParams(**sampling_kwargs)
         self._last_cot_budget_debug: list[dict[str, Any]] = []
 
+    def _repair_cot_budget_from_text(self, token_ids: Sequence[int]) -> tuple[Optional[list[int]], dict[str, Any]]:
+        return _repair_cot_budget_from_text(
+            self.tokenizer,
+            token_ids,
+            start_token=self.config.cot_budget_start_token,
+            end_token=self.config.cot_budget_end_token,
+            max_cot_tokens=self.cot_budget_controller.max_tokens if self.cot_budget_controller else 0,
+            max_length=self.config.response_length,
+        )
+
     @contextmanager
     def update_sampling_params(self, **kwargs):
         # update sampling params
@@ -246,10 +339,14 @@ class vLLMRollout(BaseRollout):
                     "max_response_length": self.config.response_length,
                 }
                 debug_entry.update(cot_status)
+                debug_entry["cot_text_fallback_used"] = False
                 debug_entry["cot_repaired"] = False
                 repaired = self.cot_budget_controller.repaired_prefix(
                     raw_token_ids, max_length=self.config.response_length
                 )
+                if repaired is None and not debug_entry["cot_start_detected"]:
+                    repaired, text_status = self._repair_cot_budget_from_text(raw_token_ids)
+                    debug_entry.update(text_status)
                 if repaired is not None:
                     response_ids[response_idx] = repaired
                     remaining_tokens = self.config.response_length - len(repaired)
