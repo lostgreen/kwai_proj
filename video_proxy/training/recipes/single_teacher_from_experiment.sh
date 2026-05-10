@@ -80,13 +80,13 @@ if [[ "${COT_MODE,,}" =~ ^(true|1|yes)$ ]]; then
             --sample-prompts "${SAMPLE_PROMPTS_PER_TYPE}" \
             --sample-prompt-max-chars "${SAMPLE_PROMPT_MAX_CHARS}"
     else
-        echo "[single-teacher] Reusing existing CoT train file: ${TRAIN_FILE}"
+        echo "[single-teacher] Reusing existing CoT train file; normalizing in-place: ${TRAIN_FILE}"
         python3 "${REPO_ROOT}/video_proxy/data/scripts/convert_jsonl_to_cot.py" \
-            "${TRAIN_FILE}" "${TRAIN_FILE}.sample_check.jsonl" \
+            "${TRAIN_FILE}" \
+            --in-place \
             --reasoning-tag "${REASONING_TAG}" \
             --sample-prompts "${SAMPLE_PROMPTS_PER_TYPE}" \
             --sample-prompt-max-chars "${SAMPLE_PROMPT_MAX_CHARS}"
-        rm -f "${TRAIN_FILE}.sample_check.jsonl"
     fi
 
     if [[ ! -f "${TEST_FILE}" || "${CONVERT_FORCE,,}" =~ ^(true|1|yes)$ ]]; then
@@ -96,7 +96,13 @@ if [[ "${COT_MODE,,}" =~ ^(true|1|yes)$ ]]; then
             --sample-prompts "${SAMPLE_PROMPTS_PER_TYPE}" \
             --sample-prompt-max-chars "${SAMPLE_PROMPT_MAX_CHARS}"
     else
-        echo "[single-teacher] Reusing existing CoT val file: ${TEST_FILE}"
+        echo "[single-teacher] Reusing existing CoT val file; normalizing in-place: ${TEST_FILE}"
+        python3 "${REPO_ROOT}/video_proxy/data/scripts/convert_jsonl_to_cot.py" \
+            "${TEST_FILE}" \
+            --in-place \
+            --reasoning-tag "${REASONING_TAG}" \
+            --sample-prompts "${SAMPLE_PROMPTS_PER_TYPE}" \
+            --sample-prompt-max-chars "${SAMPLE_PROMPT_MAX_CHARS}"
     fi
 else
     TRAIN_FILE="${SOURCE_TRAIN_FILE}"
@@ -167,6 +173,8 @@ if [[ "${COT_MODE,,}" =~ ^(true|1|yes)$ ]]; then
     COT_BUDGET_START_TOKEN="${COT_BUDGET_START_TOKEN:-<${REASONING_TAG}>}"
     COT_BUDGET_END_TOKEN="${COT_BUDGET_END_TOKEN:-</${REASONING_TAG}>}"
     COT_BUDGET_MAX_TOKENS="${COT_BUDGET_MAX_TOKENS:-128}"
+    COT_FORMAT_REWARD_ENABLED="${COT_FORMAT_REWARD_ENABLED:-true}"
+    COT_FORMAT_REWARD_MISSING="${COT_FORMAT_REWARD_MISSING:-0.0}"
     VLLM_USE_V1="${VLLM_USE_V1:-1}"
 else
     COT_BUDGET_ENABLED="${COT_BUDGET_ENABLED:-false}"

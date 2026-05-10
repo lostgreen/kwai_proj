@@ -59,6 +59,17 @@ _EVENTS_OUTPUT_FORMAT_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _OUTPUT_ONLY_TIMESTAMPS_RULE = "- Output only timestamps, no descriptions."
+_EVENTS_EXAMPLE_PATTERN = re.compile(
+    r"Example:\s*<events>(?P<events>.*?)</events>",
+    re.IGNORECASE | re.DOTALL,
+)
+_LEGACY_EVENTS_COT_INSTRUCTION_PATTERN = re.compile(
+    r"First,?\s+think\s+step\s+by\s+step\s+inside\s+"
+    r"<(?P<tag>think|thought)></(?P=tag)>\s+tags\.\s*"
+    r"Use\s+the\s+visual\s+evidence\s+and\s+timestamps\s+to\s+decide\s+"
+    r"the\s+temporal\s+boundaries\.\s*",
+    re.IGNORECASE | re.DOTALL,
+)
 _STRICT_EVENTS_OUTPUT = (
     "Output format (strictly follow this):\n"
     "<events>\n"
@@ -110,7 +121,13 @@ def _choice_prefix(reasoning_tag: str) -> str:
 def _events_cot_instruction(reasoning_tag: str) -> str:
     return (
         f"First, think step by step inside {_reasoning_token(reasoning_tag)} tags. "
-        "Use the visual evidence and timestamps to decide the temporal boundaries.\n\n"
+        "Use concise visual evidence and timestamps to decide the temporal boundaries.\n"
+        "Inside the reasoning tags, include:\n"
+        "- Shots: sustained visual shot or scene anchors with approximate timestamps.\n"
+        "- Decisions: KEEP/MERGE/SPLIT choices that turn shots into the final segments.\n"
+        "- Partition check: verify the final segments are chronological, non-overlapping, "
+        "gap-free when the task requires full coverage, and cover the requested timeline.\n\n"
+        "Then output the final timestamps after the closing reasoning tag.\n\n"
     )
 
 
@@ -133,6 +150,40 @@ def _tg_cot_suffix(reasoning_tag: str) -> str:
         f" First, think step by step inside {_reasoning_token(reasoning_tag)}, "
         "then give the final sentence only."
     )
+
+
+def _events_cot_example(reasoning_tag: str, events_block: str) -> str:
+    return (
+        "Example:\n"
+        f"<{reasoning_tag}>\n"
+        "The video has five shots: [0,8] oil is poured into a pan, [8,14] white seeds are added, "
+        "[14,22] dark seeds are added in the same pan, [22,34] green leaves are added followed by "
+        "chopped chilies, and [34,42] the ingredients are stirred. Shots [0,8], [8,14], and [14,22] "
+        "are merged into [0,22] because they are consecutive views of one seasoning-base task. "
+        "The shot [22,34] is split into [22,28] and [28,34] because adding leaves and adding chilies "
+        "are distinct actions inside one shot. The shot [34,42] is kept as [34,42] because it is one "
+        "coherent stirring task. The final events are chronological, adjacent, non-overlapping, "
+        "and cover the full 0-42s clip.\n"
+        f"</{reasoning_tag}>\n"
+        "<events>[[0, 22], [22, 28], [28, 34], [34, 42]]</events>"
+    )
+
+
+def _rewrite_events_examples(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
+    new_prompt, count = _EVENTS_EXAMPLE_PATTERN.subn(
+        lambda match: _events_cot_example(reasoning_tag, match.group("events")),
+        prompt,
+    )
+    return new_prompt, count > 0
+
+
+def _upgrade_existing_events_cot_instruction(prompt: str) -> tuple[str, bool]:
+    def replace(match: re.Match[str]) -> str:
+        tag = match.group("tag").lower()
+        return _events_cot_instruction(tag)
+
+    new_prompt, count = _LEGACY_EVENTS_COT_INSTRUCTION_PATTERN.subn(replace, prompt)
+    return new_prompt, count > 0
 
 
 def _choice_replacement(match: re.Match[str], reasoning_tag: str) -> str:
@@ -188,6 +239,8 @@ def _rewrite_choice_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
 
 
 def _rewrite_events_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
+    prompt, example_changed = _rewrite_events_examples(prompt, reasoning_tag)
+
     if _STRICT_EVENTS_OUTPUT in prompt:
         return prompt.replace(_STRICT_EVENTS_OUTPUT, _strict_events_cot(reasoning_tag)).rstrip(), True
 
@@ -205,7 +258,18 @@ def _rewrite_events_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
     if "<events>" in prompt and "Output" in prompt:
         return (prompt.rstrip() + "\n\n" + _events_cot_instruction(reasoning_tag).rstrip()).rstrip(), True
 
-    return prompt, False
+    return prompt.rstrip(), example_changed
+
+
+def _normalize_existing_cot_events_prompt(prompt: str) -> tuple[str, bool]:
+    if "<events>" not in prompt:
+        return prompt, False
+
+    new_prompt, instruction_changed = _upgrade_existing_events_cot_instruction(prompt)
+    tag_match = re.search(r"<(think|thought)></\1>", new_prompt, re.IGNORECASE)
+    reasoning_tag = tag_match.group(1).lower() if tag_match else "think"
+    new_prompt, example_changed = _rewrite_events_examples(new_prompt, reasoning_tag)
+    return new_prompt.rstrip(), instruction_changed or example_changed
 
 
 def _rewrite_tg_natural_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
@@ -238,6 +302,12 @@ def convert_record(record: dict[str, Any], reasoning_tag: str = "think") -> tupl
         return copy.deepcopy(record), False, "missing_prompt"
 
     if _has_cot(prompt):
+        new_prompt, changed = _normalize_existing_cot_events_prompt(prompt)
+        if changed:
+            out = copy.deepcopy(record)
+            out["prompt"] = new_prompt
+            _sync_messages(out, new_prompt)
+            return out, True, "already_cot_events"
         return copy.deepcopy(record), False, "already_cot"
 
     for reason, rewriter in (

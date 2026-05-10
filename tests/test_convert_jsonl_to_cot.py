@@ -154,6 +154,44 @@ def test_rewrite_events_prompt_inserts_cot_before_final_output_instruction():
     assert converted["answer"] == record["answer"]
 
 
+def test_rewrite_shot_first_events_prompt_uses_cot_example_not_final_only_example():
+    prompt = (
+        "<video>\n"
+        "Detect all events in this clip using a SHOT-FIRST approach:\n\n"
+        "STEP 1 — IDENTIFY SHOTS:\n"
+        "Scan the clip for visual shot transitions.\n\n"
+        "STEP 2 — RESTRUCTURE INTO EVENTS using three operations:\n"
+        "- KEEP: A single shot that contains one coherent task becomes one event.\n"
+        "- MERGE: Consecutive shots that belong to the same local task become one event.\n"
+        "- SPLIT: A long single-shot segment that contains multiple distinct tasks should be split.\n\n"
+        "PARTITION RULE: The events must form a non-overlapping, gap-free partition of the full clip timeline.\n\n"
+        "Output the start and end time (integer seconds, 0-based) for each event in chronological order:\n"
+        "<events>[[start_time, end_time], ...]</events>\n\n"
+        "Example: <events>[[0, 42], [42, 68], [68, 90]]</events>"
+    )
+    record = {"prompt": prompt, "answer": "<events>[[0, 42], [42, 68], [68, 90]]</events>"}
+
+    converted, changed, reason = convert_jsonl_to_cot.convert_record(record, reasoning_tag="thought")
+
+    assert changed is True
+    assert reason == "events"
+    assert "First, think step by step inside <thought></thought> tags" in converted["prompt"]
+    example = converted["prompt"].split("Example:", 1)[1]
+    assert "The video has five shots" in example
+    assert "[0,8] oil is poured into a pan" in example
+    assert "[22,34] green leaves are added followed by chopped chilies" in example
+    assert "Shots [0,8], [8,14], and [14,22] are merged into [0,22]" in example
+    assert "The shot [22,34] is split into [22,28] and [28,34]" in example
+    assert "The shot [34,42] is kept as [34,42]" in example
+    assert "cover the full 0-42s clip" in example
+    assert "Example: <events>" not in converted["prompt"]
+    assert "<thought>\nThe video has five shots:" in converted["prompt"]
+    assert "placeholder" not in converted["prompt"].lower()
+    assert "..." not in example
+    assert "\nI " not in example
+    assert "</thought>\n<events>[[0, 22], [22, 28], [28, 34], [34, 42]]</events>" in converted["prompt"]
+
+
 def test_rewrite_generic_events_prompt_inserts_cot_before_output_format_and_scopes_timestamp_rule():
     prompt = (
         "<video>\n"
@@ -251,6 +289,22 @@ def test_convert_jsonl_uses_custom_reasoning_tag(tmp_path: Path):
     assert summary.converted == 1
     assert "<thought></thought>" in written[0]["prompt"]
     assert "<think>" not in written[0]["prompt"]
+
+
+def test_tg_compat_converter_delegates_to_shared_cli():
+    wrapper = (
+        Path(__file__).resolve().parents[1]
+        / "video_proxy"
+        / "data"
+        / "base_sources"
+        / "tg"
+        / "convert_nocot_to_cot.py"
+    )
+
+    source = wrapper.read_text(encoding="utf-8")
+
+    assert "video_proxy.data.scripts.convert_jsonl_to_cot" in source
+    assert "main()" in source
 
 
 def test_collect_prompt_samples_groups_by_problem_type_and_limits_per_type(tmp_path: Path):

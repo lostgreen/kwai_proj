@@ -842,6 +842,7 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     helper = Path("video_proxy/training/recipes/single_teacher_from_experiment.sh").read_text()
 
     assert "convert_jsonl_to_cot.py" in helper
+    assert "--in-place" in helper
     assert "CONVERT_ONLY" in helper
     assert "Data ready:" in helper
     assert 'REASONING_TAG="${REASONING_TAG:-thought}"' in helper
@@ -867,6 +868,9 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert 'ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"' in helper
     assert 'VLLM_USE_V1="${VLLM_USE_V1:-1}"' in helper
     assert "export VLLM_USE_V1" in helper
+    assert 'COT_FORMAT_REWARD_ENABLED="${COT_FORMAT_REWARD_ENABLED:-true}"' in helper
+    assert 'COT_FORMAT_REWARD_MISSING="${COT_FORMAT_REWARD_MISSING:-0.0}"' in helper
+    assert '\\"cot_format_missing\\":${COT_FORMAT_REWARD_MISSING}' in runner
 
     for dirname, (size, model_name) in model_specs.items():
         base = Path("video_proxy/experiments/teacher_train") / dirname

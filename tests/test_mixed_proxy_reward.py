@@ -88,6 +88,39 @@ def test_cot_format_reward_penalizes_repaired_correct_answer_without_changing_ac
     ]
 
 
+def test_cot_format_reward_penalizes_missing_cot_start_on_correct_answer():
+    scores = compute_score(
+        [
+            {
+                "response": "<answer>A</answer>",
+                "ground_truth": "A",
+                "problem_type": "event_logic_predict_next",
+                "data_type": "video",
+                "cot_budget_debug": {
+                    "cot_budget_enabled": True,
+                    "cot_start_detected": False,
+                    "cot_end_detected": False,
+                    "cot_repaired": False,
+                },
+            }
+        ],
+        cot_format_reward_enabled=True,
+        cot_format_missing=0.0,
+        cot_format_truncated=0.5,
+        cot_format_ok=1.0,
+    )
+
+    assert scores == [
+        {
+            "overall": 0.0,
+            "format": 1.0,
+            "accuracy": 1.0,
+            "overall_base": 1.0,
+            "cot_format": 0.0,
+        }
+    ]
+
+
 def test_cot_format_reward_keeps_unrepaired_correct_answer_at_full_reward():
     scores = compute_score(
         [

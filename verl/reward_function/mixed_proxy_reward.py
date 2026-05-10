@@ -246,6 +246,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 def _cot_format_reward(
     cot_budget_debug: Any,
     *,
+    missing_reward: float,
     truncated_reward: float,
     ok_reward: float,
 ) -> float:
@@ -255,6 +256,10 @@ def _cot_format_reward(
         return float(ok_reward)
     if bool(cot_budget_debug.get("cot_repaired", False)):
         return float(truncated_reward)
+    if "cot_start_detected" in cot_budget_debug and not bool(cot_budget_debug.get("cot_start_detected")):
+        return float(missing_reward)
+    if "cot_end_detected" in cot_budget_debug and not bool(cot_budget_debug.get("cot_end_detected")):
+        return float(missing_reward)
     return float(ok_reward)
 
 
@@ -263,6 +268,7 @@ def _apply_cot_format_reward(
     cot_budget_debug: Any,
     *,
     enabled: bool,
+    missing_reward: float,
     truncated_reward: float,
     ok_reward: float,
 ) -> Dict[str, float]:
@@ -273,6 +279,7 @@ def _apply_cot_format_reward(
     base_overall = _safe_float(shaped.get("overall", shaped.get("accuracy", 0.0)))
     cot_format = _cot_format_reward(
         cot_budget_debug,
+        missing_reward=missing_reward,
         truncated_reward=truncated_reward,
         ok_reward=ok_reward,
     )
@@ -325,6 +332,7 @@ _TASK_REWARD_DISPATCH = {
 def compute_score(
     reward_inputs: List[Dict[str, Any]],
     cot_format_reward_enabled: bool = False,
+    cot_format_missing: float = 0.0,
     cot_format_truncated: float = 0.5,
     cot_format_ok: float = 1.0,
     **kwargs,
@@ -370,6 +378,7 @@ def compute_score(
                         score,
                         item.get("cot_budget_debug"),
                         enabled=cot_format_reward_enabled,
+                        missing_reward=cot_format_missing,
                         truncated_reward=cot_format_truncated,
                         ok_reward=cot_format_ok,
                     )
@@ -395,6 +404,7 @@ def compute_score(
                     score,
                     item.get("cot_budget_debug"),
                     enabled=cot_format_reward_enabled,
+                    missing_reward=cot_format_missing,
                     truncated_reward=cot_format_truncated,
                     ok_reward=cot_format_ok,
                 )
