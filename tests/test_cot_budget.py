@@ -23,6 +23,7 @@ CoTBudgetController = cot_budget.CoTBudgetController
 CoTBudgetProcessor = cot_budget.CoTBudgetProcessor
 configure_vllm_engine_for_cot_budget = cot_budget.configure_vllm_engine_for_cot_budget
 make_cot_budget_processor = cot_budget.make_cot_budget_processor
+make_cot_budget_controller = cot_budget.make_cot_budget_controller
 
 
 def test_controller_forces_custom_thought_end_after_budget():
@@ -78,6 +79,56 @@ def test_controller_counts_after_latest_unclosed_start():
 
     assert controller.next_forced_token([10, 100, 20, 999, 10, 101]) is None
     assert controller.next_forced_token([10, 100, 20, 999, 10, 101, 102]) == 20
+
+
+def test_controller_repairs_over_budget_cot_for_vllm_v1_continuation():
+    controller = CoTBudgetController(
+        start_token_ids=[10],
+        end_token_ids=[20, 21],
+        max_tokens=2,
+    )
+
+    assert controller.repaired_prefix([1, 10, 100, 101, 102, 103]) == [1, 10, 100, 101, 20, 21]
+
+
+def test_controller_keeps_closed_in_budget_cot_without_repair():
+    controller = CoTBudgetController(
+        start_token_ids=[10],
+        end_token_ids=[20, 21],
+        max_tokens=2,
+    )
+
+    assert controller.repaired_prefix([1, 10, 100, 101, 20, 21, 300]) is None
+
+
+def test_controller_repairs_cot_that_closes_after_budget():
+    controller = CoTBudgetController(
+        start_token_ids=[10],
+        end_token_ids=[20],
+        max_tokens=2,
+    )
+
+    assert controller.repaired_prefix([1, 10, 100, 101, 102, 20, 300]) == [1, 10, 100, 101, 20]
+
+
+def test_controller_repairs_within_max_length_without_truncating_end_tag():
+    controller = CoTBudgetController(
+        start_token_ids=[10],
+        end_token_ids=[20, 21],
+        max_tokens=4,
+    )
+
+    assert controller.repaired_prefix([1, 10, 100, 101, 102, 103, 104], max_length=5) == [1, 10, 100, 20, 21]
+
+
+def test_controller_repair_never_exceeds_max_length():
+    controller = CoTBudgetController(
+        start_token_ids=[10],
+        end_token_ids=[20, 21],
+        max_tokens=4,
+    )
+
+    assert controller.repaired_prefix([10, 100, 101], max_length=1) == [20]
 
 
 def test_processor_masks_logits_to_forced_token():
@@ -148,12 +199,44 @@ def test_make_processor_uses_configurable_tags():
     assert tokenizer.calls == [("<thought>", False), ("</thought>", False)]
 
 
-def test_cot_budget_forces_vllm_v0_before_engine_import(monkeypatch):
+def test_make_controller_uses_configurable_tags():
+    tokenizer = _FakeTokenizer()
+
+    controller = make_cot_budget_controller(
+        tokenizer,
+        start_token="<thought>",
+        end_token="</thought>",
+        max_tokens=8,
+    )
+
+    assert controller.start_token_ids == [30, 31]
+    assert controller.end_token_ids == [40, 41]
+    assert controller.max_tokens == 8
+    assert tokenizer.calls == [("<thought>", False), ("</thought>", False)]
+
+
+def test_cot_budget_preserves_vllm_v1_before_engine_import(monkeypatch):
     monkeypatch.setenv("VLLM_USE_V1", "1")
 
     configure_vllm_engine_for_cot_budget(True)
 
-    assert os.environ["VLLM_USE_V1"] == "0"
+    assert os.environ["VLLM_USE_V1"] == "1"
+
+
+def test_cot_budget_selects_vllm_v1_when_env_is_unset(monkeypatch):
+    monkeypatch.delenv("VLLM_USE_V1", raising=False)
+
+    configure_vllm_engine_for_cot_budget(True)
+
+    assert os.environ["VLLM_USE_V1"] == "1"
+
+
+def test_cot_budget_overrides_legacy_vllm_v0_env(monkeypatch):
+    monkeypatch.setenv("VLLM_USE_V1", "0")
+
+    configure_vllm_engine_for_cot_budget(True)
+
+    assert os.environ["VLLM_USE_V1"] == "1"
 
 
 def test_rollout_config_defaults_disable_cot_budget():
@@ -175,11 +258,76 @@ def test_rollout_config_defaults_disable_cot_budget():
 def test_vllm_rollout_wires_cot_processor_into_sampling_params():
     source = (Path(__file__).resolve().parents[1] / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py").read_text()
 
-    assert "make_cot_budget_processor" in source
+    assert "make_cot_budget_controller" in source
     assert "cot_budget_enabled" in source
     assert "configure_vllm_engine_for_cot_budget(config.cot_budget_enabled)" in source
     assert "from vllm import LLM, RequestOutput, SamplingParams" not in source
-    assert '"logits_processors"' in source
+    assert '"logits_processors"' not in source
+    assert "_generate_with_cot_budget" in source
+
+
+def test_vllm_rollout_repairs_cot_budget_and_continues_generation():
+    module_path = Path(__file__).resolve().parents[1] / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py"
+    source = module_path.read_text()
+    tree = ast.parse(source)
+    rollout_cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "vLLMRollout")
+    method = next(node for node in rollout_cls.body if isinstance(node, ast.FunctionDef) and node.name == "_generate_with_cot_budget")
+    helper_module = ast.Module(body=[method], type_ignores=[])
+    ast.fix_missing_locations(helper_module)
+    namespace = {"Any": object, "Optional": object}
+    exec(compile(helper_module, str(module_path), "exec"), namespace)
+    generate_with_cot_budget = namespace["_generate_with_cot_budget"]
+
+    class FakeOutput:
+        def __init__(self, token_ids):
+            self.token_ids = token_ids
+
+    class FakeCompletion:
+        def __init__(self, outputs):
+            self.outputs = [FakeOutput(token_ids) for token_ids in outputs]
+
+    class FakeEngine:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, prompts, sampling_params, use_tqdm):
+            self.calls.append((prompts, sampling_params.max_tokens, use_tqdm))
+            if len(self.calls) == 1:
+                return [FakeCompletion([[10, 100, 101, 102, 103]])]
+            return [FakeCompletion([[201, 202, 203]])]
+
+    class FakeRollout:
+        def __init__(self):
+            self.inference_engine = FakeEngine()
+            self.sampling_params = types.SimpleNamespace(n=1, max_tokens=8)
+            self.use_tqdm = True
+            self.config = types.SimpleNamespace(response_length=8)
+            self.cot_budget_controller = CoTBudgetController(
+                start_token_ids=[10],
+                end_token_ids=[20],
+                max_tokens=2,
+            )
+
+        def update_sampling_params(self, **kwargs):
+            old_values = {key: getattr(self.sampling_params, key) for key in kwargs}
+
+            class Manager:
+                def __enter__(manager_self):
+                    for key, value in kwargs.items():
+                        setattr(self.sampling_params, key, value)
+
+                def __exit__(manager_self, exc_type, exc, tb):
+                    for key, value in old_values.items():
+                        setattr(self.sampling_params, key, value)
+
+            return Manager()
+
+    rollout = FakeRollout()
+    responses = generate_with_cot_budget(rollout, [{"prompt_token_ids": [1, 2]}])
+
+    assert responses == [[10, 100, 101, 20, 201, 202, 203]]
+    assert rollout.inference_engine.calls[1][0] == [{"prompt_token_ids": [1, 2, 10, 100, 101, 20]}]
+    assert rollout.inference_engine.calls[1][1] == 4
 
 
 def test_fsdp_worker_configures_cot_budget_before_lazy_vllm_imports():
@@ -263,7 +411,7 @@ def test_multi_task_launcher_exposes_cot_budget_flags():
     assert 'worker.rollout.cot_budget_start_token="${COT_BUDGET_START_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_end_token="${COT_BUDGET_END_TOKEN}"' in source
     assert 'worker.rollout.cot_budget_max_tokens="${COT_BUDGET_MAX_TOKENS}"' in source
-    assert 'runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "0")' in trainer_source
+    assert 'runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "1")' in trainer_source
 
 
 def test_rollout_checker_counts_closed_and_over_budget_cot_spans(tmp_path: Path):
@@ -356,7 +504,7 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert 'LR="${LR:-5e-7}"' in helper
     assert 'KL_COEF="${KL_COEF:-0.01}"' in helper
     assert 'ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"' in helper
-    assert 'VLLM_USE_V1="${VLLM_USE_V1:-0}"' in helper
+    assert 'VLLM_USE_V1="${VLLM_USE_V1:-1}"' in helper
     assert "export VLLM_USE_V1" in helper
 
     for dirname, (size, model_name) in model_specs.items():

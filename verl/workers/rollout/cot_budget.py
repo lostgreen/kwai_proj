@@ -77,6 +77,32 @@ class CoTBudgetController:
 
         return None
 
+    def repaired_prefix(self, token_ids: Sequence[int], max_length: Optional[int] = None) -> Optional[list[int]]:
+        """Return a budget-compliant prefix with a closed CoT span, if repair is needed."""
+
+        start_idx = _find_last_subsequence(token_ids, self.start_token_ids)
+        if start_idx < 0:
+            return None
+
+        content_start = start_idx + len(self.start_token_ids)
+        end_idx = _find_subsequence(token_ids, self.end_token_ids, start=content_start)
+        if end_idx >= 0 and end_idx - content_start <= self.max_tokens:
+            return None
+
+        budgeted_content_end = min(content_start + self.max_tokens, len(token_ids))
+        if max_length is not None:
+            if max_length <= 0:
+                return []
+            if max_length < len(self.end_token_ids):
+                return list(self.end_token_ids[:max_length])
+            available_content_tokens = max_length - content_start - len(self.end_token_ids)
+            if available_content_tokens < 0:
+                return list(token_ids[: max_length - len(self.end_token_ids)]) + list(self.end_token_ids)
+            budgeted_content_end = min(budgeted_content_end, content_start + available_content_tokens)
+
+        content_end = budgeted_content_end
+        return list(token_ids[:content_end]) + list(self.end_token_ids)
+
     def _close_prefix_len(self, generated_after_start: Sequence[int]) -> int:
         max_prefix_len = min(len(generated_after_start), len(self.end_token_ids) - 1)
         for prefix_len in range(max_prefix_len, 0, -1):
@@ -118,7 +144,23 @@ class CoTBudgetProcessor:
 
 def configure_vllm_engine_for_cot_budget(cot_budget_enabled: bool) -> None:
     if cot_budget_enabled:
-        os.environ["VLLM_USE_V1"] = "0"
+        os.environ["VLLM_USE_V1"] = "1"
+
+
+def make_cot_budget_controller(
+    tokenizer: Any,
+    *,
+    start_token: str,
+    end_token: str,
+    max_tokens: int,
+) -> CoTBudgetController:
+    start_token_ids = tokenizer.encode(start_token, add_special_tokens=False)
+    end_token_ids = tokenizer.encode(end_token, add_special_tokens=False)
+    return CoTBudgetController(
+        start_token_ids=start_token_ids,
+        end_token_ids=end_token_ids,
+        max_tokens=max_tokens,
+    )
 
 
 def make_cot_budget_processor(
@@ -128,12 +170,11 @@ def make_cot_budget_processor(
     end_token: str,
     max_tokens: int,
 ) -> CoTBudgetProcessor:
-    start_token_ids = tokenizer.encode(start_token, add_special_tokens=False)
-    end_token_ids = tokenizer.encode(end_token, add_special_tokens=False)
     return CoTBudgetProcessor(
-        CoTBudgetController(
-            start_token_ids=start_token_ids,
-            end_token_ids=end_token_ids,
+        make_cot_budget_controller(
+            tokenizer,
+            start_token=start_token,
+            end_token=end_token,
             max_tokens=max_tokens,
         )
     )

@@ -123,7 +123,7 @@ def main():
             "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
         }
         if ppo_config.worker.rollout.cot_budget_enabled:
-            runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "0")
+            runtime_env_vars["VLLM_USE_V1"] = os.environ.get("VLLM_USE_V1", "1")
         if os.environ.get("VERL_TIMING_LOG_TO_FILE", "").lower() in {"1", "true", "yes"}:
             runtime_env_vars["VERL_TIMING_LOG_TO_FILE"] = "true"
             runtime_env_vars["VERL_TIMING_LOG_DIR"] = os.environ.get(

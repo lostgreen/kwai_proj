@@ -28,7 +28,7 @@ from ...utils.dataset import process_image, process_video
 from ...utils.torch_dtypes import PrecisionType
 from .base import BaseRollout
 from .config import RolloutConfig
-from .cot_budget import configure_vllm_engine_for_cot_budget, make_cot_budget_processor
+from .cot_budget import CoTBudgetController, configure_vllm_engine_for_cot_budget, make_cot_budget_controller
 
 
 def _repeat_interleave(value: Union[torch.Tensor, np.ndarray, list], repeats: int) -> Union[torch.Tensor, np.ndarray, list]:
@@ -166,22 +166,22 @@ class vLLMRollout(BaseRollout):
         except AssertionError:
             pass
 
+        self.cot_budget_controller: Optional[CoTBudgetController] = None
+        if config.cot_budget_enabled:
+            if config.cot_budget_max_tokens <= 0:
+                raise ValueError("worker.rollout.cot_budget_max_tokens must be positive when cot_budget_enabled=true.")
+            self.cot_budget_controller = make_cot_budget_controller(
+                tokenizer,
+                start_token=config.cot_budget_start_token,
+                end_token=config.cot_budget_end_token,
+                max_tokens=config.cot_budget_max_tokens,
+            )
+
         sampling_kwargs = {
             "max_tokens": config.response_length,
             "detokenize": False,
             "logit_bias": _get_logit_bias(processor),
         }
-        if config.cot_budget_enabled:
-            if config.cot_budget_max_tokens <= 0:
-                raise ValueError("worker.rollout.cot_budget_max_tokens must be positive when cot_budget_enabled=true.")
-            sampling_kwargs["logits_processors"] = [
-                make_cot_budget_processor(
-                    tokenizer,
-                    start_token=config.cot_budget_start_token,
-                    end_token=config.cot_budget_end_token,
-                    max_tokens=config.cot_budget_max_tokens,
-                )
-            ]
         default_sampling_params = SamplingParams()
         for key in config.to_dict().keys():
             if hasattr(default_sampling_params, key):
@@ -205,6 +205,53 @@ class vLLMRollout(BaseRollout):
         # roll back to previous sampling params
         for key, value in old_sampling_params_args.items():
             setattr(self.sampling_params, key, value)
+
+    def _generate_with_cot_budget(self, vllm_inputs: list[dict[str, Any]]) -> list[list[int]]:
+        completions = self.inference_engine.generate(
+            prompts=vllm_inputs, sampling_params=self.sampling_params, use_tqdm=self.use_tqdm
+        )
+        response_ids = [list(output.token_ids) for completion in completions for output in completion.outputs]
+        if self.cot_budget_controller is None:
+            return response_ids
+
+        continuation_requests: list[tuple[int, dict[str, Any], int]] = []
+        response_idx = 0
+        for prompt_idx, completion in enumerate(completions):
+            for output in completion.outputs:
+                repaired = self.cot_budget_controller.repaired_prefix(
+                    output.token_ids, max_length=self.config.response_length
+                )
+                if repaired is not None:
+                    response_ids[response_idx] = repaired
+                    remaining_tokens = self.config.response_length - len(repaired)
+                    if remaining_tokens > 0:
+                        continuation_input = dict(vllm_inputs[prompt_idx])
+                        continuation_input["prompt_token_ids"] = (
+                            list(vllm_inputs[prompt_idx]["prompt_token_ids"]) + repaired
+                        )
+                        continuation_requests.append((response_idx, continuation_input, remaining_tokens))
+                response_idx += 1
+
+        if not continuation_requests:
+            return response_ids
+
+        max_remaining_tokens = max(remaining_tokens for _, _, remaining_tokens in continuation_requests)
+        continuation_inputs = [request for _, request, _ in continuation_requests]
+        with self.update_sampling_params(n=1, max_tokens=max_remaining_tokens):
+            continuations = self.inference_engine.generate(
+                prompts=continuation_inputs,
+                sampling_params=self.sampling_params,
+                use_tqdm=False,
+            )
+
+        for (response_idx, _, remaining_tokens), continuation in zip(continuation_requests, continuations):
+            if continuation.outputs:
+                continuation_ids = list(continuation.outputs[0].token_ids)[:remaining_tokens]
+                response_ids[response_idx] = (
+                    response_ids[response_idx] + continuation_ids
+                )[: self.config.response_length]
+
+        return response_ids
 
     @torch.no_grad()
     def generate_sequences(self, prompts: DataProto) -> DataProto:
@@ -252,15 +299,12 @@ class vLLMRollout(BaseRollout):
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**prompts.meta_info):
-            completions = self.inference_engine.generate(
-                prompts=vllm_inputs, sampling_params=self.sampling_params, use_tqdm=self.use_tqdm
-            )
+            generated_response_ids = self._generate_with_cot_budget(vllm_inputs)
             _t2 = _time.time()
             tlog(f"[vllm][rank={_rank}] engine.generate: {_t2 - _t1:.2f}s")
 
-            response_ids = [output.token_ids for completion in completions for output in completion.outputs]
             response_ids = VF.pad_2d_list_to_length(
-                response_ids, self.pad_token_id, max_length=self.config.response_length
+                generated_response_ids, self.pad_token_id, max_length=self.config.response_length
             ).to(input_ids.device)
 
             if self.sampling_params.n > 1:
