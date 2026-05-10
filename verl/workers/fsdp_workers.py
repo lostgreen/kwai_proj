@@ -63,6 +63,15 @@ from .sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 from .teacher_routing import resolve_opd_teacher_name
 
 
+def _get_processor_patch_size(processor) -> int:
+    for processor_attr in ("video_processor", "image_processor"):
+        image_processor = getattr(processor, processor_attr, None)
+        patch_size = getattr(image_processor, "patch_size", None)
+        if patch_size is not None:
+            return int(patch_size)
+    return 14
+
+
 class FSDPWorker(Worker):
     def __init__(
         self,
@@ -510,6 +519,7 @@ class FSDPWorker(Worker):
         if "multi_modal_inputs" not in self._cache:
             min_pixels = data.meta_info["min_pixels"]
             max_pixels = data.meta_info["max_pixels"]
+            image_patch_size = _get_processor_patch_size(self.processor)
             batch_multi_modal_inputs = []
             multi_modal_inputs_cache = {}  # avoid repeated processing for n > 1 samples
             for index, multi_modal_data in zip(
@@ -529,7 +539,7 @@ class FSDPWorker(Worker):
                                 kwargs["video_fps"] = sample_fps[min(idx, len(sample_fps) - 1)]
                             else:
                                 kwargs["video_fps"] = sample_fps
-                            videos.append(process_video(video, **kwargs))
+                            videos.append(process_video(video, image_patch_size=image_patch_size, **kwargs))
 
                     if len(images) != 0:
                         # it's necessary to add `dict` to properly convert batch features to dict

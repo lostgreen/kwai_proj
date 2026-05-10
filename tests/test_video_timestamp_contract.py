@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
+import types
 from pathlib import Path
 
 
@@ -117,6 +119,43 @@ def test_dataset_video_fetch_uses_processor_patch_size_contract():
 
     assert "image_patch_size=16" not in text
     assert "image_patch_size=self.image_patch_size" in text
+
+
+def test_worker_video_fetch_uses_processor_patch_size_contract():
+    vllm_text = (REPO_ROOT / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py").read_text(
+        encoding="utf-8"
+    )
+    fsdp_text = (REPO_ROOT / "verl" / "workers" / "fsdp_workers.py").read_text(encoding="utf-8")
+
+    assert "image_patch_size=16" not in vllm_text
+    assert "image_patch_size=16" not in fsdp_text
+    assert "image_patch_size = _get_processor_patch_size(self.processor)" in vllm_text
+    assert "image_patch_size = _get_processor_patch_size(self.processor)" in fsdp_text
+    assert "image_patch_size=image_patch_size" in vllm_text
+    assert "image_patch_size=image_patch_size" in fsdp_text
+
+
+def test_worker_patch_size_helper_falls_back_to_image_processor():
+    source = (REPO_ROOT / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py").read_text(
+        encoding="utf-8"
+    )
+    module = ast.parse(source)
+    helper = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_get_processor_patch_size"
+    )
+    helper_module = ast.Module(body=[helper], type_ignores=[])
+    ast.fix_missing_locations(helper_module)
+    namespace = {"Optional": object, "ProcessorMixin": object}
+    exec(compile(helper_module, "vllm_rollout_spmd.py", "exec"), namespace)
+
+    processor = types.SimpleNamespace(
+        video_processor=types.SimpleNamespace(),
+        image_processor=types.SimpleNamespace(patch_size=16),
+    )
+
+    assert namespace["_get_processor_patch_size"](processor) == 16
 
 
 def test_worker_paths_use_sample_level_video_fps():

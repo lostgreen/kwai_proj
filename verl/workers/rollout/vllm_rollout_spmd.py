@@ -56,8 +56,17 @@ def _get_logit_bias(processor: Optional[ProcessorMixin]) -> Optional[dict[int, f
         return None
 
 
+def _get_processor_patch_size(processor: Optional[ProcessorMixin]) -> int:
+    for processor_attr in ("video_processor", "image_processor"):
+        image_processor = getattr(processor, processor_attr, None)
+        patch_size = getattr(image_processor, "patch_size", None)
+        if patch_size is not None:
+            return int(patch_size)
+    return 14
+
+
 def _process_multi_modal_data(
-    multi_modal_data: dict[str, Any], min_pixels: int, max_pixels: int, video_fps: float
+    multi_modal_data: dict[str, Any], min_pixels: int, max_pixels: int, video_fps: float, image_patch_size: int = 14
 ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
     """
     兼容原逻辑的最小改动版本：
@@ -81,7 +90,7 @@ def _process_multi_modal_data(
                 kwargs["video_fps"] = sample_fps[min(idx, len(sample_fps) - 1)]
             else:
                 kwargs["video_fps"] = sample_fps
-            processed, video_fps = process_video(video, return_fps=True, **kwargs)
+            processed, video_fps = process_video(video, return_fps=True, image_patch_size=image_patch_size, **kwargs)
             videos.append(processed)
 
         if len(videos) > 0:
@@ -307,12 +316,14 @@ class vLLMRollout(BaseRollout):
 
         if batch_multi_modal_data is not None:
             vllm_inputs = []
+            image_patch_size = _get_processor_patch_size(self.processor)
             for raw_prompt_ids, multi_modal_data in zip(batch_raw_prompt_ids, batch_multi_modal_data):
                 mm_data, mm_kwargs = _process_multi_modal_data(
                     multi_modal_data,
                     prompts.meta_info["min_pixels"],
                     prompts.meta_info["max_pixels"],
                     prompts.meta_info["video_fps"],
+                    image_patch_size=image_patch_size,
                 )
                 item = {
                     "prompt_token_ids": list(raw_prompt_ids),

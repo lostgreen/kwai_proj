@@ -329,7 +329,7 @@ def generate_with_vllm(example: dict[str, Any], processor, llm, sampling_params,
 
 def _build_vllm_request(example: dict[str, Any], processor, args: argparse.Namespace) -> dict[str, Any] | None:
     """Build a single vLLM request dict from a data example."""
-    from verl.workers.rollout.vllm_rollout_spmd import _process_multi_modal_data
+    from verl.workers.rollout.vllm_rollout_spmd import _get_processor_patch_size, _process_multi_modal_data
 
     prompt = build_prompt(example, processor)
     request = {
@@ -342,6 +342,7 @@ def _build_vllm_request(example: dict[str, Any], processor, args: argparse.Names
             args.min_pixels,
             args.max_pixels,
             args.video_fps,
+            image_patch_size=_get_processor_patch_size(processor),
         )
         if mm_data is not None:
             request["multi_modal_data"] = mm_data
