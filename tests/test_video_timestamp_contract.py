@@ -112,6 +112,13 @@ def test_runtime_paths_do_not_read_video_fps_override_directly():
         assert "meta.get('video_fps_override')" not in text
 
 
+def test_dataset_video_fetch_uses_processor_patch_size_contract():
+    text = (REPO_ROOT / "verl" / "utils" / "dataset.py").read_text(encoding="utf-8")
+
+    assert "image_patch_size=16" not in text
+    assert "image_patch_size=self.image_patch_size" in text
+
+
 def test_worker_paths_use_sample_level_video_fps():
     vllm_text = (REPO_ROOT / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py").read_text(
         encoding="utf-8"

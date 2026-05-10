@@ -287,7 +287,14 @@ def process_image(
 
 
 def process_video(
-    video: Any, min_pixels: int = 4*32*32, max_pixels: int = 48*32*32, max_frames: int = 256, video_fps: float = 2, min_frames: int = 0, return_fps: bool = False
+    video: Any,
+    min_pixels: int = 4*32*32,
+    max_pixels: int = 48*32*32,
+    max_frames: int = 256,
+    video_fps: float = 2,
+    min_frames: int = 0,
+    return_fps: bool = False,
+    image_patch_size: int = 14,
 ):
     vision_info = build_video_vision_info(
         video,
@@ -296,7 +303,12 @@ def process_video(
         max_frames=max_frames,
         video_fps=video_fps,
     )
-    result = fetch_video(vision_info, image_patch_size=16, return_video_sample_fps=return_fps, return_video_metadata=return_fps)
+    result = fetch_video(
+        vision_info,
+        image_patch_size=image_patch_size,
+        return_video_sample_fps=return_fps,
+        return_video_metadata=return_fps,
+    )
 
     # If min_frames is set and the result has fewer frames, retry with higher fps
     if min_frames > 0:
@@ -315,7 +327,12 @@ def process_video(
                     max_frames=max_frames,
                     video_fps=new_fps,
                 )
-                result = fetch_video(vision_info_retry, image_patch_size=16, return_video_sample_fps=return_fps, return_video_metadata=return_fps)
+                result = fetch_video(
+                    vision_info_retry,
+                    image_patch_size=image_patch_size,
+                    return_video_sample_fps=return_fps,
+                    return_video_metadata=return_fps,
+                )
 
     _maybe_log_video_debug(
         video=video,
@@ -472,6 +489,8 @@ class RLHFDataset(Dataset):
         self.max_pixels = max_pixels
         self.max_frames = max_frames
         self.min_frames = min_frames
+        image_processor = getattr(processor, "video_processor", None) or getattr(processor, "image_processor", None)
+        self.image_patch_size = int(getattr(image_processor, "patch_size", 14))
 
         if "@" in data_path:
             data_path, data_split = data_path.split("@")
@@ -622,7 +641,17 @@ class RLHFDataset(Dataset):
             _meta = example.get("metadata") or {}
             _eff_fps = resolve_video_fps(_meta, self.video_fps, n_videos=len(videos))
             for video in videos:
-                processed_videos.append(process_video(video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=self.max_frames, min_frames=self.min_frames, video_fps=_eff_fps))
+                processed_videos.append(
+                    process_video(
+                        video,
+                        min_pixels=self.min_pixels,
+                        max_pixels=self.max_pixels,
+                        max_frames=self.max_frames,
+                        min_frames=self.min_frames,
+                        video_fps=_eff_fps,
+                        image_patch_size=self.image_patch_size,
+                    )
+                )
 
             model_inputs = self.processor(
                 videos=processed_videos, text=[prompt], add_special_tokens=False, return_tensors="pt"
@@ -706,7 +735,14 @@ class RLHFDataset(Dataset):
 
             for video, _eff_fps in zip(videos, video_fps_overrides):
                 processed_video, video_fps = process_video(
-                    video, min_pixels=self.min_pixels, max_pixels=self.max_pixels, max_frames=max_frames_per_video, min_frames=self.min_frames, video_fps=_eff_fps, return_fps=True
+                    video,
+                    min_pixels=self.min_pixels,
+                    max_pixels=self.max_pixels,
+                    max_frames=max_frames_per_video,
+                    min_frames=self.min_frames,
+                    video_fps=_eff_fps,
+                    return_fps=True,
+                    image_patch_size=self.image_patch_size,
                 )
                 video_kwargs = {"do_sample_frames": False}
                 processed_videos.append(processed_video)
