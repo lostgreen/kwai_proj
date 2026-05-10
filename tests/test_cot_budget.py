@@ -279,6 +279,92 @@ def test_controller_accepts_end_tag_tokenized_with_answer_suffix_variant():
     assert controller.repaired_prefix([30, 100, 405, 900]) is None
 
 
+def test_controller_repairs_thought_tag_when_configured_for_think_alias():
+    class DualReasoningTagTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            mapping = {
+                "<think>": [10],
+                "<think>\n": [1010],
+                "<think>\n\n": [1011],
+                "<think> ": [1012],
+                "<think>\t": [1013],
+                "<think>\r\n": [1014],
+                "</think>": [20],
+                "</think>\n": [1020],
+                "</think>\n\n": [1021],
+                "</think> ": [1022],
+                "</think>\t": [1023],
+                "</think>\r\n": [1024],
+                "</think><answer>": [1025],
+                "</think>\n<answer>": [1026],
+                "</think> <answer>": [1027],
+                "<thought>": [30],
+                "<thought>\n": [3030],
+                "<thought>\n\n": [3031],
+                "<thought> ": [3032],
+                "<thought>\t": [3033],
+                "<thought>\r\n": [3034],
+                "</thought>": [40],
+                "</thought>\n": [4040],
+                "</thought>\n\n": [4041],
+                "</thought> ": [4042],
+                "</thought>\t": [4043],
+                "</thought>\r\n": [4044],
+                "</thought><answer>": [4045],
+                "</thought>\n<answer>": [4046],
+                "</thought> <answer>": [4047],
+            }
+            return mapping[text]
+
+    controller = make_cot_budget_controller(
+        DualReasoningTagTokenizer(),
+        start_token="<think>",
+        end_token="</think>",
+        max_tokens=2,
+    )
+
+    assert controller.has_start([30, 100, 101, 102])
+    assert controller.repaired_prefix([30, 100, 101, 102]) == [30, 100, 101, 40]
+    assert controller.next_forced_token([30, 100, 101]) == 40
+
+
+def test_controller_detects_end_tag_tokenized_with_leading_newline_variant():
+    class LeadingNewlineEndTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            mapping = {
+                "<thought>": [30],
+                "<thought>\n": [301],
+                "<thought>\n\n": [302],
+                "<thought> ": [303],
+                "<thought>\t": [304],
+                "<thought>\r\n": [305],
+                "</thought>": [40],
+                "</thought>\n": [401],
+                "</thought>\n\n": [402],
+                "</thought> ": [403],
+                "</thought>\t": [404],
+                "</thought>\r\n": [405],
+                "</thought><answer>": [406],
+                "</thought>\n<answer>": [407],
+                "</thought> <answer>": [408],
+                "\n</thought>": [409],
+                "\n</thought>\n": [410],
+                "\n</thought><answer>": [411],
+            }
+            return mapping[text]
+
+    controller = make_cot_budget_controller(
+        LeadingNewlineEndTokenizer(),
+        start_token="<thought>",
+        end_token="</thought>",
+        max_tokens=2,
+    )
+
+    assert controller.repaired_prefix([30, 100, 101, 409, 900]) is None
+
+
 def test_cot_budget_preserves_vllm_v1_before_engine_import(monkeypatch):
     monkeypatch.setenv("VLLM_USE_V1", "1")
 
@@ -454,6 +540,12 @@ def test_vllm_rollout_records_cot_budget_debug_info_for_repairs():
             "prompt_index": 0,
             "cot_budget_enabled": True,
             "cot_start_detected": True,
+            "cot_start_index": 0,
+            "cot_start_token_ids": [10],
+            "cot_end_detected": False,
+            "cot_end_index": -1,
+            "cot_end_token_ids": [20],
+            "cot_end_pattern_ids": None,
             "cot_repaired": True,
             "raw_token_len": 4,
             "repaired_token_len": 4,

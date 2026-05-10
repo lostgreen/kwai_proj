@@ -85,6 +85,7 @@ class CoTBudgetController:
     max_tokens: int
     start_token_id_variants: Optional[Sequence[Sequence[int]]] = None
     end_token_id_variants: Optional[Sequence[Sequence[int]]] = None
+    token_pair_variants: Optional[Sequence[tuple[Sequence[int], Sequence[int], Sequence[Sequence[int]]]]] = None
 
     def __post_init__(self) -> None:
         if not self.start_token_ids:
@@ -97,33 +98,33 @@ class CoTBudgetController:
     def next_forced_token(self, token_ids: Sequence[int]) -> Optional[int]:
         """Return the next forced close-tag token, or None when sampling is free."""
 
-        start_idx, start_pattern = _find_last_subsequence_any(token_ids, self._start_patterns())
+        start_idx, start_pattern, end_token_ids, end_patterns = self.find_latest_start(token_ids)
         if start_idx < 0:
             return None
 
         content_start = start_idx + len(start_pattern or [])
-        end_idx, _ = _find_subsequence_any(token_ids, self._end_patterns(), start=content_start)
+        end_idx, _ = _find_subsequence_any(token_ids, end_patterns, start=content_start)
         if end_idx >= 0:
             return None
 
         generated_after_start = list(token_ids[content_start:])
         if len(generated_after_start) >= self.max_tokens:
-            close_prefix_len = self._close_prefix_len(generated_after_start)
+            close_prefix_len = self._close_prefix_len(generated_after_start, end_token_ids)
             if close_prefix_len > 0:
-                return self.end_token_ids[close_prefix_len]
-            return self.end_token_ids[0]
+                return end_token_ids[close_prefix_len]
+            return end_token_ids[0]
 
         return None
 
     def repaired_prefix(self, token_ids: Sequence[int], max_length: Optional[int] = None) -> Optional[list[int]]:
         """Return a budget-compliant prefix with a closed CoT span, if repair is needed."""
 
-        start_idx, start_pattern = self.find_latest_start(token_ids)
+        start_idx, start_pattern, end_token_ids, end_patterns = self.find_latest_start(token_ids)
         if start_idx < 0:
             return None
 
         content_start = start_idx + len(start_pattern or [])
-        end_idx, _ = _find_subsequence_any(token_ids, self._end_patterns(), start=content_start)
+        end_idx, _ = _find_subsequence_any(token_ids, end_patterns, start=content_start)
         if end_idx >= 0 and end_idx - content_start <= self.max_tokens:
             return None
 
@@ -131,22 +132,60 @@ class CoTBudgetController:
         if max_length is not None:
             if max_length <= 0:
                 return []
-            if max_length < len(self.end_token_ids):
-                return list(self.end_token_ids[:max_length])
-            available_content_tokens = max_length - content_start - len(self.end_token_ids)
+            if max_length < len(end_token_ids):
+                return list(end_token_ids[:max_length])
+            available_content_tokens = max_length - content_start - len(end_token_ids)
             if available_content_tokens < 0:
-                return list(token_ids[: max_length - len(self.end_token_ids)]) + list(self.end_token_ids)
+                return list(token_ids[: max_length - len(end_token_ids)]) + list(end_token_ids)
             budgeted_content_end = min(budgeted_content_end, content_start + available_content_tokens)
 
         content_end = budgeted_content_end
-        return list(token_ids[:content_end]) + list(self.end_token_ids)
+        return list(token_ids[:content_end]) + list(end_token_ids)
 
     def has_start(self, token_ids: Sequence[int]) -> bool:
-        start_idx, _ = self.find_latest_start(token_ids)
+        start_idx, _, _, _ = self.find_latest_start(token_ids)
         return start_idx >= 0
 
-    def find_latest_start(self, token_ids: Sequence[int]) -> tuple[int, Optional[list[int]]]:
-        return _find_last_subsequence_any(token_ids, self._start_patterns())
+    def span_status(self, token_ids: Sequence[int]) -> dict[str, Any]:
+        start_idx, start_pattern, end_token_ids, end_patterns = self.find_latest_start(token_ids)
+        if start_idx < 0:
+            return {
+                "cot_start_detected": False,
+                "cot_start_index": -1,
+                "cot_start_token_ids": None,
+                "cot_end_detected": False,
+                "cot_end_index": -1,
+                "cot_end_token_ids": None,
+                "cot_end_pattern_ids": None,
+            }
+
+        content_start = start_idx + len(start_pattern or [])
+        end_idx, end_pattern = _find_subsequence_any(token_ids, end_patterns, start=content_start)
+        return {
+            "cot_start_detected": True,
+            "cot_start_index": start_idx,
+            "cot_start_token_ids": list(start_pattern or []),
+            "cot_end_detected": end_idx >= 0,
+            "cot_end_index": end_idx,
+            "cot_end_token_ids": list(end_token_ids),
+            "cot_end_pattern_ids": list(end_pattern) if end_pattern is not None else None,
+        }
+
+    def find_latest_start(
+        self, token_ids: Sequence[int]
+    ) -> tuple[int, Optional[list[int]], list[int], list[list[int]]]:
+        best_idx = -1
+        best_start = None
+        best_end = list(self.end_token_ids)
+        best_end_patterns = self._end_patterns()
+        for start_pattern, end_token_ids, end_patterns in self._token_pattern_groups():
+            idx = _find_last_subsequence(token_ids, start_pattern)
+            if idx >= 0 and (idx > best_idx or (idx == best_idx and len(start_pattern) > len(best_start or []))):
+                best_idx = idx
+                best_start = list(start_pattern)
+                best_end = list(end_token_ids)
+                best_end_patterns = _unique_patterns([end_token_ids, *end_patterns])
+        return best_idx, best_start, best_end, best_end_patterns
 
     def _start_patterns(self) -> list[list[int]]:
         return _unique_patterns([self.start_token_ids, *(self.start_token_id_variants or [])])
@@ -154,10 +193,18 @@ class CoTBudgetController:
     def _end_patterns(self) -> list[list[int]]:
         return _unique_patterns([self.end_token_ids, *(self.end_token_id_variants or [])])
 
-    def _close_prefix_len(self, generated_after_start: Sequence[int]) -> int:
-        max_prefix_len = min(len(generated_after_start), len(self.end_token_ids) - 1)
+    def _token_pattern_groups(self) -> list[tuple[list[int], list[int], list[list[int]]]]:
+        groups = [(pattern, list(self.end_token_ids), self._end_patterns()) for pattern in self._start_patterns()]
+        for start_pattern, end_token_ids, end_patterns in self.token_pair_variants or []:
+            if not start_pattern or not end_token_ids:
+                continue
+            groups.append((list(start_pattern), list(end_token_ids), _unique_patterns(end_patterns)))
+        return groups
+
+    def _close_prefix_len(self, generated_after_start: Sequence[int], end_token_ids: Sequence[int]) -> int:
+        max_prefix_len = min(len(generated_after_start), len(end_token_ids) - 1)
         for prefix_len in range(max_prefix_len, 0, -1):
-            if list(generated_after_start[-prefix_len:]) == list(self.end_token_ids[:prefix_len]):
+            if list(generated_after_start[-prefix_len:]) == list(end_token_ids[:prefix_len]):
                 return prefix_len
         return 0
 
@@ -198,14 +245,28 @@ def configure_vllm_engine_for_cot_budget(cot_budget_enabled: bool) -> None:
         os.environ["VLLM_USE_V1"] = "1"
 
 
-def _encode_variants(tokenizer: Any, token: str, suffixes: Sequence[str]) -> list[list[int]]:
+def _encode_variants(
+    tokenizer: Any,
+    token: str,
+    suffixes: Sequence[str],
+    prefixes: Sequence[str] = ("",),
+) -> list[list[int]]:
     variants = []
-    for suffix in suffixes:
-        try:
-            variants.append(tokenizer.encode(token + suffix, add_special_tokens=False))
-        except Exception:
-            continue
+    for prefix in prefixes:
+        for suffix in suffixes:
+            try:
+                variants.append(tokenizer.encode(prefix + token + suffix, add_special_tokens=False))
+            except Exception:
+                continue
     return variants
+
+
+def _paired_reasoning_aliases(start_token: str, end_token: str) -> list[tuple[str, str]]:
+    known_pairs = {
+        ("<think>", "</think>"): [("<thought>", "</thought>")],
+        ("<thought>", "</thought>"): [("<think>", "</think>")],
+    }
+    return known_pairs.get((start_token, end_token), [])
 
 
 def make_cot_budget_controller(
@@ -221,14 +282,36 @@ def make_cot_budget_controller(
     end_variants = _encode_variants(
         tokenizer,
         end_token,
-        ["\n", "\n\n", " ", "\t", "\r\n", "<answer>", "\n<answer>", " <answer>"],
+        ["", "\n", "\n\n", " ", "\t", "\r\n", "<answer>", "\n<answer>", " <answer>"],
+        prefixes=("", "\n"),
     )
+    token_pair_variants = []
+    for alias_start_token, alias_end_token in _paired_reasoning_aliases(start_token, end_token):
+        try:
+            alias_start_token_ids = tokenizer.encode(alias_start_token, add_special_tokens=False)
+            alias_end_token_ids = tokenizer.encode(alias_end_token, add_special_tokens=False)
+        except Exception:
+            continue
+        alias_start_variants = _encode_variants(
+            tokenizer,
+            alias_start_token,
+            ["", "\n", "\n\n", " ", "\t", "\r\n"],
+        )
+        alias_end_variants = _encode_variants(
+            tokenizer,
+            alias_end_token,
+            ["", "\n", "\n\n", " ", "\t", "\r\n", "<answer>", "\n<answer>", " <answer>"],
+            prefixes=("", "\n"),
+        )
+        for alias_start_pattern in _unique_patterns([alias_start_token_ids, *alias_start_variants]):
+            token_pair_variants.append((alias_start_pattern, alias_end_token_ids, alias_end_variants))
     return CoTBudgetController(
         start_token_ids=start_token_ids,
         end_token_ids=end_token_ids,
         max_tokens=max_tokens,
         start_token_id_variants=start_variants,
         end_token_id_variants=end_variants,
+        token_pair_variants=token_pair_variants,
     )
 
 

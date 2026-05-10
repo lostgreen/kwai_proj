@@ -222,13 +222,11 @@ class vLLMRollout(BaseRollout):
         for prompt_idx, completion in enumerate(completions):
             for output in completion.outputs:
                 raw_token_ids = list(output.token_ids)
-                cot_start_detected = self.cot_budget_controller.has_start(raw_token_ids)
+                cot_status = self.cot_budget_controller.span_status(raw_token_ids)
                 debug_entry = {
                     "response_index": response_idx,
                     "prompt_index": prompt_idx,
                     "cot_budget_enabled": True,
-                    "cot_start_detected": cot_start_detected,
-                    "cot_repaired": False,
                     "raw_token_len": len(raw_token_ids),
                     "repaired_token_len": len(raw_token_ids),
                     "remaining_tokens": 0,
@@ -237,6 +235,8 @@ class vLLMRollout(BaseRollout):
                     "max_cot_tokens": self.cot_budget_controller.max_tokens,
                     "max_response_length": self.config.response_length,
                 }
+                debug_entry.update(cot_status)
+                debug_entry["cot_repaired"] = False
                 repaired = self.cot_budget_controller.repaired_prefix(
                     raw_token_ids, max_length=self.config.response_length
                 )
