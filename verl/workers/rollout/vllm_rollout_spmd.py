@@ -128,6 +128,7 @@ class vLLMRollout(BaseRollout):
         super().__init__()
         self.rank = int(os.getenv("RANK", "0"))
         self.config = config
+        self.processor = processor
         self.pad_token_id = tokenizer.pad_token_id
         self.use_tqdm = (self.rank == 0) and (not config.disable_tqdm)
         if config.tensor_parallel_size > torch.distributed.get_world_size():

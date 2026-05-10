@@ -129,6 +129,7 @@ def test_worker_video_fetch_uses_processor_patch_size_contract():
 
     assert "image_patch_size=16" not in vllm_text
     assert "image_patch_size=16" not in fsdp_text
+    assert "self.processor = processor" in vllm_text
     assert "image_patch_size = _get_processor_patch_size(self.processor)" in vllm_text
     assert "image_patch_size = _get_processor_patch_size(self.processor)" in fsdp_text
     assert "image_patch_size=image_patch_size" in vllm_text
