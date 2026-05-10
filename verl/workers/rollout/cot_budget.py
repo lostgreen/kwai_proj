@@ -40,6 +40,42 @@ def _find_last_subsequence(seq: Sequence[int], pattern: Sequence[int]) -> int:
     return -1
 
 
+def _unique_patterns(patterns: Sequence[Sequence[int]]) -> list[list[int]]:
+    unique = []
+    seen = set()
+    for pattern in patterns:
+        normalized = tuple(pattern)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(list(normalized))
+    return unique
+
+
+def _find_subsequence_any(
+    seq: Sequence[int], patterns: Sequence[Sequence[int]], start: int = 0
+) -> tuple[int, Optional[list[int]]]:
+    best_idx = -1
+    best_pattern = None
+    for pattern in patterns:
+        idx = _find_subsequence(seq, pattern, start=start)
+        if idx >= 0 and (best_idx < 0 or idx < best_idx or (idx == best_idx and len(pattern) > len(best_pattern or []))):
+            best_idx = idx
+            best_pattern = list(pattern)
+    return best_idx, best_pattern
+
+
+def _find_last_subsequence_any(seq: Sequence[int], patterns: Sequence[Sequence[int]]) -> tuple[int, Optional[list[int]]]:
+    best_idx = -1
+    best_pattern = None
+    for pattern in patterns:
+        idx = _find_last_subsequence(seq, pattern)
+        if idx >= 0 and (idx > best_idx or (idx == best_idx and len(pattern) > len(best_pattern or []))):
+            best_idx = idx
+            best_pattern = list(pattern)
+    return best_idx, best_pattern
+
+
 @dataclass(frozen=True)
 class CoTBudgetController:
     """State-free controller that decides when a CoT close tag must be forced."""
@@ -47,6 +83,8 @@ class CoTBudgetController:
     start_token_ids: Sequence[int]
     end_token_ids: Sequence[int]
     max_tokens: int
+    start_token_id_variants: Optional[Sequence[Sequence[int]]] = None
+    end_token_id_variants: Optional[Sequence[Sequence[int]]] = None
 
     def __post_init__(self) -> None:
         if not self.start_token_ids:
@@ -59,12 +97,12 @@ class CoTBudgetController:
     def next_forced_token(self, token_ids: Sequence[int]) -> Optional[int]:
         """Return the next forced close-tag token, or None when sampling is free."""
 
-        start_idx = _find_last_subsequence(token_ids, self.start_token_ids)
+        start_idx, start_pattern = _find_last_subsequence_any(token_ids, self._start_patterns())
         if start_idx < 0:
             return None
 
-        content_start = start_idx + len(self.start_token_ids)
-        end_idx = _find_subsequence(token_ids, self.end_token_ids, start=content_start)
+        content_start = start_idx + len(start_pattern or [])
+        end_idx, _ = _find_subsequence_any(token_ids, self._end_patterns(), start=content_start)
         if end_idx >= 0:
             return None
 
@@ -80,12 +118,12 @@ class CoTBudgetController:
     def repaired_prefix(self, token_ids: Sequence[int], max_length: Optional[int] = None) -> Optional[list[int]]:
         """Return a budget-compliant prefix with a closed CoT span, if repair is needed."""
 
-        start_idx = _find_last_subsequence(token_ids, self.start_token_ids)
+        start_idx, start_pattern = self.find_latest_start(token_ids)
         if start_idx < 0:
             return None
 
-        content_start = start_idx + len(self.start_token_ids)
-        end_idx = _find_subsequence(token_ids, self.end_token_ids, start=content_start)
+        content_start = start_idx + len(start_pattern or [])
+        end_idx, _ = _find_subsequence_any(token_ids, self._end_patterns(), start=content_start)
         if end_idx >= 0 and end_idx - content_start <= self.max_tokens:
             return None
 
@@ -102,6 +140,19 @@ class CoTBudgetController:
 
         content_end = budgeted_content_end
         return list(token_ids[:content_end]) + list(self.end_token_ids)
+
+    def has_start(self, token_ids: Sequence[int]) -> bool:
+        start_idx, _ = self.find_latest_start(token_ids)
+        return start_idx >= 0
+
+    def find_latest_start(self, token_ids: Sequence[int]) -> tuple[int, Optional[list[int]]]:
+        return _find_last_subsequence_any(token_ids, self._start_patterns())
+
+    def _start_patterns(self) -> list[list[int]]:
+        return _unique_patterns([self.start_token_ids, *(self.start_token_id_variants or [])])
+
+    def _end_patterns(self) -> list[list[int]]:
+        return _unique_patterns([self.end_token_ids, *(self.end_token_id_variants or [])])
 
     def _close_prefix_len(self, generated_after_start: Sequence[int]) -> int:
         max_prefix_len = min(len(generated_after_start), len(self.end_token_ids) - 1)
@@ -147,6 +198,16 @@ def configure_vllm_engine_for_cot_budget(cot_budget_enabled: bool) -> None:
         os.environ["VLLM_USE_V1"] = "1"
 
 
+def _encode_variants(tokenizer: Any, token: str, suffixes: Sequence[str]) -> list[list[int]]:
+    variants = []
+    for suffix in suffixes:
+        try:
+            variants.append(tokenizer.encode(token + suffix, add_special_tokens=False))
+        except Exception:
+            continue
+    return variants
+
+
 def make_cot_budget_controller(
     tokenizer: Any,
     *,
@@ -156,10 +217,18 @@ def make_cot_budget_controller(
 ) -> CoTBudgetController:
     start_token_ids = tokenizer.encode(start_token, add_special_tokens=False)
     end_token_ids = tokenizer.encode(end_token, add_special_tokens=False)
+    start_variants = _encode_variants(tokenizer, start_token, ["\n", "\n\n", " ", "\t", "\r\n"])
+    end_variants = _encode_variants(
+        tokenizer,
+        end_token,
+        ["\n", "\n\n", " ", "\t", "\r\n", "<answer>", "\n<answer>", " <answer>"],
+    )
     return CoTBudgetController(
         start_token_ids=start_token_ids,
         end_token_ids=end_token_ids,
         max_tokens=max_tokens,
+        start_token_id_variants=start_variants,
+        end_token_id_variants=end_variants,
     )
 
 

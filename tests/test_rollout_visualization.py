@@ -109,6 +109,57 @@ def test_store_loads_trainer_rollout_jsonl_contract(tmp_path: Path):
     assert detail["frame_strip"] == []
 
 
+def test_store_loads_rollout_media_sidecar_contract(tmp_path: Path):
+    rollout_dir = tmp_path / "rollouts"
+    rollout_dir.mkdir()
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake video")
+    media_record = {
+        "phase": "train",
+        "step": 12,
+        "index": 0,
+        "uid": "sample-1",
+        "problem_id": "p-1",
+        "problem_type": "add",
+        "video_paths": [str(video_path)],
+        "image_paths": [],
+        "video_nframes": [8],
+        "video_fps": [2.0],
+        "multi_modal_source": {"videos": [str(video_path), str(video_path)], "video_fps": [2.0, 2.0]},
+    }
+    record = {
+        "phase": "train",
+        "step": 12,
+        "uid": "sample-1",
+        "problem_type": "add",
+        "data_type": "event_logic",
+        "problem_id": "p-1",
+        "problem": "reserved problem text",
+        "prompt": "<video>\nA. chop onions\nB. pour oil",
+        "response": "The visual next step is <answer>B</answer>",
+        "ground_truth": "B",
+        "reward": 1.0,
+        "media_ref": {"file": "step_000012.media.jsonl", "index": 0},
+    }
+    (rollout_dir / "step_000012.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    (rollout_dir / "step_000012.media.jsonl").write_text(
+        json.dumps(media_record) + "\n",
+        encoding="utf-8",
+    )
+
+    store = RolloutStore(root=tmp_path)
+    summary = store.load(str(rollout_dir), None)
+    detail = store.get_group_detail("sample-1", text_only=True)
+
+    assert summary["group_count"] == 1
+    assert summary["sample_count"] == 1
+    assert detail["video_paths"] == [str(video_path)]
+    assert detail["video_nframes"] == [8]
+    assert detail["video_fps"] == [2.0]
+    assert detail["multi_modal_source"] == media_record["multi_modal_source"]
+    assert detail["choice_meta"]["option_type"] == "video"
+
+
 def test_text_only_group_detail_does_not_extract_frames(monkeypatch, tmp_path: Path):
     store = RolloutStore(root=tmp_path)
     store.groups["sample-1"] = {
@@ -148,3 +199,15 @@ def test_trainer_rollout_writer_includes_dataset_metadata():
 
     assert 'metadata = batch.non_tensor_batch.get("metadata"' in trainer_source
     assert '"metadata": _to_jsonable(metadata[i])' in trainer_source
+
+
+def test_trainer_rollout_writer_splits_media_sidecar_from_main_jsonl():
+    trainer_source = (REPO_ROOT / "verl" / "trainer" / "ray_trainer.py").read_text(encoding="utf-8")
+
+    assert "_rollout_media_filepath" in trainer_source
+    assert "media_ref" in trainer_source
+    assert "media_record" in trainer_source
+    assert "media_line_offset" in trainer_source
+    assert '"batch_index": i' in trainer_source
+    assert '"multi_modal_source": mm_source_json' not in trainer_source
+    assert '"video_paths": video_paths' not in trainer_source

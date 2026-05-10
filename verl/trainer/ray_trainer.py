@@ -116,6 +116,22 @@ def _rollout_filepath(rollout_dir: str, phase: str, step: int) -> str:
     return os.path.join(rollout_dir, f"{prefix}_{step:06d}.jsonl")
 
 
+def _rollout_media_filepath(rollout_dir: str, phase: str, step: int) -> str:
+    prefix = "val_step" if phase == "val" else "step"
+    return os.path.join(rollout_dir, f"{prefix}_{step:06d}.media.jsonl")
+
+
+def _jsonl_line_count(filepath: str) -> int:
+    if not os.path.exists(filepath):
+        return 0
+    count = 0
+    with open(filepath, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
 class Role(IntEnum):
     """
     To create more roles dynamically, you can subclass Role and add new members
@@ -458,6 +474,7 @@ class RayPPOTrainer:
         rollout_dir = os.path.join(self.config.trainer.save_checkpoint_path, "rollouts")
         os.makedirs(rollout_dir, exist_ok=True)
         filepath = _rollout_filepath(rollout_dir, phase=phase, step=self.global_step)
+        media_filepath = _rollout_media_filepath(rollout_dir, phase=phase, step=self.global_step)
 
         prompt_ids = batch.batch["prompts"]       # (B, prompt_len)
         response_ids = batch.batch["responses"]   # (B, response_len)
@@ -468,14 +485,17 @@ class RayPPOTrainer:
         problem_ids = batch.non_tensor_batch.get("problem_id", [None] * len(scores))
         problems = batch.non_tensor_batch.get("problem_reserved_text", [None] * len(scores))
         metadata = batch.non_tensor_batch.get("metadata", [None] * len(scores))
+        cot_budget_debug = batch.non_tensor_batch.get("cot_budget_debug", [None] * len(scores))
 
         total = len(scores)
         n = self.config.trainer.save_rollout_n_per_step
         indices = list(range(total)) if n <= 0 else list(range(min(n, total)))
 
         mode = "a" if append else "w"
-        with open(filepath, mode, encoding="utf-8") as f:
-            for i in indices:
+        media_file_name = os.path.basename(media_filepath)
+        media_line_offset = _jsonl_line_count(media_filepath) if append else 0
+        with open(filepath, mode, encoding="utf-8") as f, open(media_filepath, mode, encoding="utf-8") as media_f:
+            for media_offset, i in enumerate(indices):
                 prompt_text = self.tokenizer.decode(prompt_ids[i], skip_special_tokens=True)
                 response_text = self.tokenizer.decode(response_ids[i], skip_special_tokens=True)
                 problem_type = str(problem_types[i]) if problem_types[i] is not None else None
@@ -486,6 +506,8 @@ class RayPPOTrainer:
                 if isinstance(mm_source_json, dict):
                     video_paths = _flatten_paths(mm_source_json.get("videos"))
                     image_paths = _flatten_paths(mm_source_json.get("images"))
+                media_index = media_line_offset + media_offset
+                media_ref = {"file": media_file_name, "index": media_index}
 
                 record = {
                     "phase": phase,
@@ -500,12 +522,23 @@ class RayPPOTrainer:
                     "response": response_text,
                     "ground_truth": str(ground_truths[i]) if ground_truths[i] is not None else None,
                     "reward": scores[i],
-                    "video_paths": video_paths,
-                    "image_paths": image_paths,
+                    "media_ref": media_ref,
+                    "cot_budget_debug": _to_jsonable(cot_budget_debug[i]) if cot_budget_debug[i] is not None else None,
+                }
+                media_record = {
+                    "phase": phase,
+                    "step": self.global_step,
+                    "index": media_index,
+                    "batch_index": i,
+                    "uid": str(uids[i]) if uids[i] is not None else None,
+                    "problem_id": str(problem_ids[i]) if problem_ids[i] is not None else None,
+                    "problem_type": problem_type,
                     "video_nframes": mm_source.get("video_nframes") if isinstance(mm_source, dict) else None,
                     "video_fps": mm_source.get("video_fps") if isinstance(mm_source, dict) else None,
-                    "multi_modal_source": mm_source_json,
                 }
+                media_record["video_paths"] = video_paths
+                media_record["image_paths"] = image_paths
+                media_record["multi_modal_source"] = mm_source_json
                 if self.config.trainer.save_rollout_include_timeline and problem_type == "temporal_seg":
                     pred_segments = _extract_temporal_segments(response_text)
                     gt_segments = _extract_temporal_segments(record["ground_truth"])
@@ -520,8 +553,12 @@ class RayPPOTrainer:
                         "max_t": max_t,
                     }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                media_f.write(json.dumps(media_record, ensure_ascii=False) + "\n")
 
-        print(f"[rollout] {phase} step {self.global_step}: saved {len(indices)}/{total} samples → {filepath}")
+        print(
+            f"[rollout] {phase} step {self.global_step}: saved {len(indices)}/{total} samples "
+            f"→ {filepath} (+ media {media_filepath})"
+        )
 
     def _save_train_rollouts(self, batch: DataProto) -> None:
         """Save training rollouts at current step to {save_checkpoint_path}/rollouts/step_XXXXXX.jsonl."""
@@ -570,8 +607,10 @@ class RayPPOTrainer:
         if self.config.trainer.save_rollout_to_file:
             rollout_dir = os.path.join(self.config.trainer.save_checkpoint_path, "rollouts")
             filepath = _rollout_filepath(rollout_dir, phase="val", step=self.global_step)
-            if os.path.exists(filepath):
-                os.remove(filepath)
+            media_filepath = _rollout_media_filepath(rollout_dir, phase="val", step=self.global_step)
+            for path in (filepath, media_filepath):
+                if os.path.exists(path):
+                    os.remove(path)
         self.actor_rollout_ref_wg.prepare_rollout_engine()
         val_iterator = iter(self.val_dataloader)
         while True:

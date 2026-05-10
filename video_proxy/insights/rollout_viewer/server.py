@@ -199,6 +199,7 @@ class RolloutStore:
         self.training_metrics: list[dict[str, Any]] = []
         self.frame_cache: dict[str, list[str]] = {}
         self.timeline_frame_cache: dict[str, list[dict[str, Any]]] = {}
+        self._media_sidecar_cache: dict[Path, list[dict[str, Any]]] = {}
         self.total_samples = 0
 
     def _resolve_local_path(self, path_text: str) -> Path:
@@ -223,9 +224,13 @@ class RolloutStore:
             if not log_file.exists():
                 raise FileNotFoundError(f"log_file not found: {log_file}")
 
-        rollout_files = sorted(rollout_dir.glob("step_*.jsonl")) + sorted(rollout_dir.glob("val_step_*.jsonl"))
+        rollout_files = [
+            p
+            for p in sorted(rollout_dir.glob("step_*.jsonl")) + sorted(rollout_dir.glob("val_step_*.jsonl"))
+            if not p.name.endswith(".media.jsonl")
+        ]
         if not rollout_files:
-            rollout_files = sorted(rollout_dir.glob("*.jsonl"))
+            rollout_files = [p for p in sorted(rollout_dir.glob("*.jsonl")) if not p.name.endswith(".media.jsonl")]
         if not rollout_files:
             raise FileNotFoundError(f"No jsonl files under {rollout_dir}")
 
@@ -261,6 +266,79 @@ class RolloutStore:
             )
             return self.summary()
 
+    def _load_media_sidecar(self, path: Path) -> list[dict[str, Any]]:
+        if path in self._media_sidecar_cache:
+            return self._media_sidecar_cache[path]
+
+        records: list[dict[str, Any]] = []
+        if not path.exists():
+            self._media_sidecar_cache[path] = records
+            return records
+
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    records.append(row)
+        self._media_sidecar_cache[path] = records
+        return records
+
+    def _media_sidecar_path(self, media_ref: dict[str, Any]) -> Optional[Path]:
+        if self.rollout_dir is None:
+            return None
+        file_text = media_ref.get("file") or media_ref.get("path")
+        if not isinstance(file_text, str) or not file_text.strip():
+            return None
+
+        candidate = Path(file_text).expanduser()
+        if not candidate.is_absolute():
+            candidate = (self.rollout_dir / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+
+        rollout_dir = self.rollout_dir.resolve()
+        if candidate != rollout_dir and rollout_dir not in candidate.parents:
+            return None
+        return candidate
+
+    def _load_media_record_for_rollout(self, record: dict[str, Any]) -> dict[str, Any]:
+        media_ref = record.get("media_ref")
+        if not isinstance(media_ref, dict):
+            return {}
+
+        path = self._media_sidecar_path(media_ref)
+        if path is None:
+            return {}
+        media_records = self._load_media_sidecar(path)
+
+        try:
+            index = int(media_ref.get("index"))
+        except (TypeError, ValueError):
+            index = -1
+        if 0 <= index < len(media_records):
+            row = media_records[index]
+            if isinstance(row, dict):
+                return row
+
+        uid = record.get("uid")
+        step = record.get("step")
+        phase = record.get("phase")
+        for row in media_records:
+            if uid is not None and row.get("uid") != uid:
+                continue
+            if step is not None and row.get("step") != step:
+                continue
+            if phase is not None and row.get("phase") != phase:
+                continue
+            return row
+        return {}
+
     def _consume_record(self, record: dict[str, Any]) -> None:
         step = int(record.get("step", 0))
         phase = str(record.get("phase") or "train")
@@ -282,6 +360,12 @@ class RolloutStore:
             "response": response,
             "temporal_segments": temporal_segments,
         }
+        media_record = self._load_media_record_for_rollout(record)
+
+        def media_value(key: str, default: Any = None) -> Any:
+            if key in record:
+                return record.get(key)
+            return media_record.get(key, default)
 
         group = self.groups.get(uid)
         if group is None:
@@ -298,9 +382,12 @@ class RolloutStore:
                 "problem_id": record.get("problem_id"),
                 "problem": record.get("problem"),
                 "metadata": record.get("metadata") or {},
-                "video_paths": record.get("video_paths") or [],
-                "image_paths": record.get("image_paths") or [],
-                "multi_modal_source": record.get("multi_modal_source"),
+                "video_paths": media_value("video_paths", []) or [],
+                "image_paths": media_value("image_paths", []) or [],
+                "video_nframes": media_value("video_nframes"),
+                "video_fps": media_value("video_fps"),
+                "multi_modal_source": media_value("multi_modal_source"),
+                "media_ref": record.get("media_ref"),
                 "attempts": [],
                 "mean_reward": 0.0,
             }

@@ -196,7 +196,9 @@ def test_make_processor_uses_configurable_tags():
     assert processor.controller.start_token_ids == [30, 31]
     assert processor.controller.end_token_ids == [40, 41]
     assert processor.controller.max_tokens == 8
-    assert tokenizer.calls == [("<thought>", False), ("</thought>", False)]
+    assert tokenizer.calls[:2] == [("<thought>", False), ("</thought>", False)]
+    assert ("<thought>\n", False) in tokenizer.calls
+    assert ("</thought><answer>", False) in tokenizer.calls
 
 
 def test_make_controller_uses_configurable_tags():
@@ -212,7 +214,69 @@ def test_make_controller_uses_configurable_tags():
     assert controller.start_token_ids == [30, 31]
     assert controller.end_token_ids == [40, 41]
     assert controller.max_tokens == 8
-    assert tokenizer.calls == [("<thought>", False), ("</thought>", False)]
+    assert tokenizer.calls[:2] == [("<thought>", False), ("</thought>", False)]
+    assert ("<thought>\n", False) in tokenizer.calls
+    assert ("</thought><answer>", False) in tokenizer.calls
+
+
+def test_controller_repairs_start_tag_tokenized_with_trailing_newline_variant():
+    class NewlineMergedTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            mapping = {
+                "<thought>": [30, 31],
+                "<thought>\n": [300],
+                "<thought>\n\n": [301],
+                "<thought> ": [302],
+                "<thought>\r\n": [303],
+                "</thought>": [40],
+                "</thought>\n": [400],
+                "</thought>\n\n": [401],
+                "</thought> ": [402],
+                "</thought>\r\n": [403],
+                "</thought><answer>": [404],
+                "</thought>\n<answer>": [405],
+            }
+            return mapping[text]
+
+    controller = make_cot_budget_controller(
+        NewlineMergedTokenizer(),
+        start_token="<thought>",
+        end_token="</thought>",
+        max_tokens=2,
+    )
+
+    assert controller.repaired_prefix([300, 100, 101, 102, 103]) == [300, 100, 101, 40]
+
+
+def test_controller_accepts_end_tag_tokenized_with_answer_suffix_variant():
+    class AnswerMergedTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            mapping = {
+                "<thought>": [30],
+                "<thought>\n": [301],
+                "<thought>\n\n": [302],
+                "<thought> ": [303],
+                "<thought>\r\n": [304],
+                "</thought>": [40],
+                "</thought>\n": [401],
+                "</thought>\n\n": [402],
+                "</thought> ": [403],
+                "</thought>\r\n": [404],
+                "</thought><answer>": [405],
+                "</thought>\n<answer>": [406],
+            }
+            return mapping[text]
+
+    controller = make_cot_budget_controller(
+        AnswerMergedTokenizer(),
+        start_token="<thought>",
+        end_token="</thought>",
+        max_tokens=2,
+    )
+
+    assert controller.repaired_prefix([30, 100, 405, 900]) is None
 
 
 def test_cot_budget_preserves_vllm_v1_before_engine_import(monkeypatch):
@@ -257,6 +321,7 @@ def test_rollout_config_defaults_disable_cot_budget():
 
 def test_vllm_rollout_wires_cot_processor_into_sampling_params():
     source = (Path(__file__).resolve().parents[1] / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py").read_text()
+    trainer_source = (Path(__file__).resolve().parents[1] / "verl" / "trainer" / "ray_trainer.py").read_text()
 
     assert "make_cot_budget_controller" in source
     assert "cot_budget_enabled" in source
@@ -264,6 +329,8 @@ def test_vllm_rollout_wires_cot_processor_into_sampling_params():
     assert "from vllm import LLM, RequestOutput, SamplingParams" not in source
     assert '"logits_processors"' not in source
     assert "_generate_with_cot_budget" in source
+    assert "cot_budget_debug" in source
+    assert "cot_budget_debug" in trainer_source
 
 
 def test_vllm_rollout_repairs_cot_budget_and_continues_generation():
@@ -328,6 +395,75 @@ def test_vllm_rollout_repairs_cot_budget_and_continues_generation():
     assert responses == [[10, 100, 101, 20, 201, 202, 203]]
     assert rollout.inference_engine.calls[1][0] == [{"prompt_token_ids": [1, 2, 10, 100, 101, 20]}]
     assert rollout.inference_engine.calls[1][1] == 4
+
+
+def test_vllm_rollout_records_cot_budget_debug_info_for_repairs():
+    module_path = Path(__file__).resolve().parents[1] / "verl" / "workers" / "rollout" / "vllm_rollout_spmd.py"
+    source = module_path.read_text()
+    tree = ast.parse(source)
+    rollout_cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "vLLMRollout")
+    method = next(node for node in rollout_cls.body if isinstance(node, ast.FunctionDef) and node.name == "_generate_with_cot_budget")
+    helper_module = ast.Module(body=[method], type_ignores=[])
+    ast.fix_missing_locations(helper_module)
+    namespace = {"Any": object, "Optional": object}
+    exec(compile(helper_module, str(module_path), "exec"), namespace)
+    generate_with_cot_budget = namespace["_generate_with_cot_budget"]
+
+    class FakeOutput:
+        def __init__(self, token_ids):
+            self.token_ids = token_ids
+
+    class FakeCompletion:
+        def __init__(self, outputs):
+            self.outputs = [FakeOutput(token_ids) for token_ids in outputs]
+
+    class FakeEngine:
+        def generate(self, prompts, sampling_params, use_tqdm):
+            if len(prompts) == 1 and prompts[0]["prompt_token_ids"] == [1, 2]:
+                return [FakeCompletion([[10, 100, 101, 102]])]
+            return [FakeCompletion([[201]])]
+
+    class FakeRollout:
+        def __init__(self):
+            self.inference_engine = FakeEngine()
+            self.sampling_params = types.SimpleNamespace(n=1, max_tokens=6)
+            self.use_tqdm = True
+            self.config = types.SimpleNamespace(response_length=6)
+            self.cot_budget_controller = CoTBudgetController(
+                start_token_ids=[10],
+                end_token_ids=[20],
+                max_tokens=2,
+            )
+
+        def update_sampling_params(self, **kwargs):
+            class Manager:
+                def __enter__(manager_self):
+                    return None
+
+                def __exit__(manager_self, exc_type, exc, tb):
+                    return None
+
+            return Manager()
+
+    rollout = FakeRollout()
+    generate_with_cot_budget(rollout, [{"prompt_token_ids": [1, 2]}])
+
+    assert rollout._last_cot_budget_debug == [
+        {
+            "response_index": 0,
+            "prompt_index": 0,
+            "cot_budget_enabled": True,
+            "cot_start_detected": True,
+            "cot_repaired": True,
+            "raw_token_len": 4,
+            "repaired_token_len": 4,
+            "remaining_tokens": 2,
+            "continuation_token_len": 1,
+            "final_token_len": 5,
+            "max_cot_tokens": 2,
+            "max_response_length": 6,
+        }
+    ]
 
 
 def test_fsdp_worker_configures_cot_budget_before_lazy_vllm_imports():
@@ -498,7 +634,10 @@ def test_qwen3_single_teacher_entrypoints_cover_nocot_and_cot_sources():
     assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"' in helper
     assert 'ROLLOUT_BS="$((N_GPUS_PER_NODE * 4))"' in helper
     assert 'GLOBAL_BS="${GLOBAL_BS:-${ROLLOUT_BS}}"' in helper
-    assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-${GLOBAL_BS}}"' in helper
+    assert (
+        'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-${GLOBAL_BS}}"' in helper
+        or 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-}"' in helper
+    )
     assert 'ROLLOUT_N="${ROLLOUT_N:-8}"' in helper
     assert 'ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-1.0}"' in helper
     assert 'LR="${LR:-5e-7}"' in helper

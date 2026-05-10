@@ -189,6 +189,7 @@ class vLLMRollout(BaseRollout):
 
         print(f"Sampling params: {sampling_kwargs}.")
         self.sampling_params = SamplingParams(**sampling_kwargs)
+        self._last_cot_budget_debug: list[dict[str, Any]] = []
 
     @contextmanager
     def update_sampling_params(self, **kwargs):
@@ -211,28 +212,56 @@ class vLLMRollout(BaseRollout):
             prompts=vllm_inputs, sampling_params=self.sampling_params, use_tqdm=self.use_tqdm
         )
         response_ids = [list(output.token_ids) for completion in completions for output in completion.outputs]
+        debug_info: list[dict[str, Any]] = []
         if self.cot_budget_controller is None:
+            self._last_cot_budget_debug = []
             return response_ids
 
         continuation_requests: list[tuple[int, dict[str, Any], int]] = []
         response_idx = 0
         for prompt_idx, completion in enumerate(completions):
             for output in completion.outputs:
+                raw_token_ids = list(output.token_ids)
+                cot_start_detected = self.cot_budget_controller.has_start(raw_token_ids)
+                debug_entry = {
+                    "response_index": response_idx,
+                    "prompt_index": prompt_idx,
+                    "cot_budget_enabled": True,
+                    "cot_start_detected": cot_start_detected,
+                    "cot_repaired": False,
+                    "raw_token_len": len(raw_token_ids),
+                    "repaired_token_len": len(raw_token_ids),
+                    "remaining_tokens": 0,
+                    "continuation_token_len": 0,
+                    "final_token_len": len(raw_token_ids),
+                    "max_cot_tokens": self.cot_budget_controller.max_tokens,
+                    "max_response_length": self.config.response_length,
+                }
                 repaired = self.cot_budget_controller.repaired_prefix(
-                    output.token_ids, max_length=self.config.response_length
+                    raw_token_ids, max_length=self.config.response_length
                 )
                 if repaired is not None:
                     response_ids[response_idx] = repaired
                     remaining_tokens = self.config.response_length - len(repaired)
+                    debug_entry.update(
+                        {
+                            "cot_repaired": True,
+                            "repaired_token_len": len(repaired),
+                            "remaining_tokens": remaining_tokens,
+                            "final_token_len": len(repaired),
+                        }
+                    )
                     if remaining_tokens > 0:
                         continuation_input = dict(vllm_inputs[prompt_idx])
                         continuation_input["prompt_token_ids"] = (
                             list(vllm_inputs[prompt_idx]["prompt_token_ids"]) + repaired
                         )
                         continuation_requests.append((response_idx, continuation_input, remaining_tokens))
+                debug_info.append(debug_entry)
                 response_idx += 1
 
         if not continuation_requests:
+            self._last_cot_budget_debug = debug_info
             return response_ids
 
         max_remaining_tokens = max(remaining_tokens for _, _, remaining_tokens in continuation_requests)
@@ -250,7 +279,10 @@ class vLLMRollout(BaseRollout):
                 response_ids[response_idx] = (
                     response_ids[response_idx] + continuation_ids
                 )[: self.config.response_length]
+                debug_info[response_idx]["continuation_token_len"] = len(continuation_ids)
+                debug_info[response_idx]["final_token_len"] = len(response_ids[response_idx])
 
+        self._last_cot_budget_debug = debug_info
         return response_ids
 
     @torch.no_grad()
@@ -348,6 +380,8 @@ class vLLMRollout(BaseRollout):
             non_tensor_batch = {"multi_modal_data": batch_multi_modal_data}
         else:
             non_tensor_batch = {}
+        if self._last_cot_budget_debug:
+            non_tensor_batch["cot_budget_debug"] = np.array(self._last_cot_budget_debug, dtype=object)
 
         _t3 = _time.time()
         tlog(f"[vllm][rank={_rank}] post_process: {_t3 - _t2:.2f}s, total: {_t3 - _t0:.2f}s")
