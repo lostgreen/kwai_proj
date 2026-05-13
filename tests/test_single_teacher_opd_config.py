@@ -364,6 +364,36 @@ def test_qwen2_5_vl_7b_mopd_defaults_use_its_task_teacher_checkpoints():
     assert "EVENTLOGIC_TEACHER_MODEL_PATH" not in two_teacher
 
 
+def test_qwen2_5_vl_7b_mopd_has_2gpu_debug_and_8gpu_train_wrappers():
+    base = Path("video_proxy/experiments/opd/qwen2_5_vl_7b")
+    debug = (base / "run_debug_2gpu.sh").read_text()
+    train = (base / "run_train_8gpu.sh").read_text()
+
+    for launcher in (debug, train):
+        assert 'target="${1:-3teachers}"' in launcher
+        assert '3teachers|run_mopd_3teachers.sh) target_script="${SCRIPT_DIR}/run_mopd_3teachers.sh" ;;' in launcher
+        assert '2teachers|run_mopd_2teachers.sh) target_script="${SCRIPT_DIR}/run_mopd_2teachers.sh" ;;' in launcher
+        assert 'exec bash "${target_script}" "$@"' in launcher
+
+    assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"' in debug
+    assert 'TP_SIZE="${TP_SIZE:-1}"' in debug
+    assert 'ROLLOUT_BS="${ROLLOUT_BS:-8}"' in debug
+    assert 'GLOBAL_BS="${GLOBAL_BS:-${ROLLOUT_BS}}"' in debug
+    assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-16}"' in debug
+    assert 'MAX_STEPS="${MAX_STEPS:-10}"' in debug
+    assert 'SAVE_FREQ="${SAVE_FREQ:-10}"' in debug
+    assert 'VAL_FREQ="${VAL_FREQ:-10}"' in debug
+    assert 'DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"' in debug
+    assert 'ENABLE_GPU_FILLER="${ENABLE_GPU_FILLER:-false}"' in debug
+    assert 'POST_TRAIN_OCCUPANCY="${POST_TRAIN_OCCUPANCY:-false}"' in debug
+
+    assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"' in train
+    assert 'TP_SIZE="${TP_SIZE:-1}"' in train
+    assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in train
+    assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in train
+    assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in train
+
+
 def test_multi_teacher_runner_builds_teacher_args_from_configured_teacher_set():
     runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
 
