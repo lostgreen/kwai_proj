@@ -18,7 +18,7 @@ case "${target}" in
 esac
 
 export N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
-export TP_SIZE="${TP_SIZE:-1}"
+export TP_SIZE="${TP_SIZE:-2}"
 export ROLLOUT_BS="${ROLLOUT_BS:-64}"
 export GLOBAL_BS="${GLOBAL_BS:-64}"
 export VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"

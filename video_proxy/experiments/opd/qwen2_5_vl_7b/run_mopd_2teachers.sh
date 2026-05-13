@@ -11,7 +11,7 @@ EXP_NAME="${EXP_NAME:-mopd_qwen2_5vl7b_base_r1_r2_2teachers_bs64_mf256_epoch1_sa
 PROJECT_NAME="${PROJECT_NAME:-VideoProxy-opd-comparison-7b}"
 SAVE_LIMIT="${SAVE_LIMIT:-1}"
 SAVE_BEST="${SAVE_BEST:-true}"
-TP_SIZE="${TP_SIZE:-1}"
+TP_SIZE="${TP_SIZE:-2}"
 
 source "${SCRIPT_DIR}/../common_mopd.sh"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${MOPD_CHECKPOINT_ROOT_7B}}"

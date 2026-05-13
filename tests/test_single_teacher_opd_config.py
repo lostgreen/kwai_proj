@@ -197,6 +197,7 @@ def test_opd_recipe_preserves_mf256_default():
     launcher = Path("video_proxy/training/recipes/opd_train.sh").read_text()
 
     assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in launcher
+    assert 'MAX_STEPS="${MAX_STEPS-50}"' in launcher
 
 
 def test_qwen3_4b_opd_entrypoint_defaults_to_teacher_checkpoint_and_sanity_settings():
@@ -217,7 +218,7 @@ def test_qwen3_4b_opd_entrypoint_defaults_to_teacher_checkpoint_and_sanity_setti
     assert 'OPD_TOPK="${OPD_TOPK:-10}"' in recipe
     assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in recipe
     assert 'SAVE_LIMIT="${SAVE_LIMIT:-3}"' in recipe
-    assert 'MAX_STEPS="${MAX_STEPS:-50}"' in recipe
+    assert 'MAX_STEPS="${MAX_STEPS-50}"' in recipe
 
 
 def test_opd_full_epoch_presets_keep_batch64_and_checkpoint_controls():
@@ -333,7 +334,9 @@ def test_qwen3_4b_and_8b_mopd_presets_keep_pre_refactor_paths_and_batch_settings
         assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in common
         assert 'MAX_PIXELS="${MAX_PIXELS:-65536}"' in common
         assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in common
-        assert 'SAVE_LIMIT="${SAVE_LIMIT:--1}"' in common
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:--1}"' in common
+    assert 'MAX_STEPS=""' in common
+    assert 'MAX_STEPS="${MAX_STEPS-50}"' in Path("video_proxy/training/recipes/opd_train.sh").read_text()
 
 
 def test_qwen2_5_vl_7b_mopd_defaults_use_its_task_teacher_checkpoints():
@@ -362,6 +365,8 @@ def test_qwen2_5_vl_7b_mopd_defaults_use_its_task_teacher_checkpoints():
     assert f'AOT_TEACHER_MODEL_PATH="${{AOT_TEACHER_MODEL_PATH:-{expected_aot}}}"' in two_teacher
     assert f'SEG_TEACHER_MODEL_PATH="${{SEG_TEACHER_MODEL_PATH:-{expected_seg}}}"' in two_teacher
     assert "EVENTLOGIC_TEACHER_MODEL_PATH" not in two_teacher
+    assert 'TP_SIZE="${TP_SIZE:-2}"' in three_teacher
+    assert 'TP_SIZE="${TP_SIZE:-2}"' in two_teacher
 
 
 def test_qwen2_5_vl_7b_mopd_has_2gpu_debug_and_8gpu_train_wrappers():
@@ -376,11 +381,11 @@ def test_qwen2_5_vl_7b_mopd_has_2gpu_debug_and_8gpu_train_wrappers():
         assert 'exec bash "${target_script}" "$@"' in launcher
 
     assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-2}"' in debug
-    assert 'TP_SIZE="${TP_SIZE:-1}"' in debug
+    assert 'TP_SIZE="${TP_SIZE:-2}"' in debug
     assert 'ROLLOUT_BS="${ROLLOUT_BS:-8}"' in debug
     assert 'GLOBAL_BS="${GLOBAL_BS:-${ROLLOUT_BS}}"' in debug
     assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-16}"' in debug
-    assert 'MAX_STEPS="${MAX_STEPS:-10}"' in debug
+    assert "MAX_STEPS=" not in debug
     assert 'SAVE_FREQ="${SAVE_FREQ:-10}"' in debug
     assert 'VAL_FREQ="${VAL_FREQ:-10}"' in debug
     assert 'DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"' in debug
@@ -388,7 +393,7 @@ def test_qwen2_5_vl_7b_mopd_has_2gpu_debug_and_8gpu_train_wrappers():
     assert 'POST_TRAIN_OCCUPANCY="${POST_TRAIN_OCCUPANCY:-false}"' in debug
 
     assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"' in train
-    assert 'TP_SIZE="${TP_SIZE:-1}"' in train
+    assert 'TP_SIZE="${TP_SIZE:-2}"' in train
     assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in train
     assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in train
     assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in train
