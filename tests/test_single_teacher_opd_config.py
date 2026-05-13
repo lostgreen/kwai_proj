@@ -178,9 +178,9 @@ def test_multi_teacher_cli_overrides_do_not_use_hydra_plus_prefix():
     runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
 
     assert "+worker.ref.teacher_models" not in runner
-    assert 'worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}"' in runner
-    assert 'worker.ref.teacher_models.seg.model_path="${SEG_TEACHER_MODEL_PATH}"' in runner
-    assert 'worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}"' in runner
+    assert 'worker.ref.teacher_models."${_teacher_name}".model_path="${!_teacher_path_var}"' in runner
+    assert 'worker.ref.teacher_models."${_teacher_name}".tokenizer_path="${!_teacher_tokenizer_var:-${!_teacher_path_var}}"' in runner
+    assert 'worker.ref.teacher_models."${_teacher_name}".trust_remote_code="${!_teacher_trust_remote_code_var}"' in runner
 
 
 def test_opd_recipe_supports_multi_teacher_paths_and_homogeneous_batching_runner():
@@ -246,6 +246,134 @@ def test_opd_full_epoch_presets_keep_batch64_and_checkpoint_controls():
     assert 'worker.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}"' in runner
     assert "max_num_seqs: int = 1024" in rollout_config
     assert "max_num_seqs=config.max_num_seqs" in rollout_impl
+
+
+def test_mopd_entrypoints_restore_three_and_two_teacher_presets_for_each_target_model():
+    opd_base = Path("video_proxy/experiments/opd")
+    common = (opd_base / "common_mopd.sh").read_text()
+    expected_models = {
+        "qwen3_vl_4b": ("qwen3_vl", "4b", "Qwen3-VL-4B-Instruct"),
+        "qwen3_vl_8b": ("qwen3_vl", "8b", "Qwen3-VL-8B-Instruct"),
+        "qwen2_5_vl_3b": ("qwen2_5_vl", "3b", "Qwen2.5-VL-3B-Instruct"),
+        "qwen2_5_vl_7b": ("qwen2_5_vl", "7b", "Qwen2.5-VL-7B-Instruct"),
+    }
+
+    assert 'FULL_COMPOSITION_EXP_NAME="${FULL_COMPOSITION_EXP_NAME:-composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema}"' in common
+    assert 'BASE_R1_R2_COMPOSITION_EXP_NAME="${BASE_R1_R2_COMPOSITION_EXP_NAME:-composition_base_seg_aot_hier10k_aot10k_mf256_ema}"' in common
+    assert 'TASKS="${TASKS:-tg mcq hier_seg event_logic aot}"' in common
+    assert 'TASKS="${TASKS:-tg mcq hier_seg aot}"' in common
+    assert 'OPD_TEACHER_SET="${OPD_TEACHER_SET:-aot seg eventlogic}"' in common
+    assert 'OPD_TEACHER_SET="${OPD_TEACHER_SET:-aot seg}"' in common
+    assert "validate_mopd_teacher_paths" in common
+
+    for dirname, (family, size, model_name) in expected_models.items():
+        three_teacher = (opd_base / dirname / "run_mopd_3teachers.sh").read_text()
+        two_teacher = (opd_base / dirname / "run_mopd_2teachers.sh").read_text()
+
+        assert f'MODEL_FAMILY="{family}"' in three_teacher
+        assert f'MODEL_SIZE="{size}"' in three_teacher
+        assert model_name in three_teacher
+        assert "mopd_full_composition_data_defaults" in three_teacher
+        assert "mopd_three_teacher_defaults" in three_teacher
+        assert "source \"${SCRIPT_DIR}/../common_mopd.sh\"" in three_teacher
+        assert "recipes/opd_train.sh" in three_teacher
+
+        assert f'MODEL_FAMILY="{family}"' in two_teacher
+        assert f'MODEL_SIZE="{size}"' in two_teacher
+        assert model_name in two_teacher
+        assert "mopd_base_r1_r2_data_defaults" in two_teacher
+        assert "mopd_two_teacher_defaults" in two_teacher
+        assert "EVENTLOGIC_TEACHER_MODEL_PATH" not in two_teacher
+        assert "source \"${SCRIPT_DIR}/../common_mopd.sh\"" in two_teacher
+        assert "recipes/opd_train.sh" in two_teacher
+
+
+def test_qwen3_4b_and_8b_mopd_presets_keep_pre_refactor_paths_and_batch_settings():
+    common = Path("video_proxy/experiments/opd/common_mopd.sh").read_text()
+    qwen3_4b = Path("video_proxy/experiments/opd/qwen3_vl_4b/run_mopd_3teachers.sh").read_text()
+    qwen3_4b_base_r1_r2 = Path("video_proxy/experiments/opd/qwen3_vl_4b/run_mopd_2teachers.sh").read_text()
+    qwen3_8b = Path("video_proxy/experiments/opd/qwen3_vl_8b/run_mopd_3teachers.sh").read_text()
+
+    assert (
+        'MOPD_TEACHER_CKPT_ROOT="${MOPD_TEACHER_CKPT_ROOT:-/m2v_intern/xuboshen/zgw/'
+        'RL-Models/VideoProxyMixed/multi_task_4b_lr5e-7_kl0p01_entropy0p005_ablations}"'
+    ) in common
+    assert 'AOT_TEACHER_STEP="${AOT_TEACHER_STEP:-200}"' in common
+    assert 'SEG_TEACHER_STEP="${SEG_TEACHER_STEP:-250}"' in common
+    assert 'EVENTLOGIC_TEACHER_STEP="${EVENTLOGIC_TEACHER_STEP:-272}"' in common
+    assert "composition_base_aot_aot10k_mf256_ema" in common
+    assert "composition_base_seg_hier10k_mf256_ema" in common
+    assert "composition_base_logic_el10k_mf256_ema" in common
+
+    assert 'EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_full_comp_4b_teachers_bs64_mf256_epoch1_save50}"' in qwen3_4b
+    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${MOPD_CHECKPOINT_ROOT_4B}}"' in qwen3_4b
+    assert 'TP_SIZE="${TP_SIZE:-1}"' in qwen3_4b
+
+    assert (
+        'EXP_NAME="${EXP_NAME:-mopd_qwen3vl4b_base_r1_r2_4b_teachers_bs64_mf256_epoch1_save50_keep1}"'
+        in qwen3_4b_base_r1_r2
+    )
+    assert 'SAVE_LIMIT="${SAVE_LIMIT:-1}"' in qwen3_4b_base_r1_r2
+    assert 'SAVE_BEST="${SAVE_BEST:-true}"' in qwen3_4b_base_r1_r2
+
+    assert (
+        'EXP_NAME="${EXP_NAME:-mopd_qwen3vl8b_full_comp_4b_teachers_bs64_mf256_epoch1_save50_keep1}"'
+        in qwen3_8b
+    )
+    assert 'CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${MOPD_CHECKPOINT_ROOT_8B}}"' in qwen3_8b
+    assert 'TP_SIZE="${TP_SIZE:-2}"' in qwen3_8b
+    assert 'ENABLE_GPU_FILLER="${ENABLE_GPU_FILLER:-false}"' in qwen3_8b
+
+    for text in (common, qwen3_4b, qwen3_8b):
+        assert 'N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"' in common
+        assert 'ROLLOUT_BS="${ROLLOUT_BS:-64}"' in common
+        assert 'GLOBAL_BS="${GLOBAL_BS:-64}"' in common
+        assert 'VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"' in common
+        assert 'ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-64}"' in common
+        assert 'MAX_FRAMES="${MAX_FRAMES:-256}"' in common
+        assert 'MAX_PIXELS="${MAX_PIXELS:-65536}"' in common
+        assert 'SAVE_FREQ="${SAVE_FREQ:-50}"' in common
+        assert 'SAVE_LIMIT="${SAVE_LIMIT:--1}"' in common
+
+
+def test_qwen2_5_vl_7b_mopd_defaults_use_its_task_teacher_checkpoints():
+    three_teacher = Path("video_proxy/experiments/opd/qwen2_5_vl_7b/run_mopd_3teachers.sh").read_text()
+    two_teacher = Path("video_proxy/experiments/opd/qwen2_5_vl_7b/run_mopd_2teachers.sh").read_text()
+
+    expected_aot = (
+        "/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task/"
+        "qwen2_5_vl_7b_aot_teacher_nocot/global_step_250/actor/huggingface"
+    )
+    expected_seg = (
+        "/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task/"
+        "qwen2_5_vl_7b_seg_teacher_nocot/global_step_272/actor/huggingface"
+    )
+    expected_logic = (
+        "/m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task/"
+        "qwen2_5_vl_7b_logic_teacher_nocot/global_step_250/actor/huggingface"
+    )
+
+    assert f'AOT_TEACHER_MODEL_PATH="${{AOT_TEACHER_MODEL_PATH:-{expected_aot}}}"' in three_teacher
+    assert f'SEG_TEACHER_MODEL_PATH="${{SEG_TEACHER_MODEL_PATH:-{expected_seg}}}"' in three_teacher
+    assert (
+        f'EVENTLOGIC_TEACHER_MODEL_PATH="${{EVENTLOGIC_TEACHER_MODEL_PATH:-{expected_logic}}}"'
+        in three_teacher
+    )
+    assert f'AOT_TEACHER_MODEL_PATH="${{AOT_TEACHER_MODEL_PATH:-{expected_aot}}}"' in two_teacher
+    assert f'SEG_TEACHER_MODEL_PATH="${{SEG_TEACHER_MODEL_PATH:-{expected_seg}}}"' in two_teacher
+    assert "EVENTLOGIC_TEACHER_MODEL_PATH" not in two_teacher
+
+
+def test_multi_teacher_runner_builds_teacher_args_from_configured_teacher_set():
+    runner = Path("video_proxy/training/launchers/run_multi_task.sh").read_text()
+
+    assert 'read -r -a OPD_TEACHER_SET_EFFECTIVE <<< "${OPD_TEACHER_SET}"' in runner
+    assert 'for _teacher_name in "${OPD_TEACHER_SET_EFFECTIVE[@]}"; do' in runner
+    assert '_teacher_prefix="$(printf \'%s\' "${_teacher_name}" | tr \'[:lower:]\' \'[:upper:]\')"' in runner
+    assert 'worker.ref.teacher_models."${_teacher_name}".model_path="${!_teacher_path_var}"' in runner
+    assert 'worker.ref.teacher_models."${_teacher_name}".tokenizer_path="${!_teacher_tokenizer_var:-${!_teacher_path_var}}"' in runner
+    assert 'worker.ref.teacher_models."${_teacher_name}".trust_remote_code="${!_teacher_trust_remote_code_var}"' in runner
+    assert "for _required_teacher_var in AOT_TEACHER_MODEL_PATH SEG_TEACHER_MODEL_PATH EVENTLOGIC_TEACHER_MODEL_PATH" not in runner
 
 
 def test_grpo_baseline_does_not_enable_opd_teachers():

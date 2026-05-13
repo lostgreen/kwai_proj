@@ -79,6 +79,7 @@ if [[ -n "${TEACHER_MODEL_PATH}" ]]; then
 fi
 if [[ -n "${AOT_TEACHER_MODEL_PATH}${SEG_TEACHER_MODEL_PATH}${EVENTLOGIC_TEACHER_MODEL_PATH}" ]]; then
     echo "[multi-task] OPD_TEACHER_KEY=${OPD_TEACHER_KEY}"
+    echo "[multi-task] OPD_TEACHER_SET=${OPD_TEACHER_SET}"
     echo "[multi-task] AOT_TEACHER_MODEL_PATH=${AOT_TEACHER_MODEL_PATH:-<unset>}"
     echo "[multi-task] SEG_TEACHER_MODEL_PATH=${SEG_TEACHER_MODEL_PATH:-<unset>}"
     echo "[multi-task] EVENTLOGIC_TEACHER_MODEL_PATH=${EVENTLOGIC_TEACHER_MODEL_PATH:-<unset>}"
@@ -374,21 +375,24 @@ if [[ -n "${AOT_TEACHER_MODEL_PATH}${SEG_TEACHER_MODEL_PATH}${EVENTLOGIC_TEACHER
         echo "[multi-task] ERROR: use either TEACHER_MODEL_PATH or multi-teacher paths, not both." >&2
         exit 1
     fi
-    for _required_teacher_var in AOT_TEACHER_MODEL_PATH SEG_TEACHER_MODEL_PATH EVENTLOGIC_TEACHER_MODEL_PATH; do
-        if [[ -z "${!_required_teacher_var:-}" ]]; then
-            echo "[multi-task] ERROR: set ${_required_teacher_var} for multi-teacher OPD." >&2
+    read -r -a OPD_TEACHER_SET_EFFECTIVE <<< "${OPD_TEACHER_SET}"
+    if (( ${#OPD_TEACHER_SET_EFFECTIVE[@]} == 0 )); then
+        echo "[multi-task] ERROR: OPD_TEACHER_SET is empty for multi-teacher OPD." >&2
+        exit 1
+    fi
+    for _teacher_name in "${OPD_TEACHER_SET_EFFECTIVE[@]}"; do
+        _teacher_prefix="$(printf '%s' "${_teacher_name}" | tr '[:lower:]' '[:upper:]')"
+        _teacher_path_var="${_teacher_prefix}_TEACHER_MODEL_PATH"
+        _teacher_tokenizer_var="${_teacher_prefix}_TEACHER_TOKENIZER_PATH"
+        _teacher_trust_remote_code_var="${_teacher_prefix}_TEACHER_TRUST_REMOTE_CODE"
+        if [[ -z "${!_teacher_path_var:-}" ]]; then
+            echo "[multi-task] ERROR: set ${_teacher_path_var} for OPD_TEACHER_SET=${OPD_TEACHER_SET}." >&2
             exit 1
         fi
+        TEACHER_MODEL_ARGS+=(worker.ref.teacher_models."${_teacher_name}".model_path="${!_teacher_path_var}")
+        TEACHER_MODEL_ARGS+=(worker.ref.teacher_models."${_teacher_name}".tokenizer_path="${!_teacher_tokenizer_var:-${!_teacher_path_var}}")
+        TEACHER_MODEL_ARGS+=(worker.ref.teacher_models."${_teacher_name}".trust_remote_code="${!_teacher_trust_remote_code_var}")
     done
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.model_path="${AOT_TEACHER_MODEL_PATH}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.tokenizer_path="${AOT_TEACHER_TOKENIZER_PATH:-${AOT_TEACHER_MODEL_PATH}}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.aot.trust_remote_code="${AOT_TEACHER_TRUST_REMOTE_CODE}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.model_path="${SEG_TEACHER_MODEL_PATH}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.tokenizer_path="${SEG_TEACHER_TOKENIZER_PATH:-${SEG_TEACHER_MODEL_PATH}}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.seg.trust_remote_code="${SEG_TEACHER_TRUST_REMOTE_CODE}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.model_path="${EVENTLOGIC_TEACHER_MODEL_PATH}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.tokenizer_path="${EVENTLOGIC_TEACHER_TOKENIZER_PATH:-${EVENTLOGIC_TEACHER_MODEL_PATH}}")
-    TEACHER_MODEL_ARGS+=(worker.ref.teacher_models.eventlogic.trust_remote_code="${EVENTLOGIC_TEACHER_TRUST_REMOTE_CODE}")
     TEACHER_MODEL_ARGS+=(worker.ref.teacher_key="${OPD_TEACHER_KEY}")
     if [[ -n "${OPD_DEFAULT_TEACHER}" ]]; then
         TEACHER_MODEL_ARGS+=(worker.ref.default_teacher="${OPD_DEFAULT_TEACHER}")
