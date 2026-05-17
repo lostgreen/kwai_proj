@@ -39,6 +39,7 @@ def test_nextvideo_pipeline_defaults_to_rollout_report_only_layout():
 
     assert "ROLLOUT_ROOT=\"${ROLLOUT_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/rollouts}\"" in text
     assert "WRITE_KEPT_JSONL=\"${WRITE_KEPT_JSONL:-false}\"" in text
+    assert "ENABLE_GPU_FILLER=\"${ENABLE_GPU_FILLER:-false}\"" in text
     rollout_common = text.split("ROLLOUT_COMMON=(", maxsplit=1)[1].split("\n    )", maxsplit=1)[0]
     assert "--output_jsonl" not in rollout_common
     assert "--report_jsonl" not in rollout_common

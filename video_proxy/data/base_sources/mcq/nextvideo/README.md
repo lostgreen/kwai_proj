@@ -39,7 +39,8 @@ to downsample to a specific comparison size.
 
 The default rollout model is Qwen3-VL-4B. Override `MODEL_PATH` if you need a
 different teacher. The default vLLM batch size is 32, matching the current
-smoke/full rollout setting.
+smoke/full rollout setting. GPU filler is disabled by default; set
+`ENABLE_GPU_FILLER=true` only when you explicitly want the built-in filler.
 
 Then refresh the multi-task MCQ base:
 
