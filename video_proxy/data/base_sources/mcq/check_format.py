@@ -60,16 +60,24 @@ def safe_float(value: Any) -> float:
         return math.nan
 
 
-def is_low_reward_llava(row: dict[str, Any]) -> bool:
+def rollout_mean_reward_key(row: dict[str, Any]) -> str | None:
+    meta = row.get("metadata") or {}
+    for key in sorted(meta):
+        if key.endswith("_rollout_mean_reward"):
+            return key
+    return None
+
+
+def is_low_reward_rollout(row: dict[str, Any]) -> bool:
     meta = row.get("metadata") or {}
     values = [
         meta.get("mcq_base_training_source"),
         meta.get("curation_source"),
         meta.get("dataset"),
     ]
-    if "llava_rollout_mean_reward" in meta:
+    if rollout_mean_reward_key(row) is not None:
         return True
-    return any("llava_rollout" in str(value).lower() for value in values if value is not None)
+    return any("rollout" in str(value).lower() for value in values if value is not None)
 
 
 def frame_lists_ok(row: dict[str, Any], check_files: bool) -> tuple[bool, str]:
@@ -123,10 +131,11 @@ def check_record(
     if not messages or messages[0].get("content") != prompt:
         errors.append(f"{where}: messages[0].content does not match prompt")
 
-    if is_low_reward_llava(row):
-        mean_reward = safe_float(meta.get("llava_rollout_mean_reward"))
+    if is_low_reward_rollout(row):
+        mean_key = rollout_mean_reward_key(row)
+        mean_reward = safe_float(meta.get(mean_key)) if mean_key else math.nan
         if math.isnan(mean_reward):
-            errors.append(f"{where}: low-reward row missing llava_rollout_mean_reward")
+            errors.append(f"{where}: low-reward row missing *_rollout_mean_reward")
         elif mean_reward < min_mean_reward or mean_reward > max_mean_reward:
             errors.append(
                 f"{where}: low-reward mean {mean_reward} outside "
@@ -146,7 +155,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         meta = row.get("metadata") or {}
         by_source[str(meta.get("source") or "unknown")] += 1
         by_duration_bucket[str(meta.get("duration_bucket") or "unknown")] += 1
-        if is_low_reward_llava(row):
+        if is_low_reward_rollout(row):
             low_reward += 1
     return {
         "records": len(rows),

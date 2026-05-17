@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from video_proxy.data.mixing import mcq, tg
 from video_proxy.data.base_sources.mcq.prepare.convert_to_direct import DIRECT_INSTRUCTION
+from video_proxy.data.base_sources.mcq.check_format import check_record
 from video_proxy.data.base_sources.mcq.rollout.select_from_shards import (
     select_records_from_reports,
 )
@@ -147,6 +148,49 @@ def test_select_records_from_reports_falls_back_to_prompt_answer_for_sharded_loc
     assert selected[0]["metadata"]["id"] == "second"
 
 
+def test_select_records_from_reports_can_label_nextvideo_rollout_metadata(tmp_path: Path):
+    prompt = "<video>\nNextVideo?\nOptions:\nA. yes\nB. no\n\nAnswer with the option letter."
+    input_path = tmp_path / "nextvideo_all.jsonl"
+    report_path = tmp_path / "rollout_report.jsonl"
+
+    _write_jsonl(
+        input_path,
+        [
+            _mcq_record(record_id="nextvideo_train_000001", prompt=prompt, source="nextvideo"),
+        ],
+    )
+    _write_jsonl(
+        report_path,
+        [
+            _report(
+                metadata_id="nextvideo_train_000001",
+                prompt=prompt,
+                mean_reward=0.25,
+                rewards=[1, 0, 1, 0, 0, 0, 0, 0],
+            ),
+        ],
+    )
+
+    selected, summary = select_records_from_reports(
+        input_paths=[input_path],
+        report_paths=[report_path],
+        min_mean_reward=0.0,
+        max_mean_reward=0.375,
+        metadata_prefix="nextvideo_rollout",
+        training_source="nextvideo_rollout_low_reward",
+    )
+
+    assert summary["selected_count"] == 1
+    meta = selected[0]["metadata"]
+    assert meta["nextvideo_rollout_mean_reward"] == 0.25
+    assert meta["nextvideo_rollout_rewards"] == [1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert meta["nextvideo_rollout_filter"] == {
+        "min_mean_reward": 0.0,
+        "max_mean_reward": 0.375,
+    }
+    assert meta["mcq_base_training_source"] == "nextvideo_rollout_low_reward"
+
+
 def test_mcq_load_val_prefers_requested_val_size_over_stale_files(tmp_path: Path):
     val_dir = tmp_path / "val"
     _write_jsonl(val_dir / "mcq_val_150_frames.jsonl", [{"prompt": "stale"}])
@@ -155,6 +199,21 @@ def test_mcq_load_val_prefers_requested_val_size_over_stale_files(tmp_path: Path
     records = mcq.load_val(str(tmp_path), SimpleNamespace(val_mcq_n=600))
 
     assert [row["prompt"] for row in records] == ["new-0", "new-1"]
+
+
+def test_check_record_validates_nextvideo_rollout_mean_reward_bounds(tmp_path: Path):
+    prompt = (
+        "<video>\nQuestion?\nOptions:\nA. yes\nB. no\n\n"
+        "Provide your answer (a single letter) inside <answer></answer> tags."
+    )
+    row = _mcq_record(record_id="nextvideo_train_000001", prompt=prompt, source="nextvideo")
+    row["messages"] = [{"role": "user", "content": prompt}]
+    row["metadata"]["mcq_base_training_source"] = "nextvideo_rollout_low_reward"
+    row["metadata"]["nextvideo_rollout_mean_reward"] = 0.5
+
+    errors = check_record(row, tmp_path / "nextvideo.jsonl", True, 0.0, 0.375)
+
+    assert any("low-reward mean 0.5 outside [0.0, 0.375]" in error for error in errors)
 
 
 def test_tg_and_mcq_default_val_sizes_are_600():

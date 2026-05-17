@@ -1,0 +1,2 @@
+"""NeXTVideo MCQ source adapter."""
+

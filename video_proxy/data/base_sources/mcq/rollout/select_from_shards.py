@@ -176,6 +176,8 @@ def select_records_from_reports(
     target_total: int = 0,
     seed: int = 42,
     skip_bad_report_lines: bool = False,
+    metadata_prefix: str = "llava_rollout",
+    training_source: str = "llava_rollout_low_reward",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     input_rows: list[dict[str, Any]] = []
     for path in input_paths:
@@ -222,15 +224,15 @@ def select_records_from_reports(
         out = _direct_record(record)
         meta = out.setdefault("metadata", {})
         rewards = reward_values(report)
-        meta["llava_rollout_mean_reward"] = round(mean_reward, 6)
+        meta[f"{metadata_prefix}_mean_reward"] = round(mean_reward, 6)
         if rewards:
-            meta["llava_rollout_rewards"] = rewards
-        meta["llava_rollout_report"] = str(report_path)
-        meta["llava_rollout_filter"] = {
+            meta[f"{metadata_prefix}_rewards"] = rewards
+        meta[f"{metadata_prefix}_report"] = str(report_path)
+        meta[f"{metadata_prefix}_filter"] = {
             "min_mean_reward": min_mean_reward,
             "max_mean_reward": max_mean_reward,
         }
-        meta["mcq_base_training_source"] = "llava_rollout_low_reward"
+        meta["mcq_base_training_source"] = training_source
         selected.append(out)
         selected_keys.add(record_key)
 
@@ -254,6 +256,8 @@ def select_records_from_reports(
         "bad_report_lines": bad_report_lines,
         "min_mean_reward": min_mean_reward,
         "max_mean_reward": max_mean_reward,
+        "metadata_prefix": metadata_prefix,
+        "training_source": training_source,
         **_summarize_records(selected),
     }
     return selected, summary
@@ -316,6 +320,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-mean-reward", type=float, default=0.375)
     parser.add_argument("--target-total", type=int, default=0, help="0 keeps all selected records")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--metadata-prefix", default="llava_rollout")
+    parser.add_argument("--training-source", default="llava_rollout_low_reward")
     parser.add_argument(
         "--skip-bad-report-lines",
         action="store_true",
@@ -345,6 +351,8 @@ def main() -> None:
         target_total=args.target_total,
         seed=args.seed,
         skip_bad_report_lines=args.skip_bad_report_lines,
+        metadata_prefix=args.metadata_prefix,
+        training_source=args.training_source,
     )
     write_jsonl(Path(args.output), selected)
 
