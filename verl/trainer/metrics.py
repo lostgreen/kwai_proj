@@ -42,6 +42,53 @@ def _flatten_numeric_values(value: Any) -> list[float]:
         return []
 
 
+def _as_bool_float(value: Any) -> float:
+    return 1.0 if bool(value) else 0.0
+
+
+def compute_cot_budget_metrics(debug_values: Any) -> dict[str, Any]:
+    """Summarize rollout CoT-budget debug records into scalar log metrics."""
+
+    if debug_values is None:
+        return {}
+    if isinstance(debug_values, np.ndarray):
+        debug_values = debug_values.tolist()
+
+    records = [item for item in debug_values if isinstance(item, dict)]
+    records = [item for item in records if bool(item.get("cot_budget_enabled", False))]
+    if not records:
+        return {}
+
+    def mean_flag(key: str) -> float:
+        return float(np.mean([_as_bool_float(item.get(key, False)) for item in records]))
+
+    metrics: dict[str, Any] = {
+        "cot_budget/enabled_ratio": 1.0,
+        "cot_budget/start_detected_ratio": mean_flag("cot_start_detected"),
+        "cot_budget/end_detected_ratio": mean_flag("cot_end_detected"),
+        "cot_budget/repaired_ratio": mean_flag("cot_repaired"),
+        "cot_budget/text_fallback_ratio": mean_flag("cot_text_fallback_used"),
+    }
+
+    for key in (
+        "raw_token_len",
+        "repaired_token_len",
+        "remaining_tokens",
+        "continuation_token_len",
+        "final_token_len",
+        "max_cot_tokens",
+    ):
+        values = _flatten_numeric_values([item.get(key) for item in records])
+        if not values:
+            continue
+        arr = np.array(values, dtype=np.float64)
+        metrics[f"cot_budget/{key}_mean"] = float(arr.mean())
+        metrics[f"cot_budget/{key}_max"] = float(arr.max())
+        metrics[f"cot_budget/{key}_min"] = float(arr.min())
+
+    return metrics
+
+
 def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
     max_response_length = batch.batch["responses"].size(-1)
     max_prompt_length = batch.batch["attention_mask"].size(-1) - max_response_length
@@ -90,6 +137,7 @@ def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
             metrics[f"{field}/max"] = float(arr.max())
             metrics[f"{field}/min"] = float(arr.min())
 
+    metrics.update(compute_cot_budget_metrics(batch.non_tensor_batch.get("cot_budget_debug")))
     return metrics
 
 

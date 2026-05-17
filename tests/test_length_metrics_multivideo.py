@@ -58,3 +58,49 @@ def test_metric_numeric_values_flattens_per_video_lists():
     )
 
     assert values == [2.0, 0.5, 1.0, 64.0, 32.0]
+
+
+def test_cot_budget_metrics_summarize_debug_flags_and_lengths():
+    metrics_mod = _load_metrics_module()
+
+    metrics = metrics_mod.compute_cot_budget_metrics(
+        [
+            {
+                "cot_budget_enabled": True,
+                "cot_start_detected": True,
+                "cot_end_detected": True,
+                "cot_repaired": False,
+                "cot_text_fallback_used": False,
+                "remaining_tokens": 12,
+                "raw_token_len": 90,
+                "final_token_len": 102,
+                "max_cot_tokens": 128,
+            },
+            {
+                "cot_budget_enabled": True,
+                "cot_start_detected": True,
+                "cot_end_detected": False,
+                "cot_repaired": True,
+                "cot_text_fallback_used": True,
+                "remaining_tokens": 0,
+                "raw_token_len": 256,
+                "final_token_len": 256,
+                "max_cot_tokens": 128,
+            },
+            None,
+        ]
+    )
+
+    assert metrics["cot_budget/enabled_ratio"] == 1.0
+    assert metrics["cot_budget/start_detected_ratio"] == 1.0
+    assert metrics["cot_budget/end_detected_ratio"] == 0.5
+    assert metrics["cot_budget/repaired_ratio"] == 0.5
+    assert metrics["cot_budget/text_fallback_ratio"] == 0.5
+    assert metrics["cot_budget/remaining_tokens_mean"] == 6.0
+    assert metrics["cot_budget/final_token_len_max"] == 256.0
+
+
+def test_cot_budget_metrics_return_empty_when_debug_absent():
+    metrics_mod = _load_metrics_module()
+
+    assert metrics_mod.compute_cot_budget_metrics([None, {}]) == {}
