@@ -4,7 +4,7 @@
 # Flow:
 #   1. Convert NeXTVideo train.jsonl to shared MCQ JSONL.
 #   2. Run Qwen3-VL offline rollout with the existing MCQ reward.
-#   3. Select low-reward records and downsample to a target count.
+#   3. Select low-reward records from the rollout report and downsample to a target count.
 #
 # Usage from train/:
 #   bash video_proxy/data/base_sources/mcq/nextvideo/run_pipeline.sh
@@ -16,15 +16,17 @@ MCQ_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../../../.." && pwd)"
 source "${REPO_ROOT}/video_proxy/training/common/gpu_filler_common.sh"
 
-NEXTVIDEO_ROOT="${NEXTVIDEO_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/NeXTVideo}"
+DATA_ROOT="${DATA_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed}"
+ROLLOUT_ROOT="${ROLLOUT_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/rollouts}"
+NEXTVIDEO_ROOT="${NEXTVIDEO_ROOT:-${DATA_ROOT}/NeXTVideo}"
 NEXTVIDEO_INPUT="${NEXTVIDEO_INPUT:-${NEXTVIDEO_ROOT}/train.jsonl}"
-MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-8B-Instruct}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/results_nextvideo_qwen3_vl_8b_roll8_leq3of8}"
+MODEL_PATH="${MODEL_PATH:-/m2v_intern/xuboshen/models/Qwen3-VL-4B-Instruct}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${ROLLOUT_ROOT}/mcq_nextvideo_qwen3_vl_4b_roll8_leq3of8}"
 
 NUM_GPUS="${NUM_GPUS:-8}"
 TP_SIZE="${TP_SIZE:-1}"
 NUM_ROLLOUTS="${NUM_ROLLOUTS:-8}"
-BATCH_SIZE="${BATCH_SIZE:-16}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-24576}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.82}"
 MIN_ACC="${MIN_ACC:-0.0}"
@@ -33,6 +35,7 @@ TARGET_TOTAL="${TARGET_TOTAL:-0}"
 SEED="${SEED:-42}"
 FORCE="${FORCE:-0}"
 VERIFY_VIDEOS="${VERIFY_VIDEOS:-true}"
+WRITE_KEPT_JSONL="${WRITE_KEPT_JSONL:-false}"
 
 ENABLE_GPU_FILLER="${ENABLE_GPU_FILLER:-true}"
 FILLER_LOG_PATH="${FILLER_LOG_PATH:-${OUTPUT_ROOT}/gpu_filler.log}"
@@ -109,6 +112,7 @@ echo " Acc Range:    [${MIN_ACC}, ${MAX_ACC}]"
 echo " Target:       ${TARGET_TOTAL} (0 = keep all filtered)"
 echo " Batch:        ${BATCH_SIZE}  Max Tokens: ${MAX_BATCHED_TOKENS}"
 echo " Verify videos:${VERIFY_VIDEOS}"
+echo " Kept JSONL:   ${WRITE_KEPT_JSONL}"
 echo "============================================="
 
 mkdir -p "${OUTPUT_ROOT}"
@@ -157,8 +161,6 @@ if [[ "${ROLLOUT_DONE}" == "0" ]]; then
 
     ROLLOUT_COMMON=(
         --input_jsonl "${MCQ_JSONL}"
-        --output_jsonl "${ROLLOUT_OUTPUT}"
-        --report_jsonl "${ROLLOUT_REPORT}"
         --model_path "${MODEL_PATH}"
         --reward_function "${REWARD_FN}"
         --backend vllm
@@ -172,11 +174,19 @@ if [[ "${ROLLOUT_DONE}" == "0" ]]; then
         --max_mean_reward 1.0
         --seed "${SEED}"
     )
+    ROLLOUT_REPORT_ARGS=(--report_jsonl "${ROLLOUT_REPORT}")
+    if [[ "${WRITE_KEPT_JSONL,,}" == "true" ]]; then
+        ROLLOUT_OUTPUT_ARGS=(--output_jsonl "${ROLLOUT_OUTPUT}")
+    else
+        ROLLOUT_OUTPUT_ARGS=()
+    fi
 
     if [[ "${TP_SIZE}" -gt 1 ]]; then
         echo "  TP=${TP_SIZE} mode"
         VERL_GPU_SIGNAL_PATH="${FILLER_SIGNAL_PREFIX}tp" python3 "${ROLLOUT_SCRIPT}" \
             "${ROLLOUT_COMMON[@]}" \
+            "${ROLLOUT_REPORT_ARGS[@]}" \
+            "${ROLLOUT_OUTPUT_ARGS[@]}" \
             --tensor_parallel_size "${TP_SIZE}"
     elif [[ "${NUM_GPUS}" -gt 1 ]]; then
         echo "  Data-parallel mode (${NUM_GPUS} GPUs)"
@@ -185,20 +195,30 @@ if [[ "${ROLLOUT_DONE}" == "0" ]]; then
             SHARD_GPU="${SHARD_GPU//[[:space:]]/}"
             SHARD_SIGNAL_PATH="${FILLER_SIGNAL_PREFIX}${SHARD_GPU}"
             echo "    shard ${i} -> CUDA_VISIBLE_DEVICES=${SHARD_GPU}"
+            if [[ "${WRITE_KEPT_JSONL,,}" == "true" ]]; then
+                SHARD_OUTPUT_ARGS=(--output_jsonl "${OUTPUT_ROOT}/_shard${i}_kept.jsonl")
+            else
+                SHARD_OUTPUT_ARGS=()
+            fi
+            SHARD_REPORT_ARGS=(--report_jsonl "${OUTPUT_ROOT}/_shard${i}_report.jsonl")
             VERL_GPU_SIGNAL_PATH="${SHARD_SIGNAL_PATH}" CUDA_VISIBLE_DEVICES="${SHARD_GPU}" python3 "${ROLLOUT_SCRIPT}" \
                 "${ROLLOUT_COMMON[@]}" \
+                "${SHARD_REPORT_ARGS[@]}" \
+                "${SHARD_OUTPUT_ARGS[@]}" \
                 --tensor_parallel_size 1 \
-                --shard_id "${i}" --num_shards "${NUM_GPUS}" \
-                --output_jsonl "${OUTPUT_ROOT}/_shard${i}_kept.jsonl" \
-                --report_jsonl "${OUTPUT_ROOT}/_shard${i}_report.jsonl" &
+                --shard_id "${i}" --num_shards "${NUM_GPUS}" &
         done
         wait
-        cat "${OUTPUT_ROOT}"/_shard*_kept.jsonl > "${ROLLOUT_OUTPUT}"
         cat "${OUTPUT_ROOT}"/_shard*_report.jsonl > "${ROLLOUT_REPORT}"
+        if [[ "${WRITE_KEPT_JSONL,,}" == "true" ]]; then
+            cat "${OUTPUT_ROOT}"/_shard*_kept.jsonl > "${ROLLOUT_OUTPUT}"
+        fi
     else
         echo "  Single GPU mode"
         VERL_GPU_SIGNAL_PATH="${FILLER_SIGNAL_PREFIX}${VISIBLE_GPU_TOKENS[0]}" python3 "${ROLLOUT_SCRIPT}" \
             "${ROLLOUT_COMMON[@]}" \
+            "${ROLLOUT_REPORT_ARGS[@]}" \
+            "${ROLLOUT_OUTPUT_ARGS[@]}" \
             --tensor_parallel_size 1
     fi
 fi

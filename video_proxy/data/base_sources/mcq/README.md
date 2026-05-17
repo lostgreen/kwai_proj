@@ -75,9 +75,21 @@ python video_proxy/data/base_sources/mcq/check_format.py \
 
 - `mcq_all.jsonl`：解析后的全量 MCQ。
 - `pilot_sample.jsonl`：pilot 模式下的分层采样集。
-- `rollout_kept.jsonl` / `rollout_report.jsonl`：rollout 后保留样本和报告。
+- `rollout_report.jsonl`：rollout 的主产物，包含每条样本的 rewards、mean_reward、responses。
+- `rollout_kept.jsonl`：旧版兼容产物，只在脚本显式启用时写出；新的筛选逻辑应从 report 派生最终训练集。
 - `train_final.jsonl` / `train_final_direct.jsonl`：进入 base 数据混合的最终 MCQ 文件。
 - `*.png` / `*.html`：可视化筛选报告。
+
+建议把不同来源的离线 rollout 统一放在数据根下的 `rollouts/`：
+
+```text
+/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/rollouts/
+  mcq_llava_qwen3_vl_8b_roll8_leq3of8/
+  mcq_nextvideo_qwen3_vl_4b_roll8_leq3of8/
+  aot_nocot_qwen3_vl_8b_roll8/
+```
+
+这样 `VideoProxyMixed/` 根目录只保留原始数据、base/multi-task 数据和少量稳定目录，rollout 报告、筛选摘要、临时 shard 都收在同一层下面。
 
 ## 注意
 

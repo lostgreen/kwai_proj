@@ -6,7 +6,8 @@ Offline filter a JSONL training set by rollout reward diversity.
 For each sample:
 1. Run the current model with `num_rollouts` sampled generations.
 2. Score each generation with the configured reward function.
-3. Keep the sample only if the rollout rewards are not all identical.
+3. Write a per-sample rollout report. Optionally also write the diverse
+   kept subset for legacy callers that still consume that intermediate file.
 
 This is intended to replace online filtering for mixed-task DAPO runs.
 """
@@ -41,7 +42,11 @@ from verl.utils.video_fps import resolve_video_fps_list
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Offline rollout filter for RL JSONL datasets.")
     parser.add_argument("--input_jsonl", required=True)
-    parser.add_argument("--output_jsonl", required=True)
+    parser.add_argument(
+        "--output_jsonl",
+        default="",
+        help="Optional legacy kept-subset JSONL. When omitted, only --report_jsonl is written.",
+    )
     parser.add_argument("--report_jsonl", required=True)
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--reward_function", required=True, help="Path spec like path/to/reward.py:compute_score")
@@ -458,9 +463,10 @@ def main() -> None:
 
     set_gpu_phase("idle")
 
-    output_path = Path(args.output_jsonl)
     report_path = Path(args.report_jsonl)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = Path(args.output_jsonl) if args.output_jsonl else None
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     kept = 0
@@ -501,7 +507,8 @@ def main() -> None:
 
         ptype = item.get("problem_type", "unknown") or "unknown"
         if keep:
-            fout.write(json.dumps(item, ensure_ascii=False) + "\n")
+            if fout is not None:
+                fout.write(json.dumps(item, ensure_ascii=False) + "\n")
             kept += 1
             kept_by_type[ptype] = kept_by_type.get(ptype, 0) + 1
         else:
@@ -545,53 +552,60 @@ def main() -> None:
         }
         freport.write(json.dumps(report, ensure_ascii=False) + "\n")
 
-    with output_path.open("w", encoding="utf-8") as fout, report_path.open("w", encoding="utf-8") as freport:
-        if args.backend == "vllm":
-            # ---- Mini-batch vLLM inference: score & write after each batch ----
-            processed = 0
-            for idx, item, result in iter_vllm_batches(
-                items,
-                processor,
-                llm,
-                sampling_params,
-                args,
-                batch_size=args.batch_size,
-            ):
-                if isinstance(result, Exception):
-                    _process_error(item, idx, result, freport)
-                else:
+    with report_path.open("w", encoding="utf-8") as freport:
+        fout = output_path.open("w", encoding="utf-8") if output_path is not None else None
+        try:
+            if args.backend == "vllm":
+                # ---- Mini-batch vLLM inference: score & write after each batch ----
+                processed = 0
+                for idx, item, result in iter_vllm_batches(
+                    items,
+                    processor,
+                    llm,
+                    sampling_params,
+                    args,
+                    batch_size=args.batch_size,
+                ):
+                    if isinstance(result, Exception):
+                        _process_error(item, idx, result, freport)
+                    else:
+                        try:
+                            _process_result(item, idx, result, fout, freport)
+                        except Exception as exc:
+                            _process_error(item, idx, exc, freport)
+                    processed += 1
+                    if fout is not None:
+                        fout.flush()
+                    freport.flush()
+                    if processed % args.log_every == 0 or processed == len(items):
+                        print(
+                            f"[offline_filter] processed={processed}/{len(items)} "
+                            f"kept={kept} dropped={dropped}",
+                            flush=True,
+                        )
+            else:
+                # ---- Sequential transformers inference ----
+                progress = tqdm(items, desc="offline_filter", total=len(items), dynamic_ncols=True)
+                for idx, item in enumerate(progress):
                     try:
-                        _process_result(item, idx, result, fout, freport)
+                        responses = generate_with_transformers(item, processor, model, args)
+                        _process_result(item, idx, responses, fout, freport)
                     except Exception as exc:
                         _process_error(item, idx, exc, freport)
-                processed += 1
-                fout.flush()
-                freport.flush()
-                if processed % args.log_every == 0 or processed == len(items):
-                    print(
-                        f"[offline_filter] processed={processed}/{len(items)} "
-                        f"kept={kept} dropped={dropped}",
-                        flush=True,
-                    )
-        else:
-            # ---- Sequential transformers inference ----
-            progress = tqdm(items, desc="offline_filter", total=len(items), dynamic_ncols=True)
-            for idx, item in enumerate(progress):
-                try:
-                    responses = generate_with_transformers(item, processor, model, args)
-                    _process_result(item, idx, responses, fout, freport)
-                except Exception as exc:
-                    _process_error(item, idx, exc, freport)
-                progress.set_postfix(kept=kept, dropped=dropped, refresh=False)
-                if (idx + 1) % args.log_every == 0 or (idx + 1) == len(items):
-                    print(
-                        f"[offline_filter] processed={idx + 1}/{len(items)} "
-                        f"kept={kept} dropped={dropped}"
-                    )
+                    progress.set_postfix(kept=kept, dropped=dropped, refresh=False)
+                    if (idx + 1) % args.log_every == 0 or (idx + 1) == len(items):
+                        print(
+                            f"[offline_filter] processed={idx + 1}/{len(items)} "
+                            f"kept={kept} dropped={dropped}"
+                        )
+        finally:
+            if fout is not None:
+                fout.close()
 
+    output_desc = str(output_path) if output_path is not None else "<not written>"
     print(
         f"[offline_filter] done. input={len(items)} kept={kept} dropped={dropped} "
-        f"output={output_path} report={report_path}"
+        f"output={output_desc} report={report_path}"
     )
     if args.min_mean_reward > 0.0 or args.max_mean_reward < 1.0:
         print(

@@ -37,6 +37,10 @@ By default `TARGET_TOTAL=0`, so the pipeline keeps all low-reward candidates
 after rollout. Once the report is complete, set `TARGET_TOTAL` only if you want
 to downsample to a specific comparison size.
 
+The default rollout model is Qwen3-VL-4B. Override `MODEL_PATH` if you need a
+different teacher. The default vLLM batch size is 32, matching the current
+smoke/full rollout setting.
+
 Then refresh the multi-task MCQ base:
 
 ```bash
@@ -54,7 +58,7 @@ bash video_proxy/data/scripts/refresh_mcq_base_with_nextvideo.sh
 ## Output Layout
 
 ```text
-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/results_nextvideo_qwen3_vl_8b_roll8_leq3of8/
+/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/rollouts/mcq_nextvideo_qwen3_vl_4b_roll8_leq3of8/
   nextvideo_mcq_all.jsonl
   _shard*_report.jsonl
   rollout_report.jsonl
@@ -62,6 +66,10 @@ bash video_proxy/data/scripts/refresh_mcq_base_with_nextvideo.sh
   train_final.jsonl
   train_final_direct.jsonl
 ```
+
+`rollout_kept.jsonl` is no longer a default output; it can be enabled for legacy
+debugging with `WRITE_KEPT_JSONL=true`. Treat `rollout_report.jsonl` as the
+canonical rollout artifact and derive training subsets from it.
 
 Base-refresh bookkeeping defaults to:
 

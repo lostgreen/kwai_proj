@@ -13,7 +13,7 @@ source "${SCRIPT_DIR}/../../training/common/multi_task_common.sh"
 
 TAG="${TAG:-nextvideo_reward_0p0_0p375_n3237}"
 NEXTVIDEO_PIPELINE_SCRIPT="${REPO_ROOT}/video_proxy/data/base_sources/mcq/nextvideo/run_pipeline.sh"
-NEXTVIDEO_OUTPUT_ROOT="${NEXTVIDEO_OUTPUT_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/results_nextvideo_qwen3_vl_8b_roll8_leq3of8}"
+NEXTVIDEO_OUTPUT_ROOT="${NEXTVIDEO_OUTPUT_ROOT:-/m2v_intern/xuboshen/zgw/data/VideoProxyMixed/rollouts/mcq_nextvideo_qwen3_vl_4b_roll8_leq3of8}"
 FINAL_DIRECT_JSONL="${FINAL_DIRECT_JSONL:-${NEXTVIDEO_OUTPUT_ROOT}/train_final_direct.jsonl}"
 
 RUN_NEXTVIDEO_PIPELINE="${RUN_NEXTVIDEO_PIPELINE:-true}"
