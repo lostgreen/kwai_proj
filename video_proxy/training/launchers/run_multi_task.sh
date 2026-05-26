@@ -46,6 +46,11 @@ COT_BUDGET_ENABLED="${COT_BUDGET_ENABLED:-false}"
 COT_BUDGET_START_TOKEN="${COT_BUDGET_START_TOKEN:-<think>}"
 COT_BUDGET_END_TOKEN="${COT_BUDGET_END_TOKEN:-</think>}"
 COT_BUDGET_MAX_TOKENS="${COT_BUDGET_MAX_TOKENS:-0}"
+ACTOR_LOSS_AVG_MODE="${ACTOR_LOSS_AVG_MODE:-token}"
+ENABLE_RESPONSE_LOSS_WEIGHT_MASK="${ENABLE_RESPONSE_LOSS_WEIGHT_MASK:-false}"
+THOUGHT_LOSS_WEIGHT="${THOUGHT_LOSS_WEIGHT:-0.2}"
+ANSWER_LOSS_WEIGHT="${ANSWER_LOSS_WEIGHT:-1.0}"
+DEFAULT_LOSS_WEIGHT="${DEFAULT_LOSS_WEIGHT:-1.0}"
 REWARD_KWARGS_ARGS=()
 if [[ "${COT_FORMAT_REWARD_ENABLED}" == "true" ]]; then
     REWARD_KWARGS_ARGS+=(
@@ -68,6 +73,7 @@ echo "[multi-task] TASK_HOMOGENEOUS_BATCHING=${TASK_HOMOGENEOUS_BATCHING}"
 echo "[multi-task] TASK_HOMOGENEOUS_GROUPING=${TASK_HOMOGENEOUS_GROUPING}"
 echo "[multi-task] TRAINING_MODE=${TRAINING_MODE} ADV_ESTIMATOR=${ADV_ESTIMATOR} LR=${LR} KL_COEF=${KL_COEF} ENTROPY_COEFF=${ENTROPY_COEFF} ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE}"
 echo "[multi-task] COT_BUDGET_ENABLED=${COT_BUDGET_ENABLED} COT_BUDGET_START_TOKEN=${COT_BUDGET_START_TOKEN} COT_BUDGET_END_TOKEN=${COT_BUDGET_END_TOKEN} COT_BUDGET_MAX_TOKENS=${COT_BUDGET_MAX_TOKENS}"
+echo "[multi-task] ACTOR_LOSS_AVG_MODE=${ACTOR_LOSS_AVG_MODE} ENABLE_RESPONSE_LOSS_WEIGHT_MASK=${ENABLE_RESPONSE_LOSS_WEIGHT_MASK} THOUGHT_LOSS_WEIGHT=${THOUGHT_LOSS_WEIGHT} ANSWER_LOSS_WEIGHT=${ANSWER_LOSS_WEIGHT} DEFAULT_LOSS_WEIGHT=${DEFAULT_LOSS_WEIGHT}"
 echo "[multi-task] ONLINE_FILTERING=${ONLINE_FILTERING} FILTER_KEY=${FILTER_KEY} FILTER_LOW=${FILTER_LOW} FILTER_HIGH=${FILTER_HIGH}"
 echo "[multi-task] COT_FORMAT_REWARD_ENABLED=${COT_FORMAT_REWARD_ENABLED} COT_FORMAT_REWARD_MISSING=${COT_FORMAT_REWARD_MISSING} COT_FORMAT_REWARD_TRUNCATED=${COT_FORMAT_REWARD_TRUNCATED} COT_FORMAT_REWARD_OK=${COT_FORMAT_REWARD_OK}"
 if [[ "${TRAINING_MODE}" == "opd" ]]; then
@@ -451,7 +457,7 @@ python3 -m verl.trainer.main \
     worker.actor.optim.min_lr_ratio="${LR_MIN_RATIO}" \
     worker.actor.clip_ratio_low="${CLIP_RATIO_LOW}" \
     worker.actor.clip_ratio_high="${CLIP_RATIO_HIGH}" \
-    worker.actor.loss_avg_mode=token \
+    worker.actor.loss_avg_mode="${ACTOR_LOSS_AVG_MODE}" \
     worker.actor.entropy_coeff="${ENTROPY_COEFF}" \
     worker.ref.offload.offload_params="${REF_OFFLOAD_PARAMS}" \
     worker.rollout.n="${ROLLOUT_N}" \
@@ -467,6 +473,10 @@ python3 -m verl.trainer.main \
     worker.rollout.cot_budget_max_tokens="${COT_BUDGET_MAX_TOKENS}" \
     worker.reward.reward_function="${REWARD_FUNCTION}" \
     worker.reward.reward_type=batch \
+    worker.reward.enable_response_loss_weight_mask="${ENABLE_RESPONSE_LOSS_WEIGHT_MASK}" \
+    worker.reward.thought_loss_weight="${THOUGHT_LOSS_WEIGHT}" \
+    worker.reward.answer_loss_weight="${ANSWER_LOSS_WEIGHT}" \
+    worker.reward.default_loss_weight="${DEFAULT_LOSS_WEIGHT}" \
     "${REWARD_KWARGS_ARGS[@]}" \
     trainer.project_name="${PROJECT_NAME}" \
     trainer.experiment_name="${EXP_NAME}" \
