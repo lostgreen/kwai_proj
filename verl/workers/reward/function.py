@@ -52,9 +52,9 @@ BatchRewardFunction = Callable[[list[RewardInput]], list[RewardScore]]
 
 
 _SEGMENT_TAG_PAIRS = (
-    ("<thought>", "</thought>", "thought"),
-    ("<think>", "</think>", "thought"),
-    ("<answer>", "</answer>", "answer"),
+    ("<thought>", "</thought>", "thought", True),
+    ("<think>", "</think>", "thought", True),
+    ("<answer>", "</answer>", "answer", False),
 )
 
 _SEGMENT_METRIC_LABELS = (
@@ -71,9 +71,11 @@ def _token_count(tokenizer: PreTrainedTokenizer, text: str) -> int:
         return len(tokenizer.encode(text))
 
 
-def _segment_spans(response: str) -> list[tuple[int, int, str]]:
+def _segment_spans(response: str, *, answer_fallback_after_thought: bool) -> list[tuple[int, int, str]]:
     spans = []
-    for open_tag, close_tag, segment_name in _SEGMENT_TAG_PAIRS:
+    thought_close_positions = []
+    has_answer_span = False
+    for open_tag, close_tag, segment_name, enables_fallback in _SEGMENT_TAG_PAIRS:
         search_from = 0
         while True:
             open_pos = response.find(open_tag, search_from)
@@ -85,7 +87,15 @@ def _segment_spans(response: str) -> list[tuple[int, int, str]]:
                 break
             if close_pos > content_start:
                 spans.append((content_start, close_pos, segment_name))
+                has_answer_span = has_answer_span or segment_name == "answer"
+                if enables_fallback:
+                    thought_close_positions.append(close_pos + len(close_tag))
             search_from = close_pos + len(close_tag)
+    if answer_fallback_after_thought and thought_close_positions and not has_answer_span:
+        fallback_start = max(thought_close_positions)
+        fallback_end = len(response)
+        if response[fallback_start:fallback_end].strip():
+            spans.append((fallback_start, fallback_end, "answer"))
     spans.sort(key=lambda item: item[0])
     return spans
 
@@ -119,7 +129,10 @@ def build_response_loss_weight_mask_and_metrics(
     weights = torch.ones_like(response_mask, dtype=torch.float32) * float(config.default_loss_weight)
     weights = weights * response_mask.to(dtype=weights.dtype)
     segment_labels = torch.zeros_like(response_mask, dtype=torch.long)
-    spans = _segment_spans(response)
+    spans = _segment_spans(
+        response,
+        answer_fallback_after_thought=bool(config.answer_fallback_after_thought),
+    )
     if not spans:
         fallback = response_mask.to(dtype=torch.float32)
         return fallback, _summarize_response_loss_weights(fallback, response_mask, segment_labels)

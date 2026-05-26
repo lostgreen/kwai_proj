@@ -238,6 +238,88 @@ def test_build_response_loss_weight_mask_reports_segment_audit_metrics():
     assert math.isclose(metrics["response_loss_weight/weighted_token_ratio"], total_weight / valid_len)
 
 
+def test_build_response_loss_weight_mask_treats_text_after_thought_as_answer_fallback():
+    config_module, function_module = _load_reward_modules()
+    tokenizer = _CharTokenizer()
+    response = "<thought>draft range 1 - 2 seconds</thought>The event happens in the 20 - 30 seconds."
+    response_ids = torch.tensor(tokenizer.encode(response))
+    response_mask = torch.ones_like(response_ids, dtype=torch.float32)
+    config = config_module.RewardConfig(
+        enable_response_loss_weight_mask=True,
+        thought_loss_weight=0.1,
+        answer_loss_weight=0.9,
+        default_loss_weight=1.0,
+    )
+
+    weights, metrics = function_module.build_response_loss_weight_mask_and_metrics(
+        response_ids,
+        response_mask,
+        response,
+        tokenizer,
+        config,
+    )
+
+    thought_offset = response.index("draft")
+    answer_offset = response.index("The event")
+    assert math.isclose(weights[thought_offset].item(), 0.1, abs_tol=1e-6)
+    assert math.isclose(weights[answer_offset].item(), 0.9, abs_tol=1e-6)
+    assert metrics["response_loss_weight/answer_token_ratio"] > 0.0
+    assert metrics["response_loss_weight/answer_effective_ratio"] > 0.0
+
+
+def test_build_response_loss_weight_mask_treats_events_after_thought_as_answer_fallback():
+    config_module, function_module = _load_reward_modules()
+    tokenizer = _CharTokenizer()
+    response = "<thought>draft</thought><events>[[20, 30]]</events>"
+    response_ids = torch.tensor(tokenizer.encode(response))
+    response_mask = torch.ones_like(response_ids, dtype=torch.float32)
+    config = config_module.RewardConfig(
+        enable_response_loss_weight_mask=True,
+        thought_loss_weight=0.1,
+        answer_loss_weight=0.9,
+        default_loss_weight=1.0,
+    )
+
+    weights, metrics = function_module.build_response_loss_weight_mask_and_metrics(
+        response_ids,
+        response_mask,
+        response,
+        tokenizer,
+        config,
+    )
+
+    event_offset = response.index("<events>")
+    assert math.isclose(weights[event_offset].item(), 0.9, abs_tol=1e-6)
+    assert metrics["response_loss_weight/answer_token_ratio"] > 0.0
+
+
+def test_build_response_loss_weight_mask_can_disable_answer_fallback_after_thought():
+    config_module, function_module = _load_reward_modules()
+    tokenizer = _CharTokenizer()
+    response = "<thought>draft</thought>The event happens in the 20 - 30 seconds."
+    response_ids = torch.tensor(tokenizer.encode(response))
+    response_mask = torch.ones_like(response_ids, dtype=torch.float32)
+    config = config_module.RewardConfig(
+        enable_response_loss_weight_mask=True,
+        thought_loss_weight=0.1,
+        answer_loss_weight=0.9,
+        default_loss_weight=1.0,
+        answer_fallback_after_thought=False,
+    )
+
+    weights, metrics = function_module.build_response_loss_weight_mask_and_metrics(
+        response_ids,
+        response_mask,
+        response,
+        tokenizer,
+        config,
+    )
+
+    answer_offset = response.index("The event")
+    assert math.isclose(weights[answer_offset].item(), 1.0, abs_tol=1e-6)
+    assert math.isclose(metrics["response_loss_weight/answer_token_ratio"], 0.0, abs_tol=1e-6)
+
+
 def test_build_response_loss_weight_mask_falls_back_to_ones_without_tags():
     config_module, function_module = _load_reward_modules()
     tokenizer = _CharTokenizer()
