@@ -214,3 +214,4 @@ _debug*
 bad_samples.txt
 proxy_data/youcook2_seg/event_logic/EVENT_LOGIC_DIFFICULTY_DISCUSSION.md
 video_proxy/data/pipelines/youcook2_seg/event_logic/EVENT_LOGIC_DIFFICULTY_DISCUSSION.md
+proxy_data

@@ -13,7 +13,7 @@
 # limitations under the License.
 """
 python /m2v_intern/xuboshen/zgw/EasyR1/scripts/model_merger.py \
-    --local_dir /m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task/el_ablation_sort/global_step_350/actor
+    --local_dir /m2v_intern/xuboshen/zgw/RL-Models/VideoProxyMixed/multi_task/qwen2_5_vl_7b_base_tg_mcq_teacher_nocot/global_step_116/actor
 """
 
 import argparse
