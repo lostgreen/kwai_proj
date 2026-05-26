@@ -91,7 +91,7 @@ class ActorConfig:
     clip_ratio_dual: float = 3.0
     """constant C in dual-clip PPO, clips when advantage < -C"""
     loss_avg_mode: str = "token"
-    """loss average mode: `token`, `seq`"""
+    """loss average mode: `token`, `seq`, `token_weighted`, `seq_weighted`"""
     ppo_epochs: int = 1
     """number of ppo epochs for each rollout batch"""
     padding_free: bool = True

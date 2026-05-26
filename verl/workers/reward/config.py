@@ -27,6 +27,10 @@ class RewardConfig:
     reward_function_kwargs: dict = field(default_factory=dict)
     skip_special_tokens: bool = True
     num_cpus: int = 1
+    enable_response_loss_weight_mask: bool = False
+    thought_loss_weight: float = 0.2
+    answer_loss_weight: float = 1.0
+    default_loss_weight: float = 1.0
     # below are auto keys
     reward_function_name: Optional[str] = field(default=None, init=False)
 

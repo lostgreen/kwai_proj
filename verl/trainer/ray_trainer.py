@@ -68,6 +68,19 @@ from .metrics import (
 _TEMPORAL_SEGMENT_PATTERN = re.compile(r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*\]")
 
 
+def _unpack_reward_output(reward_output):
+    if len(reward_output) == 2:
+        reward_tensor, reward_metrics = reward_output
+        return reward_tensor, reward_metrics, {}
+    reward_tensor, reward_metrics, extra_tensors = reward_output
+    return reward_tensor, reward_metrics, extra_tensors or {}
+
+
+def _attach_reward_extra_tensors(batch: DataProto, extra_tensors: dict[str, torch.Tensor]) -> None:
+    for key, value in extra_tensors.items():
+        batch.batch[key] = value
+
+
 def _extract_temporal_segments(text: str) -> list[list[float]]:
     if not text:
         return []
@@ -647,7 +660,7 @@ class RayPPOTrainer:
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
-            reward_tensor, reward_metrics = ray.get(self.val_reward_fn.compute_reward.remote(test_batch))
+            reward_tensor, reward_metrics, _ = _unpack_reward_output(ray.get(self.val_reward_fn.compute_reward.remote(test_batch)))
             set_gpu_phase("val_idle")
 
             repeated_multimodal_sources = np.repeat(multimodal_sources, repeat_times, axis=0)
@@ -796,7 +809,7 @@ class RayPPOTrainer:
                 gen_baseline_output = self.actor_rollout_ref_wg.generate_sequences(gen_baseline_batch)
 
                 new_batch = new_batch.union(gen_baseline_output)
-                reward_baseline_tensor, _ = ray.get(self.reward_fn.compute_reward.remote(new_batch))
+                reward_baseline_tensor, _, _ = _unpack_reward_output(ray.get(self.reward_fn.compute_reward.remote(new_batch)))
                 reward_baseline_tensor = reward_baseline_tensor.sum(dim=-1)
 
                 new_batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
@@ -810,12 +823,15 @@ class RayPPOTrainer:
             # filter group
             if self.config.algorithm.online_filtering:
                 _reward_t0 = _time.time()
-                reward_tensor, reward_metrics = ray.get(self.reward_fn.compute_reward.remote(new_batch))
+                reward_tensor, reward_metrics, reward_extra_tensors = _unpack_reward_output(
+                    ray.get(self.reward_fn.compute_reward.remote(new_batch))
+                )
                 _reward_t1 = _time.time()
                 if timing_raw is not None:
                     timing_raw[f"gen/iter_{num_try_make_batch}/reward"] = _reward_t1 - _reward_t0
                 tlog(f"[make_batch] iter={num_try_make_batch} reward compute: {_reward_t1 - _reward_t0:.2f}s")
                 new_batch.batch["token_level_scores"] = reward_tensor
+                _attach_reward_extra_tensors(new_batch, reward_extra_tensors)
                 for k, v in reward_metrics.items():
                     all_metrics[k].extend(v)
 
@@ -974,8 +990,9 @@ class RayPPOTrainer:
                     with timer("adv", timing_raw):
                         if "token_level_scores" not in batch.batch:
                             # get token level scores asynchronously
-                            reward_tensor, reward_metrics = ray.get(reward_ref)
+                            reward_tensor, reward_metrics, reward_extra_tensors = _unpack_reward_output(ray.get(reward_ref))
                             batch.batch["token_level_scores"] = reward_tensor
+                            _attach_reward_extra_tensors(batch, reward_extra_tensors)
                             reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
                             metrics.update(reward_metrics)
 

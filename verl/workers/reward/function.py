@@ -51,6 +51,67 @@ SequentialRewardFunction = Callable[[RewardInput], RewardScore]
 BatchRewardFunction = Callable[[list[RewardInput]], list[RewardScore]]
 
 
+_SEGMENT_TAG_PAIRS = (
+    ("<thought>", "</thought>", "thought"),
+    ("<think>", "</think>", "thought"),
+    ("<answer>", "</answer>", "answer"),
+)
+
+
+def _token_count(tokenizer: PreTrainedTokenizer, text: str) -> int:
+    try:
+        return len(tokenizer.encode(text, add_special_tokens=False))
+    except TypeError:
+        return len(tokenizer.encode(text))
+
+
+def _segment_spans(response: str) -> list[tuple[int, int, str]]:
+    spans = []
+    for open_tag, close_tag, segment_name in _SEGMENT_TAG_PAIRS:
+        search_from = 0
+        while True:
+            open_pos = response.find(open_tag, search_from)
+            if open_pos < 0:
+                break
+            content_start = open_pos + len(open_tag)
+            close_pos = response.find(close_tag, content_start)
+            if close_pos < 0:
+                break
+            if close_pos > content_start:
+                spans.append((content_start, close_pos, segment_name))
+            search_from = close_pos + len(close_tag)
+    spans.sort(key=lambda item: item[0])
+    return spans
+
+
+def build_response_loss_weight_mask(
+    response_ids: torch.Tensor,
+    response_mask: torch.Tensor,
+    response: str,
+    tokenizer: PreTrainedTokenizer,
+    config: RewardConfig,
+) -> torch.Tensor:
+    """Build per-response-token loss weights from CoT/answer XML-style spans."""
+    weights = torch.ones_like(response_mask, dtype=torch.float32) * float(config.default_loss_weight)
+    weights = weights * response_mask.to(dtype=weights.dtype)
+    spans = _segment_spans(response)
+    if not spans:
+        return response_mask.to(dtype=torch.float32)
+
+    valid_len = int(torch.sum(response_mask).item())
+    for char_start, char_end, segment_name in spans:
+        token_start = min(_token_count(tokenizer, response[:char_start]), valid_len)
+        token_end = min(_token_count(tokenizer, response[:char_end]), valid_len)
+        if token_end <= token_start:
+            continue
+        segment_weight = (
+            config.thought_loss_weight if segment_name == "thought" else config.answer_loss_weight
+        )
+        weights[token_start:token_end] = float(segment_weight)
+
+    return weights
+
+
 class FunctionRewardManager(ABC):
     """Reward manager for rule-based reward."""
 
@@ -78,6 +139,16 @@ class FunctionRewardManager(ABC):
         self.config = config
         self.tokenizer = tokenizer
 
+    def _maybe_build_loss_weight_mask(
+        self,
+        response_ids: torch.Tensor,
+        response_mask: torch.Tensor,
+        response: str,
+    ) -> Optional[torch.Tensor]:
+        if not self.config.enable_response_loss_weight_mask:
+            return None
+        return build_response_loss_weight_mask(response_ids, response_mask, response, self.tokenizer, self.config)
+
     @abstractmethod
     def compute_reward(self, data: DataProto) -> Tuple[torch.Tensor, dict[str, list[float]]]:
         """Compute reward for a batch of data."""
@@ -89,6 +160,11 @@ class SequentialFunctionRewardManager(FunctionRewardManager):
 
     def compute_reward(self, data: DataProto) -> Tuple[torch.Tensor, dict[str, list[float]]]:
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
+        loss_weight_mask = (
+            torch.zeros_like(data.batch["response_mask"], dtype=torch.float32)
+            if self.config.enable_response_loss_weight_mask
+            else None
+        )
         reward_metrics = defaultdict(list)
         response_ids = data.batch["responses"]
         response_length = torch.sum(data.batch["response_mask"], dim=-1)
@@ -106,9 +182,17 @@ class SequentialFunctionRewardManager(FunctionRewardManager):
                 }
             )
             reward_tensor[i, cur_response_length - 1] = score["overall"]
+            if loss_weight_mask is not None:
+                loss_weight_mask[i] = self._maybe_build_loss_weight_mask(
+                    response_ids[i],
+                    data.batch["response_mask"][i],
+                    response_str,
+                )
             for key, value in score.items():
                 reward_metrics[key].append(value)
 
+        if loss_weight_mask is not None:
+            return reward_tensor, reward_metrics, {"response_loss_weight_mask": loss_weight_mask}
         return reward_tensor, reward_metrics
 
 
@@ -119,6 +203,11 @@ class BatchFunctionRewardManager(FunctionRewardManager):
         reward_inputs = []
         response_ids = data.batch["responses"]
         response_length = torch.sum(data.batch["response_mask"], dim=-1)
+        loss_weight_mask = (
+            torch.zeros_like(data.batch["response_mask"], dtype=torch.float32)
+            if self.config.enable_response_loss_weight_mask
+            else None
+        )
         cot_budget_debug = data.non_tensor_batch.get("cot_budget_debug", [None] * len(data))
         for i in range(len(data)):
             cur_response_length = int(response_length[i].item())  # avoid tensor indexing error
@@ -141,6 +230,12 @@ class BatchFunctionRewardManager(FunctionRewardManager):
                     "cot_budget_debug": cot_budget_debug[i],
                 }
             )
+            if loss_weight_mask is not None:
+                loss_weight_mask[i] = self._maybe_build_loss_weight_mask(
+                    response_ids[i],
+                    data.batch["response_mask"][i],
+                    response_str,
+                )
 
 
         # print(data)
@@ -155,4 +250,6 @@ class BatchFunctionRewardManager(FunctionRewardManager):
             cur_response_length = int(response_length[i].item())  # avoid tensor indexing error
             reward_tensor[i, cur_response_length - 1] = coerce_reward_metric(score.get("overall", 0.0))
 
+        if loss_weight_mask is not None:
+            return reward_tensor, reward_metrics, {"response_loss_weight_mask": loss_weight_mask}
         return reward_tensor, reward_metrics

@@ -644,7 +644,11 @@ def compute_rewards(
 
 
 def average_loss(
-    values: torch.Tensor, mask: torch.Tensor, mode: Literal["token", "seq"], eps: float = 1e-8
+    values: torch.Tensor,
+    mask: torch.Tensor,
+    mode: Literal["token", "seq", "token_weighted", "seq_weighted"],
+    eps: float = 1e-8,
+    weight_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Average the policy loss.
 
@@ -653,9 +657,11 @@ def average_loss(
             shape: (bs, response_length)
         mask: `(torch.Tensor)`
             shape: (bs, response_length)
-        mode: `(Literal["token", "seq"])`
+        mode: `(Literal["token", "seq", "token_weighted", "seq_weighted"])`
             "token": average the loss in the whole batch
             "seq": average the loss in each sequence then average the mean of the means
+            "token_weighted": average weighted token losses across the whole batch
+            "seq_weighted": average weighted token losses in each sequence then average the means
         eps: `(float)`
             epsilon value
 
@@ -666,6 +672,18 @@ def average_loss(
         return VF.masked_mean(values, mask, eps=eps)
     elif mode == "seq":
         return ((values * mask).sum(-1) / (mask.sum(-1) + eps)).mean()
+    elif mode == "token_weighted":
+        if weight_mask is None:
+            weight_mask = torch.ones_like(values)
+        mask = mask.to(device=values.device, dtype=values.dtype)
+        effective_mask = mask * weight_mask.to(device=values.device, dtype=values.dtype)
+        return (values * effective_mask).sum() / (effective_mask.sum() + eps)
+    elif mode == "seq_weighted":
+        if weight_mask is None:
+            weight_mask = torch.ones_like(values)
+        mask = mask.to(device=values.device, dtype=values.dtype)
+        effective_mask = mask * weight_mask.to(device=values.device, dtype=values.dtype)
+        return ((values * effective_mask).sum(-1) / (effective_mask.sum(-1) + eps)).mean()
     else:
         raise NotImplementedError(f"Unknown mode: {mode}.")
 
@@ -678,7 +696,8 @@ def compute_policy_loss(
     clip_ratio_low: float,
     clip_ratio_high: float,
     clip_ratio_dual: float,
-    loss_avg_mode: Literal["token", "seq"],
+    loss_avg_mode: Literal["token", "seq", "token_weighted", "seq_weighted"],
+    response_loss_weight_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Compute the clipped policy objective and related metrics for PPO.
 
@@ -699,7 +718,7 @@ def compute_policy_loss(
             The higher clip range used in DAPO. See https://arxiv.org/pdf/2503.14476
         clip_ratio_dual: (float)
             The dual clip range used in Dual-clip PPO. See https://arxiv.org/pdf/1912.09729
-        loss_avg_mode: (Literal["token", "seq"])
+        loss_avg_mode: (Literal["token", "seq", "token_weighted", "seq_weighted"])
             "token": average the loss in the whole batch
             "seq": average the loss in each sequence then average the mean of the means
 
@@ -741,7 +760,12 @@ def compute_policy_loss(
     final_pg_loss = torch.where(advantages < 0, clipped_pg_loss_lower, clipped_pg_loss_higher)
     metrics["pg_clipfrac_lower"] = (clipped_pg_loss_higher > pg_loss3).float() * (advantages < 0).float()
 
-    final_pg_loss = average_loss(final_pg_loss, response_mask, mode=loss_avg_mode)
+    final_pg_loss = average_loss(
+        final_pg_loss,
+        response_mask,
+        mode=loss_avg_mode,
+        weight_mask=response_loss_weight_mask,
+    )
     metrics = {k: VF.masked_mean(v, response_mask).detach().item() for k, v in metrics.items()}
     return final_pg_loss, metrics
 
