@@ -118,13 +118,21 @@ def _choice_prefix(reasoning_tag: str) -> str:
     )
 
 
-def _events_cot_instruction(reasoning_tag: str) -> str:
+def _events_cot_instruction(reasoning_tag: str, problem_type: str = "") -> str:
+    l3_lines = ""
+    if problem_type == "temporal_seg_hier_L3_seg":
+        l3_lines = (
+            "- L3 policy: For L3, preserve visually distinct shot boundaries first; "
+            "long single shots may need additional state/action splits.\n"
+            "- L3 caution: Do not collapse multiple clear shots into one broad segment.\n"
+        )
     return (
         f"First, think step by step inside {_reasoning_token(reasoning_tag)} tags. "
         "Use concise visual evidence and timestamps to decide the temporal boundaries.\n"
         "Inside the reasoning tags, include:\n"
         "- Shots: sustained visual shot or scene anchors with approximate timestamps.\n"
         "- Decisions: KEEP/MERGE/SPLIT choices that turn shots into the final segments.\n"
+        f"{l3_lines}"
         "- Partition check: verify the final segments are chronological, non-overlapping, "
         "gap-free when the task requires full coverage, and cover the requested timeline.\n\n"
         "Then output the final timestamps after the closing reasoning tag.\n\n"
@@ -177,10 +185,10 @@ def _rewrite_events_examples(prompt: str, reasoning_tag: str) -> tuple[str, bool
     return new_prompt, count > 0
 
 
-def _upgrade_existing_events_cot_instruction(prompt: str) -> tuple[str, bool]:
+def _upgrade_existing_events_cot_instruction(prompt: str, problem_type: str = "") -> tuple[str, bool]:
     def replace(match: re.Match[str]) -> str:
         tag = match.group("tag").lower()
-        return _events_cot_instruction(tag)
+        return _events_cot_instruction(tag, problem_type=problem_type)
 
     new_prompt, count = _LEGACY_EVENTS_COT_INSTRUCTION_PATTERN.subn(replace, prompt)
     return new_prompt, count > 0
@@ -238,7 +246,7 @@ def _rewrite_choice_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
     return prompt, False
 
 
-def _rewrite_events_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
+def _rewrite_events_prompt(prompt: str, reasoning_tag: str, problem_type: str = "") -> tuple[str, bool]:
     prompt, example_changed = _rewrite_events_examples(prompt, reasoning_tag)
 
     if _STRICT_EVENTS_OUTPUT in prompt:
@@ -252,20 +260,32 @@ def _rewrite_events_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:
     match = _EVENTS_OUTPUT_PATTERN.search(prompt) or _EVENTS_OUTPUT_FORMAT_PATTERN.search(prompt)
     if match is not None:
         idx = match.start()
-        new_prompt = prompt[:idx].rstrip() + "\n\n" + _events_cot_instruction(reasoning_tag) + prompt[idx:]
+        new_prompt = (
+            prompt[:idx].rstrip()
+            + "\n\n"
+            + _events_cot_instruction(reasoning_tag, problem_type=problem_type)
+            + prompt[idx:]
+        )
         return new_prompt.rstrip(), True
 
     if "<events>" in prompt and "Output" in prompt:
-        return (prompt.rstrip() + "\n\n" + _events_cot_instruction(reasoning_tag).rstrip()).rstrip(), True
+        return (
+            prompt.rstrip()
+            + "\n\n"
+            + _events_cot_instruction(reasoning_tag, problem_type=problem_type).rstrip()
+        ).rstrip(), True
 
     return prompt.rstrip(), example_changed
 
 
-def _normalize_existing_cot_events_prompt(prompt: str) -> tuple[str, bool]:
+def _normalize_existing_cot_events_prompt(prompt: str, problem_type: str = "") -> tuple[str, bool]:
     if "<events>" not in prompt:
         return prompt, False
 
-    new_prompt, instruction_changed = _upgrade_existing_events_cot_instruction(prompt)
+    new_prompt, instruction_changed = _upgrade_existing_events_cot_instruction(
+        prompt,
+        problem_type=problem_type,
+    )
     tag_match = re.search(r"<(think|thought)></\1>", new_prompt, re.IGNORECASE)
     reasoning_tag = tag_match.group(1).lower() if tag_match else "think"
     new_prompt, example_changed = _rewrite_events_examples(new_prompt, reasoning_tag)
@@ -298,11 +318,12 @@ def _sync_messages(record: dict[str, Any], prompt: str) -> None:
 def convert_record(record: dict[str, Any], reasoning_tag: str = "think") -> tuple[dict[str, Any], bool, str]:
     _reasoning_token(reasoning_tag)
     prompt = str(record.get("prompt") or "")
+    problem_type = str(record.get("problem_type") or "")
     if not prompt:
         return copy.deepcopy(record), False, "missing_prompt"
 
     if _has_cot(prompt):
-        new_prompt, changed = _normalize_existing_cot_events_prompt(prompt)
+        new_prompt, changed = _normalize_existing_cot_events_prompt(prompt, problem_type=problem_type)
         if changed:
             out = copy.deepcopy(record)
             out["prompt"] = new_prompt
@@ -311,9 +332,9 @@ def convert_record(record: dict[str, Any], reasoning_tag: str = "think") -> tupl
         return copy.deepcopy(record), False, "already_cot"
 
     for reason, rewriter in (
-        ("tg_natural", _rewrite_tg_natural_prompt),
-        ("answer_tag", _rewrite_choice_prompt),
-        ("events", _rewrite_events_prompt),
+        ("tg_natural", lambda text, tag: _rewrite_tg_natural_prompt(text, tag)),
+        ("answer_tag", lambda text, tag: _rewrite_choice_prompt(text, tag)),
+        ("events", lambda text, tag: _rewrite_events_prompt(text, tag, problem_type=problem_type)),
     ):
         new_prompt, changed = rewriter(prompt, reasoning_tag)
         if changed:

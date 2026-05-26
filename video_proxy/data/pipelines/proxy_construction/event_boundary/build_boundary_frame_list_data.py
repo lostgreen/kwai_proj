@@ -66,11 +66,19 @@ PROBLEM_TYPES = {
 }
 
 
-def _make_prompt(level: str, duration: int) -> str:
+def _make_prompt(level: str, duration: int, variant: str = "V1") -> str:
     """用 V4 shot-first prompt 模板生成训练 prompt (领域无关)。"""
-    template = PROMPT_VARIANTS_V4[level]["V1"]
+    template = PROMPT_VARIANTS_V4[level][variant]
     body = template.format(duration=duration)
     return f"Watch the following video clip carefully:\n<video>\n\n{body}"
+
+
+def _prompt_variant_for_level(level: str, requested_variant: str) -> str:
+    """Keep non-L3 levels on V1 when the requested variant is L3-only."""
+    variants = PROMPT_VARIANTS_V4[level]
+    if requested_variant in variants:
+        return requested_variant
+    return "V1"
 
 
 def _resolve_archetype(ann: dict) -> str:
@@ -99,6 +107,7 @@ def build_l1_records(
     ann: dict,
     clip_dir_l1: str = "",
     l1_fps: int = 1,
+    prompt_variant: str = "V1",
 ) -> list[dict]:
     """从标注 JSON 构建 L1 训练记录 (基于真实时间戳)。
 
@@ -146,7 +155,7 @@ def build_l1_records(
     else:
         vp = source_video
 
-    prompt = _make_prompt("L1", duration)
+    prompt = _make_prompt("L1", duration, _prompt_variant_for_level("L1", prompt_variant))
     answer = f"<events>{json.dumps(spans)}</events>"
 
     return [{
@@ -180,6 +189,7 @@ def build_l2_phase_records(
     ann: dict,
     clip_dir_l2: str = "",
     min_events: int = 2,
+    prompt_variant: str = "V1",
 ) -> list[dict]:
     """从标注 JSON 构建 L2 训练记录 (per-phase 模式).
 
@@ -251,7 +261,7 @@ def build_l2_phase_records(
         else:
             vp = video_path
 
-        prompt = _make_prompt("L2", duration)
+        prompt = _make_prompt("L2", duration, _prompt_variant_for_level("L2", prompt_variant))
         answer = f"<events>{json.dumps(matched)}</events>"
 
         records.append({
@@ -290,6 +300,7 @@ def build_l2_fullvideo_records(
     clip_dir_l1: str = "",
     l1_fps: int = 1,
     min_events: int = 3,
+    prompt_variant: str = "V1",
 ) -> list[dict]:
     """从标注 JSON 构建 L2 训练记录 (全视频模式).
 
@@ -335,7 +346,7 @@ def build_l2_fullvideo_records(
     else:
         vp = source_video
 
-    prompt = _make_prompt("L2", duration)
+    prompt = _make_prompt("L2", duration, _prompt_variant_for_level("L2", prompt_variant))
     answer = f"<events>{json.dumps(spans)}</events>"
 
     return [{
@@ -370,6 +381,7 @@ def build_l3_seg_records(
     ann: dict,
     clip_dir_l3: str = "",
     min_actions: int = 2,
+    prompt_variant: str = "V1",
 ) -> list[dict]:
     """从标注 JSON 构建 L3 segmentation (无 query) 训练记录。
 
@@ -439,7 +451,7 @@ def build_l3_seg_records(
         else:
             vp = video_path
 
-        prompt = _make_prompt("L3", duration)
+        prompt = _make_prompt("L3", duration, _prompt_variant_for_level("L3", prompt_variant))
         answer = f"<events>{json.dumps(spans)}</events>"
 
         records.append({
@@ -607,6 +619,12 @@ def main():
     parser.add_argument("--levels", nargs="+", required=True,
                         choices=["L1", "L2", "L3_seg"],
                         help="要构建的层级列表")
+    parser.add_argument(
+        "--prompt-variant",
+        default="V1",
+        choices=sorted({variant for variants in PROMPT_VARIANTS_V4.values() for variant in variants}),
+        help="Prompt variant for event-boundary dataset construction. V2 currently affects L3 only.",
+    )
     parser.add_argument("--total-val", type=int, default=200,
                         help="总验证集样本数")
     parser.add_argument("--train-per-level", type=int, default=-1,
@@ -653,18 +671,18 @@ def main():
     for ann in ann_list:
         for lv in args.levels:
             if lv == "L1":
-                recs = build_l1_records(ann, args.clip_dir_l1, args.l1_fps)
+                recs = build_l1_records(ann, args.clip_dir_l1, args.l1_fps, args.prompt_variant)
             elif lv == "L2":
                 if args.l2_mode == "full":
                     recs = build_l2_fullvideo_records(
-                        ann, args.clip_dir_l1, args.l1_fps, args.l2_min_events,
+                        ann, args.clip_dir_l1, args.l1_fps, args.l2_min_events, args.prompt_variant,
                     )
                 else:
                     recs = build_l2_phase_records(
-                        ann, args.clip_dir_l2, args.l2_min_events,
+                        ann, args.clip_dir_l2, args.l2_min_events, args.prompt_variant,
                     )
             elif lv == "L3_seg":
-                recs = build_l3_seg_records(ann, args.clip_dir_l3, args.l3_min_actions)
+                recs = build_l3_seg_records(ann, args.clip_dir_l3, args.l3_min_actions, args.prompt_variant)
             else:
                 continue
 

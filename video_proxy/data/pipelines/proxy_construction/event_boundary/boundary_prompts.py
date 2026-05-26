@@ -34,6 +34,16 @@ or camera cuts to place boundaries. \
 Create a boundary ONLY when the change is visible across multiple sampled frames \
 or when the task/state clearly shifts."""
 
+_L3_V2_SPARSE_NOTICE = """\
+IMPORTANT — SPARSE VISUAL EVIDENCE:
+This clip is represented by sparsely sampled frames and timestamp markers, \
+not continuous video. Use the displayed timestamps as the temporal reference. \
+Do NOT rely on single-frame flicker. \
+Do NOT rely on single-frame micro-motions, tiny hand/body repositioning, or \
+instantaneous contact changes to place boundaries. \
+A clear camera cut, angle change, framing change, subject change, or sustained \
+state/action change SHOULD be used as a boundary."""
+
 
 # =====================================================================
 # L1 — Shot → Phase Aggregation
@@ -166,6 +176,44 @@ Output the start and end time (integer seconds, 0-based) for each segment in chr
 
 Example: <events>[[2, 6], [9, 13], [15, 20]]</events>""".format(sparse=_SPARSE_SAMPLING_NOTICE)
 
+L3_V2 = """\
+You are given a {{duration}}s video clip represented by sparsely sampled frames.
+
+Detect all fine-grained L3 sub-actions using a SHOT-FIRST policy:
+
+STEP 1 — FIND SHOT / SCENE BOUNDARIES:
+A shot boundary is a visible camera cut, angle/framing change, subject change, \
+or abrupt scene transition. These boundaries are strong temporal anchors for L3.
+
+Do not merge visually distinct shots into one segment unless they are static, \
+redundant, or show the same unchanged visual state.
+
+STEP 2 — KEEP OR SPLIT EACH SHOT:
+- Keep a shot as one segment if it contains one continuous visual state or action.
+- Split a long shot when the physical action, object/material state, subject pose, \
+or task phase clearly changes.
+- A long single shot may produce multiple L3 segments.
+
+Create a boundary when ANY of the following occurs:
+- A camera cut or framing change to a different angle or subject.
+- A physical action change: a different motion or task begins.
+- A visible object/material state change: deformation, separation, positional shift, or state transition.
+- An object or subject enters or leaves the frame.
+- An environmental shift: lighting change or background change.
+
+Do NOT place a boundary when:
+- Hands or body parts reposition without changing any object's state or the camera framing.
+- A single-frame flicker is not sustained across 2 or more sampled frames.
+
+{sparse}
+
+Gaps between segments are expected — do not force full coverage.
+
+Output the start and end time (integer seconds, 0-based) for each segment in chronological order:
+<events>[[start_time, end_time], ...]</events>
+
+Example: <events>[[2, 6], [9, 13], [15, 20]]</events>""".format(sparse=_L3_V2_SPARSE_NOTICE)
+
 
 # =====================================================================
 # Registry (与 prepare_prompt_data.py 接口兼容)
@@ -174,11 +222,12 @@ Example: <events>[[2, 6], [9, 13], [15, 20]]</events>""".format(sparse=_SPARSE_S
 PROMPT_VARIANTS_V4 = {
     "L1": {"V1": L1_V1},
     "L2": {"V1": L2_V1},
-    "L3": {"V1": L3_V1},
+    "L3": {"V1": L3_V1, "V2": L3_V2},
 }
 
 VARIANT_DESCRIPTIONS_V4 = {
     "V1": "Shot-first two-step: identify shots → merge/split by level (no CoT)",
+    "V2": "L3 shot-boundary-first variant: keep clear cuts as anchors, split long shots by state/action changes",
 }
 
 # 模板参数: 只需 duration
@@ -187,4 +236,5 @@ PROMPT_PARAMS = {"duration"}
 # MAX_RESPONSE_LEN 建议
 RESPONSE_LEN_HINTS_V4 = {
     "V1": 512,
+    "V2": 512,
 }
