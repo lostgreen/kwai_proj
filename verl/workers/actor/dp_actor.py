@@ -583,6 +583,28 @@ class DataParallelPPOActor(BasePPOActor):
                         "actor/entropy_loss": pg_metrics["entropy_loss"],
                         "actor/ppo_kl": pg_metrics["ppo_kl"],
                     }
+                    if response_loss_weight_mask is not None:
+                        weight_dtype = response_loss_weight_mask.dtype
+                        float_response_mask = response_mask.to(dtype=weight_dtype)
+                        valid_weight = response_loss_weight_mask * float_response_mask
+                        valid_tokens = torch.sum(float_response_mask)
+                        batch_metrics.update(
+                            {
+                                "actor/loss_weight_mask_present": 1.0,
+                                "actor/loss_weight_mean": (
+                                    torch.sum(valid_weight) / torch.clamp(valid_tokens, min=1)
+                                ).detach().item(),
+                                "actor/loss_weight_changed_ratio": (
+                                    torch.sum(
+                                        ((response_loss_weight_mask - 1.0).abs() > 1e-6).to(dtype=weight_dtype)
+                                        * float_response_mask
+                                    )
+                                    / torch.clamp(valid_tokens, min=1)
+                                ).detach().item(),
+                            }
+                        )
+                    else:
+                        batch_metrics["actor/loss_weight_mask_present"] = 0.0
                     append_to_dict(metrics, batch_metrics)
 
                 grad_norm = self._optimizer_step()

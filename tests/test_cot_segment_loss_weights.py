@@ -203,6 +203,41 @@ def test_build_response_loss_weight_mask_marks_thought_and_answer_spans():
     assert math.isclose(weights[0].item(), 1.0, abs_tol=1e-6)
 
 
+def test_build_response_loss_weight_mask_reports_segment_audit_metrics():
+    config_module, function_module = _load_reward_modules()
+    tokenizer = _CharTokenizer()
+    response = "<thought>abcd</thought><answer>XY</answer>"
+    response_ids = torch.tensor(tokenizer.encode(response))
+    response_mask = torch.ones_like(response_ids, dtype=torch.float32)
+    config = config_module.RewardConfig(
+        enable_response_loss_weight_mask=True,
+        thought_loss_weight=0.25,
+        answer_loss_weight=2.0,
+        default_loss_weight=1.0,
+    )
+
+    weights, metrics = function_module.build_response_loss_weight_mask_and_metrics(
+        response_ids,
+        response_mask,
+        response,
+        tokenizer,
+        config,
+    )
+
+    valid_len = float(len(response))
+    thought_tokens = 4.0
+    answer_tokens = 2.0
+    default_tokens = valid_len - thought_tokens - answer_tokens
+    total_weight = default_tokens * 1.0 + thought_tokens * 0.25 + answer_tokens * 2.0
+    assert torch.equal(weights.ne(0).to(dtype=response_mask.dtype), response_mask)
+    assert math.isclose(metrics["response_loss_weight/thought_token_ratio"], thought_tokens / valid_len)
+    assert math.isclose(metrics["response_loss_weight/answer_token_ratio"], answer_tokens / valid_len)
+    assert math.isclose(metrics["response_loss_weight/default_token_ratio"], default_tokens / valid_len)
+    assert math.isclose(metrics["response_loss_weight/thought_effective_ratio"], thought_tokens * 0.25 / total_weight)
+    assert math.isclose(metrics["response_loss_weight/answer_effective_ratio"], answer_tokens * 2.0 / total_weight)
+    assert math.isclose(metrics["response_loss_weight/weighted_token_ratio"], total_weight / valid_len)
+
+
 def test_build_response_loss_weight_mask_falls_back_to_ones_without_tags():
     config_module, function_module = _load_reward_modules()
     tokenizer = _CharTokenizer()

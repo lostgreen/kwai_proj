@@ -20,6 +20,14 @@ LOG_COT_KEYS = {
     "cot_budget/text_fallback_ratio": "log_cot_text_fallback_ratio",
     "cot_budget/final_token_len_mean": "log_cot_final_token_len_mean",
     "cot_budget/remaining_tokens_mean": "log_cot_remaining_tokens_mean",
+    "reward/response_loss_weight/thought_token_ratio": "loss_weight_thought_token_ratio",
+    "reward/response_loss_weight/answer_token_ratio": "loss_weight_answer_token_ratio",
+    "reward/response_loss_weight/thought_effective_ratio": "loss_weight_thought_effective_ratio",
+    "reward/response_loss_weight/answer_effective_ratio": "loss_weight_answer_effective_ratio",
+    "reward/response_loss_weight/weighted_token_ratio": "loss_weight_weighted_token_ratio",
+    "actor/loss_weight_mask_present": "actor_loss_weight_mask_present",
+    "actor/loss_weight_mean": "actor_loss_weight_mean",
+    "actor/loss_weight_changed_ratio": "actor_loss_weight_changed_ratio",
 }
 
 
@@ -366,6 +374,13 @@ def print_markdown(rows: list[dict[str, Any]]) -> None:
         "log_cot_end_ratio",
         "log_cot_repaired_ratio",
         "log_cot_final_token_len_mean",
+        "loss_weight_thought_token_ratio",
+        "loss_weight_answer_token_ratio",
+        "loss_weight_thought_effective_ratio",
+        "loss_weight_answer_effective_ratio",
+        "actor_loss_weight_mask_present",
+        "actor_loss_weight_mean",
+        "actor_loss_weight_changed_ratio",
         "cot_end_ratio",
         "cot_repaired_ratio",
         "cot_final_token_len_mean",
