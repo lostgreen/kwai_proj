@@ -265,7 +265,7 @@ def test_build_response_loss_weight_mask_can_downweight_format_tokens_separately
     assert math.isclose(weights[response.index("XY")].item(), 2.0, abs_tol=1e-6)
     assert math.isclose(weights[response.index("</answer>")].item(), 0.1, abs_tol=1e-6)
     assert metrics["response_loss_weight/format_token_ratio"] > 0.0
-    assert metrics["response_loss_weight/format_effective_ratio"] < metrics["response_loss_weight/default_effective_ratio"]
+    assert metrics["response_loss_weight/format_effective_ratio"] < metrics["response_loss_weight/answer_effective_ratio"]
 
 
 def test_build_response_loss_weight_mask_keeps_middle_text_as_default_not_format():

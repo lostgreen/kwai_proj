@@ -93,6 +93,15 @@ def _is_format_default(text: str) -> bool:
     return not _SEGMENT_FORMAT_RE.sub("", text).strip()
 
 
+def _format_ranges(response: str, spans: list[tuple[int, int, str]]) -> list[tuple[int, int]]:
+    ranges = [(match.start(), match.end()) for match in _SEGMENT_FORMAT_RE.finditer(response)]
+    for char_start, char_end in _default_ranges(response, spans):
+        if _is_format_default(response[char_start:char_end]):
+            ranges.append((char_start, char_end))
+    ranges.sort()
+    return ranges
+
+
 def _segment_spans(response: str, *, answer_fallback_after_thought: bool) -> list[tuple[int, int, str]]:
     spans = []
     thought_close_positions = []
@@ -161,9 +170,7 @@ def build_response_loss_weight_mask_and_metrics(
 
     valid_len = int(torch.sum(response_mask).item())
     if config.format_loss_weight is not None:
-        for char_start, char_end in _default_ranges(response, spans):
-            if not _is_format_default(response[char_start:char_end]):
-                continue
+        for char_start, char_end in _format_ranges(response, spans):
             token_start = min(_token_count(tokenizer, response[:char_start]), valid_len)
             token_end = min(_token_count(tokenizer, response[:char_end]), valid_len)
             if token_end <= token_start:
