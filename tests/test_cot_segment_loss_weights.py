@@ -238,6 +238,64 @@ def test_build_response_loss_weight_mask_reports_segment_audit_metrics():
     assert math.isclose(metrics["response_loss_weight/weighted_token_ratio"], total_weight / valid_len)
 
 
+def test_build_response_loss_weight_mask_can_downweight_format_tokens_separately():
+    config_module, function_module = _load_reward_modules()
+    tokenizer = _CharTokenizer()
+    response = "<thought>abcd</thought><answer>XY</answer>"
+    response_ids = torch.tensor(tokenizer.encode(response))
+    response_mask = torch.ones_like(response_ids, dtype=torch.float32)
+    config = config_module.RewardConfig(
+        enable_response_loss_weight_mask=True,
+        thought_loss_weight=0.25,
+        answer_loss_weight=2.0,
+        default_loss_weight=1.0,
+        format_loss_weight=0.1,
+    )
+
+    weights, metrics = function_module.build_response_loss_weight_mask_and_metrics(
+        response_ids,
+        response_mask,
+        response,
+        tokenizer,
+        config,
+    )
+
+    assert math.isclose(weights[response.index("<thought>")].item(), 0.1, abs_tol=1e-6)
+    assert math.isclose(weights[response.index("abcd")].item(), 0.25, abs_tol=1e-6)
+    assert math.isclose(weights[response.index("XY")].item(), 2.0, abs_tol=1e-6)
+    assert math.isclose(weights[response.index("</answer>")].item(), 0.1, abs_tol=1e-6)
+    assert metrics["response_loss_weight/format_token_ratio"] > 0.0
+    assert metrics["response_loss_weight/format_effective_ratio"] < metrics["response_loss_weight/default_effective_ratio"]
+
+
+def test_build_response_loss_weight_mask_keeps_middle_text_as_default_not_format():
+    config_module, function_module = _load_reward_modules()
+    tokenizer = _CharTokenizer()
+    response = "<thought>draft</thought> extra explanation <answer>B</answer>"
+    response_ids = torch.tensor(tokenizer.encode(response))
+    response_mask = torch.ones_like(response_ids, dtype=torch.float32)
+    config = config_module.RewardConfig(
+        enable_response_loss_weight_mask=True,
+        thought_loss_weight=0.1,
+        answer_loss_weight=0.9,
+        default_loss_weight=1.0,
+        format_loss_weight=0.2,
+    )
+
+    weights, metrics = function_module.build_response_loss_weight_mask_and_metrics(
+        response_ids,
+        response_mask,
+        response,
+        tokenizer,
+        config,
+    )
+
+    assert math.isclose(weights[response.index("extra")].item(), 1.0, abs_tol=1e-6)
+    assert math.isclose(weights[response.index("<answer>")].item(), 0.2, abs_tol=1e-6)
+    assert metrics["response_loss_weight/default_token_ratio"] > 0.0
+    assert metrics["response_loss_weight/format_token_ratio"] > 0.0
+
+
 def test_build_response_loss_weight_mask_treats_text_after_thought_as_answer_fallback():
     config_module, function_module = _load_reward_modules()
     tokenizer = _CharTokenizer()

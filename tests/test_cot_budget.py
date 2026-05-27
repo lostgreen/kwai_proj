@@ -50,6 +50,19 @@ def test_controller_supports_multi_token_end_sequence():
     assert controller.next_forced_token([10, 100, 101, 20, 21, 22]) is None
 
 
+def test_controller_forces_answer_prefix_after_cot_close_when_configured():
+    controller = CoTBudgetController(
+        start_token_ids=[10],
+        end_token_ids=[20],
+        max_tokens=2,
+        repair_suffix_token_ids=[30],
+    )
+
+    assert controller.next_forced_token([10, 100, 101]) == 20
+    assert controller.next_forced_token([10, 100, 101, 20]) == 30
+    assert controller.next_forced_token([10, 100, 101, 20, 30]) is None
+
+
 def test_controller_does_not_continue_partial_end_before_budget():
     controller = CoTBudgetController(
         start_token_ids=[10],
@@ -89,6 +102,17 @@ def test_controller_repairs_over_budget_cot_for_vllm_v1_continuation():
     )
 
     assert controller.repaired_prefix([1, 10, 100, 101, 102, 103]) == [1, 10, 100, 101, 20, 21]
+
+
+def test_controller_can_repair_with_answer_prefix_after_cot_close():
+    controller = CoTBudgetController(
+        start_token_ids=[10],
+        end_token_ids=[20],
+        max_tokens=2,
+        repair_suffix_token_ids=[30],
+    )
+
+    assert controller.repaired_prefix([1, 10, 100, 101, 102, 103]) == [1, 10, 100, 101, 20, 30]
 
 
 def test_controller_keeps_closed_in_budget_cot_without_repair():

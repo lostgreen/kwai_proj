@@ -78,6 +78,7 @@ _STRICT_EVENTS_OUTPUT = (
     "Where start_time and end_time are in seconds "
     "(precise to one decimal place, e.g., [12.5, 17.8])."
 )
+_ANSWER_EVENTS_OUTPUT = "<answer>[[start_time, end_time]]</answer>"
 
 @dataclass
 class ConversionSummary:
@@ -135,7 +136,8 @@ def _events_cot_instruction(reasoning_tag: str, problem_type: str = "") -> str:
         f"{l3_lines}"
         "- Partition check: verify the final segments are chronological, non-overlapping, "
         "gap-free when the task requires full coverage, and cover the requested timeline.\n\n"
-        "Then output the final timestamps after the closing reasoning tag.\n\n"
+        "Then output the final timestamps after the closing reasoning tag inside "
+        "<answer></answer> tags.\n\n"
     )
 
 
@@ -145,9 +147,7 @@ def _strict_events_cot(reasoning_tag: str) -> str:
         "Describe what happens at different time periods in the video "
         "and determine when the target event occurs.\n\n"
         "Then, provide the precise time period in the following format:\n"
-        "<events>\n"
-        "[start_time, end_time]\n"
-        "</events>\n\n"
+        f"{_ANSWER_EVENTS_OUTPUT}\n\n"
         "Where start_time and end_time are in seconds "
         "(precise to one decimal place, e.g., [12.5, 17.8])."
     )
@@ -156,7 +156,7 @@ def _strict_events_cot(reasoning_tag: str) -> str:
 def _tg_cot_suffix(reasoning_tag: str) -> str:
     return (
         f" First, think step by step inside {_reasoning_token(reasoning_tag)}, "
-        "then give the final sentence only."
+        "then give the final sentence only inside <answer></answer> tags."
     )
 
 
@@ -173,7 +173,7 @@ def _events_cot_example(reasoning_tag: str, events_block: str) -> str:
         "coherent stirring task. The final events are chronological, adjacent, non-overlapping, "
         "and cover the full 0-42s clip.\n"
         f"</{reasoning_tag}>\n"
-        "<events>[[0, 22], [22, 28], [28, 34], [34, 42]]</events>"
+        "<answer>[[0, 22], [22, 28], [28, 34], [34, 42]]</answer>"
     )
 
 
@@ -254,7 +254,7 @@ def _rewrite_events_prompt(prompt: str, reasoning_tag: str, problem_type: str = 
 
     prompt = prompt.replace(
         _OUTPUT_ONLY_TIMESTAMPS_RULE,
-        "- In the final <events> block, output only timestamps, no descriptions.",
+        "- In the final <answer> block, output only timestamps, no descriptions.",
     )
 
     match = _EVENTS_OUTPUT_PATTERN.search(prompt) or _EVENTS_OUTPUT_FORMAT_PATTERN.search(prompt)

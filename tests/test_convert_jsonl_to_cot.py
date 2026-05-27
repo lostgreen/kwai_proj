@@ -36,7 +36,7 @@ def test_rewrite_tg_natural_prompt_to_cot_and_syncs_last_user_message():
     assert changed is True
     assert reason == "tg_natural"
     assert "First, think step by step inside <think></think>" in converted["prompt"]
-    assert converted["prompt"].endswith("then give the final sentence only.")
+    assert converted["prompt"].endswith("then give the final sentence only inside <answer></answer> tags.")
     assert converted["answer"] == record["answer"]
     assert converted["messages"][0]["content"] == "system stays"
     assert converted["messages"][1] == {"role": "user", "content": converted["prompt"]}
@@ -185,11 +185,12 @@ def test_rewrite_shot_first_events_prompt_uses_cot_example_not_final_only_exampl
     assert "The shot [34,42] is kept as [34,42]" in example
     assert "cover the full 0-42s clip" in example
     assert "Example: <events>" not in converted["prompt"]
+    assert "<answer><events>" not in converted["prompt"]
     assert "<thought>\nThe video has five shots:" in converted["prompt"]
     assert "placeholder" not in converted["prompt"].lower()
     assert "..." not in example
     assert "\nI " not in example
-    assert "</thought>\n<events>[[0, 22], [22, 28], [28, 34], [34, 42]]</events>" in converted["prompt"]
+    assert "</thought>\n<answer>[[0, 22], [22, 28], [28, 34], [34, 42]]</answer>" in converted["prompt"]
 
 
 def test_rewrite_generic_events_prompt_inserts_cot_before_output_format_and_scopes_timestamp_rule():
@@ -211,7 +212,7 @@ def test_rewrite_generic_events_prompt_inserts_cot_before_output_format_and_scop
     assert changed is True
     assert reason == "events"
     assert converted["prompt"].index("First, think step by step") < converted["prompt"].index("Output format")
-    assert "In the final <events> block, output only timestamps" in converted["prompt"]
+    assert "In the final <answer> block, output only timestamps" in converted["prompt"]
     assert "- Output only timestamps, no descriptions." not in converted["prompt"]
 
 

@@ -43,6 +43,7 @@ class RolloutConfig:
     cot_budget_start_token: str = "<think>"
     cot_budget_end_token: str = "</think>"
     cot_budget_max_tokens: int = 0
+    cot_budget_repair_suffix: str = ""
     val_override_config: dict[str, Any] = field(default_factory=dict)
     # below are auto keys
     prompt_length: int = field(default=-1, init=False)

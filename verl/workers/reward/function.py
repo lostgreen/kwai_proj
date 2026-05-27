@@ -14,6 +14,7 @@
 
 import importlib.util
 import os
+import re
 import sys
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -61,7 +62,10 @@ _SEGMENT_METRIC_LABELS = (
     (1, "thought"),
     (2, "answer"),
     (0, "default"),
+    (3, "format"),
 )
+
+_SEGMENT_FORMAT_RE = re.compile(r"</?(?:thought|think|answer)>", re.IGNORECASE)
 
 
 def _token_count(tokenizer: PreTrainedTokenizer, text: str) -> int:
@@ -69,6 +73,24 @@ def _token_count(tokenizer: PreTrainedTokenizer, text: str) -> int:
         return len(tokenizer.encode(text, add_special_tokens=False))
     except TypeError:
         return len(tokenizer.encode(text))
+
+
+def _default_ranges(response: str, spans: list[tuple[int, int, str]]) -> list[tuple[int, int]]:
+    ranges = []
+    cursor = 0
+    for start, end, _ in spans:
+        if start > cursor:
+            ranges.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < len(response):
+        ranges.append((cursor, len(response)))
+    return ranges
+
+
+def _is_format_default(text: str) -> bool:
+    if not text.strip():
+        return True
+    return not _SEGMENT_FORMAT_RE.sub("", text).strip()
 
 
 def _segment_spans(response: str, *, answer_fallback_after_thought: bool) -> list[tuple[int, int, str]]:
@@ -138,6 +160,17 @@ def build_response_loss_weight_mask_and_metrics(
         return fallback, _summarize_response_loss_weights(fallback, response_mask, segment_labels)
 
     valid_len = int(torch.sum(response_mask).item())
+    if config.format_loss_weight is not None:
+        for char_start, char_end in _default_ranges(response, spans):
+            if not _is_format_default(response[char_start:char_end]):
+                continue
+            token_start = min(_token_count(tokenizer, response[:char_start]), valid_len)
+            token_end = min(_token_count(tokenizer, response[:char_end]), valid_len)
+            if token_end <= token_start:
+                continue
+            weights[token_start:token_end] = float(config.format_loss_weight)
+            segment_labels[token_start:token_end] = 3
+
     for char_start, char_end, segment_name in spans:
         token_start = min(_token_count(tokenizer, response[:char_start]), valid_len)
         token_end = min(_token_count(tokenizer, response[:char_end]), valid_len)

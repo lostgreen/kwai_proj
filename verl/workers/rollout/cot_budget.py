@@ -86,6 +86,7 @@ class CoTBudgetController:
     start_token_id_variants: Optional[Sequence[Sequence[int]]] = None
     end_token_id_variants: Optional[Sequence[Sequence[int]]] = None
     token_pair_variants: Optional[Sequence[tuple[Sequence[int], Sequence[int], Sequence[Sequence[int]]]]] = None
+    repair_suffix_token_ids: Optional[Sequence[int]] = None
 
     def __post_init__(self) -> None:
         if not self.start_token_ids:
@@ -102,17 +103,22 @@ class CoTBudgetController:
         if start_idx < 0:
             return None
 
+        repair_close_ids = list(end_token_ids) + list(self.repair_suffix_token_ids or [])
         content_start = start_idx + len(start_pattern or [])
         end_idx, _ = _find_subsequence_any(token_ids, end_patterns, start=content_start)
         if end_idx >= 0:
+            generated_after_start = list(token_ids[content_start:])
+            close_prefix_len = self._close_prefix_len(generated_after_start, repair_close_ids)
+            if close_prefix_len >= len(end_token_ids) and close_prefix_len < len(repair_close_ids):
+                return repair_close_ids[close_prefix_len]
             return None
 
         generated_after_start = list(token_ids[content_start:])
         if len(generated_after_start) >= self.max_tokens:
-            close_prefix_len = self._close_prefix_len(generated_after_start, end_token_ids)
+            close_prefix_len = self._close_prefix_len(generated_after_start, repair_close_ids)
             if close_prefix_len > 0:
-                return end_token_ids[close_prefix_len]
-            return end_token_ids[0]
+                return repair_close_ids[close_prefix_len]
+            return repair_close_ids[0]
 
         return None
 
@@ -120,6 +126,7 @@ class CoTBudgetController:
         """Return a budget-compliant prefix with a closed CoT span, if repair is needed."""
 
         start_idx, start_pattern, end_token_ids, end_patterns = self.find_latest_start(token_ids)
+        repair_close_ids = list(end_token_ids) + list(self.repair_suffix_token_ids or [])
         if start_idx < 0:
             return None
 
@@ -132,15 +139,15 @@ class CoTBudgetController:
         if max_length is not None:
             if max_length <= 0:
                 return []
-            if max_length < len(end_token_ids):
-                return list(end_token_ids[:max_length])
-            available_content_tokens = max_length - content_start - len(end_token_ids)
+            if max_length < len(repair_close_ids):
+                return list(repair_close_ids[:max_length])
+            available_content_tokens = max_length - content_start - len(repair_close_ids)
             if available_content_tokens < 0:
-                return list(token_ids[: max_length - len(end_token_ids)]) + list(end_token_ids)
+                return list(token_ids[: max_length - len(repair_close_ids)]) + repair_close_ids
             budgeted_content_end = min(budgeted_content_end, content_start + available_content_tokens)
 
         content_end = budgeted_content_end
-        return list(token_ids[:content_end]) + list(end_token_ids)
+        return list(token_ids[:content_end]) + repair_close_ids
 
     def has_start(self, token_ids: Sequence[int]) -> bool:
         start_idx, _, _, _ = self.find_latest_start(token_ids)
@@ -275,6 +282,7 @@ def make_cot_budget_controller(
     start_token: str,
     end_token: str,
     max_tokens: int,
+    repair_suffix: str = "",
 ) -> CoTBudgetController:
     start_token_ids = tokenizer.encode(start_token, add_special_tokens=False)
     end_token_ids = tokenizer.encode(end_token, add_special_tokens=False)
@@ -285,6 +293,9 @@ def make_cot_budget_controller(
         ["", "\n", "\n\n", " ", "\t", "\r\n", "<answer>", "\n<answer>", " <answer>"],
         prefixes=("", "\n"),
     )
+    repair_suffix_token_ids = None
+    if repair_suffix:
+        repair_suffix_token_ids = tokenizer.encode(repair_suffix, add_special_tokens=False)
     token_pair_variants = []
     for alias_start_token, alias_end_token in _paired_reasoning_aliases(start_token, end_token):
         try:
@@ -312,6 +323,7 @@ def make_cot_budget_controller(
         start_token_id_variants=start_variants,
         end_token_id_variants=end_variants,
         token_pair_variants=token_pair_variants,
+        repair_suffix_token_ids=repair_suffix_token_ids,
     )
 
 
@@ -321,6 +333,7 @@ def make_cot_budget_processor(
     start_token: str,
     end_token: str,
     max_tokens: int,
+    repair_suffix: str = "",
 ) -> CoTBudgetProcessor:
     return CoTBudgetProcessor(
         make_cot_budget_controller(
@@ -328,5 +341,6 @@ def make_cot_budget_processor(
             start_token=start_token,
             end_token=end_token,
             max_tokens=max_tokens,
+            repair_suffix=repair_suffix,
         )
     )

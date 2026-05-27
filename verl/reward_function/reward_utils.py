@@ -25,6 +25,10 @@ EVENTS_PATTERN = re.compile(
     r"<events>(.*?)</events>",
     re.DOTALL,
 )
+ANSWER_PATTERN = re.compile(
+    r"<answer>(.*?)</answer>",
+    re.DOTALL,
+)
 SEGMENT_PATTERN = re.compile(
     r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*\]"
 )
@@ -34,15 +38,15 @@ SEGMENT_PATTERN = re.compile(
 # 解析
 # ===========================
 def parse_segments(text: str, duration: Optional[float] = None) -> List[List[float]]:
-    """从 <events>...</events> 块中提取有效 [start, end] 列表。"""
+    """从 <answer>...</answer> 或旧版 <events>...</events> 块中提取有效 [start, end] 列表。"""
     if not text:
         return []
     text = str(text)
-    events_match = EVENTS_PATTERN.search(text)
-    if events_match is None:
+    block_match = ANSWER_PATTERN.search(text) or EVENTS_PATTERN.search(text)
+    if block_match is None:
         return []
 
-    events_block = events_match.group(1)
+    events_block = block_match.group(1)
     segments: List[List[float]] = []
 
     for m in SEGMENT_PATTERN.finditer(events_block):
@@ -63,6 +67,12 @@ def parse_segments(text: str, duration: Optional[float] = None) -> List[List[flo
 def has_events_tag(text: str) -> bool:
     """检查文本是否包含 <events>...</events> 标签"""
     return EVENTS_PATTERN.search(str(text)) is not None
+
+
+def has_segment_answer_tag(text: str) -> bool:
+    """检查文本是否包含可解析时间段的 <answer>...</answer> 或旧版 <events>...</events> 标签。"""
+    text = str(text)
+    return ANSWER_PATTERN.search(text) is not None or EVENTS_PATTERN.search(text) is not None
 
 
 # ===========================

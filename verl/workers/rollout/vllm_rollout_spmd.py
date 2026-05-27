@@ -148,6 +148,7 @@ def _repair_cot_budget_from_text(
     end_token: str,
     max_cot_tokens: int,
     max_length: Optional[int] = None,
+    repair_suffix: str = "",
 ) -> tuple[Optional[list[int]], dict[str, Any]]:
     try:
         text = tokenizer.decode(token_ids, skip_special_tokens=False)
@@ -167,6 +168,7 @@ def _repair_cot_budget_from_text(
         cot_content_ids = tokenizer.encode(cot_content, add_special_tokens=False)
         prefix_ids = tokenizer.encode(text[:content_start_text_idx], add_special_tokens=False)
         end_token_ids = tokenizer.encode(matched_end, add_special_tokens=False)
+        repair_suffix_ids = tokenizer.encode(repair_suffix, add_special_tokens=False) if repair_suffix else []
     except Exception:
         return None, {"cot_text_fallback_used": False}
 
@@ -186,7 +188,7 @@ def _repair_cot_budget_from_text(
     if end_text_idx >= 0 and len(cot_content_ids) <= max_cot_tokens:
         return None, status
 
-    repaired = prefix_ids + cot_content_ids[:max_cot_tokens] + end_token_ids
+    repaired = prefix_ids + cot_content_ids[:max_cot_tokens] + end_token_ids + repair_suffix_ids
     if max_length is not None:
         repaired = repaired[:max_length]
     return repaired, status
@@ -268,6 +270,7 @@ class vLLMRollout(BaseRollout):
                 start_token=config.cot_budget_start_token,
                 end_token=config.cot_budget_end_token,
                 max_tokens=config.cot_budget_max_tokens,
+                repair_suffix=config.cot_budget_repair_suffix,
             )
 
         sampling_kwargs = {
@@ -292,6 +295,7 @@ class vLLMRollout(BaseRollout):
             end_token=self.config.cot_budget_end_token,
             max_cot_tokens=self.cot_budget_controller.max_tokens if self.cot_budget_controller else 0,
             max_length=self.config.response_length,
+            repair_suffix=self.config.cot_budget_repair_suffix,
         )
 
     @contextmanager

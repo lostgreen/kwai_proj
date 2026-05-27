@@ -20,6 +20,7 @@ from typing import Any, Dict, List
 from verl.reward_function.reward_utils import (
     compute_f1_iou,
     has_events_tag,
+    has_segment_answer_tag,
     parse_segments,
 )
 
@@ -35,6 +36,8 @@ def _anti_hack_check(response: str) -> bool:
         return False
     # 多重 <events> / </events> 复读
     if response.count("<events>") > 1 or response.count("</events>") > 1:
+        return False
+    if response.count("<answer>") > 1 or response.count("</answer>") > 1:
         return False
     return True
 
@@ -53,7 +56,7 @@ def _f1_iou_reward(response: str, ground_truth: str) -> Dict[str, float]:
         return dict(_ZERO)
     if not _anti_hack_check(response):
         return dict(_ZERO)
-    if not has_events_tag(response):
+    if not has_segment_answer_tag(response):
         return dict(_ZERO)
     pred_segs = parse_segments(response)
     if not pred_segs:
@@ -171,7 +174,7 @@ def compute_score(
             reward_fn = _DISPATCH.get(problem_type)
             if reward_fn is None:
                 # fallback: 如果 GT 里有 <events> 就用 F1-IoU；纯数字序列就用 sort
-                if has_events_tag(ground_truth):
+                if has_segment_answer_tag(ground_truth):
                     reward_fn = _f1_iou_reward
                 elif re.match(r"^\d+$", ground_truth.strip()):
                     reward_fn = _sort_reward

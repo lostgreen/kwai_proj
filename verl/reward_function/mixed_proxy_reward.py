@@ -33,6 +33,11 @@ from verl.reward_function.reward_utils import (
     parse_segments,
 )
 
+try:
+    from verl.reward_function.reward_utils import has_segment_answer_tag
+except ImportError:
+    has_segment_answer_tag = has_events_tag
+
 
 # ===================================================================
 # ① 选择题 Reward (add / delete / replace)
@@ -227,7 +232,9 @@ def _seg_f1_iou_fallback(response: str, ground_truth: str) -> Dict[str, float]:
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
     if response.count("</events>") > 1 or response.count("<events>") > 1:
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
-    if not has_events_tag(response):
+    if response.count("</answer>") > 1 or response.count("<answer>") > 1:
+        return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
+    if not has_segment_answer_tag(response):
         return {"overall": 0.0, "format": 0.0, "accuracy": 0.0}
     pred_segs = parse_segments(response)
     if not pred_segs:

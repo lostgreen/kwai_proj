@@ -22,6 +22,7 @@ from typing import Any, Dict, List
 
 from verl.reward_function.reward_utils import (
     has_events_tag,
+    has_segment_answer_tag,
     ngiou,
     nms_1d,
     parse_segments,
@@ -36,6 +37,8 @@ def _anti_hack_check(response: str) -> bool:
     if re.search(r"\[\d+-\d+\]", response):
         return False
     if response.count("<events>") > 1 or response.count("</events>") > 1:
+        return False
+    if response.count("<answer>") > 1 or response.count("</answer>") > 1:
         return False
     return True
 
@@ -143,7 +146,7 @@ def _seg_match_reward(
         return dict(_ZERO)
     if not _anti_hack_check(response):
         return dict(_ZERO)
-    if not has_events_tag(response):
+    if not has_segment_answer_tag(response):
         return dict(_ZERO)
     pred_segs = parse_segments(response)
     if not pred_segs:
@@ -196,7 +199,7 @@ def compute_score(
 
             reward_fn = _DISPATCH.get(problem_type)
             if reward_fn is None:
-                if has_events_tag(ground_truth):
+                if has_segment_answer_tag(ground_truth):
                     reward_fn = _seg_match_reward
                 else:
                     results.append(dict(_ZERO))

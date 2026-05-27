@@ -31,6 +31,7 @@ class RewardConfig:
     thought_loss_weight: float = 0.2
     answer_loss_weight: float = 1.0
     default_loss_weight: float = 1.0
+    format_loss_weight: Optional[float] = None
     answer_fallback_after_thought: bool = True
     # below are auto keys
     reward_function_name: Optional[str] = field(default=None, init=False)
