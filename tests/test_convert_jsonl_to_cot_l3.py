@@ -37,3 +37,5 @@ def test_l3_events_cot_instruction_keeps_shot_boundaries_primary():
     assert "For L3, preserve visually distinct shot boundaries first" in converted["prompt"]
     assert "long single shots may need additional state/action splits" in converted["prompt"]
     assert "Do not collapse multiple clear shots into one broad segment" in converted["prompt"]
+    assert "<events>" not in converted["prompt"]
+    assert "<answer>[[start_time, end_time], ...]</answer>" in converted["prompt"]

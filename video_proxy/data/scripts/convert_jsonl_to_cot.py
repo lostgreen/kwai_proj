@@ -63,6 +63,10 @@ _EVENTS_EXAMPLE_PATTERN = re.compile(
     r"Example:\s*<events>(?P<events>.*?)</events>",
     re.IGNORECASE | re.DOTALL,
 )
+_EVENTS_BLOCK_PATTERN = re.compile(
+    r"<events>(?P<events>.*?)</events>",
+    re.IGNORECASE | re.DOTALL,
+)
 _LEGACY_EVENTS_COT_INSTRUCTION_PATTERN = re.compile(
     r"First,?\s+think\s+step\s+by\s+step\s+inside\s+"
     r"<(?P<tag>think|thought)></(?P=tag)>\s+tags\.\s*"
@@ -185,6 +189,14 @@ def _rewrite_events_examples(prompt: str, reasoning_tag: str) -> tuple[str, bool
     return new_prompt, count > 0
 
 
+def _rewrite_events_blocks_to_answer(prompt: str) -> tuple[str, bool]:
+    new_prompt, count = _EVENTS_BLOCK_PATTERN.subn(
+        lambda match: f"<answer>{match.group('events')}</answer>",
+        prompt,
+    )
+    return new_prompt, count > 0
+
+
 def _upgrade_existing_events_cot_instruction(prompt: str, problem_type: str = "") -> tuple[str, bool]:
     def replace(match: re.Match[str]) -> str:
         tag = match.group("tag").lower()
@@ -266,16 +278,20 @@ def _rewrite_events_prompt(prompt: str, reasoning_tag: str, problem_type: str = 
             + _events_cot_instruction(reasoning_tag, problem_type=problem_type)
             + prompt[idx:]
         )
+        new_prompt, _ = _rewrite_events_blocks_to_answer(new_prompt)
         return new_prompt.rstrip(), True
 
     if "<events>" in prompt and "Output" in prompt:
-        return (
+        new_prompt = (
             prompt.rstrip()
             + "\n\n"
             + _events_cot_instruction(reasoning_tag, problem_type=problem_type).rstrip()
-        ).rstrip(), True
+        )
+        new_prompt, _ = _rewrite_events_blocks_to_answer(new_prompt)
+        return new_prompt.rstrip(), True
 
-    return prompt.rstrip(), example_changed
+    prompt, events_block_changed = _rewrite_events_blocks_to_answer(prompt)
+    return prompt.rstrip(), example_changed or events_block_changed
 
 
 def _normalize_existing_cot_events_prompt(prompt: str, problem_type: str = "") -> tuple[str, bool]:
@@ -289,7 +305,8 @@ def _normalize_existing_cot_events_prompt(prompt: str, problem_type: str = "") -
     tag_match = re.search(r"<(think|thought)></\1>", new_prompt, re.IGNORECASE)
     reasoning_tag = tag_match.group(1).lower() if tag_match else "think"
     new_prompt, example_changed = _rewrite_events_examples(new_prompt, reasoning_tag)
-    return new_prompt.rstrip(), instruction_changed or example_changed
+    new_prompt, events_block_changed = _rewrite_events_blocks_to_answer(new_prompt)
+    return new_prompt.rstrip(), instruction_changed or example_changed or events_block_changed
 
 
 def _rewrite_tg_natural_prompt(prompt: str, reasoning_tag: str) -> tuple[str, bool]:

@@ -151,6 +151,8 @@ def test_rewrite_events_prompt_inserts_cot_before_final_output_instruction():
     assert reason == "events"
     assert converted["prompt"].count("<think></think>") == 1
     assert converted["prompt"].index("First, think step by step") < converted["prompt"].index("Output the start")
+    assert "<events>" not in converted["prompt"]
+    assert "<answer>[[start_time, end_time], ...]</answer>" in converted["prompt"]
     assert converted["answer"] == record["answer"]
 
 
@@ -185,6 +187,7 @@ def test_rewrite_shot_first_events_prompt_uses_cot_example_not_final_only_exampl
     assert "The shot [34,42] is kept as [34,42]" in example
     assert "cover the full 0-42s clip" in example
     assert "Example: <events>" not in converted["prompt"]
+    assert "<events>" not in converted["prompt"]
     assert "<answer><events>" not in converted["prompt"]
     assert "<thought>\nThe video has five shots:" in converted["prompt"]
     assert "placeholder" not in converted["prompt"].lower()
@@ -213,6 +216,8 @@ def test_rewrite_generic_events_prompt_inserts_cot_before_output_format_and_scop
     assert reason == "events"
     assert converted["prompt"].index("First, think step by step") < converted["prompt"].index("Output format")
     assert "In the final <answer> block, output only timestamps" in converted["prompt"]
+    assert "<events>" not in converted["prompt"]
+    assert "<answer>" in converted["prompt"]
     assert "- Output only timestamps, no descriptions." not in converted["prompt"]
 
 
